@@ -81,8 +81,8 @@ flowchart TD
 [最新交接文档 §6.2 门禁表](docs/HANDOFF-2026-10-15.md)，本文不复述** —— 这里此前钉着 v3.9.14 的
 "3418 / 261"，而那之后又发了五个版本。一个数字写在不是它权威来源的地方就会烂。
 全量 `npm test` 的总数**不再漂**：2026-09-13 实测，真正的原因不是"输出竞态"而是
-`--test-force-exit` 会在跑完**部分 suite 之后**就让进程以 **0** 退出 —— 同一份字节跑 12 次得到
-**8 个不同的数字（34…72）**，去掉它之后 **10/10 稳定**。该 flag 已从 `package.json`、
+`--test-force-exit` 会在跑完**部分 suite 之后**就让进程以 **0** 退出 —— 同一份字节跑 10 轮得到
+**8 个不同的数字（34…72）**，去掉它之后 **10/10 稳定**（两臂逐轮交错跑，逐轮原始计数在 `939872b` 的 commit message 里，`git show -s --format=%B 939872b` 可复核）。该 flag 已从 `package.json`、
 `scripts/run-test-shard.mjs` 与三个 harness 脚本中移除。**不要加回来**：
 截断是静默的，而挂起会被 shard runner 点名。
 
@@ -109,7 +109,7 @@ for s in test/mutations/*.json; do npm run mutate -- "$s"; done
 
 **元规则 —— 什么才算守卫(RC0):** 守卫只有在**把修复回退后它会变红、且是在生产实际走的那个形状上变红**,才算守卫。—— #252 / #261
 
-- 正面实例(#261,走倒车实测):"**走倒车**实测(这是它算不算守卫的判据):把 `chat.js:3313` 的调用行删掉,新测试**红**"（引文坐标是 2026-09-13 的树；同一调用点现在 `chat.js:3380-3382`——引文逐字未改，只补坐标）
+- 正面实例(#261,走倒车实测):"**走倒车**实测(这是它算不算守卫的判据):把 `chat.js:3313` 的调用行删掉,新测试**红**"（引文坐标是 2026-09-13 的树；同一调用点现在 `chat.js:3384-3386`——引文逐字未改，只补坐标）
 - 反面实例(#252):"**Non-stream passes by accident, through two unrelated mechanisms.**"
 
 **开 PR 前自答(有一条答不上来,先别开):**
@@ -224,8 +224,9 @@ and is deliberately not repeated here** — this spot used to pin "3418 / 261 as
 releases shipped after that. A number written anywhere other than its authoritative source
 rots. Totals from a plain `npm test` **no longer drift**: measured 2026-09-13, the cause was not
 an "output race" but `--test-force-exit` ending the process after **part of the suites** and
-still exiting **0** — twelve identical runs of one file gave **eight distinct counts (34..72)**,
-and **10/10 stable** without it. The flag was removed from `package.json`,
+still exiting **0** — ten identical runs of one file gave **eight distinct counts (34..72)**,
+and **10/10 stable** without it (both arms interleaved round by round; the per-round raw counts
+are in `939872b`'s commit message — `git show -s --format=%B 939872b`). The flag was removed from `package.json`,
 `scripts/run-test-shard.mjs` and the three harness scripts. **Do not re-add it**: a truncation is
 silent, a hang is named by the shard runner.
 
@@ -378,7 +379,7 @@ This repository's merge bar has only ever existed in review comments (7 formal r
 
 **Meta-rule — what counts as a guard (RC0):** a guard counts only if **reverting the fix turns it red, and it turns red in the shape production actually takes**. — #252 / #261
 
-- Positive instance (#261, the reverse-the-fix measurement): "**走倒车**实测(这是它算不算守卫的判据):把 `chat.js:3313` 的调用行删掉,新测试**红**" (the quoted coordinate is the 2026-09-13 tree; the same call site is now `chat.js:3380-3382` — the quote stays verbatim, only the coordinate is added)
+- Positive instance (#261, the reverse-the-fix measurement): "**走倒车**实测(这是它算不算守卫的判据):把 `chat.js:3313` 的调用行删掉,新测试**红**" (the quoted coordinate is the 2026-09-13 tree; the same call site is now `chat.js:3384-3386` — the quote stays verbatim, only the coordinate is added)
 - Negative instance (#252): "**Non-stream passes by accident, through two unrelated mechanisms.**"
 
 **Self-check before opening a PR (if one item has no answer, fix that first):**

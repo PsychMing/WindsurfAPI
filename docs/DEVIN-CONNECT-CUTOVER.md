@@ -320,12 +320,19 @@ GetChatMessage rejects the bare router uid. Turn the hop on:
 ```sh
 # .env:
 DEVIN_CONNECT_ASSIGN_MODEL=1
-# If a real AssignModel round-trip shows different tags than our inferred
-# defaults (req_model_uid=2, resp_assignment=1, asg_model_uid=1, asg_jwt=2,
-# asg_harness=3), pin them:
-DEVIN_CONNECT_ASSIGN_TAGS="req_model_uid=2,resp_assignment=1,asg_model_uid=1,asg_jwt=2,asg_harness=3"
+# If a real AssignModel round-trip shows different tags than our defaults
+# (req_model_uid=2, req_cascade_id=3, resp_assignment=1, asg_model_uid=2,
+# asg_jwt=1, asg_harness=3), pin them:
+DEVIN_CONNECT_ASSIGN_TAGS="req_model_uid=2,req_cascade_id=3,resp_assignment=1,asg_model_uid=2,asg_jwt=1,asg_harness=3"
 # Extra router names/prefixes:  DEVIN_CONNECT_ROUTER_MODELS="auto,smart-*"
 ```
+
+The defaults above are the post-`86d5543` set (2026-10-15): the request now carries
+`cascade_id` (#3, the schema marks it required) and `ModelAssignment`'s `model_uid` /
+assignment-blob numbers were corrected (they had been swapped). An `.env` that pinned the
+old set — `req_model_uid=2,resp_assignment=1,asg_model_uid=1,asg_jwt=2,asg_harness=3` — must
+be re-pinned or dropped; it would re-point `asg_model_uid` at the JWT field and omit
+`cascade_id` entirely.
 
 A failed/empty resolve degrades gracefully to the original selector and bumps
 the `assign_model_failed` counter on `/connect-metrics` — it never fails the

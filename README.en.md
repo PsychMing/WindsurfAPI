@@ -412,30 +412,30 @@ Open `http://YOUR_IP:3003/dashboard`:
 100+ static models in the main catalog plus dynamic cloud-side models added at startup via `mergeCloudModels`. On the Cascade transport, after per-account cloud catalogs sync, `GET /v1/models` and the Dashboard show the union available across active accounts, while routing applies the selected account's own catalog. `DEVIN_CONNECT` remains governed by its separate selector catalog. The full static catalog remains available on the [GitHub Pages model catalog](https://dwgx.github.io/WindsurfAPI/#models) (auto-generated from `src/models.js`).
 
 <details>
-<summary><b>Claude (Anthropic)</b> — 58 models</summary>
+<summary><b>Claude (Anthropic)</b> — 73 models</summary>
 
-claude-3.5-sonnet / 3.7-sonnet / thinking · claude-4-sonnet / opus / thinking · claude-4.1-opus · claude-4.5-haiku / sonnet / opus · claude-sonnet-4.6 (incl. 1m / thinking / thinking-1m) · claude-opus-4.6 / thinking · **claude-opus-4.7-medium** · **claude-opus-4.8 series** (low / medium / high / xhigh / max + fast) · **claude-5-fable / claude-sonnet-5 / claude-opus-5 series** (low / medium / high / xhigh / max; opus-5 incl. fast)
-
-</details>
-
-<details>
-<summary><b>GPT (OpenAI)</b> — 83 models</summary>
-
-gpt-4o · gpt-4.1 · gpt-5 series (incl. medium / high / codex) · **gpt-5.1 series** (base / low / medium / high + fast + codex, all 6 variants) · **gpt-5.2 series** (none / low / medium / high / xhigh + fast + codex) · **gpt-5.4 series** (base / mini × low/medium/high/xhigh) · **gpt-5.5 series** (none / low / medium / high / xhigh + fast) · **gpt-5.6-luna series** (none / low / medium / high / xhigh) · o3 series (base / mini / pro) · o4-mini
+claude-3.5-sonnet / 3.7-sonnet / thinking · claude-4-sonnet / opus / thinking · claude-4.1-opus · claude-4.5-haiku / sonnet / opus · claude-sonnet-4.6 (incl. 1m / thinking / thinking-1m) · claude-opus-4.6 / thinking · **claude-opus-4.7-medium** · **claude-opus-4.8 series** (low / medium / high / xhigh / max + fast) · **claude-5-fable / claude-sonnet-5 / claude-opus-5 series** (low / medium / high / xhigh / max; opus-5 incl. fast) · **claude-fable-5.1 / claude-sonnet-5.5 / claude-opus-5.5 series** (low / medium / high / xhigh / max)
 
 </details>
 
 <details>
-<summary><b>Gemini (Google)</b> — 9 models</summary>
+<summary><b>GPT (OpenAI)</b> — 118 models</summary>
 
-gemini-2.5-pro / flash · gemini-3.0-pro / flash (minimal / low / medium / high — 4 reasoning levels) · gemini-3.1-pro (low / high)
+gpt-4o · gpt-4.1 · gpt-5 series (incl. medium / high / codex) · **gpt-5.1 series** (base / low / medium / high + fast + codex, all 6 variants) · **gpt-5.2 series** (none / low / medium / high / xhigh + fast + codex) · **gpt-5.4 series** (base / mini × low/medium/high/xhigh) · **gpt-5.5 series** (none / low / medium / high / xhigh + fast) · **gpt-5.6-luna series** (none / low / medium / high / xhigh / max) · **gpt-5.6-sol / terra series** (none / low / medium / high / xhigh / max) · **gpt-6 family** (sol / luna: none / low / medium / high / xhigh / max; astra and gpt-6.1-sol: low / medium / high / xhigh / max) · o3 series (base / mini / pro) · o4-mini
+
+</details>
+
+<details>
+<summary><b>Gemini (Google)</b> — 22 models</summary>
+
+gemini-2.5-pro / flash · gemini-3.0-pro / flash (minimal / low / medium / high — 4 reasoning levels) · gemini-3.1-pro (low / high) · gemini-3.6-flash (minimal / low / medium / high) · gemini-3.7 / 3.8-flash (low / medium / high) · gemini-4-argon (low / medium / high)
 
 </details>
 
 <details>
 <summary><b>Open source / Chinese providers</b></summary>
 
-**Kimi**: kimi-k2 / k2.5 / k2-6 / k2-7 · **GLM**: glm-4.7 / 5 / 5.1 / 5.2 · **Qwen**: qwen-3 · **Grok**: grok-3 / grok-3-mini-thinking / grok-code-fast-1 · **MiniMax**: minimax-m2.5
+**Kimi**: kimi-k2 / k2.5 / k2-6 / k2-7 / k3 · **GLM**: glm-4.7 / 5 / 5.1 / 5.2 / 5.3 · **Qwen**: qwen-3 · **DeepSeek**: deepseek-v4 / v4.1-flash · **Grok**: grok-3 / grok-3-mini-thinking / grok-code-fast-1 / grok-4.5 / 4.6 / 4.7 · **MiniMax**: minimax-m2.5 · **Nemotron**: nemotron-3-ultra · **Inkling**: inkling
 
 </details>
 
@@ -554,7 +554,7 @@ A: Depends on the model. Claude family is rock-solid (also free-account-entitled
 A: First look for `ToolRoute[...]` in the logs. It lists the tools your client declared, the effective tools after `tool_choice` filtering, mapped/unmapped tools for the native bridge, the preamble downgrade tier, and the reason (`tool_choice_none` / `forced_tool_not_declared` / `preamble_compacted` / `native_bridge_*`). Server-side tools on `/v1/messages` and `/v1/responses` (Anthropic advisor/code_execution, OpenAI file_search/mcp/computer_use) are dropped at the translation layer when the proxy doesn't implement them; those aren't ordinary function tools, and their absence doesn't mean WindsurfAPI can execute them on the client's behalf. The native bridge is also not a "local IDE tool fix" switch: the default safe path is prompt/tool emulation with local client-side execution; the native bridge makes the remote Windsurf workspace execute Cascade built-in tools and is only meant for low-traffic experiments behind a model/account/API-key gate.
 
 **Q: 31 trial accounts go unavailable after a few hundred calls**
-A: Likely the model is a weekly-quota variant — `claude-opus-4-7-max` / `gpt-5.5-xhigh` / `claude-sonnet-4-7-thinking` etc. cap at 5 calls per week per account, so 31 accounts × 5 ≈ 150 calls hit the wall fast. Switch to `claude-sonnet-4.6` / `claude-haiku-4.5` (daily quotas are much wider). Verify with `docker logs windsurfapi-windsurf-api-1 | grep rate_limit` — the per-account cooldown reason is in the log.
+A: Likely the model is a weekly-quota variant — `claude-opus-4-7-max` / `gpt-5.5-xhigh` / `claude-opus-4-8-xhigh` etc. cap at 5 calls per week per account, so 31 accounts × 5 ≈ 150 calls hit the wall fast. Switch to `claude-sonnet-4.6` / `claude-haiku-4.5` (daily quotas are much wider). Verify with `docker logs windsurfapi-windsurf-api-1 | grep rate_limit` — the per-account cooldown reason is in the log.
 
 **Q: "All accounts temporarily rate-limited" / IP-level cooldown — is the proxy broken?**
 A: Usually not. Windsurf's upstream applies cooldowns to dense bursts from the same egress IP + same model, so accounts sharing one egress IP get limited together. WindsurfAPI stops burning accounts and returns `429 + Retry-After`; since v2.0.140 the wait time reflects the upstream's real value (e.g. `Resets in: 27m12s`) instead of a fixed 30-second hint. The fixes are lowering concurrency, switching to gentler models, binding accounts to different egress IPs, or waiting for the upstream cooldown to expire.
@@ -602,7 +602,7 @@ Huge thanks to the following folks who sent pull requests or systematically audi
 - [@forrinzhao](https://github.com/forrinzhao) — [PR #219](https://github.com/dwgx/WindsurfAPI/pull/219)
   Traced the Devin content-policy block that killed every request from a Feishu codex bot to one sentence in codex's `apply_patch` tool description: `FREEFORM tool, so do not wrap the patch in JSON.` Live-bisected 7/7 deterministic, with the decisive two-fragment A/B — rewriting only one fragment still blocks, both must change. The finding exposed a deeper structural gap: the tool-description preamble is injected *after* `neutralizeClientIdentity`, so any trigger phrase arriving via a tool description bypassed the entire a1-a6 defense line on the native path. The landed fix moves neutralization after preamble injection and adds the two rewrites as rule `(a7)` in the existing sequence (reusing the main switch and test harness), so it now covers every client and every trigger. Also adopted his `responses.js` fix: Codex sends bare `{role, content}` input items without `type:'message'`, which were silently dropped and left upstream with an empty messages array → UPSTREAM_INTERNAL.
 - [@warelik](https://github.com/warelik) — [PR #224](https://github.com/dwgx/WindsurfAPI/pull/224) [#225](https://github.com/dwgx/WindsurfAPI/pull/225) [#226](https://github.com/dwgx/WindsurfAPI/pull/226) [#227](https://github.com/dwgx/WindsurfAPI/pull/227) [#228](https://github.com/dwgx/WindsurfAPI/pull/228) [#229](https://github.com/dwgx/WindsurfAPI/pull/229)
-  Six PRs in one round, across the account pool, rate limiting, identity neutralization, and protocol conformance. The 429 reset-window bug was two links of one chain: the upstream's 3h reset window was dropped in transport (both error paths destructured only `{code, message}`), and a model-scoped cooldown is structurally invisible to pool selection via `getApiKey(modelKey=null)` — fixing either alone has no observable effect, so a just-429'd account got re-picked within seconds and hammered upstream into a hard lockout (#224). Client disconnects are no longer treated as account faults: abort is now recognized uniformly (undici and AbortController disagree on shape), and no exit path penalizes the error budget, burns quota on failover, or writes to a dead socket (#225). Grok CLI's `You are Grok … released by xAI` self-ID trips the content policy — added to the a1-a5 rule family, plus whole-block stripping of `<executing_actions_with_care>` (#227). Thinking blocks now omit `signature` instead of sending `""`, which strict clients reject (#228). Responses usage gained `input/output_tokens_details`, which pairs exactly with the DEVIN_CONNECT cache wire-tag calibration (#229). Also a 600-line zero-dependency pair-chain session-continuity module deriving a stable `session_id` from the conversation's own completed request/response pairs — opt-in, byte-identical when off (#226).
+  Six PRs in one round, across the account pool, rate limiting, identity neutralization, and protocol conformance. The 429 reset-window bug was two links of one chain: the upstream's 3h reset window was dropped in transport (both error paths destructured only `{code, message}`), and a model-scoped cooldown is structurally invisible to pool selection via `getApiKey(modelKey=null)` — fixing either alone has no observable effect, so a just-429'd account got re-picked within seconds and hammered upstream into a hard lockout (#224). Client disconnects are no longer treated as account faults: abort is now recognized uniformly (undici and AbortController disagree on shape), and no exit path penalizes the error budget, burns quota on failover, or writes to a dead socket (#225). Grok CLI's `You are Grok … released by xAI` self-ID trips the content policy — added to the a1-a5 rule family, plus whole-block stripping of `<executing_actions_with_care>` (#227). Thinking blocks now omit `signature` instead of sending `""`, which strict clients reject (#228). Responses usage gained `input/output_tokens_details`, which pairs exactly with the DEVIN_CONNECT cache wire-tag calibration (#229). Also a zero-dependency pair-chain session-continuity module (600 lines when it landed, 858 today) deriving a stable `session_id` from the conversation's own completed request/response pairs — opt-in, byte-identical when off (#226).
 - [@warelik](https://github.com/warelik) — [PR #216](https://github.com/dwgx/WindsurfAPI/pull/216) + [PR #215](https://github.com/dwgx/WindsurfAPI/pull/215)
   Neutralized the upstream MCP-gate: server.codeium.com fingerprints tool descriptions and rejected 8 of Cursor's 21 tools with permission_denied. The fix replaces the native #10 ToolDef top-level description with the tool name and recursively strips `description` annotations from the parameter schema (preserving structure and parameters literally named `description`), then injects a description-only preamble into the system prompt to restore tool-selection context — 21/21 tools pass (#216). Also fixed Node 20+ IPv6 Happy Eyeballs ETIMEDOUT by disabling autoSelectFamily and switching local HTTP/2 to 127.0.0.1 (#215).
 

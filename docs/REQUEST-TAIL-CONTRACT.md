@@ -10,6 +10,10 @@ between how the surfaces handle one.
 The guard and converter line numbers below are re-derivable with the commands in
 [§6](#6-where-this-is-pinned); every other line number was hand-checked against the same tree on the
 same date.
+**Re-measured:** 2026-10-16 against `master` @ `d3f0490` — the §2 stage table carries those
+coordinates (the merges in between pushed the chat.js sites by 4–9 lines). The guard block
+(`:2994-3033`), the delegation lines and the §3 converter chains were **unchanged**, so their
+2026-10-07 coordinates still hold.
 
 ## 1. The rule
 
@@ -38,11 +42,11 @@ One block: `src/handlers/chat.js:2994-3033` (assistant-tail check `:2994-3009`, 
 
 | stage | first reached at |
 |---|---|
-| connect-path stream branch (`if (stream)`) | `chat.js:3659` |
-| default-path stream branch (`if (stream)`) | `chat.js:4530` |
+| connect-path stream branch (`if (stream)`) | `chat.js:3663` |
+| default-path stream branch (`if (stream)`) | `chat.js:4539` |
 | backend selection (`selectBackend`) | `chat.js:3226` |
-| account acquisition (`acquireConnectAccount` / `waitForAccount`) | `chat.js:3517` / `:4695` |
-| response cache (first `cacheGet`) | `chat.js:4578` |
+| account acquisition (`acquireConnectAccount` / `waitForAccount`) | `chat.js:3521` / `:4704` |
+| response cache (first `cacheGet`) | `chat.js:4587` |
 
 Every surface delegates into this function: `/v1/chat/completions` (`src/server.js:610`),
 `/v1/completions` (`src/handlers/completions.js:97`), `/v1/responses`
@@ -116,6 +120,8 @@ Provenance, 2026-10-07, `master` @ `df9d429`:
 - guard and converter line numbers: `grep -n 'ANSWERABLE_ROLES\|trimmedBytes === 0' src/handlers/chat.js`
   and `grep -n 'textParts.length' src/handlers/messages.js src/handlers/gemini.js`
 - §2 stage rows (first occurrences): `grep -n 'await acquireConnectAccount(\|selectBackend({ modelInfo })\|await waitForAccountFn(\|const cached = cacheShareable\|if (stream)' src/handlers/chat.js`
+  （2026-10-16 @ `d3f0490` 用同一条命令重导过：3663 / 4539 / 3226 / 3521 / 4704 / 4587；
+  其余各组坐标在同一天重跑后未变）
 - surface delegation lines: `grep -n '|| handleChatCompletions' src/handlers/completions.js src/handlers/responses.js src/handlers/messages.js src/handlers/gemini.js`
   and `grep -n 'handleChatCompletions(body' src/server.js`
 - §4 completions numbers: `grep -n 'Streaming is not supported\|promptToText(body.prompt)\|messages: \[{ role' src/handlers/completions.js`

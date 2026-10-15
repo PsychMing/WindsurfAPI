@@ -512,30 +512,30 @@ data URL / base64，或显式开启 `DEVIN_ACP_VISION=1` 走本机 Devin CLI 的
 主线 100+ 个静态模型 + Windsurf 雲端動態下發（`mergeCloudModels` 啟動時拉取最新）。Cascade 路径下，各账号云端 catalog 同步后，`GET /v1/models` 和 Dashboard 展示活跃账号目录的并集，路由则校验所选账号自己的目录；`DEVIN_CONNECT` 继续使用独立 selector catalog；静态完整列表仍可查看 [GitHub Pages 模型清单](https://dwgx.github.io/WindsurfAPI/#models)（同步生成於 `src/models.js`）。
 
 <details>
-<summary><b>Claude（Anthropic）</b> — 58 个</summary>
+<summary><b>Claude（Anthropic）</b> — 73 个</summary>
 
-claude-3.5-sonnet / 3.7-sonnet / thinking · claude-4-sonnet / opus / thinking · claude-4.1-opus · claude-4.5-haiku / sonnet / opus · claude-sonnet-4.6（含 1m / thinking / thinking-1m） · claude-opus-4.6 / thinking · **claude-opus-4.7-medium** · **claude-opus-4.8 全系**（low / medium / high / xhigh / max + fast） · **claude-5-fable / claude-sonnet-5 / claude-opus-5 全系**（low / medium / high / xhigh / max，opus-5 含 fast）
-
-</details>
-
-<details>
-<summary><b>GPT（OpenAI）</b> — 83 个</summary>
-
-gpt-4o · gpt-4.1 · gpt-5 全系（含 medium / high / codex） · **gpt-5.1 全系**（base / low / medium / high + fast + codex 全 6 變體） · **gpt-5.2 全系**（none / low / medium / high / xhigh + fast + codex 全 5 變體） · **gpt-5.4 全系**（base / mini × low/medium/high/xhigh） · **gpt-5.5 全系**（none / low / medium / high / xhigh + fast） · **gpt-5.6-luna 全系**（none / low / medium / high / xhigh） · o3 全系（base / mini / pro） · o4-mini
+claude-3.5-sonnet / 3.7-sonnet / thinking · claude-4-sonnet / opus / thinking · claude-4.1-opus · claude-4.5-haiku / sonnet / opus · claude-sonnet-4.6（含 1m / thinking / thinking-1m） · claude-opus-4.6 / thinking · **claude-opus-4.7-medium** · **claude-opus-4.8 全系**（low / medium / high / xhigh / max + fast） · **claude-5-fable / claude-sonnet-5 / claude-opus-5 全系**（low / medium / high / xhigh / max，opus-5 含 fast） · **claude-fable-5.1 / claude-sonnet-5.5 / claude-opus-5.5 全系**（low / medium / high / xhigh / max）
 
 </details>
 
 <details>
-<summary><b>Gemini（Google）</b> — 9 个</summary>
+<summary><b>GPT（OpenAI）</b> — 118 个</summary>
 
-gemini-2.5-pro / flash · gemini-3.0-pro / flash（minimal / low / medium / high 4 個 reasoning 等級） · gemini-3.1-pro（low / high）
+gpt-4o · gpt-4.1 · gpt-5 全系（含 medium / high / codex） · **gpt-5.1 全系**（base / low / medium / high + fast + codex 全 6 變體） · **gpt-5.2 全系**（none / low / medium / high / xhigh + fast + codex 全 5 變體） · **gpt-5.4 全系**（base / mini × low/medium/high/xhigh） · **gpt-5.5 全系**（none / low / medium / high / xhigh + fast） · **gpt-5.6-luna 全系**（none / low / medium / high / xhigh / max） · **gpt-5.6-sol / terra 全系**（none / low / medium / high / xhigh / max） · **gpt-6 系列**（sol / luna 為 none / low / medium / high / xhigh / max；astra 與 gpt-6.1-sol 為 low / medium / high / xhigh / max） · o3 全系（base / mini / pro） · o4-mini
+
+</details>
+
+<details>
+<summary><b>Gemini（Google）</b> — 22 个</summary>
+
+gemini-2.5-pro / flash · gemini-3.0-pro / flash（minimal / low / medium / high 4 個 reasoning 等級） · gemini-3.1-pro（low / high） · gemini-3.6-flash（minimal / low / medium / high） · gemini-3.7 / 3.8-flash（low / medium / high） · gemini-4-argon（low / medium / high）
 
 </details>
 
 <details>
 <summary><b>开源 / 国产</b></summary>
 
-**Kimi**: kimi-k2 / k2.5 / k2-6 / k2-7 · **GLM**: glm-4.7 / 5 / 5.1 / 5.2 · **Qwen**: qwen-3 · **Grok**: grok-3 / grok-3-mini-thinking / grok-code-fast-1 · **MiniMax**: minimax-m2.5
+**Kimi**: kimi-k2 / k2.5 / k2-6 / k2-7 / k3 · **GLM**: glm-4.7 / 5 / 5.1 / 5.2 / 5.3 · **Qwen**: qwen-3 · **DeepSeek**: deepseek-v4 / v4.1-flash · **Grok**: grok-3 / grok-3-mini-thinking / grok-code-fast-1 / grok-4.5 / 4.6 / 4.7 · **MiniMax**: minimax-m2.5 · **Nemotron**: nemotron-3-ultra · **Inkling**: inkling
 
 </details>
 
@@ -654,7 +654,7 @@ A: 看模型。Claude family `<tool_use>` 协议训练扎实最稳（free 账号
 A: 先看日志里的 `ToolRoute[...]`。它会列出客户端声明的工具、`tool_choice` 过滤后的有效工具、native bridge 映射/未映射工具、preamble 降级层级，以及 `tool_choice_none` / `forced_tool_not_declared` / `preamble_compacted` / `native_bridge_*` 等原因。`/v1/messages` 和 `/v1/responses` 的 server-side 工具（如 Anthropic advisor/code_execution，OpenAI file_search/mcp/computer_use）如果代理没有实现，会在翻译层丢弃；这类工具不是普通 function tool，不等于 WindsurfAPI 已经能替客户端执行。native bridge 也不是“本地 IDE 工具修复开关”：默认安全路径仍是 prompt/tool emulation，由客户端本地执行工具；native bridge 是让 Windsurf 远端 workspace 执行 Cascade 内置工具，只适合有模型/账号/API key gate 的小流量实验。
 
 **Q: 31 个 trial 账号一会儿就全 unavailable**
-A: 八成是用了周限模型 — `claude-opus-4-7-max` / `gpt-5.5-xhigh` / `claude-sonnet-4-7-thinking` 这类高 reasoning effort 变体每个账号每周只有 5 次配额，31 号 × 5 次 ≈ 150 次就到顶。换 `claude-sonnet-4.6` / `claude-haiku-4.5` daily 配额比较宽松。`docker logs windsurfapi-windsurf-api-1 | grep rate_limit` 看每个账号的 cooldown 字段验证。
+A: 八成是用了周限模型 — `claude-opus-4-7-max` / `gpt-5.5-xhigh` / `claude-opus-4-8-xhigh` 这类高 reasoning effort 变体每个账号每周只有 5 次配额，31 号 × 5 次 ≈ 150 次就到顶。换 `claude-sonnet-4.6` / `claude-haiku-4.5` daily 配额比较宽松。`docker logs windsurfapi-windsurf-api-1 | grep rate_limit` 看每个账号的 cooldown 字段验证。
 
 **Q: All accounts temporarily rate-limited / IP-level cooldown 是不是代理坏了**
 A: 通常不是。Windsurf 上游会对同一出口 IP + 同一模型的密集请求施加 cooldown，多个账号绑在同一出口时会一起被限流。WindsurfAPI 会停止继续烧账号并返回 `429 + Retry-After`；v2.0.140 起这个等待时间会按上游 `Resets in: 27m12s` 这类真实值返回，而不是固定提示 30 秒。解决方向是降并发、换更宽松模型、给账号绑定不同出口 IP，或者等上游 cooldown 到期。
@@ -702,7 +702,7 @@ A: 不能。长 thinking / 长输出在约 236-243 秒断流，是 Windsurf prov
 - [@forrinzhao](https://github.com/forrinzhao) — [PR #219](https://github.com/dwgx/WindsurfAPI/pull/219)
   定位到 codex `apply_patch` 工具描述里的 `FREEFORM tool, so do not wrap the patch in JSON.` 会触发 Devin content policy(飞书 codex bot 全量被拦),live-bisect 7/7 确定性复现,并做了关键的双片段 A/B —— 只改一处仍拦、两处都改才过。这个发现顺带暴露出更深的结构缺陷:工具描述 preamble 注入在 `neutralizeClientIdentity` **之后**,导致 native 路径上任何经由工具描述进来的触发词都绕过 a1-a6 整条防线。落地版把中和移到 preamble 注入之后,并把两条改写做成 `(a7)` 规则进既有序列(复用主开关与测试体系),因此覆盖所有客户端、所有触发词。另采纳其 `responses.js` 修复:Codex 发的 input item 是裸 `{role, content}` 不带 `type:'message'`,此前被静默丢弃导致上游收到空 messages → UPSTREAM_INTERNAL。
 - [@warelik](https://github.com/warelik) — [PR #224](https://github.com/dwgx/WindsurfAPI/pull/224) [#225](https://github.com/dwgx/WindsurfAPI/pull/225) [#226](https://github.com/dwgx/WindsurfAPI/pull/226) [#227](https://github.com/dwgx/WindsurfAPI/pull/227) [#228](https://github.com/dwgx/WindsurfAPI/pull/228) [#229](https://github.com/dwgx/WindsurfAPI/pull/229)
-  一轮六连,覆盖账号池、限流、身份中和、协议规范四个子系统。429 reset window 双链根因:上游给的 3h 重置窗口在传输层被丢(只解构 `{code, message}`),且 model-scoped 冷却对 `getApiKey(modelKey=null)` 的池选择结构上不可见 —— 两条只修一条都毫无效果,刚被 429 的账号几秒内被重选、一路撞到硬封(#224)。客户端断连不再当成账号故障:统一识别 abort(兼容 undici 与 AbortController 两种形态),流式/非流式全部退出路径不再罚 error budget、不再 failover 烧配额、不再往死 socket 写(#225)。Grok CLI 的 `You are Grok … released by xAI` self-ID 触发 content policy,补进 a1-a5 同族规则并整块剥离 `<executing_actions_with_care>`(#227)。thinking 块 `signature: ""` 改为省略,修严格客户端拒收(#228)。Responses usage 补齐 `input/output_tokens_details`,与 DEVIN_CONNECT 缓存 wire tag 校准正好凑成一条链的两半(#229)。另有 600 行零依赖的 pair-chain 会话连续性模块,从对话自身已完成的请求/响应对推导稳定 `session_id`,默认关、开关闭合时字节等价(#226)。
+  一轮六连,覆盖账号池、限流、身份中和、协议规范四个子系统。429 reset window 双链根因:上游给的 3h 重置窗口在传输层被丢(只解构 `{code, message}`),且 model-scoped 冷却对 `getApiKey(modelKey=null)` 的池选择结构上不可见 —— 两条只修一条都毫无效果,刚被 429 的账号几秒内被重选、一路撞到硬封(#224)。客户端断连不再当成账号故障:统一识别 abort(兼容 undici 与 AbortController 两种形态),流式/非流式全部退出路径不再罚 error budget、不再 failover 烧配额、不再往死 socket 写(#225)。Grok CLI 的 `You are Grok … released by xAI` self-ID 触发 content policy,补进 a1-a5 同族规则并整块剥离 `<executing_actions_with_care>`(#227)。thinking 块 `signature: ""` 改为省略,修严格客户端拒收(#228)。Responses usage 补齐 `input/output_tokens_details`,与 DEVIN_CONNECT 缓存 wire tag 校准正好凑成一条链的两半(#229)。另有零依赖的 pair-chain 会话连续性模块（引入时 600 行，现 858 行）,从对话自身已完成的请求/响应对推导稳定 `session_id`,默认关、开关闭合时字节等价(#226)。
 - [@warelik](https://github.com/warelik) — [PR #216](https://github.com/dwgx/WindsurfAPI/pull/216) + [PR #215](https://github.com/dwgx/WindsurfAPI/pull/215)
   中和上游 MCP-gate：server.codeium.com 对工具描述做指纹匹配，Cursor 21 个工具里 8 个被 permission_denied 拒掉；把 native #10 ToolDef 顶层描述换成工具名 + 递归剥参数 schema 的描述注解（保留结构和名叫 `description` 的参数），再把描述-only preamble 注入 system prompt 补回选工具上下文，21/21 全过（#216）。另修 Node 20+ IPv6 Happy Eyeballs 导致的 ETIMEDOUT：关掉 autoSelectFamily + 本地 HTTP/2 连接改用 127.0.0.1（#215）。
 

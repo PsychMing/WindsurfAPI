@@ -1,13 +1,16 @@
 # 环境变量参考（补 .env.example 未收录的部分）
 
 README 的表格列常用变量，[.env.example](../.env.example) 是完整清单 —— 两者合计覆盖
-74 个。本文补齐**剩下 84 个只存在于源码里**的开关：注释很全，但运营翻不到。
+75 个。本文补齐**剩下 82 个只存在于源码里**的开关：注释很全，但运营翻不到。
+（2026-10-16 按 `d3f0490` 重测：全量 **157**。旧值 158 / 74 / 84 是 `ab4e66f` 树的口径：
+`9031b9b` 把 `CASCADE_MAX_WAIT_MS` 写进 README（覆盖 +1），`054806a` 删掉一个开关的读取点
+（全量 −1）。重测命令就是下面那段脚本。）
 
 数开关**别用裸 `grep 'env\.'`**，有两个坑：一是 `WINDSURFAPI_TRACE` 这类名字是
 `WINDSURFAPI_TRACE_DIR` 的前缀，正则不加边界会重复计数；二是**相当一部分读取点
 不长得像 `env.FOO`** —— `positiveIntEnv('FOO', 默认)`（`client.js`/`proto-trace.js`/
 `conversation-pool.js`）和 `runtime-config.js` 里 `{env: 'FOO', def: …}` 的表驱动写法
-都是真读取点。只匹配 `env.FOO` 会漏掉 45 个（2026-10-15 用下面的脚本重测：全量 158、裸 grep 113）。正确数法：
+都是真读取点。只匹配 `env.FOO` 会漏掉 45 个（2026-10-16 用下面的脚本重测 @d3f0490：全量 157、裸 grep 112；`ab4e66f` 时点为 158 / 113 —— 差值仍是 45）。正确数法：
 
 ```bash
 python3 - <<'PY'
@@ -84,7 +87,6 @@ PY
 | `WINDSURFAPI_NATIVE_BRIDGE_NO_EMUL` | 关 | 走 native bridge 时不再叠加 prompt 层的工具模拟（`=== '1'`）。用来区分「原生解码坏了」和「模拟层坏了」。 |
 | `WINDSURFAPI_NATIVE_TOOL_BRIDGE_POLL_AFTER_TOOL` | 关 | 交出 tool result 后主动再轮询一次上游（`client.js`，`=== '1'`）。只在 native 模式下有意义。 |
 | `WINDSURFAPI_NATIVE_TOOL_BRIDGE_WEBFETCH_AUTO_APPROVE` | 关 | 自动批准 read_url 抓取，不等确认（`client.js` 的 `isReadUrlAutoApproveAllowed`）。**光开这个不够** —— 还必须用 `..._WEBFETCH_AUTO_APPROVE_ORIGINS` 列出允许的 origin，名单为空时一律返回 false。双重门是刻意的：让模型自行发外部请求必须显式指定去哪。 |
-| `WINDSURFAPI_NATIVE_TOOL_BRIDGE_READ_URL_LEGACY_SUMMARY` | 关 | read_url 结果回到旧版摘要格式（`windsurf.js`，`=== '1'`）。兼容老客户端。 |
 | `WINDSURFAPI_NATIVE_TOOL_BRIDGE_CONFIG_RAW` | 空 | 直接塞一段原始 bridge 配置（`windsurf.js`，`|| ''` 后 trim）。留空则用正常构造流程。 |
 | `WINDSURFAPI_NATIVE_TOOL_BRIDGE_ALLOWLIST_NAMES` | 空 | 覆盖工具白名单的名字，逗号分隔（`cascade-native-bridge.js` 的 `csvListEnv`）。留空用内置名单。 |
 | `WINDSURFAPI_NATIVE_BRIDGE_STATS_KEY_LIMIT` | `200` | 统计里最多保留多少个 key（`native-bridge-stats.js`，非有限值或 ≤0 时回落 200）。 |
@@ -168,7 +170,7 @@ PY
 | `WINDSURFAPI_TOOL_DESC_MAX` | `500` | 工具描述的字符上限（`toolDescMax()`，要求 `>= 0` 的有限数否则回落 500）。**`0` = 不限长**，不是"全砍掉"。注释说明当前只用于长度阈值判断。 |
 | `CASCADE_1M_HISTORY_BYTES` | `900000` | 1M 上下文模型的历史字节预算（`client.js`，`positiveIntEnv`）。非 1M 模型走 `CASCADE_MAX_HISTORY_BYTES`（默认 `600000`）。 |
 | `CASCADE_MAX_HISTORY_BYTES` | `600000` | 非 1M 模型的历史字节预算（`client.js`，`positiveIntEnv`）。源码注释记着这个默认值的来历：早先是 400KB，**200KB 曾导致 30+ 轮工具调用的会话静默丢上下文**，所以调到 600KB 留出余量。调小之前先想清楚这一点。此前只作为上一行的说明文字出现，没有自己的条目。 |
-| `CASCADE_MAX_WAIT_MS` | `600000` | Cascade 单次等待上限（`client.js`）。曾出现在 2.0.74 的 release notes 里，但没进过参考文档。 |
+| `CASCADE_MAX_WAIT_MS` | `600000` | Cascade 单次等待上限（`client.js`）。曾只出现在 2.0.74 的 release notes 里；`9031b9b` 起 README 两语的 FAQ 也点名了它（`README.md:642` / `README.en.md:542`，cold stall 的封顶值）—— 本文不再是它唯一的落点。 |
 | `CASCADE_IDLE_GRACE_MS` | `8000` | 空闲宽限（`client.js`）。 |
 | `CASCADE_COLD_STALL_BASE_MS` | `30000` | 冷启动停顿基数（`client.js`）。 |
 
@@ -236,8 +238,8 @@ PY
 | `WINDSURFAPI_QUOTA_COOLDOWN` | **开**（`true`） | `bool` | 配额冷却。 |
 | `WINDSURFAPI_ON_DEMAND_RESERVE_USD` | `0` | 0–100000 | 按需消费的预留额度（`float`，美元）。**涉及真实花钱，改前想清楚。** |
 
-至此三前缀开关 158 个全部有据可查：`.env.example` + README 覆盖 74 个（含 PR #249
-的 `WINDSURFAPI_LEAK_TRACE`），本文覆盖其余 84 个。这个不变式由
+至此三前缀开关 157 个全部有据可查：`.env.example` + README 覆盖 75 个（含 PR #249
+的 `WINDSURFAPI_LEAK_TRACE`），本文覆盖其余 82 个（2026-10-16 按 `d3f0490` 重测）。这个不变式由
 [`test/docs-consistency-guard.test.js`](../test/docs-consistency-guard.test.js) 的
 「every switch read in src/ is findable in some reader-facing doc」守着 ——
 **加新开关不写文档会直接让测试变红**，不再依赖人记得。

@@ -17,7 +17,7 @@
 flowchart TD
     Q{"What do you need?"}
     Q -->|"run it"| RUN["Main README<br/>快速开始 / Quick start"]
-    Q -->|"tune it"| OPS["ENV-SWITCHES.md<br/>84 source-only switches"]
+    Q -->|"tune it"| OPS["ENV-SWITCHES.md<br/>82 source-only switches"]
     Q -->|"ship DEVIN_CONNECT"| CUT["DEVIN-CONNECT-CUTOVER.md<br/>prod is ON, code default is OFF"]
     Q -->|"understand it"| ARCH["review.html<br/>whole-system map"]
     Q -->|"know what was probed"| LED["AUDIT-LEDGER.md<br/>17 rounds, append-only"]
@@ -44,7 +44,7 @@ flowchart TD
 
 | Goal | Go here |
 |---|---|
-| Tune behaviour without touching code | **[ENV-SWITCHES.md](ENV-SWITCHES.md)** — the 84 switches that exist only in source. Read its header first: it explains how to count them correctly, because the obvious `grep` undercounts by 45 |
+| Tune behaviour without touching code | **[ENV-SWITCHES.md](ENV-SWITCHES.md)** — the 82 switches that exist only in source. Read its header first: it explains how to count them correctly, because the obvious `grep` undercounts by 45 |
 | Take `DEVIN_CONNECT` to production | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** — production runs with this ON while the code default is OFF, so this is not optional reading |
 | Localise the dashboard | [dashboard-i18n.md](dashboard-i18n.md) |
 | See what changed in a version | [releases/](releases/) — one file per version, v2.0.6 → present |
@@ -127,7 +127,9 @@ silently stopped guarding. These are the tools that close that gap:
   ledger entry fails CI. Added after #247 shipped as the sole default-on change in a batch with
   no kill switch and a content-loss failure shape.
 - `scripts/secret-scan.mjs` — now scans `test/` too (fixtures exempt by SHAPE, not path).
-  Round 12 measured ~1100 of ~2333 new lines were never scanned.
+  Round 10 measured ~1100 of ~2333 new lines were never scanned — that is the ledger's round-10
+  close (`AUDIT-LEDGER.md:1021`, commit `02c4858`). `scripts/secret-scan.mjs:104` attributes the
+  same numbers to "round 12", which no round-12 entry supports.
 
 ## Protocol and product notes
 
@@ -165,7 +167,8 @@ silently stopped guarding. These are the tools that close that gap:
   drawn from the matching lines without opening it. Before correcting, open the file.
 - **One handoff per RELEASE, not per session.** Five handoffs were written on 2026-08-04 alone,
   each superseding the last, and the result is a directory whose filename order is not
-  chronological and eight files that need banners to say "not this one". Amending the current
+  chronological and **15 files that need banners to say "not this one"** (2026-10-16 count:
+  `ls docs/HANDOFF-*.md | wc -l` = 16, one of which is the live head). Amending the current
   handoff in place is fine and preferred while its version is still unreleased; start a new
   file once a tag ships. Numbers inside a handoff (gate counts, mutation totals, file counts)
   must be re-measured when it is amended — they are the fastest thing in these docs to rot.
