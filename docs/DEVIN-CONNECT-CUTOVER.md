@@ -68,7 +68,7 @@ added by raw token (the current pooled free account, id `70da7667`) has none, so
 it can fail over to other pool members but cannot self-heal its own token. To
 enable self-heal, re-add the account through the email/password login path with
 `DEVIN_CONNECT_CRED_KEY` set — the password is then auto-stored encrypted
-(`src/auth.js:514-515`). See §5.
+(`src/auth.js:1495-1500`). See §5.
 
 ## 3. Deploy steps (operator runs on homecloud)
 

@@ -105,11 +105,11 @@ for s in test/mutations/*.json; do npm run mutate -- "$s"; done
 
 ### 审查与合并标准
 
-这个仓库的合并标准此前只以 review 评论形式存在（截至 2026-10-05 的 87 个 PR 里 7 条正式 review：#90 #142 #198 #232 #255 #256 #274，外加 ~40 条长评论）。以下是它的成文版;引文逐字未改,每条附出处。
+这个仓库的合并标准此前只以 review 评论形式存在（7 条正式 review：#90 #142 #198 #232 #255 #256 #274，外加 ~40 条长评论；#276 在 2026-10-05 又追加 2 条 CHANGES_REQUESTED → 现为 **9 条 / 8 个 PR**（截至 2026-10-15），最新计数见 [交接文档 §2.1](docs/HANDOFF-2026-10-15.md)，本文不复述）。以下是它的成文版;引文逐字未改,每条附出处。
 
 **元规则 —— 什么才算守卫(RC0):** 守卫只有在**把修复回退后它会变红、且是在生产实际走的那个形状上变红**,才算守卫。—— #252 / #261
 
-- 正面实例(#261,走倒车实测):"**走倒车**实测(这是它算不算守卫的判据):把 `chat.js:3313` 的调用行删掉,新测试**红**"
+- 正面实例(#261,走倒车实测):"**走倒车**实测(这是它算不算守卫的判据):把 `chat.js:3313` 的调用行删掉,新测试**红**"（引文坐标是 2026-09-13 的树；同一调用点现在 `chat.js:3380-3382`——引文逐字未改，只补坐标）
 - 反面实例(#252):"**Non-stream passes by accident, through two unrelated mechanisms.**"
 
 **开 PR 前自答(有一条答不上来,先别开):**
@@ -374,11 +374,11 @@ checkout while it runs. In your PR description, also include:
 
 ### Review & merge bar
 
-This repository's merge bar has only ever existed in review comments (7 formal reviews across 84 PRs — #90 #142 #198 #232 #255 #256 #274 — plus ~40 long issue comments). This is that bar in writing; every quote is verbatim, with its PR.
+This repository's merge bar has only ever existed in review comments (7 formal reviews — #90 #142 #198 #232 #255 #256 #274 — plus ~40 long issue comments; #276 added two more CHANGES_REQUESTED on 2026-10-05, so the current count is **9 across 8 PRs** as of 2026-10-15 — the live number lives in handoff §2.1). This is that bar in writing; every quote is verbatim, with its PR.
 
 **Meta-rule — what counts as a guard (RC0):** a guard counts only if **reverting the fix turns it red, and it turns red in the shape production actually takes**. — #252 / #261
 
-- Positive instance (#261, the reverse-the-fix measurement): "**走倒车**实测(这是它算不算守卫的判据):把 `chat.js:3313` 的调用行删掉,新测试**红**"
+- Positive instance (#261, the reverse-the-fix measurement): "**走倒车**实测(这是它算不算守卫的判据):把 `chat.js:3313` 的调用行删掉,新测试**红**" (the quoted coordinate is the 2026-09-13 tree; the same call site is now `chat.js:3380-3382` — the quote stays verbatim, only the coordinate is added)
 - Negative instance (#252): "**Non-stream passes by accident, through two unrelated mechanisms.**"
 
 **Self-check before opening a PR (if one item has no answer, fix that first):**

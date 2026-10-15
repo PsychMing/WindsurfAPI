@@ -639,7 +639,7 @@ A: 这是 **chat API**，不是 IDE agent。要让模型真的改文件，用 **
 A: 多账号轮询**不会**丢上下文 — 每次请求都重新打包完整 history 发给 Cascade。真正的原因通常是中转层（new-api 等）没把完整 `messages[]` 透传过来。在 Dashboard 日志面板看 `turns=N`：如果多轮对话但 `turns=1`，就是中转层在你之前就把历史丢了。
 
 **Q: 长 prompt 超时**
-A: 已修。cold stall 检测按输入长度自适应，长输入最多给 90s。
+A: 已修。cold stall 检测按输入长度自适应（基数 30s，每 1500 字符 +5s），封顶取 `CASCADE_MAX_WAIT_MS`（默认 600s）—— 曾经的 90s 固定上限已在 2026-04-20 撤掉。
 
 **Q: Claude Code 能用吗**
 A: 能。`export ANTHROPIC_BASE_URL=http://你的API` + `export ANTHROPIC_API_KEY=你的key`。`/v1/messages` 支持 system + tools + tool_use + tool_result + stream + multi-turn 全套，已实测通过。

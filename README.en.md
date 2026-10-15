@@ -539,7 +539,7 @@ A: This is a **chat API**, not an IDE agent. To have the model actually modify f
 A: Multi-account round-robin will **not** lose context — every request repackages the full history and sends it to Cascade. The real reason is usually a relay layer (like new-api) not passing the full `messages[]` array. Check `turns=N` in the Dashboard logs: if it's a multi-turn conversation but `turns=1`, then a layer before you has already dropped the history.
 
 **Q: Long prompts are timing out**
-A: This has been fixed. Cold stall detection is now adaptive to input length, with a max timeout of 90s for long inputs.
+A: This has been fixed. Cold stall detection is adaptive to input length (30s base, +5s per 1500 characters) and is capped by `CASCADE_MAX_WAIT_MS` (default 600s) — the old fixed 90s cap was removed on 2026-04-20.
 
 **Q: Can I use Claude Code?**
 A: Yes. `export ANTHROPIC_BASE_URL=http://YOUR_API` + `export ANTHROPIC_API_KEY=YOUR_KEY`. `/v1/messages` supports the full suite: system, tools, tool_use, tool_result, stream, and multi-turn, all tested and working.
