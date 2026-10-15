@@ -7,7 +7,7 @@ README 的表格列常用变量，[.env.example](../.env.example) 是完整清�
 `WINDSURFAPI_TRACE_DIR` 的前缀，正则不加边界会重复计数；二是**相当一部分读取点
 不长得像 `env.FOO`** —— `positiveIntEnv('FOO', 默认)`（`client.js`/`proto-trace.js`/
 `conversation-pool.js`）和 `runtime-config.js` 里 `{env: 'FOO', def: …}` 的表驱动写法
-都是真读取点。只匹配 `env.FOO` 会漏掉 70 个。正确数法：
+都是真读取点。只匹配 `env.FOO` 会漏掉 45 个（2026-10-15 用下面的脚本重测：全量 158、裸 grep 113）。正确数法：
 
 ```bash
 python3 - <<'PY'

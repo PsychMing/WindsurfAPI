@@ -46,7 +46,7 @@ One block: `src/handlers/chat.js:2994-3033` (assistant-tail check `:2994-3009`, 
 
 Every surface delegates into this function: `/v1/chat/completions` (`src/server.js:610`),
 `/v1/completions` (`src/handlers/completions.js:97`), `/v1/responses`
-(`src/handlers/responses.js:1415`), `/v1/messages` (`src/handlers/messages.js:1645`), Gemini
+(`src/handlers/responses.js:1436`), `/v1/messages` (`src/handlers/messages.js:1657`), Gemini
 (`src/handlers/gemini.js:768`). No surface can bypass the checks, and a rejected request never
 touches a backend, an account, or the cache.
 
@@ -54,7 +54,7 @@ touches a backend, an account, or the cache.
 
 The guard is shared; the input is not. The Anthropic and Gemini converters normalise turns
 *before* delegating, and a turn that yields **no text / image / tool part** is dropped on the way
-in: the per-turn push chains in `anthropicToOpenAI` (`src/handlers/messages.js:729-741`) and
+in: the per-turn push chains in `anthropicToOpenAI` (`src/handlers/messages.js:741-753`) and
 `geminiToOpenAI` (`src/handlers/gemini.js:235-247`) have no final `else`. The textless variants of
 **both rejected shapes** are therefore **served** on `/v1/messages` and Gemini, while
 `/v1/chat/completions` and `/v1/responses` reach the guard and get the 400s — the Responses

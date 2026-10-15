@@ -3,8 +3,11 @@
 Per-version release notes for WindsurfAPI. Filenames follow the pattern
 `RELEASE_NOTES_<major>.<minor>.<patch>.md` and are picked up automatically
 by `.github/workflows/release.yml` when a `v*` tag is pushed — the file
-becomes the GitHub Release body. Historical exception: v3.9.22 shipped as
-`RELEASE_NOTES_v3.9.22.md` (a `v` prefix). Do not repeat that spelling.
+becomes the GitHub Release body. Historical exception: v3.9.22's notes sit in
+`RELEASE_NOTES_v3.9.22.md` (a `v` prefix). Do not repeat that spelling — the
+workflow looks only for the exact unprefixed names (`release.yml:329-330`), so a
+`v`-prefixed file is silently ignored and the release falls back to GitHub's
+generated notes (`release.yml:378-379`).
 
 The latest version's notes are also surfaced on the project homepage and
 in the dashboard "About" panel.

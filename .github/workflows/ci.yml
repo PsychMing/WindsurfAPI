@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [master]
   # Manual mutation sweep (Actions -> CI -> Run workflow). Deliberately NOT on the PR path:
-  # each mutation re-runs its spec's whole test suite, so all 44 specs is hours, and a gate
+  # each mutation re-runs its spec's whole test suite, so all 85 specs is hours, and a gate
   # nobody can afford to run is worse than no gate — that is the warning in the specs job's
   # own comment. Until 2026-09-13 nothing in this repo ever executed `npm run mutate`.
   workflow_dispatch:
@@ -106,8 +106,9 @@ jobs:
   # Baseline VALUE drift is measured here too, by EXECUTING the covered specs and reading
   # the runner's events (scripts/spec-baseline-check.mjs) — never by scraping display text
   # and never by rewriting a pin. A changed diff measures only the affected specs; a
-  # synchronised checkout measures all of them, which costs ~100s for 82 specs. The check
-  # used to run only in the local gate, so a wrong pin reached CI green.
+  # synchronised checkout measures all of them, which costs ~100s for the whole set (82
+  # specs when that was measured; 85 today). The check used to run only in the local gate,
+  # so a wrong pin reached CI green.
   specs:
     name: Mutation spec consistency
     runs-on: ubuntu-latest
@@ -192,9 +193,9 @@ jobs:
           node-version: '24'
           cache: 'npm'
 
-      # image-resize.test.js imports jimp (the sole runtime dependency), so the
-      # runner needs node_modules — without this step every shard that touches
-      # a jimp-importing test fails with ERR_MODULE_NOT_FOUND.
+      # Zero npm dependencies: package.json declares none, and the JPEG/PNG decoders
+      # are vendored under src/vendor/. This step is a no-op today — kept so that a
+      # future dependency cannot silently break the shards that import it.
       - name: Install dependencies
         run: npm ci
 

@@ -20,7 +20,7 @@ flowchart TD
     Q -->|"tune it"| OPS["ENV-SWITCHES.md<br/>84 source-only switches"]
     Q -->|"ship DEVIN_CONNECT"| CUT["DEVIN-CONNECT-CUTOVER.md<br/>prod is ON, code default is OFF"]
     Q -->|"understand it"| ARCH["review.html<br/>whole-system map"]
-    Q -->|"know what was probed"| LED["AUDIT-LEDGER.md<br/>16 rounds, append-only"]
+    Q -->|"know what was probed"| LED["AUDIT-LEDGER.md<br/>17 rounds, append-only"]
     Q -->|"maintain it"| HO["HANDOFF-*.md<br/>1 live head + archived handoffs"]
     Q -->|"what changed"| REL["releases/<br/>one file per version, v2.0.6 → present"]
 
@@ -44,7 +44,7 @@ flowchart TD
 
 | Goal | Go here |
 |---|---|
-| Tune behaviour without touching code | **[ENV-SWITCHES.md](ENV-SWITCHES.md)** — the 84 switches that exist only in source. Read its header first: it explains how to count them correctly, because the obvious `grep` undercounts by 70 |
+| Tune behaviour without touching code | **[ENV-SWITCHES.md](ENV-SWITCHES.md)** — the 84 switches that exist only in source. Read its header first: it explains how to count them correctly, because the obvious `grep` undercounts by 45 |
 | Take `DEVIN_CONNECT` to production | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** — production runs with this ON while the code default is OFF, so this is not optional reading |
 | Localise the dashboard | [dashboard-i18n.md](dashboard-i18n.md) |
 | See what changed in a version | [releases/](releases/) — one file per version, v2.0.6 → present |
@@ -63,7 +63,7 @@ flowchart TD
 
 | # | File | Why |
 |---|---|---|
-| 1 | **[HANDOFF-2026-09-17-B.md](HANDOFF-2026-09-17-B.md)** | Current state (the file's own header names the live product tag), what to expose, what is blocked on someone else. Read §1 first (operational traps), then §4 (what is deliberately not done). OTA follows the latest annotated tag, not later untagged SHAs. |
+| 1 | **[HANDOFF-2026-10-15.md](HANDOFF-2026-10-15.md)** | Current state (its §0 names the live product tag and SHA), the inbound queue (every open PR/issue with a verdict and its evidence), what is frozen or owner-gated, the local-only assets that never reach git, and the gap register. Read §1 first (operational traps), then §3 (what is deliberately not done). OTA follows the latest annotated tag, not later untagged SHAs. |
 | 2 | **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** | Which subsystems were *actually probed*, the conclusion, and where the guard lives. Start with its "怎么读这份文件" section: the file is appended to per round and is **not** organised by topic, so that section is the only reliable entry point. It states its own round count and line-scale — **this row deliberately states neither**, because both belong to a file that grows every round, and the version of this row that did cite a round count went stale twice. |
 | 3 | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** | Production cutover runbook. `DEVIN_CONNECT` is what production actually runs (the code default is OFF; the deployment sets it), so this is not optional. Paid wire-calibration procedure in §8. |
 
@@ -88,6 +88,8 @@ Trust this list, not the directory listing.
 
 | Handoff | Covers |
 |---|---|
+| [09-22](HANDOFF-2026-09-22.md) | 工程审计收口（有限审计快照，不是产品状态） |
+| [09-17-B](HANDOFF-2026-09-17-B.md) | v3.9.36 → v3.9.40 — 被 10-15 取代 |
 | [09-17](HANDOFF-2026-09-17.md) | v3.9.36 — 审查前的状态;锁仍是旧实现 |
 | [09-16](HANDOFF-2026-09-16.md) | v3.9.35 — PR #271 合入前的状态 |
 | [08-20](HANDOFF-2026-08-20.md) | v3.9.25–v3.9.34 — 面板 401、旱灾名单、Connect 目录、四条外部 PR |
@@ -115,7 +117,8 @@ silently stopped guarding. These are the tools that close that gap:
   well-formedness, no test execution. Catches a PR that edited a pinned line (the mutation
   becomes a no-op that reports SURVIVED). Exit 2 on failure.
 - `scripts/spec-baseline-audit.mjs [filter]` — **re-measures every spec's `expectBaselinePass`
-  by actually running its test files** (slow; ~40 min for all 25). Run after merges, not per-PR.
+  by actually running its test files** (slow; ~40 min for all 25 back when it was written — the
+  corpus is 85 specs today). Run after merges, not per-PR.
   Baseline drift is a merge product: each PR measures its own spec right alone, and is wrong
   once stacked (#241 anchors, retry-rescue 82/87→88, reasoning-continuity 289→300).
 - `test/default-on-switch-registry.test.js` — ledger of every default-on behaviour switch;

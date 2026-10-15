@@ -6,7 +6,7 @@
 
 > Turn Windsurf / Devin's 100+ AI models (Claude, GPT, Gemini, DeepSeek, Kimi, GLM, SWE…) into OpenAI / Anthropic / Gemini standard APIs. Zero npm runtime dependencies.
 
-> **History Ledger** · Every commit laid out: 1387 commits, 196 releases, 82 PRs, 180 issues — timeline, contributor analysis, Git tree (vertical / horizontal / ring), and a full account of every mistake along the way. [**Open the interactive ledger**](https://dwgx.github.io/WindsurfAPI/HISTORY-LEDGER-VIZ.html) (zero-dependency, pure vanilla).
+> **History Ledger** · Every commit laid out: 1387 commits, 196 releases, 82 PRs, 180 issues (the ledger's own frozen scope — **its numbers stop at v3.9.34 / 2026-09-15**) — timeline, contributor analysis, Git tree (vertical / horizontal / ring), and a full account of every mistake along the way. [**Open the interactive ledger**](https://dwgx.github.io/WindsurfAPI/HISTORY-LEDGER-VIZ.html) (zero-dependency, pure vanilla).
 
 
 <p align="center">
@@ -412,14 +412,14 @@ Open `http://YOUR_IP:3003/dashboard`:
 100+ static models in the main catalog plus dynamic cloud-side models added at startup via `mergeCloudModels`. On the Cascade transport, after per-account cloud catalogs sync, `GET /v1/models` and the Dashboard show the union available across active accounts, while routing applies the selected account's own catalog. `DEVIN_CONNECT` remains governed by its separate selector catalog. The full static catalog remains available on the [GitHub Pages model catalog](https://dwgx.github.io/WindsurfAPI/#models) (auto-generated from `src/models.js`).
 
 <details>
-<summary><b>Claude (Anthropic)</b> — 36 models</summary>
+<summary><b>Claude (Anthropic)</b> — 58 models</summary>
 
 claude-3.5-sonnet / 3.7-sonnet / thinking · claude-4-sonnet / opus / thinking · claude-4.1-opus · claude-4.5-haiku / sonnet / opus · claude-sonnet-4.6 (incl. 1m / thinking / thinking-1m) · claude-opus-4.6 / thinking · **claude-opus-4.7-medium** · **claude-opus-4.8 series** (low / medium / high / xhigh / max + fast) · **claude-5-fable / claude-sonnet-5 / claude-opus-5 series** (low / medium / high / xhigh / max; opus-5 incl. fast)
 
 </details>
 
 <details>
-<summary><b>GPT (OpenAI)</b> — 65 models</summary>
+<summary><b>GPT (OpenAI)</b> — 83 models</summary>
 
 gpt-4o · gpt-4.1 · gpt-5 series (incl. medium / high / codex) · **gpt-5.1 series** (base / low / medium / high + fast + codex, all 6 variants) · **gpt-5.2 series** (none / low / medium / high / xhigh + fast + codex) · **gpt-5.4 series** (base / mini × low/medium/high/xhigh) · **gpt-5.5 series** (none / low / medium / high / xhigh + fast) · **gpt-5.6-luna series** (none / low / medium / high / xhigh) · o3 series (base / mini / pro) · o4-mini
 

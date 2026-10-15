@@ -78,7 +78,7 @@ flowchart TD
 
 项目有完整的自动测试套件，PR 合并前 CI 会自动跑。权威计数口径是
 `npm run test:release`（逐文件进程隔离）。**当前数字见
-[最新交接文档](docs/README.md) 的门禁表，本文不复述** —— 这里此前钉着 v3.9.14 的
+[最新交接文档 §6.2 门禁表](docs/HANDOFF-2026-10-15.md)，本文不复述** —— 这里此前钉着 v3.9.14 的
 "3418 / 261"，而那之后又发了五个版本。一个数字写在不是它权威来源的地方就会烂。
 全量 `npm test` 的总数**不再漂**：2026-09-13 实测，真正的原因不是"输出竞态"而是
 `--test-force-exit` 会在跑完**部分 suite 之后**就让进程以 **0** 退出 —— 同一份字节跑 12 次得到
@@ -219,8 +219,8 @@ the routed path, or making parseFields recurse).
 
 The project has a full automated test suite and CI runs it on every PR. The authoritative
 count comes from `npm run test:release` (one process per file). **The current number lives in
-the gate table of the newest handoff ([docs/README.md](docs/README.md) points at it) and is
-deliberately not repeated here** — this spot used to pin "3418 / 261 as of v3.9.14" and five
+the gate table of the newest handoff ([docs/HANDOFF-2026-10-15.md](docs/HANDOFF-2026-10-15.md) §6.2)
+and is deliberately not repeated here** — this spot used to pin "3418 / 261 as of v3.9.14" and five
 releases shipped after that. A number written anywhere other than its authoritative source
 rots. Totals from a plain `npm test` **no longer drift**: measured 2026-09-13, the cause was not
 an "output race" but `--test-force-exit` ending the process after **part of the suites** and

@@ -25,7 +25,7 @@ JavaScript · MIT · ★3,046
 
 > 把 Windsurf / Devin 的 100+ AI 模型（Claude、GPT、Gemini、DeepSeek、Kimi、GLM、SWE…）变成 OpenAI Chat / Responses / Anthropic / Gemini 四套标准 API。零 npm 运行时依赖。
 
-> **历史账本** · 把 1387 次提交、196 个版本、82 个 PR、180 个 issue 摊开给你看：时间线主账 + 贡献者分析 + Git 树三形态（竖/横/环）+ 自伤与返工全记录 —— [**打开可视化账本**](https://dwgx.github.io/WindsurfAPI/HISTORY-LEDGER-VIZ.html)（纯原生渲染，零依赖）
+> **历史账本** · 把 1387 次提交、196 个版本、82 个 PR、180 个 issue（账本自己的口径，**数字跟到 v3.9.34 / 2026-09-15**）摊开给你看：时间线主账 + 贡献者分析 + Git 树三形态（竖/横/环）+ 自伤与返工全记录 —— [**打开可视化账本**](https://dwgx.github.io/WindsurfAPI/HISTORY-LEDGER-VIZ.html)（纯原生渲染，零依赖）
 
 
 <p align="center">
@@ -512,14 +512,14 @@ data URL / base64，或显式开启 `DEVIN_ACP_VISION=1` 走本机 Devin CLI 的
 主线 100+ 个静态模型 + Windsurf 雲端動態下發（`mergeCloudModels` 啟動時拉取最新）。Cascade 路径下，各账号云端 catalog 同步后，`GET /v1/models` 和 Dashboard 展示活跃账号目录的并集，路由则校验所选账号自己的目录；`DEVIN_CONNECT` 继续使用独立 selector catalog；静态完整列表仍可查看 [GitHub Pages 模型清单](https://dwgx.github.io/WindsurfAPI/#models)（同步生成於 `src/models.js`）。
 
 <details>
-<summary><b>Claude（Anthropic）</b> — 36 个</summary>
+<summary><b>Claude（Anthropic）</b> — 58 个</summary>
 
 claude-3.5-sonnet / 3.7-sonnet / thinking · claude-4-sonnet / opus / thinking · claude-4.1-opus · claude-4.5-haiku / sonnet / opus · claude-sonnet-4.6（含 1m / thinking / thinking-1m） · claude-opus-4.6 / thinking · **claude-opus-4.7-medium** · **claude-opus-4.8 全系**（low / medium / high / xhigh / max + fast） · **claude-5-fable / claude-sonnet-5 / claude-opus-5 全系**（low / medium / high / xhigh / max，opus-5 含 fast）
 
 </details>
 
 <details>
-<summary><b>GPT（OpenAI）</b> — 65 个</summary>
+<summary><b>GPT（OpenAI）</b> — 83 个</summary>
 
 gpt-4o · gpt-4.1 · gpt-5 全系（含 medium / high / codex） · **gpt-5.1 全系**（base / low / medium / high + fast + codex 全 6 變體） · **gpt-5.2 全系**（none / low / medium / high / xhigh + fast + codex 全 5 變體） · **gpt-5.4 全系**（base / mini × low/medium/high/xhigh） · **gpt-5.5 全系**（none / low / medium / high / xhigh + fast） · **gpt-5.6-luna 全系**（none / low / medium / high / xhigh） · o3 全系（base / mini / pro） · o4-mini
 
