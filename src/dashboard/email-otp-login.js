@@ -226,7 +226,9 @@ export async function registerUserWithOtp(email, otpCode, turnstileToken, firstN
   });
   const headers = buildJsonHeaders(fingerprint, body, { 'Connect-Protocol-Version': '1' });
 
-  log.info(`RegisterUser (OTP): ${safeEmailRef(email)}, otpCode=***${otpCode.slice(-2)}`);
+  // SD-1: never log any fragment of the OTP — the whole 6-digit space must
+  // stay unguessable from logs (10^6, not 10^4). See test/otp-log-redaction.test.js.
+  log.info(`RegisterUser (OTP): ${safeEmailRef(email)}, otpCode=***`);
 
   const res = await httpsRequest(REGISTER_USER_URL, { method: 'POST', headers }, body, proxy);
 
@@ -276,7 +278,7 @@ export async function pollGmailForOtp(imapUser, imapPassword, timeoutMs = 120000
     try {
       const code = await readOtpFromImapOnce(imapUser, imapPassword);
       if (code) {
-        log.info(`OTP code found: ***${code.slice(-2)}`);
+        log.info(`OTP code found: ***`);
         return code;
       }
     } catch (err) {
@@ -375,7 +377,10 @@ async function readOtpFromImapOnce(imapUser, imapPassword) {
         } else if (currentPhase === 'search') {
           // Parse SEARCH response: "* SEARCH 1234 5678"
           if (line.startsWith('* SEARCH')) {
-            const msgIds = line.match(/\d+/g)?.slice(1) || []; // skip "SEARCH" token
+            // `* SEARCH` itself carries no digits — every match is a message id.
+            // (The old `.slice(1)` meant to skip the token but actually dropped
+            // the first id, so a single-result SEARCH read as "no mail".)
+            const msgIds = line.match(/\d+/g) || [];
             if (msgIds.length === 0) {
               // No new messages found, return null (caller will poll again)
               done(null);
