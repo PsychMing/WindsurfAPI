@@ -720,6 +720,27 @@ export function isUserJwtEnabled(env = process.env) {
 const USER_JWT_REFRESH_SKEW_MS = 60_000;
 const USER_JWT_CACHE_MAX = 500;
 
+/**
+ * Absolute deadline for one GetUserJwt mint, ms. Overridable per call via
+ * `mintUserJwt(token, { timeoutMs })`; a non-finite or non-positive override
+ * falls back here.
+ *
+ * This RPC runs BEFORE the chat request is built (`streamChat` awaits the mint),
+ * so a peer that accepts the connection and then never answers used to pin the
+ * whole chat request — and, through the coalescing map above, every other
+ * request sharing that token — with no timer running anywhere: the stream's own
+ * absolute deadline (DEVIN_CONNECT_TIMEOUT_MS) starts later, and a cold cache
+ * has nothing to serve. 15s is the ceiling for an RPC that gates a user-visible
+ * request: a healthy mint is one small round trip well under a second, so a peer
+ * still silent at 15s is dead and the caller is better off on the historical
+ * no-JWT wire. The catalog's metadata unary probe waits 30s
+ * (devin-connect-catalog.js:84) but sits in front of no user request.
+ *
+ * Deliberately NOT env-configurable: the failure this bound prevents is
+ * unbounded, so every value a switch could offer is a worse one.
+ */
+export const USER_JWT_MINT_TIMEOUT_MS = 15_000;
+
 function pruneUserJwtCache(now) {
   for (const [key, entry] of _userJwtCache) {
     if (entry.expMs - USER_JWT_REFRESH_SKEW_MS <= now) _userJwtCache.delete(key);
@@ -760,7 +781,9 @@ export function userJwtExpiryMs(jwt) {
  * rather than fail the user's request. That is also why nothing here throws.
  *
  * @param {string} sessionToken
- * @param {{host?: string, signal?: AbortSignal, now?: number}} [opts]
+ * @param {{host?: string, signal?: AbortSignal, now?: number, timeoutMs?: number}} [opts]
+ *   `timeoutMs` overrides USER_JWT_MINT_TIMEOUT_MS for this mint (non-finite or
+ *   non-positive → that default, never "no deadline").
  * @returns {Promise<string|null>}
  */
 export async function mintUserJwt(sessionToken, opts = {}) {
@@ -789,7 +812,7 @@ export async function mintUserJwt(sessionToken, opts = {}) {
     try {
       const proto = writeMessageField(1, buildClientMetadata(sessionToken, opts.deviceSeed));
       const framed = wrapEnvelope(proto, { compress: false });
-      const raw = await postConnectUnary(host, USER_JWT_PATH, framed, sessionToken, opts.signal);
+      const raw = await postConnectUnary(host, USER_JWT_PATH, framed, sessionToken, opts.signal, opts.timeoutMs);
       if (!raw) return null;
       const jwt = getField(parseFields(raw), 1, 2)?.value?.toString('utf8')?.trim();
       if (!jwt) return null;
@@ -819,13 +842,26 @@ export async function mintUserJwt(sessionToken, opts = {}) {
 /**
  * One unary Connect-RPC round trip → the response's single protobuf frame.
  *
- * Resolves null (never rejects) for any non-200 or malformed body: every caller
- * here treats failure as "carry on without the optional credential".
+ * Resolves null (never rejects) for any non-200, malformed body, transport
+ * failure, or `timeoutMs` expiry: every caller here treats failure as "carry on
+ * without the optional credential".
  */
-function postConnectUnary(host, path, framed, sessionToken, signal) {
+function postConnectUnary(host, path, framed, sessionToken, signal, timeoutMs) {
+  // The one place the deadline is resolved, so a bad override can neither
+  // disable the bound nor arm an instant timer — a 0 here would fire on the
+  // next turn of the loop, kill a healthy mint and silently turn the opt-in
+  // feature into an always-null no-op.
+  const deadlineMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs : USER_JWT_MINT_TIMEOUT_MS;
   return new Promise((resolve) => {
     let settled = false;
-    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    let timer = null;
+    const done = (v) => {
+      if (settled) return;
+      settled = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      resolve(v);
+    };
     let req;
     try {
       req = requestImpl({
@@ -868,6 +904,15 @@ function postConnectUnary(host, path, framed, sessionToken, signal) {
         res.on('error', () => done(null));
       });
       req.on('error', () => done(null));
+      // Absolute deadline from request start — not a socket idle timeout, which
+      // any byte of traffic resets and which does not cover the connect phase.
+      // Armed BEFORE end() so the write can never run ahead of the bound; on
+      // expiry the socket is destroyed and the promise leaves through the same
+      // resolve(null) door as every other failure above.
+      timer = setTimeout(() => {
+        try { req.destroy(); } catch { /* already closed */ }
+        done(null);
+      }, deadlineMs);
       req.end(framed);
     } catch {
       done(null);
