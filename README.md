@@ -706,7 +706,7 @@ A: 不能。长 thinking / 长输出在约 236-243 秒断流，是 Windsurf prov
 - [@warelik](https://github.com/warelik) — [PR #216](https://github.com/dwgx/WindsurfAPI/pull/216) + [PR #215](https://github.com/dwgx/WindsurfAPI/pull/215)
   中和上游 MCP-gate：server.codeium.com 对工具描述做指纹匹配，Cursor 21 个工具里 8 个被 permission_denied 拒掉；把 native #10 ToolDef 顶层描述换成工具名 + 递归剥参数 schema 的描述注解（保留结构和名叫 `description` 的参数），再把描述-only preamble 注入 system prompt 补回选工具上下文，21/21 全过（#216）。另修 Node 20+ IPv6 Happy Eyeballs 导致的 ETIMEDOUT：关掉 autoSelectFamily + 本地 HTTP/2 连接改用 127.0.0.1（#215）。
 
-想加入这份名单？欢迎提 [issue](https://github.com/dwgx/WindsurfAPI/issues) 或 [pull request](https://github.com/dwgx/WindsurfAPI/pulls)。Dashboard 左侧的"致谢"面板是**更完整的一份**：它从 `contributors.json` 渲染,当前 27 位贡献者、53 条记录,每条还带分级与机制说明；上面这份名单是其中人工挑选的一部分。
+想加入这份名单？欢迎提 [issue](https://github.com/dwgx/WindsurfAPI/issues) 或 [pull request](https://github.com/dwgx/WindsurfAPI/pulls)。Dashboard 左侧的"致谢"面板是**更完整的一份**：它从 `contributors.json` 渲染,当前 36 位贡献者、68 条记录,每条还带分级与机制说明；上面这份名单是其中人工挑选的一部分。
 
 ## 授权
 

@@ -606,7 +606,7 @@ Huge thanks to the following folks who sent pull requests or systematically audi
 - [@warelik](https://github.com/warelik) — [PR #216](https://github.com/dwgx/WindsurfAPI/pull/216) + [PR #215](https://github.com/dwgx/WindsurfAPI/pull/215)
   Neutralized the upstream MCP-gate: server.codeium.com fingerprints tool descriptions and rejected 8 of Cursor's 21 tools with permission_denied. The fix replaces the native #10 ToolDef top-level description with the tool name and recursively strips `description` annotations from the parameter schema (preserving structure and parameters literally named `description`), then injects a description-only preamble into the system prompt to restore tool-selection context — 21/21 tools pass (#216). Also fixed Node 20+ IPv6 Happy Eyeballs ETIMEDOUT by disabling autoSelectFamily and switching local HTTP/2 to 127.0.0.1 (#215).
 
-Want to be on this list? Open an [issue](https://github.com/dwgx/WindsurfAPI/issues) or a [pull request](https://github.com/dwgx/WindsurfAPI/pulls). The dashboard's Credits panel on the left is the **fuller** list: it renders from `contributors.json` — currently 27 contributors across 53 entries, each with a weight tier and a mechanism note — while the list above is a hand-picked subset of it.
+Want to be on this list? Open an [issue](https://github.com/dwgx/WindsurfAPI/issues) or a [pull request](https://github.com/dwgx/WindsurfAPI/pulls). The dashboard's Credits panel on the left is the **fuller** list: it renders from `contributors.json` — currently 36 contributors across 68 entries, each with a weight tier and a mechanism note — while the list above is a hand-picked subset of it.
 
 ## License
 
