@@ -55,7 +55,7 @@ import {
 import { acpVisionEnabled } from '../devin-acp.js';
 import { selectBackend, usesCascadeFlow } from '../backend-router.js';
 import { toChatCompletion as _toChatCompletion, streamChatCompletion as _streamChatCompletion } from '../devin-connect-openai.js';
-import { resolveConnectSelector } from '../devin-connect-models.js';
+import { resolveConnectSelector, DROUGHT_SAFE_SELECTORS } from '../devin-connect-models.js';
 import { isRetryable as isConnectRetryable, getToolDefTags, parseToolCallTagMap } from '../devin-connect.js';
 import { isRouterModel, assignModel as _assignModel } from '../devin-connect-catalog.js';
 import { bumpConnect } from '../devin-connect-metrics.js';
@@ -3289,7 +3289,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
     // have zero overlap. See auth.js isConnectSelectorBlockedByDrought.
     if (isConnectSelectorBlockedByDrought(selector)) {
       const summary = getDroughtSummary({ env: process.env });
-      const freeList = (summary.freeTierModels || []).slice(0, 4).join(', ') || 'swe-1-6-slow';
+      // #258: the gate admits DROUGHT_SAFE_SELECTORS (weekly-quota-exempt paid
+      // selectors) on top of the free-reachable one. The suggested list has to
+      // name them — it previously offered only swe-1-6-slow.
+      const offeredModels = [...DROUGHT_SAFE_SELECTORS, ...(summary.freeTierModels || [])];
+      const freeList = offeredModels.slice(0, 4).join(', ');
       const retryAfterSec = clientRetryAfterSeconds(30 * 60 * 1000);
       log.warn(`Chat[${reqId}]: DEVIN_CONNECT drought blocking premium selector "${safeLogValue(selector)}" (lowestWeekly=${summary.lowestWeeklyPercent}%, ${summary.quotaKnownAccounts}/${summary.activeAccounts} accounts measured)`);
       bumpConnect('drought_blocked');
@@ -3306,7 +3310,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
               threshold: summary.threshold,
               activeAccounts: summary.activeAccounts,
               quotaKnownAccounts: summary.quotaKnownAccounts,
-              allowedModels: summary.freeTierModels,
+              allowedModels: offeredModels,
             },
             retry_after_ms: retryAfterSec * 1000,
           },
@@ -4423,6 +4427,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
   // still go through.
   if (isModelBlockedByDrought(routingModelKey)) {
     const summary = getDroughtSummary();
+    // Namespace check (#234/#258): this is the CASCADE gate's suggestion list and
+    // it must keep resolving from getTierModels('free') — the same source the
+    // gate above reads, via the summary's non-connect branch. Do NOT "align" it
+    // with the connect-side DROUGHT_SAFE_SELECTORS: Cascade cannot route those
+    // selectors, so naming them here would offer models that error out.
     const freeList = (summary.freeTierModels || []).slice(0, 4).join(', ') || 'gemini-2.5-flash';
     const retryAfterSec = Math.max(60, Math.min(60 * 60 * 24, 60 * 30)); // hint 30 min by default
     log.warn(`Chat[drought]: blocking premium model ${routingModelKey} (lowestWeekly=${summary.lowestWeeklyPercent}%, ${summary.knownAccounts}/${summary.activeAccounts} accounts known)`);

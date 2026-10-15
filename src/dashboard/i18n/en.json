@@ -783,9 +783,9 @@
     "disable": "Disable",
     "cascadeReuse": {
       "title": "Enable Cascade Conversation Reuse",
-      "desc": "Disabled by default. When enabled, takes effect immediately on current conversation pool.",
+      "desc": "Enabled by default. When disabled, takes effect immediately on current conversation pool.",
       "enable": "Enable Cascade Conversation Reuse",
-      "hint": "Disabled by default. When enabled, takes effect immediately on current conversation pool."
+      "hint": "Enabled by default. When disabled, takes effect immediately on current conversation pool."
     },
     "identityPrompt": {
       "title": "Enable Model Identity Injection",

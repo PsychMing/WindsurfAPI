@@ -21,7 +21,7 @@ const DEFAULTS = {
   experimental: {
     // Reuse Cascade cascade_id across multi-turn requests when the history
     // fingerprint matches. Big latency win for long conversations but relies
-    // on Windsurf keeping the cascade alive — off by default.
+    // on Windsurf keeping the cascade alive — on by default (#24).
     cascadeConversationReuse: true,
     // Pre-flight rate limit check via server.codeium.com before sending a
     // chat request. Reduces wasted attempts when the account has no message
