@@ -197,7 +197,7 @@ const SOURCE = Object.freeze({ USER: 1, ASSISTANT: 2, TOOL_RESULT: 4 });
 
 // CompletionConfig defaults, matched to the captured CLI request.
 // #2 = max_tokens, #3 = max_newlines (schema-confirmed); see buildCompletionConfig.
-const DEFAULT_CONTEXT_WINDOW = 128000;
+const DEFAULT_MAX_NEWLINES = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
 // What goes on the wire at #2 when the caller named no cap. Deliberately NOT
 // DEFAULT_MAX_TOKENS: since the tag fix, #2 is an ENFORCED output cap, and a defaulted
@@ -448,7 +448,8 @@ function encodeAssistantToolCall({ id, name, argsJson, reasoning, reasoningTagNu
 //
 // Accepted forms of DEVIN_CONNECT_TOOL_DEF_TAGS (fail-closed to null on any
 // malformed value — never emit a broken frame):
-//   - key=val:   "name=1,description=2,parameters=3[,strict=6][,outer=10]"
+//   - key=val:   "name=1,description=2,parameters=3[,strict=12][,outer=10]"
+//     (strict is #12 on the current server; #4 is reserved there)
 //   - positional (back-compat): STRICT 4-tuple "10,1,2,3" = outer,name,description,schema.
 // To omit outer (use the #10 default), use the key=val form — a positional
 // 3-tuple is ambiguous and fails closed to null.
@@ -513,9 +514,11 @@ export function getToolDefTags(env = process.env, { useDefault = false } = {}) {
  * swapping writeStringField→writeBytesField here (zero risk). ← SWITCH POINT.
  *
  * strict (OpenAI function.strict) is emitted as a varint bool ONLY when the
- * operator calibrated a `strict` tag AND the tool asked for it. custom_tool /
- * defer_loading are Devin-proprietary and never emitted (getToolDefTags rejects
- * their keys).
+ * operator calibrated a `strict` tag AND the tool asked for it — calibrate
+ * `strict=12` (the field's number on the current server; #4 is reserved there).
+ * The default tag map has no strict key, so nothing is emitted unless an
+ * operator opts in. custom_tool / defer_loading are Devin-proprietary and
+ * never emitted (getToolDefTags rejects their keys).
  */
 // Normalize an OpenAI/MCP function-parameters JSON Schema into the minimal,
 // well-formed shape upstream accepts. Real clients (OpenCode, MCP servers) emit
@@ -1079,7 +1082,7 @@ export function buildSystemPromptCacheOptions(systemPrompt, env = process.env) {
   return writeVarintField(1, PROMPT_CACHE_EPHEMERAL);
 }
 
-function buildCompletionConfig({ maxTokens, temperature, topK, topP, contextWindow } = {}) {
+function buildCompletionConfig({ maxTokens, temperature, topK, topP, maxNewlines } = {}) {
   // LIVE FINDING (free-tier swe-1-6-slow, 2026-06-30): temperature=0 reliably
   // makes the upstream return "an internal error occurred" (3/3), while 0.001
   // succeeds. OpenAI/Anthropic clients routinely send temperature=0 for
@@ -1108,7 +1111,10 @@ function buildCompletionConfig({ maxTokens, temperature, topK, topP, contextWind
     // `|| 8192` fallbacks in handlers/messages.js and handlers/gemini.js), not the old
     // dead constant. DEFAULT_MAX_TOKENS stays 4096 for callers that read it directly.
     writeVarintField(2, maxTokens ?? WIRE_DEFAULT_MAX_TOKENS),
-    writeVarintField(3, contextWindow ?? DEFAULT_CONTEXT_WINDOW),
+    // #3 = max_newlines: an explicit value wins, else the calibrated default.
+    // A context window has no member in CompletionConfiguration and is never
+    // written here.
+    writeVarintField(3, maxNewlines ?? DEFAULT_MAX_NEWLINES),
     writeFixed64Field(5, f64le(temp)),
     writeVarintField(7, topK ?? DEFAULT_TOP_K),
     writeFixed64Field(8, f64le(topP ?? DEFAULT_TOP_P)),

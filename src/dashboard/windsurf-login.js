@@ -10,6 +10,7 @@ import { resolveProxyConnectHost } from '../net-safety.js';
 import { safeEmailRef, safeKeyRef, logHash, sliceRedactedJson } from '../log-safety.js';
 import { isSocks, createSocksTunnel } from '../socks.js';
 import { getEmailLockThreshold, getEmailLockMs, getBackendSwitch } from '../runtime-config.js';
+import { parseFields, getField, getAllFields } from '../proto.js';
 
 const FIREBASE_API_KEY = 'AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY';
 const FIREBASE_AUTH_URL = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`;
@@ -67,17 +68,47 @@ function isLoginHostFallbackEnabled() {
 let _transportOverride = null;
 export function __setLoginTransportForTests(fn) { _transportOverride = fn; }
 
-function parsePostAuthResponseData(payload) {
+export function parsePostAuthResponseData(payload) {
   const raw = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload || '');
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') return parsed;
   } catch {}
+  // The wire response is application/proto — decode it directly (binary-safe)
+  // instead of scanning the bytes as text: session_token = #1, orgs = #2,
+  // account_id = #4, primary_org_id = #5.
+  if (Buffer.isBuffer(payload)) {
+    try {
+      const fields = parseFields(payload);
+      const sessionToken = getField(fields, 1, 2)?.value?.toString('utf8');
+      if (sessionToken) {
+        return {
+          sessionToken,
+          accountId: getField(fields, 4, 2)?.value?.toString('utf8'),
+          primaryOrgId: getField(fields, 5, 2)?.value?.toString('utf8'),
+          orgs: getAllFields(fields, 2).filter(f => f.wireType === 2).map(f => decodePostAuthOrg(f.value)),
+        };
+      }
+    } catch {}
+  }
+  // Regex fallback for non-protobuf responses (plain-text bodies etc.).
   const sessionToken = raw.match(/devin-session-token\$[a-zA-Z0-9._-]+/)?.[0];
   const accountId = raw.match(/account-[a-f0-9]+/)?.[0];
   const primaryOrgId = raw.match(/org-[a-f0-9]+/)?.[0];
   if (sessionToken) return { sessionToken, accountId, primaryOrgId };
   return { error: raw.slice(0, 200) || 'empty response' };
+}
+
+/** Decode one WindsurfPostAuthOrg sub-message (#2 of WindsurfPostAuthResponse). */
+function decodePostAuthOrg(buf) {
+  const f = parseFields(buf);
+  const str = (n) => getField(f, n, 2)?.value?.toString('utf8');
+  const bool = (n) => { const v = getField(f, n, 0); return v ? v.value !== 0 : undefined; };
+  return {
+    id: str(1), name: str(2), isAdmin: bool(3), canUseCli: bool(4),
+    canUseCascade: bool(5), planSlug: str(6), subscriptionStatus: str(7),
+    webappHost: str(8), ssoLoginRequired: bool(9),
+  };
 }
 
 async function postAuthDualPath(auth1Token, fingerprint, proxy, preferredHost = null) {

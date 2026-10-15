@@ -559,8 +559,9 @@ export async function registerWithFirebaseToken(firebaseToken, opts = {}) {
 
 /**
  * Pre-flight check: does this account still have message capacity?
- * Returns { hasCapacity, messagesRemaining, maxMessages }.
- * -1 means unlimited.
+ * Returns { hasCapacity, messagesRemaining, maxMessages, retryAfterMs }.
+ * -1 means unlimited; retryAfterMs is the server cooldown in ms (null when
+ * absent).
  *
  * @param {string} apiKey
  * @param {object} [proxy]
@@ -579,11 +580,14 @@ export async function checkMessageRateLimit(apiKey, proxy = null) {
           lastErr = new Error(`CheckRateLimit ${host} → ${res.status}: ${res.raw.slice(0, 160)}`);
           continue;
         }
+        // The cooldown rides resets_in_seconds (#5) — int64, which may arrive as
+        // a number or a proto3-JSON string; retryAfterMs is the ×1000 ms form.
+        const resetSeconds = res.data.resetsInSeconds == null ? NaN : Number(res.data.resetsInSeconds);
         return {
           hasCapacity: res.data.hasCapacity !== false,
           messagesRemaining: res.data.messagesRemaining ?? -1,
           maxMessages: res.data.maxMessages ?? -1,
-          retryAfterMs: Number.isFinite(res.data.retryAfterMs) ? res.data.retryAfterMs : null,
+          retryAfterMs: Number.isFinite(resetSeconds) ? resetSeconds * 1000 : null,
         };
       } catch (e) {
         lastErr = e;
