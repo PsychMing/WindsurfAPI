@@ -56,6 +56,7 @@ flowchart TD
 | Get the whole map in one page | **[Architecture Review](review.html)** — startup → routes → protocol bridge → account/LS pools → dashboard → security boundaries |
 | Know which subsystems were actually probed, and what the conclusion was | **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** — start with its `怎么读这份文件` section; the file is appended per round and is not organised by topic |
 | Understand reasoning/content dedup | [reasoning-dedup.md](reasoning-dedup.md) |
+| Look up what this repo's own PRs and issues decided, offline | [GITHUB-CORPUS.md](GITHUB-CORPUS.md) — the local corpus of all 89 PRs / 183 issues (snapshot 2026-10-15): what it captures, its schema, the read-only rebuild, the query tool, and the coverage gaps |
 
 ---
 
