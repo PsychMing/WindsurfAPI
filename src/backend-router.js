@@ -73,13 +73,19 @@ function devinCliMode(env = process.env) {
  * upstream is decommissioned. Defaults OFF, so behaviour is unchanged until an
  * operator flips it.
  *
- * NOTE (unverified, needs live probe): routing a model like claude-4.5-sonnet
- * here makes Devin the *nominal* backend. The ACP path passes that model to
- * the CLI launch as `devin acp --model <key>` (devin-acp.js:530-531) and ALSO
- * adds a prompt-side hint alongside it (devin-acp.js:579-582). Whether the
- * CLI's `--model` actually switches its underlying core is NOT determined by
- * this repository — it needs a live probe against a real account, as does
- * whether Devin can actually serve a specific model.
+ * NOTE (model selection is settled; per-account serving is not): routing a model like
+ * claude-4.5-sonnet here makes Devin the *nominal* backend. The ACP path passes that model
+ * to the CLI launch as `devin acp --model <key>` (devin-acp.js:530-531) and ALSO adds a
+ * prompt-side hint alongside it (devin-acp.js:579-582). The CLI's `--model` **does** switch
+ * the underlying core: the official `devin` binary resolves the name server-side through the
+ * AssignModel RPC — its own strings are `Resolving model router '' via AssignModel RPC` and
+ * `/exa.api_server_pb.ApiServerService/AssignModel`, and its help text promises "the same
+ * fuzzy names as /model (family slug, alias, or partial name)". A prompt hint cannot produce
+ * server-side fuzzy resolution, and the client never resolves a uid locally (evidence:
+ * extra-hands/RESEARCH/windsurfapi-verification-ledger-2026-10-01.md §1c). So model selection
+ * is a routing change, not a capability gap. What is still live-only is whether a given
+ * account can *serve* a specific model (entitlement) — and the tool layer remains the real
+ * gap: special-agent.js:804 hard-400s any request carrying caller-local tools[].
  */
 function devinOnlyEnabled(env = process.env) {
   return getBackendSwitch('devinOnly', env);
