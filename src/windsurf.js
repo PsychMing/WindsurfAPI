@@ -65,9 +65,6 @@ import {
 } from './proto.js';
 import { getSystemPrompts } from './runtime-config.js';
 import { isUserJwtEnabled } from './windsurf-api.js';
-function readUrlLegacySummaryFallbackEnabled() {
-  return process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_READ_URL_LEGACY_SUMMARY === '1';
-}
 
 // ─── Enums ─────────────────────────────────────────────────
 
@@ -176,6 +173,7 @@ export function buildRawGetChatMessageRequest(apiKey, messages, modelEnum, model
   // data" upstream. Cascade models are unaffected — they use a different
   // endpoint (SendUserCascadeMessage) with full tool support.
   let systemPrompt = '';
+  let chatMessageCount = 0;
   for (const msg of messages) {
     if (msg.role === 'system') {
       systemPrompt += (systemPrompt ? '\n' : '') +
@@ -219,6 +217,15 @@ export function buildRawGetChatMessageRequest(apiKey, messages, modelEnum, model
     }
 
     parts.push(writeMessageField(2, buildChatMessage(text, source, conversationId)));
+    chatMessageCount++;
+  }
+
+  // RawGetChatMessageRequest requires at least one chat_messages (#2) entry —
+  // the legacy backend rejects an empty list. An all-system (or empty) input
+  // folds everything into system_prompt_override, so keep one empty user turn
+  // in that case.
+  if (chatMessageCount === 0) {
+    parts.push(writeMessageField(2, buildChatMessage('', SOURCE.USER, conversationId)));
   }
 
   // Field 3: system_prompt_override
@@ -575,6 +582,15 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault, n
     convParts.push(writeMessageField(13, communicationOverride));
   }
 
+  // code_changes_section (field 11) — suppress IDE-specific "apply changes"
+  // boilerplate. The section must ride the conversational planner config:
+  // the same number on the outer planner config is a bool flag
+  // (allow_pending_steps), so a section written there would not decode.
+  if (!toolPreamble) {
+    const emptySection = Buffer.concat([writeVarintField(1, 1), writeStringField(2, '')]);
+    convParts.push(writeMessageField(11, emptySection));
+  }
+
   const conversationalConfig = Buffer.concat(convParts);
   const plannerParts = [
     writeMessageField(2, conversationalConfig),   // conversational = 2
@@ -606,12 +622,6 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault, n
   // Missing this causes truncated long responses.
   plannerParts.push(writeVarintField(6, 32768));
 
-  // code_changes_section (field 11) — suppress IDE-specific "apply changes" boilerplate
-  if (!toolPreamble) {
-    const emptySection = Buffer.concat([writeVarintField(1, 1), writeStringField(2, '')]);
-    plannerParts.push(writeMessageField(11, emptySection));
-  }
-
   // CascadePlannerConfig.tool_config = field 13 → CascadeToolConfig.
   // Only populated in native bridge mode. The allowlist (field 32) tells
   // the planner which built-in cascade tools to enable; the per-tool
@@ -622,14 +632,18 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault, n
 
   const plannerConfig = Buffer.concat(plannerParts);
 
+  // brain_config (field 7): {enabled=true}. update_strategy (#6) is left
+  // unset (server default) — it carries a nested strategy message, and an
+  // empty placeholder would never encode.
   const brainConfig = Buffer.concat([
-    writeVarintField(1, 1),
-    writeMessageField(6, writeMessageField(6, Buffer.alloc(0))),
+    writeVarintField(1, 1),   // enabled = true
   ]);
 
   // memory_config (field 5): {enabled=false} — prevent LS injecting user's
-  // stored Cascade memories into API responses
-  const memoryConfig = Buffer.concat([writeBoolField(1, false)]);
+  // stored Cascade memories into API responses. enabled is field 2 and is
+  // written explicitly (varint 0): a plain false bool would be omitted and
+  // the whole message dropped, so the flag would never reach the server.
+  const memoryConfig = Buffer.concat([writeVarintField(2, 0)]);
 
   return Buffer.concat([
     writeMessageField(1, plannerConfig),
@@ -1050,6 +1064,34 @@ export function parseTrajectorySteps(buf) {
     return /^[A-Za-z0-9._-]+(?:[\\/][A-Za-z0-9._-]+)*\.[A-Za-z0-9]{1,12}$/.test(s);
   };
 
+  // Classify a #19 child payload as raw text vs a structured message. The
+  // wrapper promotion below uses these so message bytes are never decoded
+  // as file content.
+  const looksLikeMessage = (buf) => {
+    if (!buf?.length) return false;
+    const key = buf[0];
+    const wireType = key & 7;
+    const field = key >> 3;
+    if (!field || ![0, 1, 2, 5].includes(wireType)) return false;
+    try {
+      const parsed = parseFields(buf);
+      return parsed.length > 0 && parsed.every(f => f.field > 0);
+    } catch {
+      return false;
+    }
+  };
+
+  const mostlyText = (buf) => {
+    if (!buf?.length) return false;
+    const s = buf.toString('utf8');
+    let printable = 0;
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c === 9 || c === 10 || c === 13 || (c >= 32 && c !== 127)) printable++;
+    }
+    return printable / Math.max(1, s.length) > 0.9;
+  };
+
   for (const step of steps) {
    // Robustness (audit #1): skip a single malformed step instead of
    // discarding the whole trajectory when one nested field is corrupt.
@@ -1290,9 +1332,6 @@ export function parseTrajectorySteps(buf) {
           const webDocument = getField(body, 2, 2);
           const hasWebDocument = !!webDocument;
           result = hasWebDocument ? decodeKnowledgeBaseItemText(webDocument.value) : '';
-          if (!result && readUrlLegacySummaryFallbackEnabled()) {
-            result = getField(body, 5, 2)?.value?.toString('utf8') || '';
-          }
           if (!hasWebDocument && !result && readUrlRequestedInteraction) continue;
         } else if (kind === 'search_web') {
           const args = {
@@ -1326,6 +1365,13 @@ export function parseTrajectorySteps(buf) {
     // Promote that shape to the same cascade-native tool call so native
     // bridge can return the proposal before the remote workspace executor
     // reports its follow-up "invalid tool call" error.
+    //
+    // Field 19 is the user_input slot on the declared schema (#1/#2 are
+    // query/user_response strings, #4 an active_user_state message), so the
+    // promotion stays a stop-loss heuristic: require a path-like candidate
+    // and treat #4 as content only when it reads as plain text. Structured
+    // message bytes are never decoded as file content, and a message-shaped
+    // #4 suppresses the promotion instead of emitting a bogus view_file call.
     if (entry.type === 14 && !entry.toolCalls.some(tc => tc.cascade_native && tc.name === 'view_file')) {
       const wrapper = getField(sf, 19, 2);
       if (wrapper) {
@@ -1333,13 +1379,16 @@ export function parseTrajectorySteps(buf) {
           const body = parseFields(wrapper.value);
           const uri = getField(body, 1, 2)?.value?.toString('utf8')
                    || getField(body, 2, 2)?.value?.toString('utf8') || '';
-          if (isLikelyPathOrFileUri(uri)) {
+          const contentField = getField(body, 4, 2);
+          const contentIsText = !contentField
+            || (mostlyText(contentField.value) && !looksLikeMessage(contentField.value));
+          if (isLikelyPathOrFileUri(uri) && contentIsText) {
             const args = { absolute_path_uri: uri, offset: 0, limit: 0, start_line: 0, end_line: 0 };
             entry.toolCalls.push({
               id: `native:view_file:${results.length}`,
               name: 'view_file',
               argumentsJson: JSON.stringify(args),
-              result: getField(body, 4, 2)?.value?.toString('utf8') || '',
+              result: contentField ? contentField.value.toString('utf8') : '',
               cascade_native: true,
             });
           }

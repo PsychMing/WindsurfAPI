@@ -292,7 +292,7 @@ describe('parseTrajectorySteps recognises propose_code + search_web (v2.0.70)', 
     assert.equal(calls[0].result, 'markdown chunk text');
   });
 
-  it('does not promote unconfirmed read_url_content top-level field 5 unless lab fallback is enabled', () => {
+  it('never promotes a read_url_content top-level field 5 (not part of the schema)', () => {
     const original = process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_READ_URL_LEGACY_SUMMARY;
     delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_READ_URL_LEGACY_SUMMARY;
     try {
@@ -305,9 +305,11 @@ describe('parseTrajectorySteps recognises propose_code + search_web (v2.0.70)', 
       assert.equal(calls.length, 1);
       assert.equal(calls[0].result, '');
 
+      // Field 5 is not part of CortexStepReadUrlContent on either schema
+      // side; even the old lab switch must not resurrect it.
       process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_READ_URL_LEGACY_SUMMARY = '1';
       calls = parseTrajectorySteps(resp)[0].toolCalls.filter(tc => tc.cascade_native);
-      assert.equal(calls[0].result, 'legacy field 5 body');
+      assert.equal(calls[0].result, '');
     } finally {
       if (original === undefined) delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_READ_URL_LEGACY_SUMMARY;
       else process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_READ_URL_LEGACY_SUMMARY = original;
