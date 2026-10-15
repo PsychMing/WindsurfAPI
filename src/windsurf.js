@@ -271,13 +271,15 @@ export function parseRawResponse(buf) {
  * Field 1: metadata
  * Field 2: ExtensionPanelTab enum (4 = CORTEX)
  */
-// Field numbers verified by extracting the FileDescriptorProto from
-// language_server_linux_x64. Historical layouts are NOT the same — field 2 of
-// InitializeCascadePanelState is reserved; workspace_trusted moved to field 3.
+// Field 2 of InitializeCascadePanelState is reserved. The workspace trust flag
+// moved to field 4 on newer language servers (field 3 on older ones); both
+// numbers are dual-written so either generation reads the value — parsers
+// ignore unknown and reserved field numbers.
 export function buildInitializePanelStateRequest(apiKey, sessionId, trusted = true) {
   return Buffer.concat([
     writeMessageField(1, buildMetadata(apiKey, undefined, sessionId)),
-    writeBoolField(3, trusted), // workspace_trusted
+    writeVarintField(3, trusted ? 1 : 0), // workspace_trusted (older servers)
+    writeVarintField(4, trusted ? 1 : 0), // is_workspace_trusted (newer servers)
   ]);
 }
 
