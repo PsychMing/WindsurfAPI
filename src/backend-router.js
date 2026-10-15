@@ -77,15 +77,26 @@ function devinCliMode(env = process.env) {
  * claude-4.5-sonnet here makes Devin the *nominal* backend. The ACP path passes that model
  * to the CLI launch as `devin acp --model <key>` (devin-acp.js:530-531) and ALSO adds a
  * prompt-side hint alongside it (devin-acp.js:579-582). The CLI's `--model` **does** switch
- * the underlying core: the official `devin` binary resolves the name server-side through the
- * AssignModel RPC — its own strings are `Resolving model router '' via AssignModel RPC` and
- * `/exa.api_server_pb.ApiServerService/AssignModel`, and its help text promises "the same
- * fuzzy names as /model (family slug, alias, or partial name)". A prompt hint cannot produce
- * server-side fuzzy resolution, and the client never resolves a uid locally (evidence:
- * extra-hands/RESEARCH/windsurfapi-verification-ledger-2026-10-01.md §1c). So model selection
- * is a routing change, not a capability gap. What is still live-only is whether a given
- * account can *serve* a specific model (entitlement) — and the tool layer remains the real
- * gap: special-agent.js:804 hard-400s any request carrying caller-local tools[].
+ * the underlying core, and the name is resolved server-side — but in TWO different places, and
+ * merging them into one is the wrong reading: **router-style names** (the `adaptive` /
+ * `arena-*` family) resolve through the AssignModel RPC — its own log line is literally
+ * `Resolving model router '' via AssignModel RPC` and its method path is
+ * `/exa.api_server_pb.ApiServerService/AssignModel` — while **ordinary fuzzy names** (the
+ * family slug / alias / partial name vocabulary the CLI's help promises, "the same fuzzy
+ * names as /model") are matched against the **server-side model catalog**
+ * (`GetCliModelConfigs`); the binary carries no local name→uid table (whether every fuzzy name
+ * takes that path is beyond static evidence). That a `--model` value is
+ * resolved rather than ignored is also carried by a runtime string: `devin acp --model` value
+ * did not resolve to an available model → falls back to the configured `agent.model`
+ * (file offset 0x80051f0). A prompt hint cannot produce server-side resolution, and the client
+ * never resolves a uid locally (old ledger §1c:
+ * extra-hands/RESEARCH/windsurfapi-verification-ledger-2026-10-01.md; corrected attribution +
+ * new strings: board ACPMAP, windsurf-re-20261015/derived/acpmap/L-ASSIGNMODEL.md §5.10/§6).
+ * So model selection is a routing change, not a capability gap. Honest boundary: the last hop is
+ * not statically provable — that the downstream inference request really carries the switched
+ * model needs one live ACP session — and whether a given account can *serve* a specific model
+ * (entitlement) stays live-only; the tool layer remains the real gap: special-agent.js:804
+ * hard-400s any request carrying caller-local tools[].
  */
 function devinOnlyEnabled(env = process.env) {
   return getBackendSwitch('devinOnly', env);
