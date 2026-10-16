@@ -56,6 +56,10 @@ export function isCascadeTransportError(err) {
   const msg = String(err?.message || err || '');
   const code = String(err?.code || '');
   return /pending stream has been canceled|ECONNRESET|ERR_HTTP2|session closed|stream closed|panel state/i.test(msg)
+    // GAP-3: the local LS's own gRPC timeouts are a transient stall — without
+    // this branch one hiccup surfaced as a hard failure instead of rotating
+    // to the next account like every other transport blip.
+    || /gRPC (?:unary|stream) timeout/i.test(msg)
     || /^(ECONNRESET|ERR_HTTP2)/i.test(code);
 }
 
@@ -467,12 +471,12 @@ export class WindsurfClient {
    * @param {Array} messages - OpenAI-format messages
    * @param {number} modelEnum - Model enum value
    * @param {string} [modelName] - Optional model name
-   * @param {object} opts - { onChunk, onEnd, onError }
+   * @param {object} opts - { onChunk, onEnd, onError, signal }
    */
   async rawGetChatMessage(messages, modelEnum, modelName, opts = {}) {
     acquireLsUseOrThrow(this.port);
     try {
-      const { onChunk, onEnd, onError } = opts;
+      const { onChunk, onEnd, onError, signal } = opts;
       // Reuse the LS-scoped session_id instead of letting buildMetadata
       // mint a fresh UUID on every call. A stable session per LS matches
       // what a real Windsurf IDE instance sends (one session for the whole
@@ -536,6 +540,9 @@ export class WindsurfClient {
             onError?.(err);
             reject(err);
           },
+          // GAP-2: caller cancellation. grpcStream closes the HTTP/2 stream
+          // with NGHTTP2_CANCEL and rejects with an AbortError.
+          signal,
         });
       }).finally(() => endLsUse(this.port));
     } catch (err) {

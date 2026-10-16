@@ -4701,7 +4701,13 @@ async function _handleChatCompletionsInner(body, context = {}) {
       }
     }
     if (!acct) {
-      acct = await waitForAccountFn(tried, null, QUEUE_MAX_WAIT_MS, routingModelKey, callerKey);
+      // GAP-2: thread the request signal into the queue wait so a disconnected
+      // caller bails instead of queueing for (and then pinning) an account it
+      // will never use. No-signal callers keep the previous null — the
+      // resolve-null contract is unchanged (abort ⇒ null, like a queue timeout).
+      acct = context.signal
+        ? await waitForAccountFn(tried, context.signal, QUEUE_MAX_WAIT_MS, routingModelKey, callerKey)
+        : await waitForAccountFn(tried, null, QUEUE_MAX_WAIT_MS, routingModelKey, callerKey);
       if (!acct) {
         // Same diagnostic-error fix as the stream path — surface real reason
         // for the queue timeout (rate limit / no entitlement / upstream stall)
@@ -4825,6 +4831,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
       // SEED-C3b: the Cascade non-stream path ignored the caller's `stop` too.
       normalizeStop(body.stop),
       context.__messagesStopCarrier === true,
+      // GAP-2: thread the request signal so a client disconnect can stop the
+      // in-flight cascade/legacy calls instead of burning LS + account quota.
+      context.signal,
     );
     if (result.status === 200) return result;
     reuseEntry = null; // don't try to reuse on the retry
@@ -4983,7 +4992,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
   return lastErr || { status: 503, body: { error: { message: 'No active accounts available', type: 'pool_exhausted' } } };
 }
 
-async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, provider, emulateTools, toolPreamble, wantJson = false, cachePolicy = null, wantThinking = false, tools = [], route = 'chat', nativeOpts = null, reqId = 'non-stream', aliasCkey = null, clineCompatActive = false, allowCascadeMetadataUnwrap = true, stopSequences = [], stopCarrier = false) {
+async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, provider, emulateTools, toolPreamble, wantJson = false, cachePolicy = null, wantThinking = false, tools = [], route = 'chat', nativeOpts = null, reqId = 'non-stream', aliasCkey = null, clineCompatActive = false, allowCascadeMetadataUnwrap = true, stopSequences = [], stopCarrier = false, signal = null) {
   const startTime = Date.now();
   const nativeBridgeOn = !!nativeOpts?.enabled;
   try {
@@ -5023,6 +5032,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
         nativeMode: nativeBridgeOn,
         nativeAllowlist: nativeOpts?.allowlist || null,
         additionalSteps: nativeOpts?.additionalSteps || null,
+        signal,
       });
       for (const c of chunks) {
         if (c.text) allText += c.text;
@@ -5251,6 +5261,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
                   nativeMode: nativeBridgeOn,
                   nativeAllowlist: nativeOpts?.allowlist || null,
                   additionalSteps: nativeOpts?.additionalSteps || null,
+                  signal,
                 });
                 let retryText = '';
                 let retryThinking = '';
@@ -5321,7 +5332,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
       // above is the ONLY surface that surfaces these — and it sanitises
       // each tool call's args via reverse mapping before emitting.
     } else {
-      const chunks = await client.rawGetChatMessage(messages, modelEnum, modelUid);
+      const chunks = await client.rawGetChatMessage(messages, modelEnum, modelUid, { signal });
       for (const c of chunks) {
         if (c.text) allText += c.text;
       }
@@ -6316,7 +6327,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 additionalSteps: nativeOpts?.additionalSteps || null,
               });
             } else {
-              await client.rawGetChatMessage(messages, modelEnum, modelUid, { onChunk });
+              await client.rawGetChatMessage(messages, modelEnum, modelUid, { onChunk, signal: abortController.signal });
             }
             // Flush order matters:
             //   1. NativeFunctionCallStreamParser tail → may produce provider

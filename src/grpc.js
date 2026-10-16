@@ -291,10 +291,26 @@ export function grpcUnary(port, csrfToken, path, body, timeout = 30000) {
  * @param {string} csrfToken
  * @param {string} path
  * @param {Buffer} body
- * @param {object} opts - { onData, onEnd, onError, timeout }
+ * @param {object} opts - { onData, onEnd, onError, timeout, signal }
  */
 export function grpcStream(port, csrfToken, path, body, opts = {}) {
-  const { onData, onEnd, onError, timeout = 300000 } = opts;
+  const { onData, onEnd, onError, timeout = 300000, signal } = opts;
+
+  // GAP-2: caller-supplied cancellation. A client disconnect (or a server
+  // shutdown drain) aborts `signal`; close the HTTP/2 stream with
+  // NGHTTP2_CANCEL and surface an AbortError so callers stop burning
+  // LS + account quota. No-op when no signal is supplied.
+  const abortError = () => {
+    const err = new Error('The operation was aborted');
+    err.name = 'AbortError';
+    err.code = 'ABORT_ERR';
+    return err;
+  };
+  if (signal?.aborted) {
+    // Already aborted before any stream was opened — settle without a request.
+    onError?.(abortError());
+    return;
+  }
 
   // req may emit both 'end' and 'error' (or error twice) when the server
   // trailers report non-OK — flip this to only fire one callback.
@@ -395,6 +411,17 @@ export function grpcStream(port, csrfToken, path, body, opts = {}) {
     transport: USE_CONNECT ? 'connect' : 'grpc',
     framed: true,
   });
+
+  if (signal) {
+    signal.addEventListener('abort', () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { req.close?.(http2.constants.NGHTTP2_CANCEL); } catch {}
+      onError?.(abortError());
+    }, { once: true });
+  }
+
   const connectParser = USE_CONNECT ? new StreamingFrameParser() : null;
 
   req.on('data', (chunk) => {
