@@ -19,6 +19,9 @@ import tls from 'node:tls';
 import { config, log } from '../config.js';
 import { resolveProxyConnectHost } from '../net-safety.js';
 import { safeEmailRef, safeKeyRef, sliceRedactedJson } from '../log-safety.js';
+// R-1 (RATE-RETRY audit): bounded response-body reads, shared with the
+// devin-connect readers — one ceiling, one truncation contract.
+import { createBoundedBodyAccumulator, MAX_ERROR_BODY_BYTES } from '../devin-connect.js';
 
 // Test-only transport seam (same pattern as windsurf-login.js __setLoginTransportForTests)
 let _transportOverride = null;
@@ -134,10 +137,17 @@ function httpsRequest(url, opts, postData, proxy) {
     };
 
     const handleResponse = (res) => {
-      const bufs = [];
-      res.on('data', d => bufs.push(d));
+      // R-1 (RATE-RETRY audit): bounded read — see createBoundedBodyAccumulator
+      // (shared ceiling). Over the cap → reject; never parse a truncated prefix.
+      const buffer = createBoundedBodyAccumulator();
+      res.on('data', buffer.onData);
       res.on('end', () => {
-        const raw = Buffer.concat(bufs).toString('utf8');
+        const { raw: rawBuffer, truncated } = buffer.finish();
+        if (truncated) {
+          reject(new Error(`Response body exceeded ${MAX_ERROR_BODY_BYTES} bytes; truncated`));
+          return;
+        }
+        const raw = rawBuffer.toString('utf8');
         try {
           resolve({ status: res.statusCode, data: JSON.parse(raw) });
         } catch {

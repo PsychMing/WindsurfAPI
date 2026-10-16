@@ -1014,7 +1014,6 @@ export class WindsurfClient {
             }
             const approvalKey = `${cascadeTrajectoryId}:${stepOffset + i}:${url}:${origin}`;
             if (approvedReadUrlInteractions.has(approvalKey)) continue;
-            approvedReadUrlInteractions.add(approvalKey);
             const req = buildHandleReadUrlContentInteractionRequest(cascadeId, {
               trajectoryId: cascadeTrajectoryId,
               stepIndex: stepOffset + i,
@@ -1029,6 +1028,11 @@ export class WindsurfClient {
                 grpcFrame(req),
                 10000
               );
+              // R-3 (RATE-RETRY audit): record the approval only AFTER the RPC
+              // succeeded. Recording before meant one failed approval made the
+              // has() guard above skip this interaction forever — the cascade
+              // sat unapproved until the warm-stall ceiling.
+              approvedReadUrlInteractions.add(approvalKey);
               lastGrowthAt = Date.now();
               log.warn('WebFetch auto-approved read_url_content', {
                 cascadeIdHash: shortHash(cascadeId),

@@ -11,6 +11,9 @@ import { safeEmailRef, safeKeyRef, logHash, sliceRedactedJson } from '../log-saf
 import { isSocks, createSocksTunnel } from '../socks.js';
 import { getEmailLockThreshold, getEmailLockMs, getBackendSwitch } from '../runtime-config.js';
 import { parseFields, getField, getAllFields } from '../proto.js';
+// R-1 (RATE-RETRY audit): bounded response-body reads, shared with the
+// devin-connect readers — one ceiling, one truncation contract.
+import { createBoundedBodyAccumulator, MAX_ERROR_BODY_BYTES } from '../devin-connect.js';
 
 const FIREBASE_API_KEY = 'AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY';
 const FIREBASE_AUTH_URL = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`;
@@ -325,10 +328,16 @@ function httpsRequest(url, opts, postData, proxy) {
     };
 
     const handleResponse = (res) => {
-      const bufs = [];
-      res.on('data', d => bufs.push(d));
+      // R-1 (RATE-RETRY audit): bounded read — see createBoundedBodyAccumulator
+      // (shared ceiling). Over the cap → reject; never parse a truncated prefix.
+      const buffer = createBoundedBodyAccumulator();
+      res.on('data', buffer.onData);
       res.on('end', () => {
-        const rawBuffer = Buffer.concat(bufs);
+        const { raw: rawBuffer, truncated } = buffer.finish();
+        if (truncated) {
+          reject(new Error(`Response body exceeded ${MAX_ERROR_BODY_BYTES} bytes; truncated`));
+          return;
+        }
         if (opts.raw) {
           resolve({ status: res.statusCode, data: rawBuffer });
           return;

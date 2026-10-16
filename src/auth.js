@@ -58,6 +58,19 @@ function accountInflight(account) {
   return Math.max(0, account?._inflight || 0);
 }
 
+// R-4 (RATE-RETRY audit): optional per-account in-flight hard cap. Default 0 =
+// OFF (selection is byte-identical). Read per call so an operator can flip it
+// without a restart; the existing stale-inflight sweep keeps a leaked counter
+// from pinning an account out past the deadline-derived threshold.
+function maxInflightPerAccount() {
+  const raw = Number.parseInt(String(process.env.DEVIN_CONNECT_MAX_INFLIGHT_PER_ACCOUNT ?? ''), 10);
+  return Number.isSafeInteger(raw) && raw > 0 ? raw : 0;
+}
+
+function isInflightCapped(account, cap) {
+  return cap > 0 && accountInflight(account) >= cap;
+}
+
 function accountMaintenance(account) {
   return Math.max(0, account?._maintenance || 0);
 }
@@ -2007,6 +2020,7 @@ function pickDegradedFallback(now, excludeKeys, modelKey, connectSelector) {
 export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, connectSelector = null, opts = {}) {
   const now = Date.now();
   const pinOnly = !!opts.pinOnly;
+  const inflightCap = maxInflightPerAccount();
 
   // ── Sticky session: prefer the account from the last turn ────────
   // When enabled, this keeps multi-turn conversations on the same upstream
@@ -2050,7 +2064,8 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
       if (acct && !excludeKeys.includes(acct.apiKey)) {
         const limit = rpmLimitFor(acct);
         const used = pruneRpmHistory(acct, now);
-        if (limit > 0 && used < limit && !isCooledForRequest(acct, modelKey, connectSelector, now) && !isAccountInMaintenance(acct)) {
+        if (limit > 0 && used < limit && !isCooledForRequest(acct, modelKey, connectSelector, now) && !isAccountInMaintenance(acct)
+            && !isInflightCapped(acct, inflightCap)) {
           if ((!modelKey || isModelAllowedForAccount(acct, modelKey))
               && (!connectSelector || isConnectSelectorAllowedForAccount(acct, connectSelector))) {
             // A pinOnly poll that SUCCEEDS is a real acquisition, so record it as one now
@@ -2136,6 +2151,7 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
     if (limit <= 0) continue; // expired tier
     const used = pruneRpmHistory(a, now);
     if (used >= limit) continue;
+    if (isInflightCapped(a, inflightCap)) continue; // R-4 hard cap (0 = off)
     // Tier entitlement + per-account blocklist filter
     if (modelKey && !isModelAllowedForAccount(a, modelKey)) continue;
     if (connectSelector && !isConnectSelectorAllowedForAccount(a, connectSelector)) continue;

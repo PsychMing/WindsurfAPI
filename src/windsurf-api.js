@@ -22,6 +22,9 @@ import https from 'https';
 import { config, log } from './config.js';
 import { redactCredentialFragments, safeKeyRef } from './log-safety.js';
 import { resolveProxyConnectHost } from './net-safety.js';
+// R-1 (RATE-RETRY audit): bounded response-body reads, shared with the
+// devin-connect readers — one ceiling, one truncation contract.
+import { createBoundedBodyAccumulator, MAX_ERROR_BODY_BYTES } from './devin-connect.js';
 
 const SERVER_HOSTS = [
   'server.codeium.com',
@@ -125,13 +128,24 @@ function postJson(host, path, body, proxy) {
       },
     };
     const onRes = (res) => {
-      const bufs = [];
-      res.on('data', d => bufs.push(d));
+      // R-1 (RATE-RETRY audit): bound the read. Concatenating unbounded is an
+      // availability bug — a misbehaving upstream can stream past V8's string
+      // limit and the ERR_STRING_TOO_LONG throw escapes this 'end' listener as
+      // an uncaughtException (see createBoundedBodyAccumulator). Over the cap
+      // the response is rejected rather than parsed from a truncated prefix.
+      const buffer = createBoundedBodyAccumulator();
+      res.on('data', buffer.onData);
       res.on('end', () => {
-        const raw = Buffer.concat(bufs).toString('utf8');
+        const { raw: rawBuffer, truncated } = buffer.finish();
+        if (truncated) {
+          reject(new Error(`Response body exceeded ${MAX_ERROR_BODY_BYTES} bytes; truncated`));
+          return;
+        }
+        const raw = rawBuffer.toString('utf8');
         try {
           const parsed = raw ? JSON.parse(raw) : {};
-          resolve({ status: res.statusCode, data: parsed, raw });
+          // `headers` feeds the rate-limit pre-flight's Retry-After fallback (R-2).
+          resolve({ status: res.statusCode, data: parsed, raw, headers: res.headers });
         } catch {
           reject(new Error(`Non-JSON response (${res.statusCode}): ${raw.slice(0, 200)}`));
         }
@@ -557,6 +571,18 @@ export async function registerWithFirebaseToken(firebaseToken, opts = {}) {
   throw new Error(`RegisterUser failed both endpoints: ${redactCredentialFragments(errors.join(' | '))}`);
 }
 
+// R-2: Retry-After is delta-seconds or an HTTP-date (RFC 9110) → ms, or null.
+function parseRetryAfterHeaderMs(value) {
+  if (value == null) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  const seconds = Number(s);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const when = Date.parse(s);
+  if (Number.isNaN(when)) return null;
+  return Math.max(0, when - Date.now());
+}
+
 /**
  * Pre-flight check: does this account still have message capacity?
  * Returns { hasCapacity, messagesRemaining, maxMessages, retryAfterMs }.
@@ -576,6 +602,24 @@ export async function checkMessageRateLimit(apiKey, proxy = null) {
     for (const host of SERVER_HOSTS) {
       try {
         const res = await postJson(host, RATE_LIMIT_PATH, body, px);
+        if (res.status === 429 || res.status === 503) {
+          // R-2 (RATE-RETRY audit): a throttle on the pre-flight itself must
+          // not read as "capacity fine" — swallowing it burns an upstream
+          // request right after. Report no-capacity with the reset window from
+          // resets_in_seconds (#5) or the Retry-After header. The limit is
+          // account-scoped, so there is no point trying the other host;
+          // network errors below still fail open.
+          const resetSeconds = res.data?.resetsInSeconds == null ? NaN : Number(res.data.resetsInSeconds);
+          const bodyMs = Number.isFinite(resetSeconds) ? Math.round(resetSeconds * 1000) : null;
+          const retryAfterMs = bodyMs ?? parseRetryAfterHeaderMs(res.headers?.['retry-after']) ?? null;
+          log.warn(`CheckRateLimit ${host} → ${res.status}: no capacity${retryAfterMs != null ? ` (retry after ${retryAfterMs}ms)` : ''}`);
+          return {
+            hasCapacity: false,
+            messagesRemaining: res.data?.messagesRemaining ?? -1,
+            maxMessages: res.data?.maxMessages ?? -1,
+            retryAfterMs,
+          };
+        }
         if (res.status >= 400) {
           lastErr = new Error(`CheckRateLimit ${host} → ${res.status}: ${res.raw.slice(0, 160)}`);
           continue;

@@ -3372,7 +3372,10 @@ async function gitStatus() {
   };
 }
 
-async function testProxy({ host, port, username, password, type }) {
+// Exported (and timeout-parameterised) so the RATE-RISK red→green test can pin
+// the TLS-stage deadline in ms instead of waiting out the 10s default; the
+// dashboard route below calls it with the default.
+export async function testProxy({ host, port, username, password, type }, tlsTimeoutMs = 10_000) {
   if (config.allowPrivateProxyHosts) {
     await validateHostFormat(host);
   } else {
@@ -3421,6 +3424,14 @@ async function testProxy({ host, port, username, password, type }) {
   return new Promise((resolve, reject) => {
       const tlsSock = tls.connect({ socket, servername: targetHost, rejectUnauthorized: true }, () => {
         tlsSock.write(`GET / HTTP/1.1\r\nHost: ${targetHost}\r\nConnection: close\r\nUser-Agent: WindsurfAPI/ProxyTest\r\n\r\n`);
+      });
+      // R-5 (RATE-RETRY audit): the CONNECT stage has a 10s timer, but the TLS
+      // stage had none — a target that completes the tunnel and then goes
+      // silent left this promise pending forever (the dashboard button spun).
+      // destroy() alone emits no 'error' on a raw socket, so settle explicitly.
+      tlsSock.setTimeout(tlsTimeoutMs, () => {
+        tlsSock.destroy();
+        reject(new Error('ERR_TIMEOUT'));
       });
       const chunks = [];
       tlsSock.on('data', c => chunks.push(c));
