@@ -57,9 +57,9 @@ describe('SEC-4 stats import prototype protection (real module)', () => {
   it('SEC-4: object-literal __proto__ is not confused with an own JSON key', () => {
     const input = { __proto__: { totalRequests: 1 }, recentRequests: [] };
     assert.equal(Object.hasOwn(input, '__proto__'), false);
-    importStats(input, { mode: 'replace' });
+    assert.deepEqual(importStats(input, { mode: 'replace' }), { ok: true, mode: 'replace' });
     const s = exportStats();
-    assert.equal(s.totalRequests, undefined);
+    assert.equal(s.totalRequests, 0);
     assert.deepEqual(s.recentRequests, []);
   });
 
@@ -77,7 +77,7 @@ describe('SEC-4 stats import prototype protection (real module)', () => {
     importStats({ totalRequests: 3, creditsByModel: { normal: 1 } });
     const before = snapshot();
     const cycle = {}; cycle.self = cycle;
-    assert.throws(() => importStats(cycle, { mode: 'replace' }), TypeError);
+    assert.deepEqual(importStats(cycle, { mode: 'replace' }), { ok: false, error: 'invalid snapshot' });
     assert.deepEqual(snapshot(), before);
   });
 
