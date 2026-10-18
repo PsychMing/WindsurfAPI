@@ -1,4 +1,5 @@
 // Tool-name mapping across the client/upstream boundary.
+import { TOOL_MAP } from './cascade-native-bridge.js';
 //
 // Anthropic accepts 1–128 chars; the OpenAI-compatible upstream accepts 64.
 // A valid client name must stay byte-identical on the client-visible leg, so
@@ -60,6 +61,12 @@ export function buildToolNameMap(tools, { maxUpstream = MAX_UPSTREAM_TOOL_NAME }
   const toUpstream = new Map();
   const toClient = new Map();
   const reserved = new Set(names.filter((n) => isValidToolName(n, maxUpstream)));
+  // A normalized caller name must never acquire native-bridge meaning. Reserve
+  // every native tool name even when the caller did not declare it, so
+  // `shell.command` cannot be rewritten to the native `shell_command`.
+  for (const native of Object.keys(TOOL_MAP)) {
+    if (isValidToolName(native, maxUpstream)) reserved.add(native);
+  }
 
   // Pass 1: every valid name keeps its exact bytes and reserves its slot.
   for (const name of names) {

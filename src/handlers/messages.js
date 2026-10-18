@@ -1550,7 +1550,11 @@ class AnthropicStreamTranslator {
     const mapped = toAnthropicError(http.status, http.type, err?.message);
     this.send('error', {
       type: 'error',
-      error: mapped.body.error,
+      error: {
+        ...mapped.body.error,
+        ...(err?.code ? { code: err.code } : {}),
+        ...(Number.isFinite(Number(err?.retry_after_ms)) ? { retry_after_ms: Number(err.retry_after_ms) } : {}),
+      },
     });
   }
 

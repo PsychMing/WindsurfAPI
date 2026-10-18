@@ -94,6 +94,7 @@ export function knownToolCallIds(messages) {
 
 function uniqueToolId(base, reserved, maxLen) {
   let wire = base || 'call';
+  if (maxLen >= 1 && wire.length > maxLen) wire = wire.slice(0, maxLen);
   let n = 2;
   while (reserved.has(wire)) {
     const suffix = `_${n++}`;

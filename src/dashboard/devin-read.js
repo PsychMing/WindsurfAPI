@@ -168,6 +168,7 @@ export async function readDevinJson({
       ...(controller ? { signal: controller.signal } : {}),
     });
   } catch (err) {
+    clearTimeout(timer);
     if (err instanceof ReadError) throw err;
     const name = err?.name || '';
     if (name === 'TimeoutError' || name === 'AbortError') {
@@ -176,25 +177,57 @@ export async function readDevinJson({
     const causeText = String(err?.cause?.message || err?.message || '');
     if (/redirect/i.test(causeText)) throw new ReadError('redirect_blocked', { status: null, cause: err });
     throw new ReadError('upstream', { status: null, cause: err });
-  } finally {
-    clearTimeout(timer);
   }
 
   const status = Number(res?.status) || 0;
-  if (!res?.ok) throw mapStatus(status, res);
+  if (!res?.ok) {
+    clearTimeout(timer);
+    throw mapStatus(status, res);
+  }
 
   const contentLength = Number(headerValue(res, 'content-length'));
   if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    clearTimeout(timer);
     throw new ReadError('too_large', { status });
   }
 
+  // Keep the abort timer armed through body consumption: a server that sends
+  // headers promptly but drips (or never finishes) the body must still time
+  // out. Enforce maxBytes per chunk so an oversized body is aborted while it
+  // is being read, not after `res.text()` has already allocated all of it.
   let text;
   try {
-    text = typeof res.text === 'function' ? await res.text() : '';
+    if (res.body && typeof res.body.getReader === 'function') {
+      const reader = res.body.getReader();
+      const chunks = [];
+      let total = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const buf = Buffer.from(value);
+        total += buf.length;
+        if (total > maxBytes) {
+          try { controller?.abort(); } catch {}
+          try { await reader.cancel(); } catch {}
+          throw new ReadError('too_large', { status });
+        }
+        chunks.push(buf);
+      }
+      text = Buffer.concat(chunks, total).toString('utf8');
+    } else {
+      text = typeof res.text === 'function' ? await res.text() : '';
+      if (Buffer.byteLength(text, 'utf8') > maxBytes) throw new ReadError('too_large', { status });
+    }
   } catch (err) {
+    if (err instanceof ReadError) throw err;
+    const name = err?.name || '';
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      throw new ReadError('timeout', { status, cause: err });
+    }
     throw new ReadError('upstream', { status, cause: err });
+  } finally {
+    clearTimeout(timer);
   }
-  if (Buffer.byteLength(text, 'utf8') > maxBytes) throw new ReadError('too_large', { status });
 
   try {
     return JSON.parse(text);

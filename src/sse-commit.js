@@ -67,10 +67,33 @@ function errorFromFrame(frame, parseError = null) {
   return obj.error;
 }
 
+const GRPC_STATUS = {
+  UNAUTHENTICATED: 401,
+  PERMISSION_DENIED: 403,
+  RESOURCE_EXHAUSTED: 429,
+  UNAVAILABLE: 503,
+  DEADLINE_EXCEEDED: 504,
+};
+
+const TYPE_STATUS = {
+  rate_limit_error: 429,
+  rate_limit_exceeded: 429,
+  authentication_error: 401,
+  permission_error: 403,
+  insufficient_quota: 402,
+  capacity_error: 503,
+  overloaded_error: 529,
+  timeout_error: 504,
+};
+
 function mapStatus(error, mapError) {
   if (typeof mapError === 'function') return mapError(error).status;
-  if (error?.code) {
-    const byCode = connectErrorToHttp(error.code);
+  if (error?.status && GRPC_STATUS[error.status]) return GRPC_STATUS[error.status];
+  const code = error?.__upstream_code
+    || (typeof error?.code === 'string' ? error.code : null);
+  if (error?.type && TYPE_STATUS[error.type]) return TYPE_STATUS[error.type];
+  if (code) {
+    const byCode = connectErrorToHttp(code);
     if (byCode.status !== 502) return byCode.status;
   }
   if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) return error.status;

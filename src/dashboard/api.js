@@ -1715,6 +1715,11 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         force: u.searchParams.get('refresh') === '1',
       });
       const { httpStatus, ...payload } = result;
+      // Preserve the upstream status marker for the browser. Without it a
+      // forwarded upstream 401/429 is indistinguishable from the dashboard's
+      // own password/IP-lock rejection, so the UI would clear a valid admin
+      // session (or start a lockout) on a provider quota error.
+      if (!result.ok) payload.httpStatus = httpStatus || 502;
       return json(res, result.ok ? 200 : (httpStatus || 502), payload, NO_STORE);
     } catch (err) {
       log.warn(`Dashboard usage read failed: ${err?.kind || err?.name || 'unexpected'}`);
@@ -1732,6 +1737,11 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         force: u.searchParams.get('refresh') === '1',
       });
       const { httpStatus, ...payload } = result;
+      // Preserve the upstream status marker for the browser. Without it a
+      // forwarded upstream 401/429 is indistinguishable from the dashboard's
+      // own password/IP-lock rejection, so the UI would clear a valid admin
+      // session (or start a lockout) on a provider quota error.
+      if (!result.ok) payload.httpStatus = httpStatus || 502;
       return json(res, result.ok ? 200 : (httpStatus || 502), payload, NO_STORE);
     } catch (err) {
       log.warn(`Dashboard billing health read failed: ${err?.kind || err?.name || 'unexpected'}`);
@@ -2441,6 +2451,11 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         force: u.searchParams.get('refresh') === '1',
       });
       const { httpStatus, ...payload } = result;
+      // Preserve the upstream status marker for the browser. Without it a
+      // forwarded upstream 401/429 is indistinguishable from the dashboard's
+      // own password/IP-lock rejection, so the UI would clear a valid admin
+      // session (or start a lockout) on a provider quota error.
+      if (!result.ok) payload.httpStatus = httpStatus || 502;
       return json(res, result.ok ? 200 : (httpStatus || 502), payload, NO_STORE);
     } catch (err) {
       log.warn(`Dashboard model reconciliation failed: ${err?.kind || err?.name || 'unexpected'}`);

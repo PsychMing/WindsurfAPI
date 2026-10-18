@@ -34,6 +34,14 @@ describe('tool names', () => {
     assert.equal(toClient.get(toUpstream.get('read file')), 'read file');
   });
 
+  it('never lets a normalized caller name become a native tool name', () => {
+    const { toUpstream } = buildToolNameMap(['shell.command']);
+    assert.notEqual(toUpstream.get('shell.command'), 'shell_command');
+    const both = buildToolNameMap(['shell.command', 'shell_command']);
+    assert.equal(both.toUpstream.get('shell_command'), 'shell_command');
+    assert.notEqual(both.toUpstream.get('shell.command'), 'shell_command');
+  });
+
   it('is deterministic for the same input', () => {
     const a = buildToolNameMap(['x/y', 'z'.repeat(80)]);
     const b = buildToolNameMap(['x/y', 'z'.repeat(80)]);

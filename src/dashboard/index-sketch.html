@@ -2209,7 +2209,10 @@ const App = {
     try {
       const r = await fetch('/dashboard/api' + path, opts);
       const data = await r.json().catch(() => ({}));
-      if (r.status === 401) {
+      // Forwarded upstream 401/429 is not dashboard auth failure (see index.html).
+      const upstreamFailure = (r.status === 401 || r.status === 429)
+        && (data?.httpStatus === r.status || data?.upstream === true);
+      if (r.status === 401 && !upstreamFailure) {
         this.password = null;
         try { localStorage.removeItem('dp'); } catch {}
         Object.values(this.pollers).forEach(clearInterval);
@@ -2218,7 +2221,7 @@ const App = {
         const authErr = (data && data.error && (data.error.message || data.error)) || 'Unauthorized';
         return { success: false, error: authErr };
       }
-      if (r.status === 429) {
+      if (r.status === 429 && !upstreamFailure) {
         const lockErr = (data && data.error && (data.error.message || data.error)) || 'Too many failed attempts';
         return { success: false, error: lockErr };
       }

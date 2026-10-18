@@ -263,7 +263,7 @@ describe('#257 UI maps a 401 add to the generic Add failed toast', () => {
     // !r.success and r.error === undefined → translateError fell through
     // to toast.addFailed ("Add failed" / "添加失败") with no reason.
     const html = readFileSync(join(ROOT, 'src', 'dashboard', 'index.html'), 'utf8');
-    const start = html.indexOf('if (r.status === 401)');
+    const start = html.indexOf('if (r.status === 401 && !upstreamFailure)');
     assert.ok(start >= 0);
     const block = html.slice(start, html.indexOf('if (!r.ok)', start));
     assert.match(block, /success:\s*false/);
@@ -295,7 +295,7 @@ describe('#257 UI maps a 401 add to the generic Add failed toast', () => {
 
   it('sketch dashboard uses the same fail-closed 401 and loadAccounts guards', () => {
     const html = readFileSync(join(ROOT, 'src', 'dashboard', 'index-sketch.html'), 'utf8');
-    const start = html.indexOf('if (r.status === 401)');
+    const start = html.indexOf('if (r.status === 401 && !upstreamFailure)');
     assert.ok(start >= 0);
     const block = html.slice(start, html.indexOf('if (r.status === 429)', start));
     assert.match(block, /success:\s*false/);

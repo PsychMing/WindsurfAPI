@@ -4204,12 +4204,20 @@ docker compose up -d --force-recreate</pre>
       // loops + the ~dozen parallel calls each panel fires) hammers the banned
       // endpoint and stacks a wall of identical toasts. Halt ALL polling and show
       // one clear "banned, retry in Ns" overlay instead of spamming.
-      if (r.status === 429) {
+      // A 401/429 from an upstream provider (Devin) is not an admin-auth
+      // failure. The dashboard API forwards the upstream status and includes
+      // `httpStatus`; only a response without that marker is the dashboard's
+      // own password/IP-lock gate. Clearing the saved admin password or
+      // starting an IP-lock countdown on an upstream quota error leaves the
+      // operator locked out of a dashboard whose own auth is still valid.
+      const upstreamFailure = (r.status === 401 || r.status === 429)
+        && (data?.httpStatus === r.status || data?.upstream === true);
+      if (r.status === 429 && !upstreamFailure) {
         this.handleLockout(data.retryAfterMs || (data.error && parseInt(String(data.error).match(/(\d+)s/)?.[1], 10) * 1000) || 0);
         const lockErr = (data && data.error && (data.error.message || data.error)) || 'Too many failed attempts';
         return { success: false, error: lockErr };
       }
-      if (r.status === 401) {
+      if (r.status === 401 && !upstreamFailure) {
         // Stale/wrong stored password: drop it so polls stop re-sending a bad
         // credential (which would rack up failed attempts and trigger a ban).
         // The password is persisted in localStorage 'dp' (see :3180) — clearing

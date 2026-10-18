@@ -257,6 +257,18 @@ export async function serveChatStream(res, result, {
   errorBody = null,
   mapError = null,
 } = {}) {
+  // Gemini's default response is a JSON array, not SSE. It cannot be parsed by
+  // the deferred SSE gate, so forward it immediately (the gate would hold the
+  // entire answer until upstream completion or the bootstrap cap).
+  if (result.mode === 'array') {
+    if (!res.headersSent) res.writeHead(result.status || 200, headers);
+    try {
+      await result.handler(res);
+    } finally {
+      onDone?.();
+    }
+    return;
+  }
   if (commitMs === 0) {
     if (!res.headersSent) res.writeHead(result.status, headers);
     try {
@@ -1041,7 +1053,6 @@ async function route(req, res) {
         isBootstrap: (obj) => obj?.type === 'message_start' || obj?.type === 'ping',
         parseError: (obj) => (obj?.type === 'error' && obj.error ? obj.error : null),
         errorBody: (error, status) => toAnthropicError(status, error?.type, error?.message).body,
-        onDone: () => updateRequest(ringRow?.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode }),
       });
     } else {
       for (const [k, v] of Object.entries(anthropicHeaders)) res.setHeader(k, v);
@@ -1114,7 +1125,6 @@ async function route(req, res) {
           && obj.candidates.every((c) => !c?.finishReason && (c?.content?.parts || []).every((p) => !p?.text && !p?.functionCall)),
         parseError: (obj) => (obj?.error && typeof obj.error === 'object' ? obj.error : null),
         errorBody: (error, status) => geminiError(status, error?.type, error?.message).body,
-        onDone: () => updateRequest(ringRow?.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode }),
       });
     } else {
       for (const [k, v] of Object.entries(geminiHeaders)) res.setHeader(k, v);

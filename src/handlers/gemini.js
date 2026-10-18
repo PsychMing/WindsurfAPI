@@ -644,7 +644,14 @@ class GeminiStreamTranslator {
     // Emit the error as a frame, then terminate. Gemini surfaces a mid-stream
     // error as a GenerateContentResponse-shaped object carrying `error`.
     if (!this.res.writableEnded) {
-      const json = JSON.stringify(mapped.body);
+      const body = err?.code
+        ? { ...mapped.body, error: {
+          ...mapped.body.error,
+          __upstream_code: err.code,
+          ...(Number.isFinite(Number(err.retry_after_ms)) ? { retry_after_ms: Number(err.retry_after_ms) } : {}),
+        } }
+        : mapped.body;
+      const json = JSON.stringify(body);
       if (this.mode === 'sse') {
         this.res.write(`data: ${json}\r\n\r\n`);
       } else {

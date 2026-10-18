@@ -1161,6 +1161,7 @@ class ResponsesStreamTranslator {
           // 就地归一化内部词到官方 OpenAI type。
           type: normalizeOpenAIErrorType(http.type, http.status),
           code: err?.code || null,
+          ...(Number.isFinite(Number(err?.retry_after_ms)) ? { retry_after_ms: Number(err.retry_after_ms) } : {}),
         },
       },
     });

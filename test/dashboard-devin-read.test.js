@@ -130,6 +130,54 @@ describe('readDevinJson', () => {
     );
   });
 
+  it('keeps the timeout armed while a streamed body is read', async () => {
+    let signal;
+    await assert.rejects(
+      readDevinJson({
+        token: 'tok',
+        path: '/x',
+        timeoutMs: 20,
+        fetchImpl: async (_url, init) => {
+          signal = init.signal;
+          return new Response(new ReadableStream({
+            start(controller) {
+              const timer = setTimeout(() => {
+                controller.enqueue(new TextEncoder().encode('{}'));
+                controller.close();
+              }, 120);
+              signal.addEventListener('abort', () => {
+                clearTimeout(timer);
+                controller.error(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+              }, { once: true });
+            },
+          }));
+        },
+      }),
+      (err) => err.kind === 'timeout',
+    );
+    assert.equal(signal.aborted, true);
+  });
+
+  it('aborts an oversized streamed body before reading all of it', async () => {
+    let chunks = 0;
+    await assert.rejects(
+      readDevinJson({
+        token: 'tok',
+        path: '/x',
+        maxBytes: 32,
+        fetchImpl: async () => new Response(new ReadableStream({
+          pull(controller) {
+            chunks++;
+            controller.enqueue(new Uint8Array(16).fill(97));
+            if (chunks === 8) controller.close();
+          },
+        }, { highWaterMark: 0 })),
+      }),
+      (err) => err.kind === 'too_large',
+    );
+    assert.ok(chunks <= 3, `read ${chunks} chunks before enforcing the cap`);
+  });
+
   it('requires a token and a valid org header when one is supplied', async () => {
     await assert.rejects(readDevinJson({ token: '', path: '/x' }), (err) => err.kind === 'no_account');
     await assert.rejects(
