@@ -48,6 +48,20 @@ export function wireToolId(base, id, seed, slot, opts = {}) {
 }
 
 export function foldOrphanResultText(content) {
+  if (Array.isArray(content)) {
+    const parts = content.map((part) => {
+      if (typeof part === 'string') return part;
+      if (part && typeof part === 'object') {
+        if (typeof part.text === 'string') return part.text;
+        if (part.type) return `[${part.type}]`;
+      }
+      return '';
+    }).filter(Boolean).join('\n').trim();
+    return parts || EMPTY_RESULT_TEXT;
+  }
+  if (content && typeof content === 'object') {
+    try { return JSON.stringify(content); } catch { return String(content); }
+  }
   const text = typeof content === 'string' ? content.trim() : String(content ?? '').trim();
   return text || EMPTY_RESULT_TEXT;
 }

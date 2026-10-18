@@ -96,3 +96,19 @@ describe('tool-id hygiene', () => {
     assert.equal(synthesizeMissingResults(messages), messages);
   });
 });
+
+describe('foldOrphanResultText', () => {
+  it('preserves text parts from array content instead of stringifying objects', () => {
+    const messages = [
+      { role: 'user', content: 'q' },
+      { role: 'tool', tool_call_id: 'call_missing', content: [
+        { type: 'text', text: 'IMPORTANT-TEXT' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } },
+      ] },
+    ];
+    const out = foldOrphanToolResults(messages);
+    assert.match(out[0].content, /IMPORTANT-TEXT/);
+    assert.match(out[0].content, /\[image_url\]/);
+    assert.doesNotMatch(out[0].content, /\[object Object\]/);
+  });
+});

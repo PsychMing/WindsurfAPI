@@ -19,20 +19,29 @@ export function normalizeHistoryTail(messages, {
 } = {}) {
   if (!Array.isArray(messages) || messages.length === 0) return messages;
 
-  let stripped = false;
+  const head = [];
   let start = 0;
+  while (start < messages.length && messages[start]?.role === 'system') {
+    head.push(messages[start]);
+    start += 1;
+  }
+  let stripped = false;
   while (start < messages.length && messages[start]?.role === 'tool') {
     start += 1;
     stripped = true;
   }
-  if (stripped && messages[start]?.role === 'assistant') start += 1;
+  // Do NOT strip the assistant after a leading tool result: in OpenAI order the
+  // assistant that issued those calls is BEFORE them (already truncated away),
+  // so a following assistant is a legitimate new turn.
 
   let out = start > 0 ? messages.slice(start) : messages;
   if (fold) out = foldOrphanToolResults(out);
   if (synthesizeMissing) out = synthesizeMissingResults(out);
 
   if (stripped && placeholder) {
-    out = [{ role: 'user', content: placeholder }, { role: 'assistant', content: 'Understood.' }, ...out];
+    out = [...head, { role: 'user', content: placeholder }, { role: 'assistant', content: 'Understood.' }, ...out];
+  } else if (head.length) {
+    out = [...head, ...out];
   }
   return out === messages ? messages : out;
 }

@@ -46,9 +46,12 @@ export function sanitizeToolName(name, maxLen = MAX_UPSTREAM_TOOL_NAME) {
  */
 export function buildToolNameMap(tools, { maxUpstream = MAX_UPSTREAM_TOOL_NAME } = {}) {
   const names = [];
+  const seen = new Set();
   for (const t of tools || []) {
     const name = typeof t === 'string' ? t : t?.name;
-    if (typeof name === 'string' && name.length > 0 && !names.includes(name)) names.push(name);
+    if (typeof name !== 'string' || name.length === 0 || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
   }
 
   const toUpstream = new Map();

@@ -6,14 +6,27 @@ import { INTERRUPTED_RESULT_TEXT } from '../src/tool-ids.js';
 const user = (content) => ({ role: 'user', content });
 
 describe('history tail normalization', () => {
-  it('strips a leading tool result and the assistant turn it belonged to', () => {
+  it('strips a leading tool result but keeps a legitimate following assistant turn', () => {
     const messages = [
       { role: 'tool', tool_call_id: 'call_1', content: 'old output' },
       { role: 'assistant', content: 'old answer' },
       user('new question'),
     ];
     const out = normalizeHistoryTail(messages);
-    assert.deepEqual(out, [user('new question')]);
+    assert.deepEqual(out, [{ role: 'assistant', content: 'old answer' }, user('new question')]);
+  });
+
+  it('preserves a leading system message and puts the placeholder after it', () => {
+    const messages = [
+      { role: 'system', content: 'rules' },
+      { role: 'tool', tool_call_id: 'call_1', content: 'old output' },
+      user('q'),
+    ];
+    const out = normalizeHistoryTail(messages, { placeholder: TRUNCATION_PLACEHOLDER });
+    assert.equal(out[0].role, 'system');
+    assert.equal(out[1].content, TRUNCATION_PLACEHOLDER);
+    assert.equal(out[2].content, 'Understood.');
+    assert.equal(out[3].content, 'q');
   });
 
   it('folds a middle orphan tool result into the preceding user text', () => {
