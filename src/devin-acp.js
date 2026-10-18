@@ -576,6 +576,36 @@ export async function runDevinAcpProcess(prompt, { modelKey = '', apiKey = '', a
     // Arm graceful cancellation: a later abort can now send session/cancel.
     client.setSessionId(sessionId);
 
+    // Optional native config: the CLI advertises configOptions on session/new.
+    // Flag-off by default because the live option ids/values are not calibrated
+    // against a real ACP peer yet; the prompt hint remains the fallback.
+    if (modelKey && process.env.DEVIN_ACP_CONFIG_OPTIONS === '1') {
+      const rawOptions = session?.result?.configOptions || session?.result?.config_options || [];
+      const modelOption = Array.isArray(rawOptions)
+        ? rawOptions.find((o) => {
+          const id = String(o?.id || o?.configId || o?.key || o?.name || '').toLowerCase();
+          return id === 'model' || id.includes('model');
+        })
+        : null;
+      const configId = modelOption?.id || modelOption?.configId || modelOption?.key || modelOption?.name;
+      if (configId) {
+        const choices = Array.isArray(modelOption.options) ? modelOption.options : [];
+        const chosen = choices.find((c) => {
+          const v = c?.value ?? c?.id ?? c?.name;
+          return v === modelKey;
+        });
+        const value = chosen ? (chosen.value ?? chosen.id ?? chosen.name) : modelKey;
+        const cfg = await client.request('session/set_config_option', {
+          sessionId,
+          configId,
+          value,
+        }, 15_000);
+        if (cfg.error) {
+          log.warn(`Devin ACP set_config_option ${configId}=${value} failed: ${cfg.error.message || cfg.error.code || 'unknown'}`);
+        }
+      }
+    }
+
     const modelHint = modelKey ? `Model requested by caller: ${modelKey}\n\n` : '';
     const result = await client.request('session/prompt', {
       sessionId,

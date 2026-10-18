@@ -108,6 +108,7 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `WINDSURFAPI_CASCADE_THINK_REROUTE` | **开** | Cascade 路径把带 think 标记的开头内容改道到 reasoning 通道（`handlers/chat.js`，`\|\| '1') !== '0'`）。设 `0` 关闭。 |
+| `DEVIN_ACP_CONFIG_OPTIONS` | 关 | ACP `session/new` 后按 `configOptions` 调用 `session/set_config_option` 设置模型（`devin-acp.js`，`=== '1'`）。默认关：live 的 option id/value 尚未校准。 |
 | `WINDSURFAPI_TOOL_HYGIENE` | **开** | 三方言请求/历史/egress 的工具名与 ID 卫生（`handlers/{messages,responses,gemini}.js`）。设 `0` 关闭，回到原始透传。 |
 | `WINDSURFAPI_STREAM_COMMIT_MS` | `5000` | OpenAI chat 流的提交门等待窗口（`server.js`，0 = 关闭门，最大钳到 14000）。窗口内只缓冲 comment/role-only 帧；首个真实内容或错误帧立即决定提交。设 `0` 回到旧的「先写 200」行为。 |
 | `WINDSURFAPI_REASONING_DEDUP` | **开** | 抑制 reasoning 与 content 逐字重复的那一份。 |
