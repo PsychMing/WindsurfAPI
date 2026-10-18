@@ -1,7 +1,7 @@
 {
-  "_comment": "DEVIN_CONNECT catalog whitelist. Refreshed from live GetCascadeModelConfigs 2026-07-08. Live dash-form + enum selectors; MODEL_PRIVATE_* excluded EXCEPT those referenced by SELECTOR_MAP; swe-1-6-slow free-tier fallback preserved. Extended 2026-08-11 from docs.devin.ai modelCostData (gpt-5-6-luna-*, claude-opus-5-*) — NOT yet frame-verified; selector form follows the 4-8/fable family convention.",
-  "_calibratedAt": "2026-07-08",
-  "_count": 225,
+  "_comment": "DEVIN_CONNECT catalog whitelist. Refreshed from live GetCascadeModelConfigs 2026-07-08. Live dash-form + enum selectors; MODEL_PRIVATE_* excluded EXCEPT those referenced by SELECTOR_MAP; swe-1-6-slow free-tier fallback preserved. Extended 2026-08-11 from docs.devin.ai modelCostData (gpt-5-6-luna-*, claude-opus-5-*) — NOT yet frame-verified; selector form follows the 4-8/fable family convention. Refreshed from live catalog dump 2026-10-18: +8 added (claude-haiku-5-5 family, swe-2 lightning variants); 4 MODEL_PRIVATE_* and 1 spelling-only enum excluded; 22 aliases updated; 18 kept-not-live (single account ≠ retirement); 45 deferred for review.",
+  "_calibratedAt": "2026-10-18",
+  "_count": 233,
   "models": [
     {
       "selector": "claude-opus-4-8-medium",
@@ -35,11 +35,13 @@
     },
     {
       "selector": "swe-1-7",
-      "provider": "cognition"
+      "provider": "cognition",
+      "alias": "swe-1.7"
     },
     {
       "selector": "swe-1-7-lightning",
-      "provider": "cognition"
+      "provider": "cognition",
+      "alias": "swe-1.7-lightning"
     },
     {
       "selector": "swe-2-medium",
@@ -48,11 +50,13 @@
     },
     {
       "selector": "swe-2-high",
-      "provider": "cognition"
+      "provider": "cognition",
+      "alias": "swe-2"
     },
     {
       "selector": "swe-2-max",
-      "provider": "cognition"
+      "provider": "cognition",
+      "alias": "swe-2"
     },
     {
       "selector": "claude-opus-4-7-medium",
@@ -538,63 +542,78 @@
     },
     {
       "selector": "gpt-5-6-luna-none",
-      "provider": "openai"
+      "provider": "openai",
+      "alias": "gpt-5.6-luna"
     },
     {
       "selector": "gpt-5-6-luna-low",
-      "provider": "openai"
+      "provider": "openai",
+      "alias": "gpt-5.6-luna"
     },
     {
       "selector": "gpt-5-6-luna-medium",
-      "provider": "openai"
+      "provider": "openai",
+      "alias": "gpt-5.6-luna"
     },
     {
       "selector": "gpt-5-6-luna-high",
-      "provider": "openai"
+      "provider": "openai",
+      "alias": "gpt-5.6-luna"
     },
     {
       "selector": "gpt-5-6-luna-xhigh",
-      "provider": "openai"
+      "provider": "openai",
+      "alias": "gpt-5.6-luna"
     },
     {
       "selector": "claude-opus-5-low",
-      "provider": "anthropic"
+      "provider": "anthropic",
+      "alias": "claude-opus-5"
     },
     {
       "selector": "claude-opus-5-medium",
-      "provider": "anthropic"
+      "provider": "anthropic",
+      "alias": "claude-opus-5"
     },
     {
       "selector": "claude-opus-5-high",
-      "provider": "anthropic"
+      "provider": "anthropic",
+      "alias": "claude-opus-5"
     },
     {
       "selector": "claude-opus-5-xhigh",
-      "provider": "anthropic"
+      "provider": "anthropic",
+      "alias": "claude-opus-5"
     },
     {
       "selector": "claude-opus-5-max",
-      "provider": "anthropic"
+      "provider": "anthropic",
+      "alias": "claude-opus-5"
     },
     {
       "selector": "claude-opus-5-low-fast",
-      "provider": "anthropic"
+      "provider": "anthropic",
+      "alias": "claude-opus-5"
     },
     {
       "selector": "claude-opus-5-medium-fast",
-      "provider": "anthropic"
+      "provider": "anthropic",
+      "alias": "claude-opus-5"
     },
     {
       "selector": "claude-opus-5-high-fast",
-      "provider": "anthropic"
+      "provider": "anthropic",
+      "alias": "claude-opus-5"
     },
     {
       "selector": "claude-opus-5-xhigh-fast",
-      "provider": "anthropic"
+      "provider": "anthropic",
+      "alias": "claude-opus-5"
     },
     {
       "selector": "claude-opus-5-max-fast",
-      "provider": "anthropic"
+      "provider": "anthropic",
+      "alias": "claude-opus-5"
     },
     {
       "selector": "claude-fable-5-1-low",
@@ -658,7 +677,8 @@
     },
     {
       "selector": "gpt-5-6-luna-max",
-      "provider": "openai"
+      "provider": "openai",
+      "alias": "gpt-5.6-luna"
     },
     {
       "selector": "gpt-5-6-sol-none",
@@ -998,11 +1018,48 @@
     },
     {
       "selector": "swe-1-7-lightning-medium",
-      "provider": "windsurf"
+      "provider": "windsurf",
+      "alias": "swe-1.7-lightning"
     },
     {
       "selector": "swe-1-7-medium",
-      "provider": "windsurf"
+      "provider": "windsurf",
+      "alias": "swe-1.7"
+    },
+    {
+      "selector": "claude-haiku-5-5-high",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "claude-haiku-5-5-low",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "claude-haiku-5-5-max",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "claude-haiku-5-5-medium",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "claude-haiku-5-5-xhigh",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "swe-2-high-lightning",
+      "provider": "cognition",
+      "alias": "swe-2"
+    },
+    {
+      "selector": "swe-2-max-lightning",
+      "provider": "cognition",
+      "alias": "swe-2"
+    },
+    {
+      "selector": "swe-2-medium-lightning",
+      "provider": "cognition",
+      "alias": "swe-2"
     }
   ]
 }

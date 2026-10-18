@@ -145,6 +145,43 @@ const SELECTOR_MAP = new Map(Object.entries({
   // the family convention; bare `claude5` (issue #244) defaults to sonnet-5-medium.
   'claude-opus-5': 'claude-opus-5-medium',
   'claude5': 'claude-sonnet-5-medium',
+  // Haiku 5.5 (live catalog 2026-10-18): the catalog advertises the family alias
+  // `claude-haiku-5.5` across five effort tiers; bare forms default to -medium.
+  'claude-haiku-5-5': 'claude-haiku-5-5-medium',
+  'claude-haiku-5.5': 'claude-haiku-5-5-medium',
+  // Live catalog 2026-10-18: new families observed in GetCliModelConfigs.
+  // Bare family aliases default to -medium (or the highest tier when the
+  // family has no -medium), matching the existing hand-curated convention.
+  'claude-fable-5-1': 'claude-fable-5-1-medium',
+  'claude-opus-5-5': 'claude-opus-5-5-medium',
+  'claude-sonnet-5-5': 'claude-sonnet-5-5-medium',
+  'deepseek-v4-1-flash': 'deepseek-v4-1-flash-high',
+  'deepseek-v4-flash': 'deepseek-v4-flash-high',
+  'deepseek-v4-pro': 'deepseek-v4-pro-high',
+  'gemini-3-7-flash': 'gemini-3-7-flash-medium',
+  'gemini-3.7-flash': 'gemini-3-7-flash-medium',
+  'gemini-3-8-flash': 'gemini-3-8-flash-medium',
+  'gemini-3.8-flash': 'gemini-3-8-flash-medium',
+  'gemini-3-6-flash': 'gemini-3-6-flash-medium',
+  'gemini-3.6-flash': 'gemini-3-6-flash-medium',
+  'gemini-4-argon': 'gemini-4-argon-medium',
+  'glm-5-3': 'glm-5-3-high',
+  'glm-5-3-flash': 'glm-5-3-flash-high',
+  'gpt-5-6-sol': 'gpt-5-6-sol-medium',
+  'gpt-5.6-sol': 'gpt-5-6-sol-medium',
+  'gpt-5-6-terra': 'gpt-5-6-terra-medium',
+  'gpt-5.6-terra': 'gpt-5-6-terra-medium',
+  'gpt-6-1-sol': 'gpt-6-1-sol-medium',
+  'gpt-6.1-sol': 'gpt-6-1-sol-medium',
+  'gpt-6-astra': 'gpt-6-astra-medium',
+  'gpt-6-luna': 'gpt-6-luna-medium',
+  'gpt-6-sol': 'gpt-6-sol-medium',
+  'grok-4-6': 'grok-4-6-medium',
+  'grok-4.6': 'grok-4-6-medium',
+  'grok-4-7': 'grok-4-7-medium',
+  'grok-4.7': 'grok-4-7-medium',
+  'kimi-k3': 'kimi-k3-high',
+  'nemotron-3-ultra': 'nemotron-3-ultra-medium',
 }));
 
 // The set of selectors the live catalog actually exposes (committed snapshot,
