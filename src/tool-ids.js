@@ -8,6 +8,7 @@
 // Request-scoped: no global mutable state.
 
 import { createHash } from 'node:crypto';
+import { neutralizeToolResultBody } from './tool-text.js';
 
 export const MAX_TOOL_ID_LEN = 64;
 export const INTERRUPTED_RESULT_TEXT = 'Tool call was interrupted before any output was recorded.';
@@ -85,16 +86,72 @@ export function knownToolCallIds(messages) {
   return ids;
 }
 
+function uniqueToolId(base, reserved, maxLen) {
+  let wire = base || 'call';
+  let n = 2;
+  while (reserved.has(wire)) {
+    const suffix = `_${n++}`;
+    wire = `${wire.slice(0, Math.max(1, maxLen - suffix.length))}${suffix}`;
+  }
+  reserved.add(wire);
+  return wire;
+}
+
 export function normalizeToolIdsInMessages(messages, { seed = '', maxLen = MAX_TOOL_ID_LEN, charsetOnly = false } = {}) {
   if (!Array.isArray(messages)) return messages;
+
+  const assistantCalls = [];
+  const resultIds = [];
+  for (const m of messages) {
+    if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) assistantCalls.push(tc);
+    } else if (m?.role === 'tool') {
+      resultIds.push(m.tool_call_id);
+    }
+  }
+
+  const opts = { maxLen, charsetOnly };
+  const reserved = new Set();
+  for (const tc of assistantCalls) {
+    if (isValidToolId(tc?.id, opts)) reserved.add(tc.id);
+  }
+  for (const id of resultIds) {
+    if (isValidToolId(id, opts)) reserved.add(id);
+  }
+
+  const map = new Map();
+  for (const tc of assistantCalls) {
+    const raw = tc?.id;
+    if (raw && isValidToolId(raw, opts)) map.set(raw, raw);
+  }
+  for (const raw of resultIds) {
+    if (raw && isValidToolId(raw, opts)) map.set(raw, raw);
+  }
+
   let slot = 0;
+  const callWire = new Map();
+  for (const tc of assistantCalls) {
+    const raw = tc?.id;
+    if (raw && map.has(raw)) { callWire.set(tc, map.get(raw)); continue; }
+    const base = raw ? sanitizeToolId(raw, opts) : synthToolId('call', seed, slot++);
+    const wire = uniqueToolId(base, reserved, maxLen);
+    callWire.set(tc, wire);
+    if (raw) map.set(raw, wire);
+  }
+  for (const raw of resultIds) {
+    if (!raw || map.has(raw)) continue;
+    const base = sanitizeToolId(raw, opts);
+    if (base) map.set(raw, uniqueToolId(base, reserved, maxLen));
+  }
+
   let changed = false;
   const out = messages.map((m) => {
     if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
       let localChanged = false;
       const calls = m.tool_calls.map((tc) => {
-        const id = wireToolId('call', tc?.id, seed, slot++, { maxLen, charsetOnly });
-        if (id !== tc?.id) {
+        const raw = tc?.id;
+        const id = callWire.get(tc) || (raw ? map.get(raw) : null);
+        if (id && id !== raw) {
           localChanged = true;
           return { ...tc, id };
         }
@@ -105,8 +162,8 @@ export function normalizeToolIdsInMessages(messages, { seed = '', maxLen = MAX_T
         return { ...m, tool_calls: calls };
       }
     }
-    if (m?.role === 'tool') {
-      const id = sanitizeToolId(m.tool_call_id, { maxLen, charsetOnly });
+    if (m?.role === 'tool' && m.tool_call_id) {
+      const id = map.get(m.tool_call_id) || m.tool_call_id;
       if (id !== m.tool_call_id) {
         changed = true;
         return { ...m, tool_call_id: id };
@@ -125,7 +182,9 @@ export function foldOrphanToolResults(messages) {
   for (const m of messages) {
     if (m?.role === 'tool' && (!m.tool_call_id || !known.has(m.tool_call_id))) {
       changed = true;
-      const folded = `${m.tool_call_id ? `[tool result for ${m.tool_call_id}]\n` : '[tool result]\n'}${foldOrphanResultText(m.content)}`;
+      const folded = neutralizeToolResultBody(
+        `${m.tool_call_id ? `[tool result for ${m.tool_call_id}]\n` : '[tool result]\n'}${foldOrphanResultText(m.content)}`,
+      );
       const prev = out[out.length - 1];
       if (prev?.role === 'user') {
         out[out.length - 1] = { ...prev, content: appendText(prev.content, folded) };

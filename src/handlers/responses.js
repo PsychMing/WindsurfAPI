@@ -11,6 +11,9 @@ import { getResponse, putResponse, deleteResponse, isResponseStoreEnabled, wants
 import { safeLogValue } from '../log-safety.js';
 import { log } from '../config.js';
 import { SseFramer } from '../sse-framer.js';
+import { buildToolNameMap, restoreToolName } from '../tool-names.js';
+import { normalizeToolIdsInMessages, sanitizeToolId } from '../tool-ids.js';
+import { normalizeHistoryTail } from '../history-normalize.js';
 
 function genResponseId() {
   return 'resp_' + randomUUID().replace(/-/g, '').slice(0, 24);
@@ -311,8 +314,9 @@ function collectResponseTools(body) {
   return tools;
 }
 
-function responseItemToolName(item) {
-  return encodeToolName(item.name || item.function?.name || 'unknown', item.namespace || '');
+function responseItemToolName(item, toolNameMap = null) {
+  const encoded = encodeToolName(item.name || item.function?.name || 'unknown', item.namespace || '');
+  return toolNameMap?.toUpstream?.get(encoded) ?? encoded;
 }
 function normalizeResponseToolChoice(toolChoice) {
   if (toolChoice == null) return toolChoice;
@@ -394,6 +398,9 @@ function normalizeResponseTextFormat(format) {
 
 export function responsesToChat(body) {
   const messages = [];
+  const tools = flattenResponseTools(collectResponseTools(body));
+  const toolNameMap = buildToolNameMap(tools.map((t) => t.function?.name || t.name).filter(Boolean));
+  const hasNameRewrites = [...toolNameMap.toUpstream].some(([client, wire]) => client !== wire);
   // How many LEADING messages came from the request-level `instructions` field
   // (as opposed to an `input` conversation item). Reported on the result rather
   // than tagged onto the message objects: those get deep-compared in tests and
@@ -407,7 +414,7 @@ export function responsesToChat(body) {
           id: item.call_id || item.id || `call_${randomUUID().slice(0, 8)}`,
           type: 'function',
           function: {
-            name: responseItemToolName(item),
+            name: responseItemToolName(item, toolNameMap),
             arguments: stringifyMaybe(item.arguments ?? item.function?.arguments ?? ''),
           },
         });
@@ -483,11 +490,22 @@ export function responsesToChat(body) {
     flushToolCalls.flush();
   }
 
-  const tools = flattenResponseTools(collectResponseTools(body));
+  for (const t of tools) {
+    if (t?.function?.name) t.function.name = toolNameMap.toUpstream.get(t.function.name) ?? t.function.name;
+  }
   const responseFormat = normalizeResponseTextFormat(body.text?.format);
-  const forwardedToolChoice = body.tool_choice != null
+  let forwardedToolChoice = body.tool_choice != null
     ? pruneResponseToolChoice(body.tool_choice, tools)
     : undefined;
+  if (forwardedToolChoice?.type === 'function' && forwardedToolChoice.function?.name) {
+    forwardedToolChoice = {
+      ...forwardedToolChoice,
+      function: {
+        ...forwardedToolChoice.function,
+        name: toolNameMap.toUpstream.get(forwardedToolChoice.function.name) ?? forwardedToolChoice.function.name,
+      },
+    };
+  }
   return {
     model: body.model || 'claude-sonnet-4.6',
     messages,
@@ -501,6 +519,7 @@ export function responsesToChat(body) {
     ...(responseFormat ? { response_format: responseFormat } : {}),
     // Internal, stripped before the upstream call (same convention as __route).
     ...(instructionsLead ? { __instructionsLead: instructionsLead } : {}),
+    ...(hasNameRewrites ? { __toolNameMap: toolNameMap } : {}),
   };
 }
 
@@ -562,11 +581,12 @@ function reasoningItem(id, text, status = 'completed') {
   };
 }
 
-function functionCallItem(toolCall, status = 'completed', requestedTools = []) {
-  const name = toolCall.function?.name || 'unknown';
+function functionCallItem(toolCall, status = 'completed', requestedTools = [], toolNameMap = null) {
+  const wireName = toolCall.function?.name || 'unknown';
+  const name = restoreToolName(wireName, toolNameMap) || wireName;
   const argsText = toolCall.function?.arguments || '';
   const requestedTool = Array.isArray(requestedTools)
-    ? requestedTools.find(t => (t?.function?.name || t?.name || (t?.__response_tool?.type === 'web_search' ? 'web_search' : null)) === name)
+    ? requestedTools.find(t => (t?.function?.name || t?.name || (t?.__response_tool?.type === 'web_search' ? 'web_search' : null)) === wireName)
     : null;
   const responseTool = requestedTool?.__response_tool || null;
   if (responseTool?.type === 'custom') {
@@ -576,7 +596,7 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = []) {
       : argsText;
     return {
       type: 'custom_tool_call',
-      call_id: toolCall.id || `call_${randomUUID().slice(0, 8)}`,
+      call_id: sanitizeToolId(toolCall.id) || `call_${randomUUID().slice(0, 8)}`,
       name: responseTool.originalName || name,
       ...(responseTool.namespace ? { namespace: responseTool.namespace } : {}),
       input,
@@ -588,10 +608,10 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = []) {
     return {
       type: responseTool.type === 'web_search' ? 'web_search_call' : 'function_call',
       ...(responseTool.type === 'web_search'
-        ? { id: toolCall.id || `ws_${randomUUID().replace(/-/g, '').slice(0, 24)}` }
+        ? { id: sanitizeToolId(toolCall.id) || `ws_${randomUUID().replace(/-/g, '').slice(0, 24)}` }
         : {
             id: genFunctionCallId(),
-            call_id: toolCall.id || `call_${randomUUID().slice(0, 8)}`,
+            call_id: sanitizeToolId(toolCall.id) || `call_${randomUUID().slice(0, 8)}`,
             name: responseTool.originalName || name,
             ...(responseTool.namespace ? { namespace: responseTool.namespace } : {}),
           }),
@@ -611,7 +631,7 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = []) {
   return {
     type: 'function_call',
     id: genFunctionCallId(),
-    call_id: toolCall.id || `call_${randomUUID().slice(0, 8)}`,
+    call_id: sanitizeToolId(toolCall.id) || `call_${randomUUID().slice(0, 8)}`,
     name: responseTool?.originalName || name,
     ...(responseTool?.namespace ? { namespace: responseTool.namespace } : {}),
     arguments: argsText,
@@ -619,7 +639,7 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = []) {
   };
 }
 
-export function chatToResponse(chatBody, requestedModel, responseId = genResponseId(), msgId = genMessageId(), requestedTools = []) {
+export function chatToResponse(chatBody, requestedModel, responseId = genResponseId(), msgId = genMessageId(), requestedTools = [], toolNameMap = null) {
   const choice = chatBody.choices?.[0] || {};
   const message = choice.message || {};
   const finishReason = choice.finish_reason || 'stop';
@@ -627,7 +647,7 @@ export function chatToResponse(chatBody, requestedModel, responseId = genRespons
   const output = [];
   if (message.reasoning_content) output.push(reasoningItem('rs_' + msgId.slice(4), message.reasoning_content));
   if (text) output.push(textMessageItem(msgId, text));
-  for (const tc of (message.tool_calls || [])) output.push(functionCallItem(tc, 'completed', requestedTools));
+  for (const tc of (message.tool_calls || [])) output.push(functionCallItem(tc, 'completed', requestedTools, toolNameMap));
 
   // A turn that ends by emitting function calls is `completed` in the OpenAI
   // Responses API — `incomplete` is reserved for truncation (length /
@@ -659,11 +679,12 @@ export function chatToResponse(chatBody, requestedModel, responseId = genRespons
 }
 
 class ResponsesStreamTranslator {
-  constructor(res, responseId, model, requestedTools = []) {
+  constructor(res, responseId, model, requestedTools = [], toolNameMap = null) {
     this.res = res;
     this.responseId = responseId;
     this.model = model;
     this.requestedTools = Array.isArray(requestedTools) ? requestedTools : [];
+    this.toolNameMap = toolNameMap;
     this.createdAt = Math.floor(Date.now() / 1000);
     this.msgId = genMessageId();
     this.sseFramer = new SseFramer({ onFrame: (frame) => this.handleSseFrame(frame) });
@@ -924,18 +945,20 @@ class ResponsesStreamTranslator {
       this.send('response.output_item.added', { output_index: existing.outputIndex, item });
     };
 
-    if (toolCall.id) existing.callId = toolCall.id;
+    if (toolCall.id) existing.callId = sanitizeToolId(toolCall.id) || existing.callId;
     if (toolCall.function?.name) {
-      existing.toolName = toolCall.function.name;
-      const requestedTool = this.resolveRequestedTool(toolCall.function.name);
+      const wireName = toolCall.function.name;
+      const clientName = restoreToolName(wireName, this.toolNameMap) || wireName;
+      existing.toolName = clientName;
+      const requestedTool = this.resolveRequestedTool(wireName);
       const responseTool = requestedTool?.__response_tool || null;
       if (responseTool) {
         existing.responseTool = responseTool;
         existing.custom = responseTool.type === 'custom';
         existing.webSearch = responseTool.type === 'web_search' || responseTool.type === 'tool_search';
       }
-      ensureItem(toolCall.function.name, existing.responseTool);
-      existing.item.name = existing.responseTool?.originalName || toolCall.function.name;
+      ensureItem(wireName, existing.responseTool);
+      existing.item.name = existing.responseTool?.originalName || clientName;
       if (existing.responseTool?.namespace) existing.item.namespace = existing.responseTool.namespace;
     }
 
@@ -973,7 +996,7 @@ class ResponsesStreamTranslator {
         tc.item = {
           type: 'function_call',
           id: genFunctionCallId(),
-          call_id: tc.callId || `call_${randomUUID().slice(0, 8)}`,
+          call_id: sanitizeToolId(tc.callId) || `call_${randomUUID().slice(0, 8)}`,
           name: tc.toolName || 'unknown',
           arguments: '',
           status: 'in_progress',
@@ -1434,8 +1457,10 @@ export async function handleResponses(body, deps = {}) {
   const responseId = genResponseId();
   const requestedModel = body.model || 'claude-sonnet-4.6';
   let chatBody;
+  let toolNameMap = null;
   try {
     chatBody = responsesToChat(body);
+    toolNameMap = chatBody.__toolNameMap || null;
   } catch (err) {
     return {
       status: 400,
@@ -1529,6 +1554,17 @@ export async function handleResponses(body, deps = {}) {
     }
   }
 
+  if (process.env.WINDSURFAPI_TOOL_HYGIENE !== '0'
+    && (chatBody.messages || []).some((m) => m?.role === 'assistant')) {
+    chatBody = {
+      ...chatBody,
+      messages: normalizeHistoryTail(
+        normalizeToolIdsInMessages(chatBody.messages || [], { seed: body.previous_response_id || 'responses' }),
+        { fold: true },
+      ),
+    };
+  }
+
   // The conversation to persist for the NEXT turn: everything the upstream saw.
   const priorMessages = chatBody.messages || [];
   // `terminal` carries the status this request REPORTED to the client, so a later
@@ -1575,7 +1611,7 @@ export async function handleResponses(body, deps = {}) {
     const result = await chatHandler({ ...chatBody, stream: false, __route: 'responses' }, context);
     if (result.status !== 200) return result;
     const msg = result.body?.choices?.[0]?.message;
-    const responseBody = chatToResponse(result.body, requestedModel, responseId, genMessageId(), requestedTools);
+    const responseBody = chatToResponse(result.body, requestedModel, responseId, genMessageId(), requestedTools, toolNameMap);
     // Record the status THIS response reported, so retrieval agrees with it.
     commit(msg ? {
       role: 'assistant',
@@ -1609,7 +1645,7 @@ export async function handleResponses(body, deps = {}) {
       'X-Accel-Buffering': 'no',
     },
     async handler(realRes) {
-      const translator = new ResponsesStreamTranslator(realRes, responseId, requestedModel, requestedTools);
+      const translator = new ResponsesStreamTranslator(realRes, responseId, requestedModel, requestedTools, toolNameMap);
       const captureRes = createCaptureRes(translator, realRes);
 
       realRes.on('close', () => {

@@ -5,8 +5,8 @@ README 的表格列常用变量，[.env.example](../.env.example) 是完整清�
 （2026-10-16 按 `d3f0490` 重测：全量 **157**。旧值 158 / 74 / 84 是 `ab4e66f` 树的口径：
 `9031b9b` 把 `CASCADE_MAX_WAIT_MS` 写进 README（覆盖 +1），`054806a` 删掉一个开关的读取点
 （全量 −1）。重测命令就是下面那段脚本。
-2026-10-18 @`9b287c1` 重测：**159**；新增 `WINDSURFAPI_STREAM_COMMIT_MS` 与
-`DEVIN_BACKEND_TOKEN` 两个读取点/文档项。）
+2026-10-18 @`706fc11` 重测：**160**；新增 `WINDSURFAPI_STREAM_COMMIT_MS`、
+`WINDSURFAPI_TOOL_HYGIENE` 与 `DEVIN_BACKEND_TOKEN` 三个读取点/文档项。）
 
 数开关**别用裸 `grep 'env\.'`**，有两个坑：一是 `WINDSURFAPI_TRACE` 这类名字是
 `WINDSURFAPI_TRACE_DIR` 的前缀，正则不加边界会重复计数；二是**相当一部分读取点
@@ -108,6 +108,7 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `WINDSURFAPI_CASCADE_THINK_REROUTE` | **开** | Cascade 路径把带 think 标记的开头内容改道到 reasoning 通道（`handlers/chat.js`，`\|\| '1') !== '0'`）。设 `0` 关闭。 |
+| `WINDSURFAPI_TOOL_HYGIENE` | **开** | 三方言请求/历史/egress 的工具名与 ID 卫生（`handlers/{messages,responses,gemini}.js`）。设 `0` 关闭，回到原始透传。 |
 | `WINDSURFAPI_STREAM_COMMIT_MS` | `5000` | OpenAI chat 流的提交门等待窗口（`server.js`，0 = 关闭门，最大钳到 14000）。窗口内只缓冲 comment/role-only 帧；首个真实内容或错误帧立即决定提交。设 `0` 回到旧的「先写 200」行为。 |
 | `WINDSURFAPI_REASONING_DEDUP` | **开** | 抑制 reasoning 与 content 逐字重复的那一份。 |
 | `WINDSURFAPI_NEUTRALIZE_CC_AGGRESSIVE` | 关 | 强制走 Claude Code 的激进中和分支（`handlers/identity-neutralize.js`，`\|\| '') === '1'`）。检测到 CC 客户端时该分支本来就会走，这个变量只是手动强制。**目前该分支是保留状态** —— 源码注释写明「no CC-only rewrites are confirmed yet」，所以开它当前不改变输出。 |

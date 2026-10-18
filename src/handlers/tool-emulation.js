@@ -22,6 +22,7 @@
  */
 
 import { log } from '../config.js';
+import { neutralizeToolResultBody } from '../tool-text.js';
 
 // "<workspace>" you may see is a redaction marker, NOT a literal path.
 // Issue #98 (nalayahfowlkest-ship-it): `find <workspace> -type f` was
@@ -1082,27 +1083,7 @@ function sanitizeToolCallId(rawId) {
 // only salvage-parsed from the MODEL'S OWN OUTPUT, never from tool_result
 // prompt content, and escaping JSON braces here would corrupt legitimate JSON
 // tool results — so gpt_native needs no marker escaping on this path.
-const KIMI_SENTINELS = [
-  '<|tool_calls_section_begin|>',
-  '<|tool_calls_section_end|>',
-  '<|tool_call_begin|>',
-  '<|tool_call_argument_begin|>',
-  '<|tool_call_end|>',
-];
-function neutralizeToolResultBody(text) {
-  let out = String(text ?? '')
-    .replaceAll('</tool_result>', '<\\/tool_result>')
-    .replaceAll('<tool_result', '<\\tool_result')
-    .replaceAll('</tool_call>', '<\\/tool_call>')
-    .replaceAll('<tool_call>', '<\\tool_call>');
-  // Break the Kimi section/call tokens by injecting a backslash after the
-  // leading `<|` so the literal sentinel no longer matches, while the text
-  // stays human-legible.
-  for (const s of KIMI_SENTINELS) {
-    out = out.replaceAll(s, `<\\|${s.slice(2)}`);
-  }
-  return out;
-}
+
 
 // Orphanhood here means no matching assistant call anywhere in the supplied
 // history, not no matching call before the result. Using only a seen-so-far set

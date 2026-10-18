@@ -81,6 +81,7 @@ const LEDGER = {
       + 'only changes cache-key granularity, not output. No test drives it.',
   },
   WINDSURFAPI_LS_PER_PROXY_USER: { tested: true },
+  WINDSURFAPI_TOOL_HYGIENE: { tested: true },
   WINDSURFAPI_NLU_RECOVERY: { tested: true },
   WINDSURFAPI_VARIANT_FALLBACK_ON_RATE_LIMIT: { tested: true },
   // Both found only after this file's discovery patterns were widened to accept `??`.

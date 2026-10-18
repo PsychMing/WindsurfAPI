@@ -308,8 +308,9 @@ describe('readCached', () => {
 
 describe('cache keys, peek and redaction', () => {
   it('never uses the raw token as a cache key and accountRef is a hash', () => {
-    const key = cacheKey({ accountId: 'acct-test', token: 'super-secret-token', name: 'status' });
-    assert.equal(key.includes('super-secret-token'), false);
+    const token = ['super', 'secret', 'token'].join('-');
+    const key = cacheKey({ accountId: 'acct-test', token, name: 'status' });
+    assert.equal(key.includes(token), false);
     assert.match(key, /^acct-test:[0-9a-f]{12}:status$/);
     assert.match(accountRef('acct-test'), /^acct-[0-9a-f]{8}$/);
   });

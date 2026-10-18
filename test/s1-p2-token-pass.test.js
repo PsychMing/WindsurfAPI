@@ -77,6 +77,8 @@ function messagesHarness({ baseline = false, poisonIterator = false } = {}) {
       annotateRiskyReadToolResult: value => value,
       extractCallerSubKey: () => '',
       buildToolNameMap: () => ({ toUpstream: new Map(), toClient: new Map() }),
+      normalizeToolIdsInMessages: (messages) => messages,
+      normalizeHistoryTail: (messages) => messages,
       restoreToolName: name => name,
       handleChatCompletions: async b => {
         wireBodies.push(JSON.stringify(b));

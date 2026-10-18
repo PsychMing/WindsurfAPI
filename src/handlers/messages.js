@@ -16,6 +16,8 @@ import { handleChatCompletions, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
 import { SseFramer } from '../sse-framer.js';
 import { buildToolNameMap, restoreToolName } from '../tool-names.js';
+import { normalizeToolIdsInMessages } from '../tool-ids.js';
+import { normalizeHistoryTail } from '../history-normalize.js';
 import { leakTraceEnabled, thinkMarkersIn, leakSample } from '../leak-trace.js';
 
 function genMsgId() {
@@ -1658,6 +1660,12 @@ export async function handleMessages(body, context = {}) {
   const ccActive = !!context.ccCompat?.active;
   const promptEstimate = { tokens: 0 };
   const openaiBody = anthropicToOpenAI(body, ccActive, promptEstimate);
+  if (process.env.WINDSURFAPI_TOOL_HYGIENE !== '0') {
+    openaiBody.messages = normalizeHistoryTail(
+      normalizeToolIdsInMessages(openaiBody.messages, { seed: msgId }),
+      { fold: true },
+    );
+  }
   const toolNameMap = openaiBody.__toolNameMap || null;
   // anthropicToOpenAI attaches __cachePolicy only when the request carried
   // cache_control breakpoints; reuse it for the local cache-token estimate.

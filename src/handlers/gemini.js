@@ -26,6 +26,9 @@
 import { handleChatCompletions, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
 import { SseFramer } from '../sse-framer.js';
+import { buildToolNameMap, restoreToolName, sanitizeToolName } from '../tool-names.js';
+import { normalizeToolIdsInMessages, sanitizeToolId } from '../tool-ids.js';
+import { normalizeHistoryTail } from '../history-normalize.js';
 
 // ─── finish_reason mapping (OpenAI → Gemini) ────────────────────
 // Gemini has no dedicated finishReason for function calls — a turn that
@@ -146,7 +149,7 @@ function mapGeminiToolChoice(toolConfig) {
 // wire has no per-call id historically, so we mint one and FIFO-match by name;
 // modern v1beta parts may carry an explicit `id`, which we prefer when present.
 function callIdFor(name, seq) {
-  return `call_${(name || 'fn').replace(/[^a-zA-Z0-9_]/g, '_')}_${seq}`;
+  return sanitizeToolId(`call_${sanitizeToolName(name || 'fn')}_${seq}`);
 }
 
 // ─── Gemini → OpenAI request translation ────────────────────────
@@ -162,6 +165,25 @@ export function geminiToOpenAI(body, modelFromPath) {
   // multiple times in parallel in one turn (the old "last id per name" Map
   // misrouted every same-name response to the FINAL call, orphaning the earlier
   // ones and duplicating a tool_call_id → upstream 400 / mis-fed tool results).
+  const historyNames = [];
+  for (const c of (body?.contents || [])) {
+    for (const part of (Array.isArray(c?.parts) ? c.parts : [])) {
+      if (typeof part?.functionCall?.name === 'string' && part.functionCall.name) historyNames.push(part.functionCall.name);
+      if (typeof part?.functionResponse?.name === 'string' && part.functionResponse.name) historyNames.push(part.functionResponse.name);
+    }
+  }
+  const declaredNames = [];
+  for (const t of (body?.tools || [])) {
+    for (const fd of (t?.functionDeclarations || [])) {
+      if (typeof fd?.name === 'string' && fd.name) declaredNames.push(fd.name);
+    }
+  }
+  const allowedNames = Array.isArray(body?.toolConfig?.functionCallingConfig?.allowedFunctionNames)
+    ? body.toolConfig.functionCallingConfig.allowedFunctionNames.filter((n) => typeof n === 'string' && n)
+    : [];
+  const toolNameMap = buildToolNameMap([...declaredNames, ...historyNames, ...allowedNames]);
+  const hasNameRewrites = [...toolNameMap.toUpstream].some(([client, wire]) => client !== wire);
+
   const pendingIdsByName = new Map();
   let callSeq = 0;
 
@@ -203,26 +225,38 @@ export function geminiToOpenAI(body, modelFromPath) {
           image_url: { url: part.fileData.fileUri },
         });
       } else if (part.functionCall) {
-        const name = part.functionCall.name || 'unknown';
-        // Prefer Gemini's own call id when present (v1beta parallel calls carry
-        // one); otherwise mint a deterministic one and enqueue it for FIFO pairing.
-        const id = part.functionCall.id || callIdFor(name, callSeq++);
-        if (!part.functionCall.id) {
-          if (!pendingIdsByName.has(name)) pendingIdsByName.set(name, []);
-          pendingIdsByName.get(name).push(id);
-        }
+        const seq = callSeq++;
+        const clientName = part.functionCall.name || 'unknown';
+        const wireName = toolNameMap.toUpstream.get(clientName) ?? clientName;
+        const explicitId = part.functionCall.id == null || part.functionCall.id === ''
+          ? ''
+          : sanitizeToolId(String(part.functionCall.id));
+        const id = explicitId || callIdFor(wireName, seq);
+        // Enqueue every call: a functionResponse may legally omit `id`, and FIFO
+        // must pair to this call instead of minting a second id.
+        if (!pendingIdsByName.has(clientName)) pendingIdsByName.set(clientName, []);
+        pendingIdsByName.get(clientName).push(id);
         toolCalls.push({
           id,
           type: 'function',
-          function: { name, arguments: JSON.stringify(part.functionCall.args ?? {}) },
+          function: { name: wireName, arguments: JSON.stringify(part.functionCall.args ?? {}) },
         });
       } else if (part.functionResponse) {
         const name = part.functionResponse.name || 'unknown';
-        // Prefer the response's own id; else dequeue the oldest unmatched call of
-        // this name (FIFO) so parallel same-name calls pair in issue order.
+        const explicitId = part.functionResponse.id == null || part.functionResponse.id === ''
+          ? ''
+          : sanitizeToolId(String(part.functionResponse.id));
         const queue = pendingIdsByName.get(name);
-        const id = part.functionResponse.id
-          || (queue && queue.length ? queue.shift() : callIdFor(name, 0));
+        let id;
+        if (explicitId) {
+          id = explicitId;
+          const at = queue ? queue.indexOf(explicitId) : -1;
+          if (at !== -1) queue.splice(at, 1);
+        } else if (queue && queue.length) {
+          id = queue.shift();
+        } else {
+          id = callIdFor(toolNameMap.toUpstream.get(name) ?? name, callSeq++);
+        }
         const resp = part.functionResponse.response;
         const content = typeof resp === 'string' ? resp : JSON.stringify(resp ?? {});
         functionResponses.push({ role: 'tool', tool_call_id: id, content });
@@ -260,7 +294,7 @@ export function geminiToOpenAI(body, modelFromPath) {
         tools.push({
           type: 'function',
           function: {
-            name: fd.name,
+            name: toolNameMap.toUpstream.get(fd.name) ?? fd.name,
             description: fd.description || '',
             // `parametersJsonSchema` is already JSON-Schema (lowercase by
             // definition); `parameters` is Gemini's Schema with UPPERCASE type
@@ -310,7 +344,10 @@ export function geminiToOpenAI(body, modelFromPath) {
     }
   }
 
-  const toolChoice = mapGeminiToolChoice(body?.toolConfig);
+  const mappedToolChoice = mapGeminiToolChoice(body?.toolConfig);
+  const toolChoice = mappedToolChoice?.type === 'function'
+    ? { ...mappedToolChoice, function: { ...mappedToolChoice.function, name: toolNameMap.toUpstream.get(mappedToolChoice.function.name) ?? mappedToolChoice.function.name } }
+    : mappedToolChoice;
 
   return {
     model: modelFromPath || body?.model || 'gemini-2.5-pro',
@@ -325,6 +362,7 @@ export function geminiToOpenAI(body, modelFromPath) {
     ...(toolChoice ? { tool_choice: toolChoice } : {}),
     ...(thinking ? { thinking } : {}),
     ...(responseFormat ? { response_format: responseFormat } : {}),
+    ...(hasNameRewrites ? { __toolNameMap: toolNameMap } : {}),
   };
 }
 
@@ -360,7 +398,7 @@ function buildUsageMetadata(usage) {
 }
 
 // ─── OpenAI → Gemini non-stream response translation ────────────
-export function openAIToGemini(result, model) {
+export function openAIToGemini(result, model, toolNameMap = null) {
   const choice = result?.choices?.[0];
   const msg = choice?.message || {};
   const parts = [];
@@ -372,8 +410,11 @@ export function openAIToGemini(result, model) {
   if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
     if (msg.content) parts.push({ text: msg.content });
     for (const tc of msg.tool_calls) {
-      const args = parseToolArgs(tc.function?.arguments, tc.function?.name);
-      parts.push({ functionCall: { name: tc.function?.name || 'unknown', args } });
+      const name = restoreToolName(tc.function?.name, toolNameMap) || 'unknown';
+      const args = parseToolArgs(tc.function?.arguments, name);
+      const functionCall = { name, args };
+      if (tc.id) functionCall.id = tc.id;
+      parts.push({ functionCall });
     }
   } else {
     parts.push({ text: msg.content || '' });
@@ -402,10 +443,11 @@ export function openAIToGemini(result, model) {
 // Mode 'array' → frames streamed inside a JSON array: `[`, frame, `,frame`, `]`
 //                (the default :streamGenerateContent wire format).
 class GeminiStreamTranslator {
-  constructor(res, model, { mode = 'sse' } = {}) {
+  constructor(res, model, { mode = 'sse', toolNameMap = null } = {}) {
     this.res = res;
     this.model = model;
     this.mode = mode;
+    this.toolNameMap = toolNameMap;
     this.toolCallBufs = new Map(); // index → { id, name, argsBuffered }
     this.finalUsage = null;
     this.finishReason = 'STOP';
@@ -472,10 +514,13 @@ class GeminiStreamTranslator {
     const bufs = [...this.toolCallBufs.values()];
     if (!bufs.length) return false;
     bufs.forEach((buf, i) => {
-      const args = parseToolArgs(buf.argsBuffered, buf.name);
+      const name = restoreToolName(buf.name, this.toolNameMap) || 'unknown';
+      const args = parseToolArgs(buf.argsBuffered, name);
       const isLast = i === bufs.length - 1;
+      const functionCall = { name, args };
+      if (buf.id) functionCall.id = buf.id;
       this.emitPart(
-        { functionCall: { name: buf.name || 'unknown', args } },
+        { functionCall },
         isLast ? { finishReason, usageMetadata } : {},
       );
     });
@@ -766,6 +811,12 @@ export function geminiError(status, internalType, message) {
 export async function handleGemini(model, body, context = {}, { stream = false, alt = null } = {}) {
   const requestedModel = model || body?.model || 'gemini-2.5-pro';
   const openaiBody = geminiToOpenAI(body, requestedModel);
+  if (process.env.WINDSURFAPI_TOOL_HYGIENE !== '0') {
+    openaiBody.messages = normalizeHistoryTail(
+      normalizeToolIdsInMessages(openaiBody.messages, { seed: requestedModel }),
+      { fold: true },
+    );
+  }
   const chatHandler = context.handleChatCompletions || handleChatCompletions;
 
   if (!stream) {
@@ -773,7 +824,7 @@ export async function handleGemini(model, body, context = {}, { stream = false, 
     if (result.status !== 200) {
       return withUpstreamHeaders(geminiError(result.status, result.body?.error?.type, result.body?.error?.message), result.headers);
     }
-    return { status: 200, body: openAIToGemini(result.body, requestedModel) };
+    return { status: 200, body: openAIToGemini(result.body, requestedModel, openaiBody.__toolNameMap || null) };
   }
 
   // Streaming path — ask handleChatCompletions for its streaming handler and
@@ -814,7 +865,7 @@ export async function handleGemini(model, body, context = {}, { stream = false, 
       'X-Accel-Buffering': 'no',
     },
     async handler(realRes) {
-      const translator = new GeminiStreamTranslator(realRes, requestedModel, { mode });
+      const translator = new GeminiStreamTranslator(realRes, requestedModel, { mode, toolNameMap: openaiBody.__toolNameMap || null });
       const captureRes = createCaptureRes(translator, realRes);
 
       // Forward client disconnect so the upstream is cancelled. Don't call
