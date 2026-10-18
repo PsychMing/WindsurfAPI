@@ -195,6 +195,34 @@ export async function getOrganization(cfg, { fetchImpl } = {}) {
 }
 
 /**
+ * Read the org's quota/status/daily usage from app.devin.ai.
+ *
+ * All three are GETs and free (no model credits). If cfg.orgId is absent the
+ * zero-cost post-auth probe derives it first; that is the normal path for a
+ * single account whose token was added without an org hint.
+ *
+ * Returns the raw upstream objects; dashboard normalization lives in
+ * `src/dashboard/usage.js` so the wire shape stays testable in isolation.
+ */
+export async function getBillingUsage(cfg, { fetchImpl } = {}) {
+  let resolved = cfg;
+  if (!resolved.orgId) {
+    const who = await probePostAuth(resolved, { fetchImpl });
+    if (!who || !who.org_id) {
+      throw Object.assign(new Error('post-auth did not return org_id'), { status: 502, type: 'backend_error' });
+    }
+    resolved = { ...resolved, orgId: who.org_id };
+  }
+  const seg = orgPathSegment(resolved.orgId);
+  const [quota, status, dailyUsage] = await Promise.all([
+    requestJson(resolved, 'GET', `/${seg}/billing/quota/usage`, { fetchImpl }),
+    requestJson(resolved, 'GET', `/${seg}/billing/status`, { fetchImpl }),
+    requestJson(resolved, 'GET', `/${seg}/billing/usage/daily-usage?cycle=current&view=sessions`, { fetchImpl }),
+  ]);
+  return { orgId: resolved.orgId, quota, status, dailyUsage };
+}
+
+/**
  * Build (do NOT open) the SSE event-stream URL + headers for a session.
  * GET /events/{devinId}/stream with Accept: text/event-stream.
  *

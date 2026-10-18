@@ -21,6 +21,7 @@ import {
   removeAccount, setAccountStatus, resetAccountErrors, updateAccountLabel,
   isAuthenticated, probeAccount, ensureLsForAccount,
   refreshCredits, refreshAllCredits, searchWebForAccount,
+  getAccountUsage,
   setAccountBlockedModels, setAccountTokens, setAccountTier, setAccountSpendPolicy,
   getAccountInternal, isLocalBindHost, maskApiKey, safeEqualString,
   checkLockout, failedAuthAttempt, successfulAuthAttempt,
@@ -1672,6 +1673,23 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   // ─── Stats ────────────────────────────────────────────
   if (subpath === '/stats' && method === 'GET') {
     return json(res, 200, getStats());
+  }
+
+  // Account usage from app.devin.ai (quota percentages, plan, credits, daily
+  // cycle). Read-only and free. `?account=<id>` selects a pool account; with no
+  // id it uses the first active account, then the env-token deploy. Results are
+  // cached for 60s; `?refresh=1` bypasses the cache.
+  if (subpath === '/usage' && method === 'GET') {
+    const u = dashboardUrl(req);
+    const id = u.searchParams.get('account') || '';
+    const result = await getAccountUsage(id || undefined, {
+      force: u.searchParams.get('refresh') === '1',
+    });
+    if (result.ok) return json(res, 200, result);
+    const status = result.error === 'Account not found' ? 404
+      : result.error === 'No account configured' ? 503
+      : 502;
+    return json(res, status, result);
   }
 
   if (subpath === '/stats' && method === 'DELETE') {
