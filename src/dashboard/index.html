@@ -2270,6 +2270,15 @@ tbody tr:hover td { background: var(--surface-2); }
         <div class="section-body"><div id="connect-metrics-status" style="width:100%;"></div></div>
       </div>
     </div>
+    <div class="section" id="catalog-diff-overview">
+      <div class="section-header">
+        <div>
+          <div class="section-title" data-i18n="section.catalogDiff.title">模型目录差异</div>
+          <div class="section-desc" data-i18n="section.catalogDiff.desc">实时目录与内置冷启动快照的集合差异 — 只读，不代表套餐权益</div>
+        </div>
+      </div>
+      <div class="section-body"><div id="catalog-diff-body"></div></div>
+    </div>
     <div class="section" id="overview-rankings">
       <div class="section-header">
         <div>
@@ -5442,6 +5451,64 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     el.innerHTML = `<div class="heal-grid">${rows.map(cell).join('')}</div>`;
   },
 
+  // Catalog diff: the account-scoped live selector set vs the committed
+  // cold-start snapshot, from /models/catalog. Read-only set arithmetic — it
+  // never claims a selector is entitled. Counts are always painted; name lists
+  // are capped at 8 and collapsed so a 233-row snapshot cannot bloat the DOM.
+  // An unsynced live catalog is an empty state, never "every snapshot row is
+  // missing".
+  _renderCatalogDiff(cat) {
+    const el = document.getElementById('catalog-diff-body');
+    if (!el) return;
+    const T = (k, v) => I18n.t('overview.catalogDiff.' + k, v);
+    if (!cat || cat.success === false) {
+      el.innerHTML = `<div class="text-sm text-muted">${T('unavailable')}</div>`;
+      return;
+    }
+    const num = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+    if (cat.synced !== true) {
+      el.innerHTML = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">`
+        + `<span class="badge warn no-dot">${T('unsynced')}</span>`
+        + `<span class="text-sm text-muted">${T('unsyncedHint', { snapshot: num(cat.snapshotCount) })}</span>`
+        + `</div>`;
+      return;
+    }
+    const chip = (label, value) => `<span class="text-sm">${label} <strong>${value}</strong></span>`;
+    const code = (v) => `<code>${this.esc(v)}</code>`;
+    const lists = [];
+    const list = (labelKey, items, render) => {
+      if (!Array.isArray(items) || items.length === 0) return;
+      const shown = items.slice(0, 8);
+      const rest = items.length - shown.length;
+      lists.push(`<details>`
+        + `<summary class="text-sm text-muted" style="cursor:pointer">${I18n.t('overview.catalogDiff.listTitle', { label: T(labelKey), count: items.length })}</summary>`
+        + `<div class="text-sm" style="margin-top:4px;display:grid;gap:2px;max-height:160px;overflow:auto">`
+        + shown.map(render).join('')
+        + (rest > 0 ? `<div class="text-muted">${T('more', { count: rest })}</div>` : '')
+        + `</div></details>`);
+    };
+    list('added', cat.added, code);
+    list('missing', cat.missing, code);
+    list('aliases', cat.aliases, (a) => {
+      const mapped = a && a.mapped === true;
+      const badge = a && typeof a.mapped === 'boolean'
+        ? ` <span class="badge ${mapped ? 'success' : 'warn'} no-dot">${T(mapped ? 'mapped' : 'unmapped')}</span>`
+        : '';
+      return `<div>${code(a && a.alias)}${a && a.selector ? ` → ${code(a.selector)}` : ''}${badge}</div>`;
+    });
+    list('unmapped', cat.unmapped, code);
+    el.innerHTML = `<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">`
+      + `<span class="badge success no-dot">${T('synced')}</span>`
+      + chip(T('snapshot'), num(cat.snapshotCount))
+      + chip(T('live'), num(cat.liveCount))
+      + chip(T('added'), num(cat.added?.length))
+      + chip(T('missing'), num(cat.missing?.length))
+      + chip(T('aliases'), num(cat.aliasCount))
+      + chip(T('unmapped'), num(cat.unmappedCount))
+      + `</div>`
+      + (lists.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:10px">${lists.join('')}</div>` : '');
+  },
+
   // Top models + top accounts by request volume (local counters only — no upstream
   // calls, account shown by 8-char id prefix, never joined to email/keys/balance).
   _renderOverviewRankings(s) {
@@ -5576,12 +5643,13 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     // extras are best-effort — a 401/failure on either renders that panel's empty
     // state without blocking the KPI row or LS section (KiroStudio principle:
     // independent skeletons, never one failing source white-screens the page).
-    const [d, s, cm, usage, req] = await Promise.all([
+    const [d, s, cm, usage, req, cat] = await Promise.all([
       this.api('GET', '/overview'),
       this.api('GET', '/stats').catch(() => null),
       this.api('GET', '/connect-metrics').catch(() => null),
       this.api('GET', '/usage').catch(() => null),
       this.api('GET', '/requests?limit=20').catch(() => null),
+      this.api('GET', '/models/catalog').catch(() => null),
     ]);
     if (!isCurrent()) return;
     if (d?.success === false) return;
@@ -5689,6 +5757,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this._lastStats = s;
     this._renderPoolHealth(cm);
     this._renderConnectMetrics(cm);
+    this._renderCatalogDiff(cat);
     this._renderOverviewRankings(s);
     this._renderRecentRequests(req);
     // Inject the section help tips (idempotent) + reflect persisted toggle state.

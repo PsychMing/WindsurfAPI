@@ -449,6 +449,10 @@
       "title": "连接自愈",
       "desc": "实时恢复计数 — 重登、故障转移、限流、失效 token"
     },
+    "catalogDiff": {
+      "title": "模型目录差异",
+      "desc": "实时目录与内置冷启动快照的集合差异 — 只读，不代表套餐权益"
+    },
     "rankings": {
       "title": "排行",
       "models": "热门模型",
@@ -1483,6 +1487,21 @@
       "credDecryptFail": "凭证解密失败",
       "silentOk": "正常",
       "empty": "暂无连接指标"
+    },
+    "catalogDiff": {
+      "synced": "已同步",
+      "unsynced": "未同步",
+      "unavailable": "目录差异不可用 — 将在下一轮概览轮询时重试",
+      "unsyncedHint": "实时目录尚未同步，因此不会把快照中的 selector 报为缺失。快照基线：{{snapshot}} 个 selector。",
+      "snapshot": "快照",
+      "live": "实时",
+      "added": "新增",
+      "missing": "缺失",
+      "aliases": "别名",
+      "unmapped": "未映射",
+      "listTitle": "{{label}}（{{count}}）",
+      "more": "另有 {{count}} 个",
+      "mapped": "已映射"
     },
     "guard": {
       "blocked": "内存守卫已拦截",

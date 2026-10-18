@@ -449,6 +449,10 @@
       "title": "Connection Self-Healing",
       "desc": "Live recovery counters — relogin, failover, throttling, dead tokens"
     },
+    "catalogDiff": {
+      "title": "Model Catalog Diff",
+      "desc": "Live catalog vs the bundled cold-start snapshot — set differences only, never entitlement"
+    },
     "rankings": {
       "title": "Rankings",
       "models": "Top Models",
@@ -1483,6 +1487,21 @@
       "credDecryptFail": "Cred decrypt fail",
       "silentOk": "Nominal",
       "empty": "No connection metrics"
+    },
+    "catalogDiff": {
+      "synced": "Synced",
+      "unsynced": "Not synced",
+      "unavailable": "Catalog diff unavailable — retrying on the next overview poll",
+      "unsyncedHint": "The live catalog has not synced yet, so snapshot selectors are not reported as missing. Snapshot baseline: {{snapshot}} selectors.",
+      "snapshot": "Snapshot",
+      "live": "Live",
+      "added": "Added",
+      "missing": "Missing",
+      "aliases": "Aliases",
+      "unmapped": "Unmapped",
+      "listTitle": "{{label}} ({{count}})",
+      "more": "+{{count}} more",
+      "mapped": "Mapped"
     },
     "guard": {
       "blocked": "Guard blocked",
