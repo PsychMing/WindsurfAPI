@@ -77,6 +77,19 @@ describe('tool-id hygiene', () => {
     assert.equal(out[2].tool_call_id, second);
   });
 
+  it('never exceeds maxLen when many ids sanitize to the same short stem', () => {
+    const raw = ['a.b', 'a/b', 'a b', 'a@b', 'a#b', 'a$b', 'a%b', 'a^b', 'a&b', 'a*b',
+      'a+b', 'a=b', 'a|b', 'a~b', 'a`b', 'a?b', 'a!b'];
+    const messages = raw.map((id) => ({
+      role: 'assistant',
+      tool_calls: [{ id, function: { name: 'f', arguments: '{}' } }],
+    }));
+    const out = normalizeToolIdsInMessages(messages, { seed: 's', maxLen: 3 });
+    const ids = out.map((m) => m.tool_calls[0].id);
+    assert.equal(new Set(ids).size, ids.length);
+    for (const id of ids) assert.ok(id.length <= 3, `${id} exceeds maxLen 3`);
+  });
+
   it('reserves a valid synth-shaped id before assigning a missing id', () => {
     const messages = [
       { role: 'assistant', tool_calls: [{ id: 'call_synth_0', function: { name: 'f' } }, { id: '', function: { name: 'f' } }] },

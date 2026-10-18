@@ -135,6 +135,15 @@ describe('first-error status contract', () => {
     }
   });
 
+  it('keeps MODEL_BLOCKED 402 for Responses but 403 for Messages', async () => {
+    for (const [protocol, expected] of [['messages', 403], ['responses', 402]]) {
+      const res = sink();
+      const result = await firstError(protocol, 'MODEL_BLOCKED');
+      await serveChatStream(res, result, { ...opts(protocol), headers: result.headers });
+      assert.equal(res.statusCode, expected, protocol);
+    }
+  });
+
   it('Gemini array mode streams before upstream completion', async () => {
     const res = sink();
     let midBytes = -1;

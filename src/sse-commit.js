@@ -68,9 +68,16 @@ function errorFromFrame(frame, parseError = null) {
 }
 
 const GRPC_STATUS = {
+  INVALID_ARGUMENT: 400,
+  OUT_OF_RANGE: 400,
   UNAUTHENTICATED: 401,
   PERMISSION_DENIED: 403,
+  NOT_FOUND: 404,
+  ALREADY_EXISTS: 409,
+  ABORTED: 409,
   RESOURCE_EXHAUSTED: 429,
+  INTERNAL: 500,
+  UNIMPLEMENTED: 501,
   UNAVAILABLE: 503,
   DEADLINE_EXCEEDED: 504,
 };
@@ -86,17 +93,27 @@ const TYPE_STATUS = {
   timeout_error: 504,
 };
 
-function mapStatus(error, mapError) {
+function mapStatus(error, mapError, protocol = '') {
   if (typeof mapError === 'function') return mapError(error).status;
+  // Gemini's error envelope carries the HTTP-like status in numeric `code`
+  // (e.g. 400/413/404), while `status` is the gRPC enum. Prefer the numeric
+  // code so 413 is not flattened to INVALID_ARGUMENT/400.
+  const numeric = Number.isInteger(error?.code)
+    ? error.code
+    : (Number.isInteger(error?.status) ? error.status : null);
+  if (numeric >= 400 && numeric <= 599) return numeric;
   if (error?.status && GRPC_STATUS[error.status]) return GRPC_STATUS[error.status];
   const code = error?.__upstream_code
     || (typeof error?.code === 'string' ? error.code : null);
-  if (error?.type && TYPE_STATUS[error.type]) return TYPE_STATUS[error.type];
+  // Messages is the one protocol whose Anthropic enum must win over the
+  // internal Connect code (MODEL_BLOCKED → permission_error/403, while the
+  // same code is 402 for OpenAI/Responses). Other protocols keep the code.
+  if (protocol === 'messages' && error?.type && TYPE_STATUS[error.type]) return TYPE_STATUS[error.type];
   if (code) {
     const byCode = connectErrorToHttp(code);
     if (byCode.status !== 502) return byCode.status;
   }
-  if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) return error.status;
+  if (error?.type && TYPE_STATUS[error.type]) return TYPE_STATUS[error.type];
   return 502;
 }
 
@@ -157,7 +174,7 @@ export function createDeferredSseResponse(realRes, {
     ended = true;
     clearTimer();
     if (realRes.writableEnded || realRes.destroyed) return;
-    const mapped = mapStatus(error, mapError);
+    const mapped = mapStatus(error, mapError, protocol);
     const retry = retryAfterSeconds(error);
     const fallbackType = (mapError ? mapError(error).type : connectErrorToHttp(error?.code).type);
     const type = normalizeOpenAIErrorType(

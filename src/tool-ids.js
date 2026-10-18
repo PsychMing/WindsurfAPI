@@ -93,12 +93,21 @@ export function knownToolCallIds(messages) {
 }
 
 function uniqueToolId(base, reserved, maxLen) {
-  let wire = base || 'call';
-  if (maxLen >= 1 && wire.length > maxLen) wire = wire.slice(0, maxLen);
+  const limit = maxLen >= 1 ? maxLen : 1;
+  const stem = base || 'call';
+  let wire = stem.slice(0, limit);
   let n = 2;
+  // A suffix must fit inside the same namespace; if it cannot, use the
+  // base-36 counter itself rather than appending past maxLen. Exhausting a
+  // tiny namespace is a contract error, not a reason to emit an overlong id.
+  const maxAttempts = limit <= 6 ? 36 ** limit : Number.MAX_SAFE_INTEGER;
   while (reserved.has(wire)) {
-    const suffix = `_${n++}`;
-    wire = `${wire.slice(0, Math.max(1, maxLen - suffix.length))}${suffix}`;
+    if (n > maxAttempts) throw new Error('tool id namespace exhausted');
+    const token = n.toString(36);
+    n += 1;
+    wire = token.length >= limit
+      ? token.slice(-limit)
+      : `${stem.slice(0, limit - token.length - 1)}_${token}`;
   }
   reserved.add(wire);
   return wire;

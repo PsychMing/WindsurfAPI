@@ -91,6 +91,21 @@ describe('createDeferredSseResponse', () => {
     }
   });
 
+  it('preserves Gemini numeric error codes when status is a gRPC enum', () => {
+    for (const [code, status] of [[400, 'INVALID_ARGUMENT'], [404, 'NOT_FOUND'], [413, 'INVALID_ARGUMENT']]) {
+      const real = fakeRes();
+      const res = createDeferredSseResponse(real, {
+        status: 200,
+        protocol: 'gemini',
+        parseError: (obj) => (obj?.error && typeof obj.error === 'object' ? obj.error : null),
+        errorBody: (error, httpStatus) => ({ error: { code: httpStatus, message: error?.message, status: error?.status } }),
+      });
+      res.write(frame({ error: { code, status, message: 'bad request' } }));
+      res.end();
+      assert.equal(real.statusCode, code, status);
+    }
+  });
+
   it('derives the official body type from the classified code', () => {
     for (const [code, type] of [['MODEL_BLOCKED', 'permission_error'], ['QUOTA_EXHAUSTED', 'insufficient_quota'], ['UNAUTHORIZED', 'authentication_error'], ['CONTENT_BLOCKED', 'invalid_request_error']]) {
       const real = fakeRes();
