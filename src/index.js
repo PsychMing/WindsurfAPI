@@ -71,7 +71,7 @@ function resetWorkspace() {
     }
   } catch {}
   try {
-    mkdirSync(join('/opt/windsurf/data', 'db'), { recursive: true });
+    mkdirSync(join(config.dataDir, 'db'), { recursive: true });
   } catch {}
 }
 
