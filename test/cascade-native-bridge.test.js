@@ -502,7 +502,7 @@ describe('parseTrajectorySteps — native step recognition', () => {
       writeVarintField(12, 100),
       writeStringField(4, 'console.log("hi")\n'),
     ]);
-    const resp = wrapResponse(wrapStep(14, 14, body));
+    const resp = wrapResponse(wrapStep(8, 14, body));
     const steps = parseTrajectorySteps(resp);
     assert.equal(steps.length, 1);
     const calls = steps[0].toolCalls.filter(tc => tc.cascade_native);
@@ -520,7 +520,7 @@ describe('parseTrajectorySteps — native step recognition', () => {
       writeStringField(23, 'echo hi'),
       writeMessageField(21, combinedOutput),
     ]);
-    const resp = wrapResponse(wrapStep(28, 28, body));
+    const resp = wrapResponse(wrapStep(21, 28, body));
     const steps = parseTrajectorySteps(resp);
     const calls = steps[0].toolCalls.filter(tc => tc.cascade_native);
     assert.equal(calls.length, 1);
@@ -536,7 +536,7 @@ describe('parseTrajectorySteps — native step recognition', () => {
       writeStringField(3, 'src'),
       writeStringField(15, 'src/foo.ts:10:// todo\n'),
     ]);
-    const resp = wrapResponse(wrapStep(105, 105, body));
+    const resp = wrapResponse(wrapStep(91, 105, body));
     const steps = parseTrajectorySteps(resp);
     const calls = steps[0].toolCalls.filter(tc => tc.cascade_native);
     assert.equal(calls.length, 1);
@@ -550,7 +550,7 @@ describe('parseTrajectorySteps — native step recognition', () => {
       writeStringField(2, 'foo.ts'),
       writeStringField(2, 'bar.ts'),
     ]);
-    const resp = wrapResponse(wrapStep(15, 15, body));
+    const resp = wrapResponse(wrapStep(9, 15, body));
     const steps = parseTrajectorySteps(resp);
     const calls = steps[0].toolCalls.filter(tc => tc.cascade_native);
     assert.equal(calls.length, 1);
@@ -561,7 +561,7 @@ describe('parseTrajectorySteps — native step recognition', () => {
   it('multiple native steps in same trajectory all surface', () => {
     const viewBody = Buffer.concat([writeStringField(1, 'file:///a.ts'), writeStringField(4, 'A')]);
     const cmdBody = Buffer.concat([writeStringField(23, 'ls'), writeMessageField(21, writeStringField(1, 'a.ts\n'))]);
-    const resp = wrapResponse(wrapStep(14, 14, viewBody), wrapStep(28, 28, cmdBody));
+    const resp = wrapResponse(wrapStep(8, 14, viewBody), wrapStep(21, 28, cmdBody));
     const steps = parseTrajectorySteps(resp);
     assert.equal(steps.length, 2);
     assert.equal(steps[0].toolCalls.filter(tc => tc.cascade_native).length, 1);

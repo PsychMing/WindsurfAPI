@@ -1358,13 +1358,14 @@ export function parseTrajectorySteps(buf) {
       });
     }
 
-    // Newer LS builds sometimes emit a completed read_file/view_file step as
-    // type=14 with the body wrapped on field 19 instead of the historical
-    // oneof field 14. Live traces show wrapper fields [2,3,4], where field 2
-    // carries the file URI/path and field 4 carries the observed content.
-    // Promote that shape to the same cascade-native tool call so native
-    // bridge can return the proposal before the remote workspace executor
-    // reports its follow-up "invalid tool call" error.
+    // Newer LS builds sometimes emit a completed read_file/view_file result on
+    // a type=14 (CortexStepType.USER_INPUT) step with the body wrapped on
+    // field 19 instead of the historical oneof field 14. Live traces show
+    // wrapper fields [2,3,4], where field 2 carries the file URI/path and
+    // field 4 carries the observed content. Promote that shape to the same
+    // cascade-native tool call so native bridge can return the proposal before
+    // the remote workspace executor reports its follow-up "invalid tool call"
+    // error.
     //
     // Field 19 is the user_input slot on the declared schema (#1/#2 are
     // query/user_response strings, #4 an active_user_state message), so the
