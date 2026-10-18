@@ -119,6 +119,33 @@ test('total budget can reclaim today’s files and remains bounded without a fil
   }
 });
 
+test('an undeletable expired segment does not stop appends and is retried', async t => {
+  const f = await fixture(t, { retentionDays: 1 });
+  const old = join(f.dir, 'app-2026-10-07.jsonl');
+  await writeFile(old, 'old\n');
+  let failures = 2;
+  const errors = [];
+  const writer = f.start({
+    onError: error => errors.push(error.code),
+    unlinkFile: async path => {
+      if (failures-- > 0) {
+        const error = new Error('file is busy');
+        error.code = 'EPERM';
+        throw error;
+      }
+      return unlink(path);
+    },
+  });
+  await writer.write('info', line('first'));
+  assert.equal(await readFile(old, 'utf8'), 'old\n', 'the busy segment must not be lost');
+  assert.equal(errors.filter(code => code === 'EPERM').length, 2);
+  assert.equal(await readFile(join(f.dir, 'app-2026-10-08.jsonl'), 'utf8'), line('first'),
+    'the append must still land while eviction is failing');
+  await writer.write('info', line('second'));
+  await assert.rejects(readFile(old, 'utf8'), error => error.code === 'ENOENT',
+    'the next pass retries and removes the segment once it is deletable');
+});
+
 test('an oversized record is not partially persisted and later normal logs still work', async t => {
   const f = await fixture(t, { maxFileBytes: 20 });
   const errors = [];

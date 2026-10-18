@@ -1,5 +1,6 @@
 /** Optional disk limits for the application's dated JSONL logs. Single writer per directory. */
-import { mkdir, readdir, lstat, appendFile, unlink } from 'node:fs/promises';
+import { mkdir, readdir, lstat, open, unlink } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { join } from 'node:path';
 
 const DAY_MS = 86_400_000;
@@ -32,7 +33,7 @@ function ownedLog(name) {
 
 /** Writes and cleanup share one queue, so a file is never removed during our append. */
 export function createLogFileWriter({ dir, retentionDays = 0, maxFileBytes = 0,
-  maxTotalBytes = 0, now = Date.now, onError = () => {} }) {
+  maxTotalBytes = 0, now = Date.now, onError = () => {}, unlinkFile = unlink }) {
   let pending = Promise.resolve();
   let initialized = false;
   let totalBytes = 0;
@@ -80,7 +81,7 @@ export function createLogFileWriter({ dir, retentionDays = 0, maxFileBytes = 0,
     try {
       const stat = await lstat(join(dir, file.name));
       if (!stat.isFile()) throw new Error('log path is no longer a regular file');
-      await unlink(join(dir, file.name));
+      await unlinkFile(join(dir, file.name));
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
@@ -98,12 +99,21 @@ export function createLogFileWriter({ dir, retentionDays = 0, maxFileBytes = 0,
     const checkRetention = retentionDays > 0 && retentionMidnight !== midnight;
     if (!checkRetention && !(maxTotalBytes > 0 && totalBytes + requiredBytes > maxTotalBytes)) return;
     // N days includes today's UTC file and the previous N-1 calendar days.
+    let failed = false;
     for (const file of oldestFirst()) {
       const expired = checkRetention && file.time < midnight - (retentionDays - 1) * DAY_MS;
       const overBudget = maxTotalBytes > 0 && totalBytes + requiredBytes > maxTotalBytes;
-      if (expired || overBudget) await remove(file);
+      if (!expired && !overBudget) continue;
+      try {
+        await remove(file);
+      } catch (error) {
+        // Windows sharing violations / immutable files must not stop the log:
+        // capacity degrades, but appends keep flowing. Retry on the next pass.
+        failed = true;
+        try { onError(error); } catch {}
+      }
     }
-    retentionMidnight = midnight;
+    retentionMidnight = failed ? null : midnight;
   }
 
   async function append(kind, line) {
@@ -127,12 +137,23 @@ export function createLogFileWriter({ dir, retentionDays = 0, maxFileBytes = 0,
       file = { name: `${key}${suffix}.jsonl`, kind, day, time: Date.parse(`${day}T00:00:00Z`), sequence, size: 0 };
     }
     const path = join(dir, file.name);
-    // An existing symlink/directory with an owned filename is not permission to overwrite it.
+    // An existing symlink/directory with an owned filename is not permission to
+    // overwrite it. Open first and fstat the fd so a path swap between the check
+    // and the write cannot redirect the append; O_NOFOLLOW closes the same race
+    // on POSIX (Windows has no O_NOFOLLOW, so the pre-open lstat remains the
+    // best-effort guard there).
     try {
       const stat = await lstat(path);
       if (!stat.isFile()) throw new Error('log path is not a regular file');
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    await appendFile(path, line);
+    const handle = await open(path,
+      constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | (constants.O_NOFOLLOW || 0), 0o600);
+    try {
+      if (!(await handle.stat()).isFile()) throw new Error('log path is not a regular file');
+      await handle.write(line);
+    } finally {
+      await handle.close();
+    }
     file.size += size;
     totalBytes += size;
     files.set(file.name, file);
