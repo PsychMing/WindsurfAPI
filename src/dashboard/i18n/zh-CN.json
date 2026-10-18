@@ -71,7 +71,8 @@
     "chartTypeGroup": "图表类型",
     "statsRangeGroup": "统计时间范围",
     "statsChart": "请求量时间序列图",
-    "dialog": "对话框"
+    "dialog": "对话框",
+    "recentRequests": "最近请求表格"
   },
   "action": {
     "checkUpdate": "检查更新",
@@ -453,6 +454,14 @@
       "models": "热门模型",
       "accounts": "热门账号",
       "desc": "按请求量（仅本地计数器）"
+    },
+    "recentRequests": {
+      "title": "最近请求",
+      "desc": "最新 20 条已完成请求 — 仅元数据，不含请求头与提示词",
+      "refresh": "刷新",
+      "refreshTitle": "重新加载最近请求",
+      "unavailable": "请求环形缓冲不可用 — 下次概览轮询将重试",
+      "meta": "环形缓冲 {{total}} / {{capacity}}"
     }
   },
   "help": {
@@ -600,7 +609,10 @@
       "p95": "p95",
       "errorCount": "错误数",
       "model": "模型",
-      "note": "说明"
+      "note": "说明",
+      "duration": "耗时",
+      "class": "分类",
+      "caller": "调用方"
     },
     "detail": {
       "avg": "平均延迟",

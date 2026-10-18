@@ -71,7 +71,8 @@
     "chartTypeGroup": "Chart type",
     "statsRangeGroup": "Statistics time range",
     "statsChart": "Request volume time-series chart",
-    "dialog": "Dialog"
+    "dialog": "Dialog",
+    "recentRequests": "Recent requests table"
   },
   "action": {
     "checkUpdate": "Check Update",
@@ -453,6 +454,14 @@
       "models": "Top Models",
       "accounts": "Top Accounts",
       "desc": "By request volume (local counters only)"
+    },
+    "recentRequests": {
+      "title": "Recent Requests",
+      "desc": "Newest 20 completed requests — metadata only, no headers or prompt text",
+      "refresh": "Refresh",
+      "refreshTitle": "Reload the recent request ring",
+      "unavailable": "Request ring unavailable — retrying on the next overview poll",
+      "meta": "{{total}} / {{capacity}} in ring"
     }
   },
   "help": {
@@ -600,7 +609,10 @@
       "p95": "p95",
       "errorCount": "Error Count",
       "model": "Model",
-      "note": "Note"
+      "note": "Note",
+      "duration": "Duration",
+      "class": "Class",
+      "caller": "Caller"
     },
     "detail": {
       "avg": "Avg latency",
