@@ -387,6 +387,28 @@ describe('DEVIN_CONNECT cross-account failover — stream', () => {
     assert.equal(frames.includes('[DONE]'), false, 'no [DONE] after a pre-content error');
   });
 
+  // A pre-content 429 must keep the rate-limit class on the wire; OpenAI SDKs
+  // back off on rate_limit_error, not on api_error.
+  it('a pre-content 429 keeps rate_limit_error on the stream', async () => {
+    seed('s-429');
+    __setConnectDeps({
+      streamChatCompletion: async () => {
+        throw Object.assign(new Error('rate limited'), { code: 'RATE_LIMITED' });
+      },
+    });
+
+    const result = await handleChatCompletions(
+      { model: 'swe-1-6-slow', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      { callerKey: '' },
+    );
+    const res = fakeRes();
+    await result.handler(res);
+    const frames = parseFrames(res.body);
+    const err = frames.find(f => f !== '[DONE]' && f.error);
+    assert.equal(err?.error?.type, 'rate_limit_error');
+    assert.equal(frames.includes('[DONE]'), false);
+  });
+
   // R1 (stream): a pre-emit RATE_LIMITED on the first account fails over to a
   // healthy one instead of erroring the stream — replay is safe while !emitted.
   it('R1 stream: fails over on a pre-emit RATE_LIMITED, then streams from the healthy account', async () => {

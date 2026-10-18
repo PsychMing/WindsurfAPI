@@ -4008,7 +4008,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
                     continue;
                   }
                 }
-                send(chatStreamError(r.err.message, 'upstream_error', r.err.code || null));
+                // Preserve the 429 class on the streaming wire: `api_error` is
+                // not what OpenAI SDKs back off on. The internal name is mapped
+                // to the official `rate_limit_error` by the egress normalizer.
+                const streamErrType = r.err.code === 'RATE_LIMITED' ? 'rate_limit_exceeded' : 'upstream_error';
+                send(chatStreamError(r.err.message, streamErrType, r.err.code || null));
                 break;
               }
               // r.kind === 'dead' — guaranteed !emitted, so a fresh account is safe.
