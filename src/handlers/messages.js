@@ -15,6 +15,7 @@ import { createHash, randomUUID } from 'crypto';
 import { handleChatCompletions, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
 import { SseFramer } from '../sse-framer.js';
+import { buildToolNameMap, restoreToolName } from '../tool-names.js';
 import { leakTraceEnabled, thinkMarkersIn, leakSample } from '../leak-trace.js';
 
 function genMsgId() {
@@ -616,6 +617,7 @@ import { neutralizeClientIdentity } from './identity-neutralize.js';
 
 function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
   const cachePolicy = extractCachePolicy(body, promptEstimate);
+  const toolNameMap = buildToolNameMap(body.tools || []);
   const mapAnthropicToolChoice = (toolChoice) => {
     if (!toolChoice || typeof toolChoice !== 'object') return toolChoice;
     if (toolChoice.type === 'auto') return 'auto';
@@ -717,7 +719,7 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
           toolCalls.push({
             id,
             type: 'function',
-            function: { name: block.name, arguments: JSON.stringify(block.input ?? {}) },
+            function: { name: toolNameMap.toUpstream.get(block.name) ?? block.name, arguments: JSON.stringify(block.input ?? {}) },
           });
         } else if (block.type === 'tool_result') {
           // B2: flatten sub-blocks without dropping non-text (image) blocks.
@@ -781,7 +783,7 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
     acc.push({
       type: 'function',
       function: {
-        name: t.name,
+        name: toolNameMap.toUpstream.get(t.name) ?? t.name,
         description: t.description || '',
         parameters: t.input_schema || {},
       },
@@ -794,8 +796,11 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
   if (convertedServerTools.length) {
     log.info(`messages: converted ${convertedServerTools.length} server-side tool(s) [${convertedServerTools.join(',')}]`);
   }
+  const mappedToolChoice = body.tool_choice ? mapAnthropicToolChoice(body.tool_choice) : undefined;
   const forwardedToolChoice = pruneToolChoice(
-    body.tool_choice ? mapAnthropicToolChoice(body.tool_choice) : undefined,
+    mappedToolChoice?.type === 'function'
+      ? { ...mappedToolChoice, function: { ...mappedToolChoice.function, name: toolNameMap.toUpstream.get(mappedToolChoice.function.name) ?? mappedToolChoice.function.name } }
+      : mappedToolChoice,
     tools,
   );
   // Claude Code 2.x and Anthropic SDK clients send response shape and
@@ -843,6 +848,7 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       ? { parallel_tool_calls: false }
       : {}),
     ...(forwardedToolChoice ? { tool_choice: forwardedToolChoice } : {}),
+    ...(tools.length && [...toolNameMap.toUpstream].some(([k, v]) => k !== v) ? { __toolNameMap: toolNameMap } : {}),
     ...(body.thinking ? { thinking: body.thinking } : {}),
     ...(ocEffort ? { reasoning_effort: ocEffort } : {}),
     ...(translatedResponseFormat ? { response_format: translatedResponseFormat } : {}),
@@ -876,7 +882,7 @@ export function annotateRiskyReadToolResult(content, { toolName = '', isError = 
 
 // ─── OpenAI → Anthropic non-stream response translation ──────
 
-export function openAIToAnthropic(result, model, msgId, cachePolicy = null, stopSequences = null) {
+export function openAIToAnthropic(result, model, msgId, cachePolicy = null, stopSequences = null, toolNameMap = null) {
   const choice = result.choices?.[0];
   const usage = result.usage || {};
   const content = [];
@@ -916,7 +922,7 @@ export function openAIToAnthropic(result, model, msgId, cachePolicy = null, stop
         // symmetric with the request-side id fallback in anthropicToOpenAI. A
         // tool_use block without an id is invalid Anthropic output.
         id: tc.id || `toolu_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
-        name: tc.function?.name || 'unknown',
+        name: restoreToolName(tc.function?.name, toolNameMap) || 'unknown',
         input,
       });
     }
@@ -1068,7 +1074,7 @@ function buildAnthropicUsage(usage, cachePolicy = null) {
 // ─── Streaming translator: intercepts OpenAI SSE, emits Anthropic SSE ──
 
 class AnthropicStreamTranslator {
-  constructor(res, msgId, model, cachePolicy = null, inputEstimate = 0, stopSequences = null, reqId = null, conversationId = null) {
+  constructor(res, msgId, model, cachePolicy = null, inputEstimate = 0, stopSequences = null, reqId = null, conversationId = null, toolNameMap = null) {
     this.res = res;
     this.msgId = msgId;
     this.model = model;
@@ -1076,6 +1082,7 @@ class AnthropicStreamTranslator {
     // caller threads them in — log fields only, no behavior.
     this.reqId = reqId;
     this.conversationId = conversationId;
+    this.toolNameMap = toolNameMap;
     // Local cache-prefix estimate from extractCachePolicy; used by finish() to
     // fill cache_creation_input_tokens when upstream reports none (see
     // buildAnthropicUsage). null when the request had no cache_control markers.
@@ -1277,7 +1284,7 @@ class AnthropicStreamTranslator {
     const idx = toolCall.index ?? 0;
     let existing = this.toolCallBufs.get(idx);
     const id = toolCall.id || existing?.id;
-    const name = toolCall.function?.name || existing?.name;
+    const name = restoreToolName(toolCall.function?.name, this.toolNameMap) || existing?.name;
     const argsChunk = toolCall.function?.arguments || '';
 
     if (!existing) {
@@ -1641,6 +1648,7 @@ export async function handleMessages(body, context = {}) {
   const ccActive = !!context.ccCompat?.active;
   const promptEstimate = { tokens: 0 };
   const openaiBody = anthropicToOpenAI(body, ccActive, promptEstimate);
+  const toolNameMap = openaiBody.__toolNameMap || null;
   // anthropicToOpenAI attaches __cachePolicy only when the request carried
   // cache_control breakpoints; reuse it for the local cache-token estimate.
   const cachePolicy = openaiBody.__cachePolicy || null;
@@ -1691,7 +1699,7 @@ export async function handleMessages(body, context = {}) {
         result.body?.error?.message,
       ), result.headers);
     }
-    return { status: 200, body: openAIToAnthropic(result.body, requestedModel, msgId, cachePolicy, body.stop_sequences) };
+    return { status: 200, body: openAIToAnthropic(result.body, requestedModel, msgId, cachePolicy, body.stop_sequences, toolNameMap) };
   }
 
   // Streaming path — ask handleChatCompletions for its streaming handler and
@@ -1730,7 +1738,7 @@ export async function handleMessages(body, context = {}) {
       'X-Accel-Buffering': 'no',
     },
     async handler(realRes) {
-      const translator = new AnthropicStreamTranslator(realRes, msgId, requestedModel, cachePolicy, inputEstimate, body.stop_sequences, context.reqId, context.conversation_id);
+      const translator = new AnthropicStreamTranslator(realRes, msgId, requestedModel, cachePolicy, inputEstimate, body.stop_sequences, context.reqId, context.conversation_id, toolNameMap);
       const captureRes = createCaptureRes(translator, realRes);
 
       // Forward client disconnect so the upstream cascade is cancelled.
