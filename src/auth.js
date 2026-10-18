@@ -41,8 +41,6 @@ import {
 import { getLsAdmissionStatus, getLsMaintenanceRequests } from './langserver.js';
 import { bumpConnect } from './devin-connect-metrics.js';
 import { classifyToken, unwrapPastedSecret } from './dashboard/account-text-parser.js';
-import { getBillingUsage } from './devin-backend.js';
-import { normalizeUsage } from './dashboard/usage.js';
 
 import { join } from 'path';
 // accounts.json lives in the cluster-shared dir so add-account writes from
@@ -3717,50 +3715,6 @@ export function getAccountList({ view = 'full', offset = 0, limit = Infinity, fi
 export function getAccountPublic(id, { view = 'full' } = {}) {
   const account = accounts.find(a => a.id === id);
   return account ? publicAccount(account, Date.now(), { view }) : null;
-}
-
-const _usageCache = new Map();
-const USAGE_CACHE_MS = 60_000;
-
-/**
- * Read the account's app.devin.ai quota/status/daily usage.
- *
- * Read-only and free (no model credits). With no id, use the first active pool
- * account, then the env-token single-account deploy. Results are cached for 60s
- * so a dashboard refresh does not fan out four upstream calls per click.
- * Errors are in-band and never include the token.
- */
-export async function getAccountUsage(id, { force = false } = {}) {
-  let account = null;
-  let accountId = null;
-  let token = '';
-  if (id) {
-    account = accounts.find(a => a.id === id);
-    if (!account) return { ok: false, error: 'Account not found' };
-    accountId = account.id;
-    token = account.apiKey;
-  } else {
-    account = accounts.find(a => a.status === 'active' && a.apiKey);
-    accountId = account ? account.id : 'env-token';
-    token = account ? account.apiKey
-      : String(process.env.DEVIN_BACKEND_TOKEN || process.env.DEVIN_CONNECT_TOKEN || '').trim();
-  }
-  if (!token) return { ok: false, error: 'No account configured' };
-
-  const cached = _usageCache.get(accountId);
-  if (!force && cached && Date.now() - cached.at < USAGE_CACHE_MS) {
-    return { ...cached.value, cached: true };
-  }
-
-  try {
-    const raw = await getBillingUsage({ baseUrl: 'https://app.devin.ai/api', token });
-    const value = { ok: true, accountId, ...normalizeUsage(raw) };
-    _usageCache.set(accountId, { at: Date.now(), value });
-    return { ...value, cached: false };
-  } catch (e) {
-    log.warn(`Usage read failed for ${accountId === 'env-token' ? 'env-token' : safeAccountRef(account)}: ${e.message}`);
-    return { ok: false, accountId, error: e.message };
-  }
 }
 
 export function getAccountListStats() {

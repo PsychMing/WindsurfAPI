@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCatalogDiff } from '../src/dashboard/catalog-diff.js';
+import { buildModelReconciliation } from '../src/dashboard/model-reconcile.js';
+import { getSnapshotSelectors } from '../src/devin-connect-models.js';
 
 const resolve = (name) => {
   if (name === 'alias-a' || name === 'sel-a') return { selector: 'sel-a', mapped: true };
@@ -54,5 +56,21 @@ describe('dashboard catalog diff', () => {
     assert.equal(diff.snapshotCount, 1);
     assert.equal(diff.aliasCount, 0);
     assert.equal(diff.unmappedCount, 0);
+  });
+
+  it('reconciles against the committed 233-selector snapshot', () => {
+    const out = buildModelReconciliation({
+      local: [],
+      live: [],
+      snapshot: getSnapshotSelectors(),
+      toggleable: [],
+      fedModels: null,
+      orgConfigs: null,
+      upstreamCatalog: null,
+      sources: {},
+    });
+    assert.equal(out.snapshotCount, 233);
+    assert.equal(out.synced, false);
+    assert.deepEqual(out.missing, []);
   });
 });

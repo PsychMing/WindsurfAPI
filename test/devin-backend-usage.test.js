@@ -1,53 +1,57 @@
-import { describe, it } from 'node:test';
+/**
+ * H0 dashboard read path: org resolution and GET-only reads.
+ *
+ * This file used to exercise `getBillingUsage` from the devin-backend stub. The
+ * dashboard now owns its read path (`src/dashboard/devin-read.js`) and the stub
+ * function is gone; the same wire assertions live here against the new reader.
+ */
+import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { getBillingUsage } from '../src/devin-backend.js';
+import {
+  ReadError,
+  readDevinJson,
+  resolveOrgId,
+  __resetReadCache,
+  __setFetchImplForTest,
+} from '../src/dashboard/devin-read.js';
 
-function jsonResponse(value) {
-  return { ok: true, status: 200, json: async () => value };
+function jsonResponse(value, { status = 200 } = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: () => null },
+    text: async () => JSON.stringify(value),
+  };
 }
+
 function errorResponse(status) {
-  return { ok: false, status, json: async () => ({}) };
+  return jsonResponse({}, { status });
 }
 
-describe('devin backend billing usage', () => {
+const originalOrg = process.env.DEVIN_BACKEND_ORG_ID;
+
+afterEach(() => {
+  __setFetchImplForTest(null);
+  __resetReadCache();
+  if (originalOrg === undefined) delete process.env.DEVIN_BACKEND_ORG_ID;
+  else process.env.DEVIN_BACKEND_ORG_ID = originalOrg;
+});
+
+describe('dashboard read path org resolution', () => {
   it('resolves the org through GET current-membership, never post-auth', async () => {
     const calls = [];
     const fetchImpl = async (url, init) => {
-      calls.push({ url, method: init.method, auth: init.headers.Authorization });
+      calls.push({ url, method: init.method });
       if (url.endsWith('/users/current-membership')) return jsonResponse({ org: { org_id: 'org-test' } });
-      if (url.endsWith('/billing/quota/usage')) return jsonResponse({ daily_percentage: 3 });
-      if (url.endsWith('/billing/status')) return jsonResponse({ plan_slug: 'pro' });
-      if (url.includes('/billing/usage/daily-usage')) return jsonResponse({ total: 0, days: [] });
       throw new Error(`unexpected ${url}`);
     };
 
-    const out = await getBillingUsage({ baseUrl: 'https://app.devin.ai/api', token: 'tok' }, { fetchImpl });
-    assert.equal(out.orgId, undefined);
-    assert.equal(out.quota.daily_percentage, 3);
-    assert.equal(out.status.plan_slug, 'pro');
-    assert.equal(calls.length, 4);
+    const org = await resolveOrgId({ token: 'tok', fetchImpl });
+    assert.equal(org, 'org-test');
+    assert.equal(calls.length, 1);
     assert.equal(calls[0].method, 'GET');
-    assert.ok(calls[0].url.endsWith('/users/current-membership'));
-    assert.ok(calls.every((c) => c.method === 'GET'));
     assert.ok(calls.every((c) => !c.url.includes('/users/post-auth')));
-    assert.ok(calls[1].url.endsWith('/org-test/billing/quota/usage'));
-    assert.ok(calls[2].url.endsWith('/org-test/billing/status'));
-    assert.ok(calls[3].url.includes('/org-test/billing/usage/daily-usage?cycle=current&view=sessions'));
-    assert.ok(calls.every((c) => c.auth === 'Bearer tok'));
-  });
-
-  it('skips org resolution when orgId is already known', async () => {
-    const calls = [];
-    const fetchImpl = async (url) => {
-      calls.push(url);
-      if (url.endsWith('/billing/quota/usage')) return jsonResponse({});
-      if (url.endsWith('/billing/status')) return jsonResponse({});
-      return jsonResponse({ days: [] });
-    };
-    const out = await getBillingUsage({ baseUrl: 'https://app.devin.ai/api', token: 'tok', orgId: 'org-known' }, { fetchImpl });
-    assert.equal(out.orgId, undefined);
-    assert.equal(calls.length, 3);
-    assert.ok(calls.every((url) => url.includes('/org-known/')));
+    assert.ok(calls.every((c) => c.method === 'GET'));
   });
 
   it('falls back to GET /organizations and picks the primary org', async () => {
@@ -55,42 +59,49 @@ describe('devin backend billing usage', () => {
     const fetchImpl = async (url) => {
       calls.push(url);
       if (url.endsWith('/users/current-membership')) return errorResponse(404);
-      if (url.endsWith('/organizations')) return jsonResponse([
-        { org_id: 'org-a' },
-        { org_id: 'org-b', is_primary_org: true },
-      ]);
-      if (url.includes('/org-b/billing/')) return jsonResponse({});
+      if (url.endsWith('/organizations')) {
+        return jsonResponse([{ org_id: 'org-a' }, { org_id: 'org-b', is_primary_org: true }]);
+      }
       throw new Error(`unexpected ${url}`);
     };
-    const out = await getBillingUsage({ baseUrl: 'https://app.devin.ai/api', token: 'tok' }, { fetchImpl });
-    assert.equal(out.orgId, undefined);
-    assert.equal(calls.length, 5);
+    const org = await resolveOrgId({ token: 'tok', fetchImpl });
+    assert.equal(org, 'org-b');
+    assert.equal(calls.length, 2);
     assert.ok(calls.some((url) => url.endsWith('/organizations')));
-    assert.ok(calls.slice(-3).every((url) => url.includes('/org-b/')));
   });
 
-  it('rejects when neither GET endpoint returns an org id', async () => {
+  it('rejects when neither GET endpoint returns a usable org id', async () => {
     const fetchImpl = async (url) => {
       if (url.endsWith('/users/current-membership')) return errorResponse(404);
       if (url.endsWith('/organizations')) return jsonResponse([]);
       throw new Error(`unexpected ${url}`);
     };
     await assert.rejects(
-      getBillingUsage({ baseUrl: 'https://app.devin.ai/api', token: 'tok' }, { fetchImpl }),
-      /did not return an org id/,
+      resolveOrgId({ token: 'tok', fetchImpl }),
+      (err) => err instanceof ReadError && err.kind === 'org_unresolved',
     );
   });
 
   it('does not fall back when the token is rejected', async () => {
     const calls = [];
-    const fetchImpl = async (url) => {
-      calls.push(url);
-      return errorResponse(401);
-    };
+    const fetchImpl = async (url) => { calls.push(url); return errorResponse(401); };
     await assert.rejects(
-      getBillingUsage({ baseUrl: 'https://app.devin.ai/api', token: 'tok' }, { fetchImpl }),
-      /failed: 401/,
+      resolveOrgId({ token: 'tok', fetchImpl }),
+      (err) => err.kind === 'unauthorized',
     );
     assert.equal(calls.length, 1);
+  });
+
+  it('never puts orgId, accountId or keyPrefix in the reader output', async () => {
+    const out = await readDevinJson({
+      token: 'tok',
+      path: '/org-test/billing/status',
+      orgId: 'org-test',
+      fetchImpl: async () => jsonResponse({ plan_slug: 'pro' }),
+    });
+    assert.equal(out.orgId, undefined);
+    assert.equal(out.accountId, undefined);
+    assert.equal(out.keyPrefix, undefined);
+    assert.equal(out.plan_slug, 'pro');
   });
 });

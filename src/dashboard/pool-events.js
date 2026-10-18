@@ -33,6 +33,33 @@ export function accountState(a) {
   return 'active';
 }
 
+/**
+ * Project the raw pool deadlines into the dashboard's cooldown card fields.
+ *
+ * A deadline is active only when `until > now` (strict): a timestamp exactly at
+ * `now` is already over. `cooldownUntil` is null — not 0 — when no account-wide
+ * deadline is in the future, so the UI can distinguish "cooling" from "expired".
+ * Reason precedence: quota > rate_limit > capacity > null.
+ */
+export function cooldownState({ rateLimitedUntil = 0, quotaResetAt = 0, capacityThrottled = false, now = Date.now() } = {}) {
+  const rateUntil = Number.isFinite(rateLimitedUntil) ? rateLimitedUntil : 0;
+  const quotaUntil = Number.isFinite(quotaResetAt) ? quotaResetAt : 0;
+  const rateLimited = rateUntil > now;
+  const quotaCooled = quotaUntil > now;
+  const cooldownUntil = Math.max(rateLimited ? rateUntil : 0, quotaCooled ? quotaUntil : 0) || null;
+  return {
+    rateLimited,
+    quotaCooled,
+    capacityThrottled: !!capacityThrottled,
+    cooldownUntil,
+    cooldownReason: quotaCooled ? 'quota'
+      : rateLimited ? 'rate_limit'
+        : capacityThrottled ? 'capacity'
+          : null,
+    cooldownRemainingMs: cooldownUntil ? cooldownUntil - now : 0,
+  };
+}
+
 // A state transition worth notifying about, with a severity for styling.
 // 'recovered' (→active from a bad state) is informational; the rest warn.
 export function classifyTransition(from, to) {

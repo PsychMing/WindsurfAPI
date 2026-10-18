@@ -22,7 +22,6 @@ import {
   removeAccount, setAccountStatus, resetAccountErrors, updateAccountLabel,
   isAuthenticated, probeAccount, ensureLsForAccount,
   refreshCredits, refreshAllCredits, searchWebForAccount,
-  getAccountUsage,
   setAccountBlockedModels, setAccountTokens, setAccountTier, setAccountSpendPolicy,
   getAccountInternal, isLocalBindHost, maskApiKey, safeEqualString,
   checkLockout, failedAuthAttempt, successfulAuthAttempt,
@@ -53,6 +52,11 @@ import { MODELS, MODEL_TIER_ACCESS as _TIER_TABLE, getTierModels as _getTierMode
 import { buildConnectReachability } from '../handlers/models.js';
 import { FREE_REACHABLE_SELECTORS, getLiveCatalog, getSnapshotSelectors, resolveConnectSelector } from '../devin-connect-models.js';
 import { buildCatalogDiff } from './catalog-diff.js';
+import { accountState, cooldownState } from './pool-events.js';
+import { peekBillingFacts } from './devin-read.js';
+import { readQuotaBurnDown } from './quota-burn-down.js';
+import { readBillingHealth } from './billing-health.js';
+import { readModelReconciliation } from './model-reconcile.js';
 import { listRequests, requestRingStats } from './request-ring.js';
 import { windsurfLogin, refreshFirebaseToken, reRegisterWithCodeium } from './windsurf-login.js';
 import { getModelAccessConfig, setModelAccessMode, setModelAccessList, addModelToList, removeModelFromList, setDefaultModel } from './model-access.js';
@@ -170,7 +174,7 @@ function resolveCorsOrigin(req) {
   return allow.includes(origin) ? origin : '';
 }
 
-function json(res, status, body) {
+function json(res, status, body, extraHeaders = null) {
   // Error envelopes carry `success: false`, the same key 2xx bodies use for
   // `success: true`, so a client can tell "this request failed" apart from
   // "this payload happens to have no success key" (#257). Scoped to non-2xx
@@ -186,6 +190,9 @@ function json(res, status, body) {
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-Dashboard-Password',
   };
+  // Authed card payloads (billing, models, pool) opt into `Cache-Control:
+  // no-store`; the server-side TTL cache is independent of the browser cache.
+  if (extraHeaders) Object.assign(headers, extraHeaders);
   // Origin resolved once per request at the top of handleDashboardApi and
   // stashed on res. Only emit ACAO when an origin is actually allowed; a
   // specific echoed origin also needs Vary: Origin so caches don't serve
@@ -202,6 +209,9 @@ function json(res, status, body) {
 function dashboardUrl(req) {
   return new URL(req?.url || '/', 'http://localhost');
 }
+
+// Authed billing/model/pool JSON must never be stored by the browser.
+const NO_STORE = Object.freeze({ 'Cache-Control': 'no-store' });
 
 function parseBoundedInt(value, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const n = Number.parseInt(String(value ?? ''), 10);
@@ -622,28 +632,45 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     return json(res, 200, { ...page, ring: requestRingStats() });
   }
 
-  // Lightweight pool snapshot for the dashboard's pool-event notifier. Reads the
-  // in-memory pool only (zero upstream cost) and returns just the per-account
-  // state flags the client diffs into transition toasts (healthy ↔ cooling ↔
-  // capacity ↔ quota ↔ disabled). Summary view keeps the payload tiny.
+  // Lightweight pool snapshot for the dashboard's pool-event notifier and the
+  // cooldown card. Reads the in-memory pool only (zero upstream cost) and returns
+  // the per-account state flags the client diffs into transition toasts
+  // (healthy ↔ cooling ↔ capacity ↔ quota ↔ disabled). `ref` is a hash — never
+  // the token prefix — and `upstream` is a cache-only billing overlay, so the
+  // 20 s poll never triggers an upstream call.
   if (subpath === '/pool-events' && method === 'GET') {
-    const accounts = getAccountList({ view: 'summary' }).map(a => ({
-      id: a.id,
-      ref: accountRef(a.id),
-      status: a.status,
-      rateLimited: !!a.rateLimited,
-      capacityThrottled: !!a.capacityThrottled,
-      quotaCooled: !!a.quotaCooled,
-      tier: a.tier || 'unknown',
-      balance: a.balance ?? null,
-      errorCount: a.errorCount || 0,
-      cooldownUntil: Math.max(a.rateLimitedUntil || 0, a.quotaResetAt || 0) || null,
-      cooldownReason: a.quotaCooled ? 'quota'
-        : a.rateLimited ? 'rate_limit'
-        : a.capacityThrottled ? 'capacity'
-        : null,
-    }));
-    return json(res, 200, { accounts, ts: Date.now() });
+    const now = Date.now();
+    const accounts = getAccountList({ view: 'summary' }).map((a) => {
+      const cooldown = cooldownState({
+        rateLimitedUntil: a.rateLimitedUntil,
+        quotaResetAt: a.quotaResetAt,
+        capacityThrottled: a.capacityThrottled,
+        now,
+      });
+      const token = getAccountInternal(a.id)?.apiKey || '';
+      return {
+        id: a.id,
+        ref: accountRef(a.id),
+        status: a.status,
+        state: accountState({
+          status: a.status,
+          rateLimited: cooldown.rateLimited,
+          capacityThrottled: cooldown.capacityThrottled,
+          quotaCooled: cooldown.quotaCooled,
+        }),
+        tier: a.tier || 'unknown',
+        balance: a.balance ?? null,
+        errorCount: a.errorCount || 0,
+        rateLimited: cooldown.rateLimited,
+        capacityThrottled: cooldown.capacityThrottled,
+        quotaCooled: cooldown.quotaCooled,
+        cooldownUntil: cooldown.cooldownUntil,
+        cooldownReason: cooldown.cooldownReason,
+        cooldownRemainingMs: cooldown.cooldownRemainingMs,
+        upstream: peekBillingFacts({ accountId: a.id, token }),
+      };
+    });
+    return json(res, 200, { accounts, ts: now }, { 'Cache-Control': 'no-store' });
   }
 
   // ─── Experimental features ────────────────────────────
@@ -1676,21 +1703,40 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     return json(res, 200, getStats());
   }
 
-  // Account usage from app.devin.ai (quota percentages, plan, credits, daily
-  // cycle). Read-only and free. `?account=<id>` selects a pool account; with no
-  // id it uses the first active account, then the env-token deploy. Results are
-  // cached for 60s; `?refresh=1` bypasses the cache.
+  // Account usage from app.devin.ai (quota burn-down card). GET-only reads
+  // through the shared dashboard cache; `?account=<id>` selects a pool account;
+  // with no id it uses the first active account, then the env-token deploy.
+  // `?refresh=1` bypasses freshness but shares any in-flight request.
   if (subpath === '/usage' && method === 'GET') {
     const u = dashboardUrl(req);
-    const id = u.searchParams.get('account') || '';
-    const result = await getAccountUsage(id || undefined, {
-      force: u.searchParams.get('refresh') === '1',
-    });
-    if (result.ok) return json(res, 200, result);
-    const status = result.error === 'Account not found' ? 404
-      : result.error === 'No account configured' ? 503
-      : 502;
-    return json(res, status, result);
+    try {
+      const result = await readQuotaBurnDown({
+        id: u.searchParams.get('account') || undefined,
+        force: u.searchParams.get('refresh') === '1',
+      });
+      const { httpStatus, ...payload } = result;
+      return json(res, result.ok ? 200 : (httpStatus || 502), payload, NO_STORE);
+    } catch (err) {
+      log.warn(`Dashboard usage read failed: ${err?.kind || err?.name || 'unexpected'}`);
+      return json(res, 502, { ok: false, error: 'upstream' }, NO_STORE);
+    }
+  }
+
+  // Billing health / pause banner (P0-2). Shares the `status` and `quota` cache
+  // entries with /usage; a 403 is a gray "no permission", never a stale state.
+  if (subpath === '/billing/health' && method === 'GET') {
+    const u = dashboardUrl(req);
+    try {
+      const result = await readBillingHealth({
+        id: u.searchParams.get('account') || undefined,
+        force: u.searchParams.get('refresh') === '1',
+      });
+      const { httpStatus, ...payload } = result;
+      return json(res, result.ok ? 200 : (httpStatus || 502), payload, NO_STORE);
+    } catch (err) {
+      log.warn(`Dashboard billing health read failed: ${err?.kind || err?.name || 'unexpected'}`);
+      return json(res, 502, { ok: false, error: 'upstream' }, NO_STORE);
+    }
   }
 
   if (subpath === '/stats' && method === 'DELETE') {
@@ -2381,6 +2427,25 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       snapshot: getSnapshotSelectors(),
       resolve: resolveConnectSelector,
     }));
+  }
+
+  // Live model reconciliation (P0-3): local /v1/models rows vs the live catalog
+  // vs the committed snapshot, plus counts-only views of the account-scoped
+  // model sources. Upstream failures degrade to `partial:true`; only an
+  // in-process handleModels() failure is a 502.
+  if (subpath === '/models/reconcile' && method === 'GET') {
+    const u = dashboardUrl(req);
+    try {
+      const result = await readModelReconciliation({
+        id: u.searchParams.get('account') || undefined,
+        force: u.searchParams.get('refresh') === '1',
+      });
+      const { httpStatus, ...payload } = result;
+      return json(res, result.ok ? 200 : (httpStatus || 502), payload, NO_STORE);
+    } catch (err) {
+      log.warn(`Dashboard model reconciliation failed: ${err?.kind || err?.name || 'unexpected'}`);
+      return json(res, 502, { ok: false, error: 'upstream' }, NO_STORE);
+    }
   }
 
   // ─── Model Access Control ──────────────────────────────

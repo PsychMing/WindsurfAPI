@@ -1,5 +1,5 @@
 /**
- * Normalize the three app.devin.ai billing reads into one dashboard payload.
+ * Normalize the app.devin.ai billing reads into one dashboard payload.
  *
  * Pure and defensive: the upstream shape is FastAPI JSON, but a missing field
  * must degrade to null rather than NaN or a thrown render error.
@@ -17,16 +17,55 @@ function str(value) {
   return typeof value === 'string' && value ? value : null;
 }
 
-export function normalizeUsage({ quota, status, dailyUsage } = {}) {
+/** Clamp a percentage to 0–100. Non-numbers stay null (no string coercion). */
+export function clampPercent(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.min(100, Math.max(0, value));
+}
+
+/**
+ * Render an ACU limit. `null` means unlimited (the upstream sends null, never 0),
+ * so it must render as ∞ rather than as a zero budget.
+ */
+export function formatAcuLimit(value) {
+  if (value === null || value === undefined) return '∞';
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return String(value);
+}
+
+/**
+ * Milliseconds until an ISO reset timestamp, or null when the timestamp is
+ * missing/invalid. `Date.parse` honours the embedded offset, so the countdown
+ * does not depend on the browser's local timezone.
+ */
+export function resetCountdown(resetAt, now = Date.now()) {
+  if (typeof resetAt !== 'string') return null;
+  const at = Date.parse(resetAt);
+  if (!Number.isFinite(at)) return null;
+  return Math.max(0, at - now);
+}
+
+function normalizeDays(days) {
+  if (!Array.isArray(days)) return [];
+  return days.slice(0, 366).map((day) => ({
+    date: str(day?.date),
+    amount: num(day?.amount, 0),
+    cumulative: num(day?.cumulative, 0),
+  })).filter((day) => day.date);
+}
+
+export function normalizeUsage({ quota, status, limits, dailyUsage, now = Date.now() } = {}) {
   const q = quota && typeof quota === 'object' ? quota : {};
   const s = status && typeof status === 'object' ? status : {};
+  const l = limits && typeof limits === 'object' ? limits : {};
   const d = dailyUsage && typeof dailyUsage === 'object' ? dailyUsage : {};
-  const days = Array.isArray(d.days)
-    ? d.days.slice(0, 366).map((day) => ({
-      date: str(day?.date),
-      amount: num(day?.amount, 0),
-      cumulative: num(day?.cumulative, 0),
-    })).filter((day) => day.date)
+  const days = normalizeDays(d.days);
+  const products = Array.isArray(d.products)
+    ? d.products.slice(0, 12).map((product) => ({
+      view: str(product?.view),
+      total: num(product?.total, 0),
+      days: normalizeDays(product?.days),
+    })).filter((product) => product.view)
     : [];
 
   return {
@@ -38,12 +77,16 @@ export function normalizeUsage({ quota, status, dailyUsage } = {}) {
     quota: {
       isQuotaPlan: bool(q.is_quota_plan),
       hasAllocation: bool(q.has_quota_allocation),
-      dailyPercentage: num(q.daily_percentage),
-      weeklyPercentage: num(q.weekly_percentage),
+      dailyPercentage: clampPercent(q.daily_percentage),
+      weeklyPercentage: clampPercent(q.weekly_percentage),
       dailyResetAt: str(q.daily_reset_at),
       weeklyResetAt: str(q.weekly_reset_at),
       overageBalance: num(q.overage_balance),
       hideDailyQuota: bool(q.hide_daily_quota),
+    },
+    limits: {
+      maxAcuLimit: num(l.max_acu_limit),
+      maxTotalSessionAcuLimit: num(l.max_total_session_acu_limit),
     },
     cycle: {
       start: str(d.cycle_start),
@@ -52,5 +95,11 @@ export function normalizeUsage({ quota, status, dailyUsage } = {}) {
       total: num(d.total, 0),
     },
     days,
+    products,
+    reset: {
+      dailyInMs: resetCountdown(q.daily_reset_at, now),
+      weeklyInMs: resetCountdown(q.weekly_reset_at, now),
+    },
+    serverNow: now,
   };
 }
