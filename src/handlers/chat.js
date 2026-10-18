@@ -3458,6 +3458,20 @@ async function _handleChatCompletionsInner(body, context = {}) {
     const ccId = genId();
     const ccCreated = Math.floor(Date.now() / 1000);
     const ccStart = Date.now();
+
+    // [STREAM-CACHE] Probe BEFORE the pool preflight/acquire: a hit needs neither
+    // an RPM reservation nor a queue slot. The key is stream-agnostic
+    // (normalize() has no stream field), so stream and non-stream turns share one
+    // slot. cacheKey() gates isCacheEnabled + hasPerUserScope (-> null when
+    // uncacheable, so no cross-user sharing).
+    let __sCkey = null;
+    let __sHit = null;
+    try {
+      __sCkey = cacheKey(body, callerKey);
+      __sHit = __sCkey ? cacheGet(__sCkey) : null;
+      if (__sHit) log.info('[STREAM-CACHE-HIT] ckey=' + __sCkey);
+    } catch (e) { log.info('[STREAM-CACHE-ERR] pre ' + (e && e.message)); }
+
     // Acquire a pooled account for rotation + quota accounting. null ⇒ either
     // the pool is empty (single-token deploy → env-token fallback is correct)
     // OR every account is rate-limited/unavailable (the pool exists but is
@@ -3470,8 +3484,10 @@ async function _handleChatCompletionsInner(body, context = {}) {
     // there's no point holding the connection for QUEUE_MAX_WAIT_MS (the limit
     // may be minutes out) — return a fast 429 with an accurate retry_after so
     // the client backs off. A momentarily-busy (not rate-limited) account still
-    // gets the queue benefit via acquireConnectAccount below.
-    if (getAccountCount().total > 0) {
+    // gets the queue benefit via acquireConnectAccount below. A cache hit skips
+    // both: it is already the answer, and charging RPM for it would exhaust the
+    // pool under exactly the retry storm the cache exists to absorb.
+    if (!__sHit && getAccountCount().total > 0) {
       // No account entitled to this selector? (e.g. a paid selector like a fable
       // with only free-tier accounts in the pool.) Fail fast with a clear 403
       // instead of routing to an unentitled account and eating an upstream
@@ -3518,7 +3534,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
         };
       }
     }
-    const ccAcct = await acquireConnectAccount(context.signal, callerKey, selector);
+    const ccAcct = __sHit ? null : await acquireConnectAccount(context.signal, callerKey, selector);
     const connectParams = { messages: connectMessages, model: selector };
     // Session continuity (opt-in, DEVIN_CONNECT_SESSION_REUSE, default OFF). Derive
     // a stable protobuf session_id (#16) from the conversation's completed request/
@@ -3661,20 +3677,6 @@ async function _handleChatCompletionsInner(body, context = {}) {
     const triedKeys = [];
     const maxHops = connectFailoverMax();
 
-    // [STREAM-CACHE] exact-match cache for the DEVIN_CONNECT path (covers the
-    // ~98% stream traffic that never reaches the inner cache: the DEVIN_CONNECT
-    // short-circuit returns before it). cacheKey() gates isCacheEnabled +
-    // hasPerUserScope (-> null when uncacheable, so no cross-user sharing).
-    // The key is stream-agnostic (normalize() has no stream field), so stream
-    // and non-stream turns share one slot. Hits release the acquired account
-    // immediately and skip upstream entirely.
-    let __sCkey = null;
-    let __sHit = null;
-    try {
-      __sCkey = cacheKey(body, callerKey);
-      __sHit = __sCkey ? cacheGet(__sCkey) : null;
-      if (__sHit) log.info('[STREAM-CACHE-HIT] ckey=' + __sCkey);
-    } catch (e) { log.info('[STREAM-CACHE-ERR] pre ' + (e && e.message)); }
     if (stream) {
       return {
         status: 200,
@@ -3766,27 +3768,28 @@ async function _handleChatCompletionsInner(body, context = {}) {
               const _txt = _st.hit ? _st.text : (__sHit.text || '');
               const _finishReason = __sHit.finishReason || 'stop';
               const _cachedStop = _st.hit ? _st.stop : (__sHit.stop || null);
-              recordRequest(connectDisplayModel, true, 0, null);
+              const _display = __sHit.displayModel || connectDisplayModel;
+              recordRequest(_display, true, 0, null);
               const _use = __sHit.usage || cachedUsage(messages, _txt);
               try { recordTokenUsage(_use); } catch {}
-              send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: connectDisplayModel,
+              send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
                 choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
               if (__sHit.thinking) {
-                send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: connectDisplayModel,
+                send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
                   choices: [{ index: 0, delta: { reasoning_content: __sHit.thinking }, finish_reason: null }] });
               }
               if (_txt) {
-                send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: connectDisplayModel,
+                send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
                   choices: [{ index: 0, delta: { content: _txt }, finish_reason: null }] });
               }
               const _finishChoice = { index: 0, delta: {}, finish_reason: _finishReason };
               if (context?.__messagesStopCarrier === true && _cachedStop && _finishReason === 'stop') {
                 _finishChoice._windsurf_stop_sequence = _cachedStop;
               }
-              send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: connectDisplayModel,
+              send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
                 choices: [_finishChoice] });
               if (connectMeta.includeUsage) {
-                send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: connectDisplayModel,
+                send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
                   choices: [], usage: _use });
               }
               if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
@@ -3955,11 +3958,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 // [STREAM-CACHE] store full text + usage AFTER commit, BEFORE the
                 // loop-exit break (code after break is unreachable).
                 try {
-                  const _sTxt = r.sr?.content || '';
+                  const _sTxt = r.sr?.delivered ?? r.sr?.content ?? '';
                   const _sTc = r.sr?.toolCalls;
                   if (__sCkey && _sTxt && !(_sTc && _sTc.length)) {
                     const _sSt = applyStop(_sTxt, normalizeStop(body.stop));
-                    cacheSet(__sCkey, { text: _sSt.hit ? _sSt.text : _sTxt, thinking: r.sr?.reasoning || '', stop: _sSt.hit ? _sSt.stop : null, finishReason: r.sr?.finish_reason || null, usage: r.sr?.usage || null });
+                    cacheSet(__sCkey, { text: _sSt.hit ? _sSt.text : _sTxt, thinking: r.sr?.reasoning || '', stop: _sSt.hit ? _sSt.stop : (r.sr?.stop || null), finishReason: r.sr?.finish_reason || null, displayModel: connectDisplayModel, usage: r.sr?.usage || null });
                     log.info('[STREAM-CACHE-STORE] ckey=' + __sCkey);
                   }
                 } catch (e) { log.info('[STREAM-CACHE-ERR] store ' + (e && e.message)); }
@@ -4103,7 +4106,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
       const _ncachedStop = _nst.hit ? _nst.stop : (__sHit.stop || null);
       const _nuse = __sHit.usage || cachedUsage(messages, _ntxt);
       try { recordTokenUsage(_nuse); } catch {}
-      const _nmodel = mapped ? reqModelName : selector;
+      const _nmodel = __sHit.displayModel || connectDisplayModel;
       try { recordRequest(_nmodel, true, 0, null); } catch {}
       const _nmsg = { role: 'assistant', content: _ntxt };
       if (__sHit.thinking) _nmsg.reasoning_content = __sHit.thinking;
@@ -4153,7 +4156,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
           const _nTxt = _nMsg?.content;
           if (__sCkey && typeof _nTxt === 'string' && _nTxt && !(_nMsg?.tool_calls?.length)) {
             const _nSt = applyStop(_nTxt, normalizeStop(body.stop));
-            cacheSet(__sCkey, { text: _nSt.hit ? _nSt.text : _nTxt, thinking: _nMsg?.reasoning_content || '', stop: _nSt.hit ? _nSt.stop : null, finishReason: r.out?.body?.choices?.[0]?.finish_reason || null, usage: r.out?.body?.usage || null });
+            cacheSet(__sCkey, { text: _nSt.hit ? _nSt.text : _nTxt, thinking: _nMsg?.reasoning_content || '', stop: _nSt.hit ? _nSt.stop : (r.out?.stop || null), finishReason: r.out?.body?.choices?.[0]?.finish_reason || null, displayModel: connectDisplayModel, usage: r.out?.body?.usage || null });
             log.info('[STREAM-CACHE-STORE] ckey=' + __sCkey);
           }
         } catch (e) { log.info('[STREAM-CACHE-ERR] store ' + (e && e.message)); }

@@ -382,7 +382,7 @@ function nowSeconds() {
  * @param {boolean} [opts.emulateTools] when true, parse <tool_call> markup out of
  *                                      the buffered answer and surface OpenAI
  *                                      tool_calls (text-emulation, swe-1.6 etc).
- * @returns {Promise<{status:number, body:object}>}
+ * @returns {Promise<{status:number, body:object, stop:string|null}>}
  */
 export async function toChatCompletion(params, opts = {}) {
   const { id = newId(), created = nowSeconds(), displayModel, maxRetries = 2, retryBaseMs = 400, emulateTools = false, stop = null, clineCompat = false, stopCarrier = false } = opts;
@@ -570,7 +570,7 @@ export async function toChatCompletion(params, opts = {}) {
   // calibrated. Under the _windsurf prefix so it can't be mistaken for an OpenAI
   // field by a downstream relay that metering reads.
   if (billing) body._windsurf_billing = billing;
-  return { status: 200, body };
+  return { status: 200, body, stop: matchedStop };
 }
 
 /**
@@ -621,6 +621,11 @@ export async function streamChatCompletion(params, send, opts = {}) {
   let reasoning = '';
   let finishReason = 'stop';
   let usage = null;
+  // Exactly what the client received as visible content, after tool-markup
+  // stripping and the stop gate. `content` is the RAW upstream accumulator and
+  // is used for tool parsing/session continuity; caching must use `delivered`
+  // or a filtered/echoed <tool_call> block becomes the visible cached answer.
+  let delivered = '';
   // Same billing passthrough as the non-stream path.
   let streamBilling = null;
   // Native tool calls (DEVIN_CONNECT_TOOL_CALL_TAGS calibrated) ride the terminal
@@ -637,10 +642,14 @@ export async function streamChatCompletion(params, send, opts = {}) {
     if (!text) return false;
     if (!stopGate.active) {
       send({ ...base, choices: [{ index: 0, delta: { content: text }, finish_reason: null }] });
+      delivered += text;
       return false;
     }
     const { emit, hit } = stopGate.push(text);
-    if (emit) send({ ...base, choices: [{ index: 0, delta: { content: emit }, finish_reason: null }] });
+    if (emit) {
+      send({ ...base, choices: [{ index: 0, delta: { content: emit }, finish_reason: null }] });
+      delivered += emit;
+    }
     if (hit) { finishReason = 'stop'; stopHit = true; matchedStop = stopGate.matched; }
     return hit;
   };
@@ -683,6 +692,7 @@ export async function streamChatCompletion(params, send, opts = {}) {
     if (ev.type === 'attempt_reset') {
       reasoning = '';
       content = '';
+      delivered = '';
       collectedToolCalls.length = 0;
       nativeToolCalls = [];
       continue;
@@ -779,7 +789,10 @@ export async function streamChatCompletion(params, send, opts = {}) {
   // withholding in case they started a stop sequence). No-op after a hit.
   if (!stopHit && stopGate.active) {
     const tail = stopGate.flush();
-    if (tail) send({ ...base, choices: [{ index: 0, delta: { content: tail }, finish_reason: null }] });
+    if (tail) {
+      send({ ...base, choices: [{ index: 0, delta: { content: tail }, finish_reason: null }] });
+      delivered += tail;
+    }
   }
 
   // 4. Terminal finish chunk. Reaching here means streamChat drained cleanly
@@ -804,7 +817,7 @@ export async function streamChatCompletion(params, send, opts = {}) {
     send({ ...base, choices: [], usage });
   }
 
-  return { content, reasoning, finish_reason: finishReason, usage, billing: streamBilling, toolCalls: collectedToolCalls };
+  return { content, delivered, reasoning, finish_reason: finishReason, usage, billing: streamBilling, toolCalls: collectedToolCalls, stop: matchedStop };
 }
 
 export const __testing = {

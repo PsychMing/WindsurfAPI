@@ -7,14 +7,15 @@
 
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { addAccountByKey, removeAccount } from '../src/auth.js';
-import { cacheClear, cacheStats } from '../src/cache.js';
+import { addAccountByKey, removeAccount, markRateLimited } from '../src/auth.js';
+import { cacheClear, cacheKey, cacheSet, cacheStats } from '../src/cache.js';
 import { handleChatCompletions, __setConnectDeps, __resetConnectDeps } from '../src/handlers/chat.js';
 
 const CALLER = 'api:test:user:connect-cache';
 const MODEL = 'swe-1-6-slow';
 const created = [];
 const saved = {};
+let defaultAccount = null;
 
 function seed() {
   const a = addAccountByKey(`devin-session-token$cache-${Math.random().toString(36).slice(2)}`, 'cache-test');
@@ -67,7 +68,7 @@ beforeEach(() => {
   saved.DEVIN_CONNECT = process.env.DEVIN_CONNECT;
   process.env.DEVIN_CONNECT = '1';
   cacheClear();
-  seed();
+  defaultAccount = seed();
 });
 
 afterEach(() => {
@@ -125,6 +126,23 @@ describe('DEVIN_CONNECT exact cache', () => {
     assert.equal(frames.at(-1), '[DONE]');
   });
 
+  it('serves a cache hit even when every pooled account is rate-limited', async () => {
+    markRateLimited(defaultAccount.apiKey, 60_000);
+    cacheSet(cacheKey(body(), CALLER), {
+      text: 'cached despite 429', thinking: '', finishReason: 'stop',
+      usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+    });
+    let calls = 0;
+    __setConnectDeps({
+      toChatCompletion: async () => { calls++; return nonStream('upstream should not run'); },
+    });
+
+    const result = await handleChatCompletions(body(), { callerKey: CALLER });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.choices[0].message.content, 'cached despite 429');
+    assert.equal(calls, 0, 'a cache hit must not acquire or call an upstream account');
+  });
+
   it('does not cache tool-call turns', async () => {
     let calls = 0;
     __setConnectDeps({
@@ -158,7 +176,12 @@ describe('DEVIN_CONNECT exact cache', () => {
   it('replays the stored stop sequence for the internal Messages carrier', async () => {
     let calls = 0;
     __setConnectDeps({
-      toChatCompletion: async () => { calls++; return nonStream('hello END world', 'stop'); },
+      toChatCompletion: async () => {
+        calls++;
+        // The real adapter already applied stop and returns the truncated text;
+        // it carries the matched cause on `stop` because the text no longer has it.
+        return Object.assign(nonStream('hello ', 'stop'), { stop: 'END' });
+      },
     });
 
     const request = body({ stop: ['END'] });
