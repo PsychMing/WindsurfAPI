@@ -655,15 +655,19 @@ async function route(req, res) {
       // pre-content upstream 429/500 then becomes a real HTTP status instead of
       // a 200 SSE error frame. Heartbeats/role-only primes are buffered (bounded
       // by the wrapper) and flushed with the first real frame.
+      const commitMsRaw = Number(process.env.WINDSURFAPI_STREAM_COMMIT_MS);
+      const commitMs = Number.isFinite(commitMsRaw) && commitMsRaw >= 0 ? Math.min(commitMsRaw, 14_000) : undefined;
       const streamRes = createDeferredSseResponse(res, {
         status: result.status,
         headers: { 'Access-Control-Allow-Origin': '*', ...modelHeaders, ...result.headers },
         protocol: 'openai',
         requestId,
+        bootstrapTimeoutMs: commitMs,
       });
       try {
         await result.handler(streamRes);
       } finally {
+        streamRes.dispose();
         // The row was recorded when the descriptor was ready; the stream itself
         // runs inside result.handler, so its real wall time is only known here.
         // Patch the same row instead of recording a second one.

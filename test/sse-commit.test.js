@@ -65,8 +65,8 @@ describe('createDeferredSseResponse', () => {
     }));
     res.end();
     assert.equal(real.statusCode, 429);
-    assert.equal(real.headers['content-type'], 'application/json');
-    assert.equal(real.headers['retry-after'], '3');
+    assert.equal(real.headers['content-type'], 'application/json; charset=utf-8');
+    assert.equal(real.headers['retry-after'], '30');
     const body = JSON.parse(real.body);
     assert.equal(body.error.code, 'RATE_LIMITED');
     assert.equal(body.request_id, 'req_1');

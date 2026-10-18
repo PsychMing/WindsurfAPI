@@ -466,8 +466,8 @@ function requestLogSummary(text, limit = 220) {
   return `len=${raw.length} hash=${shortHash(raw)}`;
 }
 
-export function chatStreamError(message, type = 'upstream_error', code = null) {
-  return { error: { message: sanitizeText(message || 'Upstream stream error'), type, code } };
+export function chatStreamError(message, type = 'upstream_error', code = null, extra = null) {
+  return { error: { message: sanitizeText(message || 'Upstream stream error'), type, code, ...(extra || {}) } };
 }
 
 // O12: OpenAI chat.completion / chat.completion.chunk bodies carry
@@ -4012,7 +4012,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 // not what OpenAI SDKs back off on. The internal name is mapped
                 // to the official `rate_limit_error` by the egress normalizer.
                 const streamErrType = r.err.code === 'RATE_LIMITED' ? 'rate_limit_exceeded' : 'upstream_error';
-                send(chatStreamError(r.err.message, streamErrType, r.err.code || null));
+                const retryAfterMs = r.err.code === 'RATE_LIMITED'
+                  ? (Number.isFinite(r.err.resetMs) && r.err.resetMs > 0 ? r.err.resetMs : getBreakerTunable('rlBurstMs'))
+                  : null;
+                send(chatStreamError(r.err.message, streamErrType, r.err.code || null,
+                  retryAfterMs ? { retry_after_ms: retryAfterMs } : null));
                 break;
               }
               // r.kind === 'dead' — guaranteed !emitted, so a fresh account is safe.
