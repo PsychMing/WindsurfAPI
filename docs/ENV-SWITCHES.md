@@ -4,7 +4,9 @@ README 的表格列常用变量，[.env.example](../.env.example) 是完整清�
 75 个。本文补齐**剩下 82 个只存在于源码里**的开关：注释很全，但运营翻不到。
 （2026-10-16 按 `d3f0490` 重测：全量 **157**。旧值 158 / 74 / 84 是 `ab4e66f` 树的口径：
 `9031b9b` 把 `CASCADE_MAX_WAIT_MS` 写进 README（覆盖 +1），`054806a` 删掉一个开关的读取点
-（全量 −1）。重测命令就是下面那段脚本。）
+（全量 −1）。重测命令就是下面那段脚本。
+2026-10-18 @`9b287c1` 重测：**159**；新增 `WINDSURFAPI_STREAM_COMMIT_MS` 与
+`DEVIN_BACKEND_TOKEN` 两个读取点/文档项。）
 
 数开关**别用裸 `grep 'env\.'`**，有两个坑：一是 `WINDSURFAPI_TRACE` 这类名字是
 `WINDSURFAPI_TRACE_DIR` 的前缀，正则不加边界会重复计数；二是**相当一部分读取点
