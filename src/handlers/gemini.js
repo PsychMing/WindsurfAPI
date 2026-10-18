@@ -25,6 +25,7 @@
 
 import { handleChatCompletions, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
+import { SseFramer } from '../sse-framer.js';
 
 // ─── finish_reason mapping (OpenAI → Gemini) ────────────────────
 // Gemini has no dedicated finishReason for function calls — a turn that
@@ -409,7 +410,7 @@ class GeminiStreamTranslator {
     this.finalUsage = null;
     this.finishReason = 'STOP';
     this.finished = false;
-    this.pendingSseBuf = '';
+    this.sseFramer = new SseFramer({ onFrame: (frame) => this.handleSseFrame(frame) });
     this.frameCount = 0;
     // True once a terminal signal is seen: choice.finish_reason, an upstream
     // error chunk, or the `[DONE]` sentinel. finish() relies on this to tell a
@@ -538,6 +539,8 @@ class GeminiStreamTranslator {
 
   finish() {
     if (this.finished) return;
+    this.sseFramer.end();
+    if (this.finished) return;
     // An abnormally cut-off stream (network drop, upstream abort, hung-stream
     // deadline) reaches finish() with NO terminal signal — no choice.finish_reason,
     // no [DONE], no error frame. Emitting a terminal candidate with
@@ -608,28 +611,26 @@ class GeminiStreamTranslator {
   }
 
   // SSE parser — handleChatCompletions writes `data: {...}\n\n` frames.
+  // SseFramer owns CRLF, split UTF-8, multi-line data and EOF flush.
   feed(rawChunk) {
-    this.pendingSseBuf += typeof rawChunk === 'string' ? rawChunk : rawChunk.toString('utf8');
-    let idx;
-    while ((idx = this.pendingSseBuf.indexOf('\n\n')) !== -1) {
-      const frame = this.pendingSseBuf.slice(0, idx);
-      this.pendingSseBuf = this.pendingSseBuf.slice(idx + 2);
-      const lines = frame.split('\n');
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const payload = line.slice(6);
-        // `[DONE]` is the OpenAI stream's terminator, but it is NOT proof the turn
-        // completed: chat.js writes it on the truncated path too (right after the
-        // synthetic finish frame). Treating it as authoritative is the SECOND way
-        // the truncation guard was defeated — plugging only the finish-frame check
-        // above leaves this one open, which is why both are needed.
-        if (payload === '[DONE]') { if (!this.sawSyntheticFinish) this.sawTerminalSignal = true; continue; }
-        try {
-          this.processChunk(JSON.parse(payload));
-        } catch (e) {
-          log.warn(`Gemini SSE parse error: ${e.message}`);
-        }
-      }
+    this.sseFramer.push(rawChunk);
+  }
+
+  handleSseFrame({ data }) {
+    if (!data) return;
+    // `[DONE]` is the OpenAI stream's terminator, but it is NOT proof the turn
+    // completed: chat.js writes it on the truncated path too (right after the
+    // synthetic finish frame). Treating it as authoritative is the SECOND way
+    // the truncation guard was defeated — plugging only the finish-frame check
+    // above leaves this one open, which is why both are needed.
+    if (data === '[DONE]') {
+      if (!this.sawSyntheticFinish) this.sawTerminalSignal = true;
+      return;
+    }
+    try {
+      this.processChunk(JSON.parse(data));
+    } catch (e) {
+      log.warn(`Gemini SSE parse error: ${e.message}`);
     }
   }
 }

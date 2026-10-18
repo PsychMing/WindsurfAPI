@@ -14,6 +14,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { handleChatCompletions, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
+import { SseFramer } from '../sse-framer.js';
 import { leakTraceEnabled, thinkMarkersIn, leakSample } from '../leak-trace.js';
 
 function genMsgId() {
@@ -1114,7 +1115,7 @@ class AnthropicStreamTranslator {
     // chat.js emits `[DONE]` on that path too — so both signals must be discounted
     // together or BUG1's guard stays defeated.
     this.sawSyntheticFinish = false;
-    this.pendingSseBuf = '';
+    this.sseFramer = new SseFramer({ onFrame: (frame) => this.handleSseFrame(frame) });
     // Anthropic streams close a thinking block with a `signature_delta` carrying
     // the encrypted-thinking signature. Our upstream never produces one, so we
     // keep the pending signature empty and only emit the delta if a real
@@ -1407,6 +1408,8 @@ class AnthropicStreamTranslator {
 
   finish() {
     if (this.messageStopped) return;
+    this.sseFramer.end();
+    if (this.messageStopped) return;
     // BUG1: An abnormally cut-off stream (network drop, upstream abort, hung-
     // stream deadline) reaches finish() with NO terminal signal — no
     // choice.finish_reason, no [DONE], no error frame.
@@ -1520,33 +1523,28 @@ class AnthropicStreamTranslator {
     });
   }
 
-  // SSE parser — handleChatCompletions writes `data: {...}\n\n` frames;
-  // accumulate and flush each complete frame as a translated event.
+  // SSE parser — handleChatCompletions writes `data: {...}\n\n` frames.
+  // SseFramer owns CRLF, split UTF-8, multi-line data and EOF flush so this
+  // route and the other two dialects cannot drift apart.
   feed(rawChunk) {
-    this.pendingSseBuf += typeof rawChunk === 'string' ? rawChunk : rawChunk.toString('utf8');
-    let idx;
-    while ((idx = this.pendingSseBuf.indexOf('\n\n')) !== -1) {
-      const frame = this.pendingSseBuf.slice(0, idx);
-      this.pendingSseBuf = this.pendingSseBuf.slice(idx + 2);
-      const lines = frame.split('\n');
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const payload = line.slice(6);
-        if (payload === '[DONE]') {
-          // [DONE] is the OpenAI stream's terminator, but it is NOT proof the turn
-          // completed: chat.js writes it on the truncated path too, right after the
-          // synthetic finish frame. Treating it as authoritative is the SECOND way
-          // BUG1's guard was defeated — plugging only the finish-frame check leaves
-          // this one open, which is why both are needed.
-          if (!this.sawSyntheticFinish) this.sawTerminalSignal = true;
-          continue;
-        }
-        try {
-          this.processChunk(JSON.parse(payload));
-        } catch (e) {
-          log.warn(`Messages SSE parse error: ${e.message}`);
-        }
-      }
+    this.sseFramer.push(rawChunk);
+  }
+
+  handleSseFrame({ data }) {
+    if (!data) return;
+    if (data === '[DONE]') {
+      // [DONE] is the OpenAI stream's terminator, but it is NOT proof the turn
+      // completed: chat.js writes it on the truncated path too, right after the
+      // synthetic finish frame. Treating it as authoritative is the SECOND way
+      // BUG1's guard was defeated — plugging only the finish-frame check leaves
+      // this one open, which is why both are needed.
+      if (!this.sawSyntheticFinish) this.sawTerminalSignal = true;
+      return;
+    }
+    try {
+      this.processChunk(JSON.parse(data));
+    } catch (e) {
+      log.warn(`Messages SSE parse error: ${e.message}`);
     }
   }
 }

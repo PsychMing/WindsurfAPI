@@ -10,6 +10,7 @@ import { handleChatCompletions, normalizeOpenAIErrorType, connectErrorToHttp, ha
 import { getResponse, putResponse, deleteResponse, isResponseStoreEnabled, wantsPersistence } from '../response-store.js';
 import { safeLogValue } from '../log-safety.js';
 import { log } from '../config.js';
+import { SseFramer } from '../sse-framer.js';
 
 function genResponseId() {
   return 'resp_' + randomUUID().replace(/-/g, '').slice(0, 24);
@@ -665,7 +666,7 @@ class ResponsesStreamTranslator {
     this.requestedTools = Array.isArray(requestedTools) ? requestedTools : [];
     this.createdAt = Math.floor(Date.now() / 1000);
     this.msgId = genMessageId();
-    this.pendingSseBuf = '';
+    this.sseFramer = new SseFramer({ onFrame: (frame) => this.handleSseFrame(frame) });
     this.createdSent = false;
     this.finished = false;
     // TWO accumulators, deliberately:
@@ -1063,6 +1064,8 @@ class ResponsesStreamTranslator {
 
   finish() {
     if (this.finished) return;
+    this.sseFramer.end();
+    if (this.finished) return;
     this.finished = true;
     this.start();
     this.finishReasoning();
@@ -1141,27 +1144,20 @@ class ResponsesStreamTranslator {
   }
 
   feed(rawChunk) {
-    this.pendingSseBuf += typeof rawChunk === 'string' ? rawChunk : rawChunk.toString('utf8');
-    let idx;
-    while ((idx = this.pendingSseBuf.indexOf('\n\n')) !== -1) {
-      const frame = this.pendingSseBuf.slice(0, idx);
-      this.pendingSseBuf = this.pendingSseBuf.slice(idx + 2);
-      const lines = frame.split('\n');
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const payload = line.slice(6);
-        if (payload === '[DONE]') continue;
-        try {
-          const parsed = JSON.parse(payload);
-          if (parsed.error) {
-            this.error(parsed.error);
-          } else {
-            this.processChunk(parsed);
-          }
-        } catch (e) {
-          log.warn(`Responses SSE parse error: ${e.message}`);
-        }
+    this.sseFramer.push(rawChunk);
+  }
+
+  handleSseFrame({ data }) {
+    if (!data || data === '[DONE]') return;
+    try {
+      const parsed = JSON.parse(data);
+      if (parsed.error) {
+        this.error(parsed.error);
+      } else {
+        this.processChunk(parsed);
       }
+    } catch (e) {
+      log.warn(`Responses SSE parse error: ${e.message}`);
     }
   }
 }
