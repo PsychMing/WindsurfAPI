@@ -72,6 +72,15 @@ describe('createDeferredSseResponse', () => {
     assert.equal(body.request_id, 'req_1');
   });
 
+  it('maps a multi-line CRLF error frame without cutting it at the first line', () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200 });
+    res.write('data: {"error":\r\ndata: {"message":"busy","code":"RATE_LIMITED","retry_after_ms":2500}}\r\n\r\n');
+    res.end();
+    assert.equal(real.statusCode, 429);
+    assert.equal(real.headers['retry-after'], '30');
+  });
+
   it('does not rewrite an error that arrives after content committed', () => {
     const real = fakeRes();
     const res = createDeferredSseResponse(real, { status: 200 });

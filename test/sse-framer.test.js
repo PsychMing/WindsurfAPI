@@ -100,6 +100,20 @@ describe('SseFramer', () => {
     assert.deepEqual(findFrameEnd('a\r\n\r\nb'), { frameEnd: 1, next: 5 });
     assert.equal(findFrameEnd('a\nb'), null);
   });
+
+  it('findFrameEnd recognizes mixed line terminators', () => {
+    assert.deepEqual(findFrameEnd('a\n\r\nb'), { frameEnd: 1, next: 4 });
+    assert.deepEqual(findFrameEnd('a\r\n\rb'), { frameEnd: 1, next: 4 });
+    assert.deepEqual(findFrameEnd('a\r\n\nb'), { frameEnd: 1, next: 4 });
+    assert.deepEqual(findFrameEnd('a\n\rb'), { frameEnd: 1, next: 3 });
+  });
+
+  it('does not treat one lone CRLF as a frame boundary', () => {
+    assert.equal(findFrameEnd('data: a\r\n'), null);
+    assert.equal(findFrameEnd('data: a\r\nb'), null);
+    assert.equal(findFrameEnd('data: a\n'), null);
+    assert.equal(findFrameEnd('data: a\r'), null);
+  });
 });
 
 describe('sse-commit + CRLF', () => {

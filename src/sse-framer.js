@@ -9,7 +9,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 export const DEFAULT_MAX_FRAME_BYTES = 64 * 1024 * 1024;
 
-const TERMINATOR_RE = /(\r\n\r\n|\n\n|\r\r)/g;
+const TERMINATOR_RE = /(\r\n\r\n|\r\n\n|\r\n\r|\n\r\n|\n\n|\n\r|\r\r)/g;
 const LINE_RE = /(\r\n|\n|\r)/g;
 const FIELD_RE = /^(event|data|id|retry):[ \t]?(.*)$/;
 
