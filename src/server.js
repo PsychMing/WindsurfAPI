@@ -233,6 +233,45 @@ function anthropicModelPayload(id, info) {
   };
 }
 
+/**
+ * Serve an OpenAI chat stream through the commit gate.
+ *
+ * Exported so the route wiring itself (not just the wrapper) can be tested:
+ * `commitMs === 0` must restore the legacy raw-res shape, otherwise the gate
+ * buffers the first frames and can rewrite a pre-content error.
+ */
+export async function serveChatStream(res, result, {
+  headers,
+  requestId,
+  commitMs,
+  onDone = null,
+} = {}) {
+  if (commitMs === 0) {
+    if (!res.headersSent) res.writeHead(result.status, headers);
+    try {
+      await result.handler(res);
+    } finally {
+      onDone?.();
+    }
+    return;
+  }
+  const streamRes = createDeferredSseResponse(res, {
+    status: result.status,
+    headers,
+    protocol: 'openai',
+    requestId,
+    bootstrapTimeoutMs: commitMs,
+  });
+  try {
+    await result.handler(streamRes);
+  } finally {
+    streamRes.dispose();
+    // A handler that throws after committing must not leave the socket open.
+    if (res.headersSent && !res.writableEnded) res.end();
+    onDone?.();
+  }
+}
+
 async function route(req, res) {
   const { method } = req;
   let path = req.url.split('?')[0];
@@ -662,35 +701,12 @@ async function route(req, res) {
           ? Math.min(Number(commitMsRaw), 14_000)
           : undefined);
       const streamHeaders = { 'Access-Control-Allow-Origin': '*', ...modelHeaders, ...result.headers };
-      if (commitMs === 0) {
-        // Explicit kill switch: restore the legacy shape (headers first, raw res)
-        // so an operator can bypass the gate without a deploy.
-        if (!res.headersSent) res.writeHead(result.status, streamHeaders);
-        try {
-          await result.handler(res);
-        } finally {
-          updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode });
-        }
-      } else {
-        const streamRes = createDeferredSseResponse(res, {
-          status: result.status,
-          headers: streamHeaders,
-          protocol: 'openai',
-          requestId,
-          bootstrapTimeoutMs: commitMs,
-        });
-        try {
-          await result.handler(streamRes);
-        } finally {
-          streamRes.dispose();
-          // A handler that throws after committing must not leave the socket open.
-          if (res.headersSent && !res.writableEnded) res.end();
-          // The row was recorded when the descriptor was ready; the stream itself
-          // runs inside result.handler, so its real wall time is only known here.
-          // Patch the same row instead of recording a second one.
-          updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode });
-        }
-      }
+      await serveChatStream(res, result, {
+        headers: streamHeaders,
+        requestId,
+        commitMs,
+        onDone: () => updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode }),
+      });
     } else {
       for (const [k, v] of Object.entries(modelHeaders)) res.setHeader(k, v);
       if (result.headers) {
