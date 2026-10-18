@@ -139,6 +139,25 @@ describe('#30 — vision requests use DEFAULT planner mode without the bridge co
   });
 });
 
+describe('#32 — no-tools requests override the tool_calling_section', () => {
+  it('emits "No tools are available." on field 10 and omits it when a tool preamble is present', () => {
+    const noTools = buildSendCascadeMessageRequest('k', 'cid', 'hi', 12345, 'MODEL_TEST', 'sess');
+    const noToolsParts = cascadeParts(noTools);
+    assert.equal(getField(noToolsParts.conv, 4, 0)?.value, 3, 'no-tools must use NO_TOOL (3)');
+    assert.equal(sectionText(noToolsParts.conv, 10), 'No tools are available.',
+      '#32: the model must be told it has no tools, not left to infer it from silence');
+    assert.ok(sectionText(noToolsParts.conv, 12), 'the no-tools additional-instructions override must ride field 12');
+
+    const withTools = buildSendCascadeMessageRequest('k', 'cid', 'hi', 12345, 'MODEL_TEST', 'sess', {
+      toolPreamble: 'Tools available this turn: Bash.',
+    });
+    const withToolsParts = cascadeParts(withTools);
+    assert.equal(getField(withToolsParts.conv, 10, 2), null,
+      '#32: a tool preamble must replace the no-tools section, not stack on top of it');
+    assert.match(sectionText(withToolsParts.conv, 12), /Tools available this turn/);
+  });
+});
+
 describe('#212 — Happy Eyeballs disabled + local LS connections dial 127.0.0.1', () => {
   it('importing config.js sets net.getDefaultAutoSelectFamily() === false', () => {
     assert.equal(typeof net.getDefaultAutoSelectFamily, 'function');
