@@ -387,7 +387,7 @@ describe('parseNativeFunctionCallsFromText', () => {
 });
 
 describe('buildAdditionalStep / buildAdditionalStepsFromHistory', () => {
-  it('view_file step encodes envelope with type=14 + content overlay', () => {
+  it('view_file step encodes CortexStepType=8 with the body on oneof field 14', () => {
     const buf = buildAdditionalStep('view_file', {
       absolute_path_uri: 'file:///foo.ts',
       content: 'console.log("hi")',
@@ -395,7 +395,7 @@ describe('buildAdditionalStep / buildAdditionalStepsFromHistory', () => {
     assert.ok(Buffer.isBuffer(buf));
     const fields = parseFields(buf);
     const typeField = getField(fields, 1, 0);
-    assert.equal(typeField.value, 14);
+    assert.equal(typeField.value, 8, 'CortexStepType.VIEW_FILE is 8, not the oneof field 14');
     const oneof = getField(fields, 14, 2);
     assert.ok(oneof, 'view_file body should be on field 14');
     const body = parseFields(oneof.value);
@@ -410,7 +410,7 @@ describe('buildAdditionalStep / buildAdditionalStepsFromHistory', () => {
       exit_code: 0,
     });
     const fields = parseFields(buf);
-    assert.equal(getField(fields, 1, 0).value, 28);
+    assert.equal(getField(fields, 1, 0).value, 21, 'CortexStepType.RUN_COMMAND is 21');
     const body = parseFields(getField(fields, 28, 2).value);
     assert.equal(getField(body, 23, 2).value.toString('utf8'), 'echo hi');
     const combined = parseFields(getField(body, 21, 2).value);
@@ -434,7 +434,7 @@ describe('buildAdditionalStep / buildAdditionalStepsFromHistory', () => {
     const steps = buildAdditionalStepsFromHistory(messages);
     assert.equal(steps.length, 1);
     const fields = parseFields(steps[0]);
-    assert.equal(getField(fields, 1, 0).value, 14); // CortexStepType view_file = 14
+    assert.equal(getField(fields, 1, 0).value, 8, 'CortexStepType.VIEW_FILE is 8');
     const body = parseFields(getField(fields, 14, 2).value);
     assert.equal(getField(body, 4, 2).value.toString('utf8'), '127.0.0.1 localhost\n');
   });
@@ -455,7 +455,7 @@ describe('buildAdditionalStep / buildAdditionalStepsFromHistory', () => {
     const steps = buildAdditionalStepsFromHistory(messages);
     assert.equal(steps.length, 1);
     const fields = parseFields(steps[0]);
-    assert.equal(getField(fields, 1, 0).value, 40);
+    assert.equal(getField(fields, 1, 0).value, 31, 'CortexStepType.READ_URL_CONTENT is 31');
     const body = parseFields(getField(fields, 40, 2).value);
     assert.equal(getField(body, 1, 2).value.toString('utf8'), 'https://example.com/docs');
     assert.equal(getField(body, 5, 2), null, 'read_url_content must not encode legacy top-level summary field 5');
@@ -795,12 +795,12 @@ describe('buildSendCascadeMessageRequest — additional_steps on field 9', () =>
 
 describe('CASCADE_STEP type constants — sanity', () => {
   it('matches proto field numbers used in oneof', () => {
-    assert.equal(CASCADE_STEP.view_file.typeEnum, 14);
-    assert.equal(CASCADE_STEP.run_command.typeEnum, 28);
-    assert.equal(CASCADE_STEP.grep_search_v2.typeEnum, 105);
-    assert.equal(CASCADE_STEP.find.typeEnum, 34);
-    assert.equal(CASCADE_STEP.list_directory.typeEnum, 15);
-    assert.equal(CASCADE_STEP.write_to_file.typeEnum, 23);
+    assert.equal(CASCADE_STEP.view_file.typeEnum, 8);
+    assert.equal(CASCADE_STEP.run_command.typeEnum, 21);
+    assert.equal(CASCADE_STEP.grep_search_v2.typeEnum, 91);
+    assert.equal(CASCADE_STEP.find.typeEnum, 25);
+    assert.equal(CASCADE_STEP.list_directory.typeEnum, 9);
+    assert.equal(CASCADE_STEP.write_to_file.typeEnum, 16);
   });
 });
 

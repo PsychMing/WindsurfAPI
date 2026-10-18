@@ -54,25 +54,25 @@ import {
 
 // ─── Cascade step type enums ───────────────────────────────────────
 //
-// CortexStepType field numbers from exa.cortex_pb.proto (see
-// scripts/ls-protos/proto/exa_cortex_pb_cortex.proto). The enum is the
-// CortexTrajectoryStep.type (field 1) value. The matching oneof field
-// number for each step is also the same number — Cascade keeps them
-// aligned so the discriminator and the body share an integer.
-
+// CortexStepType enum values from exa.cortex_pb.proto. The `type` field is
+// `CortexTrajectoryStep.type` (field 1), whose enum values are NOT the oneof
+// field numbers: e.g. VIEW_FILE=8 but the `view_file` body rides field 14.
+// Writing the oneof number into `type` labels every step as a different kind
+// (14 is USER_INPUT, 28 is COMMAND_STATUS, 40 is TOOL_CALL_PROPOSAL). The
+// body field still uses the oneof number; keep the two separate.
 export const CASCADE_STEP = {
   // step kind → { typeEnum, oneofField }
-  view_file:       { typeEnum: 14,  oneofField: 14  },
-  list_directory:  { typeEnum: 15,  oneofField: 15  },
-  write_to_file:   { typeEnum: 23,  oneofField: 23  },
-  run_command:     { typeEnum: 28,  oneofField: 28  },
-  propose_code:    { typeEnum: 32,  oneofField: 32  },
-  find:            { typeEnum: 34,  oneofField: 34  },
-  read_url_content:{ typeEnum: 40,  oneofField: 40  },
-  grep_search:     { typeEnum: 13,  oneofField: 13  },
-  grep_search_v2:  { typeEnum: 105, oneofField: 105 },
+  view_file:       { typeEnum: 8,   oneofField: 14  },
+  list_directory:  { typeEnum: 9,   oneofField: 15  },
+  write_to_file:   { typeEnum: 16,  oneofField: 23  },
+  run_command:     { typeEnum: 21,  oneofField: 28  },
+  propose_code:    { typeEnum: 24,  oneofField: 32  },
+  find:            { typeEnum: 25,  oneofField: 34  },
+  read_url_content:{ typeEnum: 31,  oneofField: 40  },
+  grep_search:     { typeEnum: 7,   oneofField: 13  },
+  grep_search_v2:  { typeEnum: 91,  oneofField: 105 },
   // v2.0.70 — search_web (CortexStepSearchWeb proto field 42).
-  search_web:      { typeEnum: 42,  oneofField: 42  },
+  search_web:      { typeEnum: 33,  oneofField: 42  },
 };
 
 // CortexStepStatus — used for the step.status field (CortexTrajectoryStep
