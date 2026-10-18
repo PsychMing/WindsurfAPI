@@ -62,6 +62,23 @@ export function recordRequest(row = {}) {
   return entry;
 }
 
+/**
+ * Patch an existing row in place (used by streaming routes after the handler
+ * finishes). Only the fields the ring owns are copied; unknown fields are
+ * ignored. Returns the row or null when the id is no longer in the ring.
+ */
+export function updateRequest(id, patch = {}) {
+  const key = String(id || '');
+  if (!key) return null;
+  const row = rows.find((r) => r && r.id === key);
+  if (!row) return null;
+  if (Number.isFinite(patch.durationMs)) row.durationMs = Math.max(0, Math.round(patch.durationMs));
+  if (Number.isFinite(patch.status)) row.status = patch.status;
+  if (typeof patch.class === 'string') row.class = patch.class.slice(0, 80);
+  if (typeof patch.stream === 'boolean') row.stream = patch.stream;
+  return row;
+}
+
 /** Newest-first page. `filter` supports model/status/class exact matches. */
 export function listRequests({ cursor = null, limit = 50, filter = {} } = {}) {
   const n = Math.max(1, Math.min(200, Number(limit) || 50));

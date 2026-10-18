@@ -1,7 +1,7 @@
 import { beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  recordRequest, listRequests, requestRingStats, __resetRequestRingForTest,
+  recordRequest, updateRequest, listRequests, requestRingStats, __resetRequestRingForTest,
 } from '../src/dashboard/request-ring.js';
 
 beforeEach(() => __resetRequestRingForTest());
@@ -41,6 +41,15 @@ describe('dashboard request ring', () => {
     assert.deepEqual(second.items.map((r) => r.id), ['r1']);
     assert.equal(second.nextCursor, null);
     assert.deepEqual(requestRingStats(), { total: 3, capacity: 2000 });
+  });
+
+  it('patches a streaming row in place without adding a second row', () => {
+    const row = recordRequest({ id: 'r1', ts: 100, model: 'a', status: 200, durationMs: 45, stream: true });
+    const updated = updateRequest(row.id, { durationMs: 1956, class: 'ok' });
+    assert.equal(updated.durationMs, 1956);
+    assert.equal(updated.class, 'ok');
+    assert.equal(listRequests({}).total, 1);
+    assert.equal(updateRequest('missing', { durationMs: 1 }), null);
   });
 
   it('drops unknown fields and coerces invalid values', () => {

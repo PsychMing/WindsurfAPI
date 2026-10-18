@@ -35,7 +35,7 @@ import { resolveCcCompat, stripCcNamespace } from './handlers/cc-compat.js';
 import { isExperimentalEnabled, getBackendSwitch } from './runtime-config.js';
 import { resolveModel, getModelInfo } from './models.js';
 import { handleDashboardApi, parseProxyUrl, validateProxyHost, verifyAdminRequest } from './dashboard/api.js';
-import { recordRequest } from './dashboard/request-ring.js';
+import { recordRequest, updateRequest } from './dashboard/request-ring.js';
 import { setAccountProxy } from './dashboard/proxy-config.js';
 import { config, log } from './config.js';
 import { getVersionInfo } from './version.js';
@@ -628,7 +628,7 @@ async function route(req, res) {
     });
     const processingMs = Date.now() - reqStartedAt;
     const requestId = 'req_' + randomUUID();
-    recordRequest({
+    const ringRow = recordRequest({
       id: requestId,
       model: body.model,
       status: result.status,
@@ -651,7 +651,14 @@ async function route(req, res) {
     };
     if (result.stream) {
       res.writeHead(result.status, { 'Access-Control-Allow-Origin': '*', ...modelHeaders, ...result.headers });
-      await result.handler(res);
+      try {
+        await result.handler(res);
+      } finally {
+        // The row was recorded when the descriptor was ready; the stream itself
+        // runs inside result.handler, so its real wall time is only known here.
+        // Patch the same row instead of recording a second one.
+        updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt });
+      }
     } else {
       for (const [k, v] of Object.entries(modelHeaders)) res.setHeader(k, v);
       if (result.headers) {
@@ -695,7 +702,7 @@ async function route(req, res) {
     });
     const processingMs = Date.now() - reqStartedAt;
     const requestId = 'req_' + randomUUID();
-    recordRequest({
+    const ringRow = recordRequest({
       id: requestId,
       model: body.model,
       status: result.status,
@@ -757,7 +764,7 @@ async function route(req, res) {
     });
     const processingMs = Date.now() - reqStartedAt;
     const requestId = 'req_' + randomUUID();
-    recordRequest({
+    const ringRow = recordRequest({
       id: requestId,
       model: body.model,
       status: result.status,
@@ -775,7 +782,14 @@ async function route(req, res) {
     };
     if (result.stream) {
       res.writeHead(result.status, { 'Access-Control-Allow-Origin': '*', ...modelHeaders, ...result.headers });
-      await result.handler(res);
+      try {
+        await result.handler(res);
+      } finally {
+        // The row was recorded when the descriptor was ready; the stream itself
+        // runs inside result.handler, so its real wall time is only known here.
+        // Patch the same row instead of recording a second one.
+        updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt });
+      }
     } else {
       for (const [k, v] of Object.entries(modelHeaders)) res.setHeader(k, v);
       if (result.headers) {
