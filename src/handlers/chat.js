@@ -523,6 +523,7 @@ export function connectErrorToHttp(code) {
     // RETRYABLE_CODES — the stream replay gate must not re-run a doomed ≈2×
     // cycle against the same stuck upstream (external audit 2026-07-12, flaw 1).
     case 'DEADLINE_EXCEEDED': return { status: 504, type: 'timeout_error' };
+    case 'windsurf_provider_deadline': return { status: 504, type: 'timeout_error' };
     default: return { status: 502, type: 'upstream_error' };
   }
 }
@@ -7140,7 +7141,21 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               : (temporaryUnavailable.allUnavailable || lastErr?.type === 'rate_limit_exceeded')
                 ? 'rate_limit_exceeded'
                 : 'upstream_error';
-            send(chatStreamError(errMsg, errType, deadlineExceeded ? 'windsurf_provider_deadline' : null));
+            const errCode = deadlineExceeded
+              ? 'windsurf_provider_deadline'
+              : (temporaryUnavailable.allUnavailable || lastErr?.type === 'rate_limit_exceeded')
+                ? 'RATE_LIMITED'
+                : poolExhausted
+                  ? 'CAPACITY'
+                  : allInternal
+                    ? 'UPSTREAM_INTERNAL'
+                    : null;
+            const retryAfterMs = errCode === 'RATE_LIMITED'
+              ? (Number.isFinite(temporaryUnavailable.retryAfterMs) && temporaryUnavailable.retryAfterMs > 0
+                ? temporaryUnavailable.retryAfterMs
+                : (Number.isFinite(lastErr?.retry_after_ms) ? lastErr.retry_after_ms : null))
+              : null;
+            send(chatStreamError(errMsg, errType, errCode, retryAfterMs ? { retry_after_ms: retryAfterMs } : null));
           });
         }
         failureStage('done', () => {

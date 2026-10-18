@@ -82,7 +82,7 @@ describe('createDeferredSseResponse', () => {
   });
 
   it('maps classified error codes to the documented statuses', () => {
-    for (const [code, status] of [['MODEL_BLOCKED', 402], ['QUOTA_EXHAUSTED', 402], ['UPSTREAM_INTERNAL', 503], ['NO_TOKEN', 401], ['RATE_LIMITED', 429]]) {
+    for (const [code, status] of [['MODEL_BLOCKED', 402], ['QUOTA_EXHAUSTED', 402], ['UPSTREAM_INTERNAL', 503], ['NO_TOKEN', 401], ['RATE_LIMITED', 429], ['windsurf_provider_deadline', 504]]) {
       const real = fakeRes();
       const res = createDeferredSseResponse(real, { status: 200 });
       res.write(`data: ${JSON.stringify({ error: { message: code, code } })}\n\n`);
