@@ -62,6 +62,39 @@ describe('SseFramer', () => {
     assert.equal(overflow.code, 'SSE_FRAME_TOO_LARGE');
   });
 
+  it('does not reject a batch of complete frames just because the push is large', () => {
+    let overflow = null;
+    const { framer, frames } = collect({ maxFrameBytes: 8, onOverflow: (e) => { overflow = e; } });
+    framer.push('data: 1\n\ndata: 2\n\n');
+    assert.equal(framer.failed, false);
+    assert.equal(overflow, null);
+    assert.deepEqual(frames, [{ event: null, data: '1' }, { event: null, data: '2' }]);
+  });
+
+  it('applies the cap to the frame payload, not the wire prefix', () => {
+    let overflow = null;
+    const { framer, frames } = collect({ maxFrameBytes: 10, onOverflow: (e) => { overflow = e; } });
+    framer.push('data: 1234567890\n\n');
+    assert.equal(framer.failed, false);
+    assert.equal(overflow, null);
+    assert.deepEqual(frames, [{ event: null, data: '1234567890' }]);
+  });
+
+  it('holds a trailing CR when the next chunk starts with LF', () => {
+    const { framer, frames } = collect();
+    framer.push('event: m\r');
+    framer.push('\ndata: a\r\ndata: b\r\n\r\n');
+    assert.deepEqual(frames, [{ event: 'm', data: 'a\nb' }]);
+  });
+
+  it('does not dispatch after end', () => {
+    const { framer, frames } = collect();
+    framer.push('data: one\n\n');
+    framer.end();
+    framer.push('data: two\n\n');
+    assert.deepEqual(frames, [{ event: null, data: 'one' }]);
+  });
+
   it('findFrameEnd recognizes LF and CRLF boundaries', () => {
     assert.deepEqual(findFrameEnd('a\n\nb'), { frameEnd: 1, next: 3 });
     assert.deepEqual(findFrameEnd('a\r\n\r\nb'), { frameEnd: 1, next: 5 });

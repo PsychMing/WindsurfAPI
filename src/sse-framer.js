@@ -36,51 +36,58 @@ export class SseFramer {
     this.event = null;
     this.data = [];
     this.failed = false;
+    this.ended = false;
   }
 
   get bufferedBytes() {
-    return Buffer.byteLength(this.buf, 'utf8') + Buffer.byteLength(this.data.join('\n'), 'utf8');
+    return Buffer.byteLength(this.buf, 'utf8')
+      + Buffer.byteLength(this.data.join('\n'), 'utf8')
+      + (this.event ? Buffer.byteLength(this.event, 'utf8') : 0);
   }
 
   push(chunk) {
-    if (this.failed) return;
+    if (this.failed || this.ended) return;
     const text = typeof chunk === 'string' ? chunk : this.decoder.write(Buffer.from(chunk));
     this.buf += text;
-    if (this.bufferedBytes > this.maxFrameBytes) {
-      this.#overflow();
-      return;
-    }
     this.#drain(false);
+    if (!this.failed && this.bufferedBytes > this.maxFrameBytes) this.#overflow();
   }
 
   end() {
-    if (this.failed) return;
+    if (this.failed || this.ended) return;
+    this.ended = true;
     this.buf += this.decoder.end();
     this.#drain(true);
+    if (!this.failed && this.bufferedBytes > this.maxFrameBytes) this.#overflow();
   }
 
   #drain(eof) {
     let offset = 0;
     for (;;) {
+      if (this.failed) break;
       LINE_RE.lastIndex = offset;
       const match = LINE_RE.exec(this.buf);
       if (!match) break;
+      // A chunk boundary can split CRLF: hold a trailing CR for the next push.
+      if (!eof && match[0] === '\r' && match.index === this.buf.length - 1) break;
       const line = this.buf.slice(offset, match.index);
       offset = match.index + match[0].length;
       this.#line(line);
     }
     this.buf = this.buf.slice(offset);
-    if (eof) {
+    if (eof && !this.failed) {
       if (this.buf.length) this.#line(this.buf);
       this.buf = '';
       this.#dispatch();
     }
-    if (this.bufferedBytes > this.maxFrameBytes) this.#overflow();
   }
 
   #overflow() {
     if (this.failed) return;
     this.failed = true;
+    this.buf = '';
+    this.event = null;
+    this.data = [];
     this.onOverflow?.(Object.assign(new Error('SSE frame exceeds cap'), { code: 'SSE_FRAME_TOO_LARGE' }));
   }
 
@@ -100,7 +107,14 @@ export class SseFramer {
   }
 
   #dispatch() {
+    if (this.failed) return;
     if (this.event !== null || this.data.length) {
+      const frameBytes = Buffer.byteLength(this.data.join('\n'), 'utf8')
+        + (this.event ? Buffer.byteLength(this.event, 'utf8') : 0);
+      if (frameBytes > this.maxFrameBytes) {
+        this.#overflow();
+        return;
+      }
       this.onFrame?.({ event: this.event, data: this.data.join('\n') });
     }
     this.event = null;
