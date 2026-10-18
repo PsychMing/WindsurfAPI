@@ -5544,10 +5544,11 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     // extras are best-effort — a 401/failure on either renders that panel's empty
     // state without blocking the KPI row or LS section (KiroStudio principle:
     // independent skeletons, never one failing source white-screens the page).
-    const [d, s, cm] = await Promise.all([
+    const [d, s, cm, usage] = await Promise.all([
       this.api('GET', '/overview'),
       this.api('GET', '/stats').catch(() => null),
       this.api('GET', '/connect-metrics').catch(() => null),
+      this.api('GET', '/usage').catch(() => null),
     ]);
     if (!isCurrent()) return;
     if (d?.success === false) return;
@@ -5592,6 +5593,14 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         <div class="card-value" style="font-size:20px">${I18n.t(ls.running ? 'card.languageServer.running' : 'card.languageServer.stopped')}</div>
         <div class="card-sub">${I18n.t('card.languageServer.subtitle', { count: poolCount, port: ls.port || '-' })} · RSS ${totalRss} · Cap ${ls.maxInstances || '-'}</div>
       </div>` : '';
+    const usageCard = usage?.ok ? `
+      <div class="card info">
+        <div class="card-header"><div class="card-title">Usage</div>
+          <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+        </div>
+        <div class="card-value" style="font-size:20px">${usage.quota?.dailyPercentage ?? '-'}%</div>
+        <div class="card-sub">${usage.plan || '-'} · daily · weekly ${usage.quota?.weeklyPercentage ?? '-'}% · ${usage.availableCredits ?? 0} credits</div>
+      </div>` : '';
     document.getElementById('overview-cards').innerHTML = `
       <div class="card success">
         <div class="card-header"><div class="card-title">${I18n.t('card.activeAccounts.title')}</div>
@@ -5623,6 +5632,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         <div class="card-sub">${I18n.t('card.uptime.subtitle', { time: d.startedAt ? new Date(d.startedAt).toLocaleString() : '-' })}</div>
       </div>
       ${lsCard}
+      ${usageCard}
       <div class="card info">
         <div class="card-header"><div class="card-title">${I18n.t('card.responseCache.title')}</div>
           <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg>
