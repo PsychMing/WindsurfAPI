@@ -32,7 +32,7 @@ import { handleResponses, handleGetResponse, handleDeleteResponse } from './hand
 import { handleModels } from './handlers/models.js';
 import { resolveClineCompat, stripClineNamespace } from './handlers/cline-compat.js';
 import { resolveCcCompat, stripCcNamespace } from './handlers/cc-compat.js';
-import { isExperimentalEnabled } from './runtime-config.js';
+import { isExperimentalEnabled, getBackendSwitch } from './runtime-config.js';
 import { resolveModel, getModelInfo } from './models.js';
 import { handleDashboardApi, parseProxyUrl, validateProxyHost, verifyAdminRequest } from './dashboard/api.js';
 import { setAccountProxy } from './dashboard/proxy-config.js';
@@ -55,6 +55,17 @@ export const MAX_BODY_SIZE = 10 * 1024 * 1024;
 // 分叉,故解析结果仅用于回写响应头 + 诊断日志。
 const ANTHROPIC_DEFAULT_VERSION = '2023-06-01';
 const ANTHROPIC_KNOWN_VERSIONS = new Set(['2023-06-01', '2023-01-01']);
+
+// Single-token DEVIN_CONNECT deploys (DEVIN_CONNECT_TOKEN / WINDSURF_API_KEY)
+// intentionally keep the account pool empty: the connect client falls back to
+// the env token when `acct` is null. The HTTP prechecks below must therefore
+// accept that deploy shape too, or every chat route 503s before the handler
+// that knows how to use the token is reached.
+function hasUsableAccount() {
+  if (isAuthenticated()) return true;
+  return getBackendSwitch('devinConnect')
+    && !!(process.env.DEVIN_CONNECT_TOKEN || process.env.WINDSURF_API_KEY);
+}
 
 // 读取并归一 anthropic-version 请求头。返回生效版本字符串(缺失→默认)。
 // Node 已把头名小写化,直接取 req.headers['anthropic-version']。
@@ -580,7 +591,7 @@ async function route(req, res) {
   }
 
   if (path === '/v1/chat/completions' && method === 'POST') {
-    if (!isAuthenticated()) {
+    if (!hasUsableAccount()) {
       return json(res, 503, {
         error: { message: 'No active accounts. POST /auth/login to add accounts.', type: 'api_error' },
       });
@@ -646,7 +657,7 @@ async function route(req, res) {
   }
 
   if (path === '/v1/completions' && method === 'POST') {
-    if (!isAuthenticated()) {
+    if (!hasUsableAccount()) {
       return json(res, 503, {
         error: { message: 'No active accounts. POST /auth/login to add accounts.', type: 'api_error' },
       });
@@ -698,7 +709,7 @@ async function route(req, res) {
   }
 
   if (path === '/v1/responses' && method === 'POST') {
-    if (!isAuthenticated()) {
+    if (!hasUsableAccount()) {
       return json(res, 503, {
         error: { message: 'No active accounts. POST /auth/login to add accounts.', type: 'api_error' },
       });
@@ -847,7 +858,7 @@ async function route(req, res) {
 
   // Anthropic Messages API — Claude Code compatibility
   if (path === '/v1/messages/count_tokens' && method === 'POST') {
-    if (!isAuthenticated()) {
+    if (!hasUsableAccount()) {
       // D2: no-account gate is a transient capacity condition, not a fatal
       // server bug. 503 api_error was self-contradictory (503 isn't in the
       // Anthropic status set; api_error implies 500). 529 overloaded_error is
@@ -871,7 +882,7 @@ async function route(req, res) {
   }
 
   if (path === '/v1/messages' && method === 'POST') {
-    if (!isAuthenticated()) {
+    if (!hasUsableAccount()) {
       // D2: see count_tokens above — transient capacity → 529 overloaded_error.
       return json(res, 529, { type: 'error', error: { type: 'overloaded_error', message: 'No active accounts available, please retry' } });
     }
@@ -944,7 +955,7 @@ async function route(req, res) {
   // The {model} segment can carry dots/dashes; the method is the suffix
   // after the final ':'. A v1 alias path is accepted too.
   if (method === 'POST' && /\/models\/[^:/]+:(generateContent|streamGenerateContent)$/.test(path)) {
-    if (!isAuthenticated()) {
+    if (!hasUsableAccount()) {
       return json(res, 503, { error: { code: 503, message: 'No active accounts. POST /auth/login to add accounts.', status: 'UNAVAILABLE' } });
     }
     const parsed = parseGeminiPath(path);
