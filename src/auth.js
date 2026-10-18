@@ -585,7 +585,51 @@ function startDirtyFlush() {
 // Test seam: run one dirty-flush pass deterministically without the timer.
 export function __flushDirtyAccounts() { flushDirty(); }
 export function __isAccountsDirty() { return _dirty; }
+
+// F4: transient rate-limit cooldowns are persisted so a restart mid-cooldown
+// cannot immediately re-select a dry account. The latch is bounded and
+// stale-safe at BOTH ends: only a finite future deadline is written, expired
+// per-model keys are dropped, and every restored deadline is clamped to this
+// maximum from load time. Without the clamp a corrupt/hand-edited accounts.json
+// (or a large clock jump) could bench an account for years. 24h sits far above
+// the transient windows this latch normally stores (5min default, 15s burst,
+// 1h breaker cap) while still bounding a hostile file to one day.
+export const RATE_LIMIT_PERSIST_MAX_MS = 24 * 60 * 60 * 1000;
+
+// Normalize one persisted deadline: 0 unless it is a finite timestamp in the
+// future, clamped so the remaining window can never exceed the persistence cap.
+function sanitizeRateLimitDeadline(value, now) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= now) return 0;
+  return Math.min(value, now + RATE_LIMIT_PERSIST_MAX_MS);
+}
+
+// Sanitize a per-model/per-selector cooldown map: drop empty keys and any
+// value that is not a finite future deadline (already-expired entries must not
+// bloat accounts.json across restarts).
+function sanitizeModelRateLimits(map, now) {
+  const out = {};
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return out;
+  for (const [key, value] of Object.entries(map)) {
+    if (!key) continue;
+    const until = sanitizeRateLimitDeadline(value, now);
+    if (until) out[key] = until;
+  }
+  return out;
+}
+
+// F4: the serialized transient latch for one account. Empty when nothing is
+// live, so an unaffected accounts.json keeps its previous shape.
+function serializeRateLimitLatch(a, now) {
+  const rateLimitedUntil = sanitizeRateLimitDeadline(a.rateLimitedUntil, now);
+  const modelRateLimits = sanitizeModelRateLimits(a._modelRateLimits, now);
+  return {
+    ...(rateLimitedUntil ? { rateLimitedUntil } : {}),
+    ...(Object.keys(modelRateLimits).length ? { _modelRateLimits: modelRateLimits } : {}),
+  };
+}
+
 function _serializeAccounts() {
+  const now = Date.now();
   const live = accounts.map(a => ({
     id: a.id, email: a.email, apiKey: a.apiKey,
     apiServerUrl: a.apiServerUrl, method: a.method,
@@ -608,6 +652,10 @@ function _serializeAccounts() {
     // separate from transient rateLimitedUntil). Persisted so a restart mid-
     // cooldown doesn't immediately re-select a dry account and eat a 402.
     quotaResetAt: a.quotaResetAt || 0,
+    // F4: transient rate-limit latch (account-wide + per-model/selector).
+    // Persisted so a restart mid-cooldown doesn't immediately re-select the
+    // account and eat another 429; expired entries are dropped at save time.
+    ...serializeRateLimitLatch(a, now),
     // v3.0.3: per-account on-demand spend policy. Persisted only when the
     // operator set an explicit override; null = inherit the global default.
     ...(typeof a.spendOnDemand === 'boolean' ? { spendOnDemand: a.spendOnDemand } : {}),
@@ -771,6 +819,11 @@ function _deserializeAccount(a, now = Date.now()) {
     userStatusLastFetched: a.userStatusLastFetched || 0,
     // RB2/B2 + B1: restore self-healing quota cooldown + backoff memory.
     quotaResetAt: a.quotaResetAt || 0,
+    // F4: restore the transient rate-limit latch. Same guard as save: only
+    // finite future deadlines survive, clamped to the persistence cap; an
+    // older accounts.json (written before these fields existed) loads clean.
+    rateLimitedUntil: sanitizeRateLimitDeadline(a.rateLimitedUntil, now),
+    _modelRateLimits: sanitizeModelRateLimits(a._modelRateLimits, now),
     // v3.0.3: per-account on-demand spend policy overrides (null = inherit the
     // global runtime-config default). Only persisted when explicitly set.
     spendOnDemand: typeof a.spendOnDemand === 'boolean' ? a.spendOnDemand : null,
