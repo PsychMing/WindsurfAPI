@@ -39,10 +39,11 @@ function parseFrameJson(frame) {
   }
 }
 
-function isBootstrapFrame(frame, protocol) {
+function isBootstrapFrame(frame, protocol, isBootstrap = null) {
   if (isCommentFrame(frame)) return true;
   const obj = parseFrameJson(frame);
   if (!obj) return false;
+  if (typeof isBootstrap === 'function') return !!isBootstrap(obj);
   if (protocol === 'openai') {
     // Role-only prime chunk: no content, no tool call, no finish. Holding it is
     // safe because a client cannot observe anything from it alone.
@@ -58,9 +59,11 @@ function isBootstrapFrame(frame, protocol) {
   return false;
 }
 
-function errorFromFrame(frame) {
+function errorFromFrame(frame, parseError = null) {
   const obj = parseFrameJson(frame);
-  if (!obj || !obj.error || typeof obj.error !== 'object') return null;
+  if (!obj) return null;
+  if (typeof parseError === 'function') return parseError(obj);
+  if (!obj.error || typeof obj.error !== 'object') return null;
   return obj.error;
 }
 
@@ -87,6 +90,8 @@ export function createDeferredSseResponse(realRes, {
   requestId = null,
   errorBody = null,
   mapError = null,
+  isBootstrap = null,
+  parseError = null,
   maxFrames = DEFAULT_MAX_FRAMES,
   maxBytes = DEFAULT_MAX_BYTES,
   bootstrapTimeoutMs = DEFAULT_BOOTSTRAP_MS,
@@ -171,12 +176,12 @@ export function createDeferredSseResponse(realRes, {
       if (!found) break;
       framesSeen += 1;
       const frame = text.slice(offset, found.frameEnd);
-      const error = errorFromFrame(frame);
+      const error = errorFromFrame(frame, parseError);
       if (error) {
         finishError(error);
         return;
       }
-      if (!isBootstrapFrame(frame, protocol)) {
+      if (!isBootstrapFrame(frame, protocol, isBootstrap)) {
         commit();
         return;
       }

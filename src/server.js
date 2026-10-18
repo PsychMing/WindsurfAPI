@@ -24,10 +24,10 @@ import {
   checkLockout, failedAuthAttempt, successfulAuthAttempt,
 } from './auth.js';
 import { trustedClientIp } from './net-safety.js';
-import { handleChatCompletions, normalizeOpenAIErrorBody } from './handlers/chat.js';
+import { handleChatCompletions, normalizeOpenAIErrorBody, normalizeOpenAIErrorType } from './handlers/chat.js';
 import { handleCompletions } from './handlers/completions.js';
-import { handleMessages, handleCountTokens, validateMessagesRequest, validateCountTokensRequest } from './handlers/messages.js';
-import { handleGemini, parseGeminiPath } from './handlers/gemini.js';
+import { handleMessages, handleCountTokens, validateMessagesRequest, validateCountTokensRequest, toAnthropicError } from './handlers/messages.js';
+import { handleGemini, parseGeminiPath, geminiError } from './handlers/gemini.js';
 import { handleResponses, handleGetResponse, handleDeleteResponse } from './handlers/responses.js';
 import { handleModels } from './handlers/models.js';
 import { createDeferredSseResponse } from './sse-commit.js';
@@ -240,11 +240,22 @@ function anthropicModelPayload(id, info) {
  * `commitMs === 0` must restore the legacy raw-res shape, otherwise the gate
  * buffers the first frames and can rewrite a pre-content error.
  */
+export function resolveStreamCommitMs(raw = process.env.WINDSURFAPI_STREAM_COMMIT_MS) {
+  if (raw === undefined || raw === '') return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.min(n, 14_000) : undefined;
+}
+
 export async function serveChatStream(res, result, {
   headers,
   requestId,
   commitMs,
   onDone = null,
+  protocol = 'openai',
+  isBootstrap = null,
+  parseError = null,
+  errorBody = null,
+  mapError = null,
 } = {}) {
   if (commitMs === 0) {
     if (!res.headersSent) res.writeHead(result.status, headers);
@@ -258,9 +269,13 @@ export async function serveChatStream(res, result, {
   const streamRes = createDeferredSseResponse(res, {
     status: result.status,
     headers,
-    protocol: 'openai',
+    protocol,
     requestId,
     bootstrapTimeoutMs: commitMs,
+    ...(isBootstrap ? { isBootstrap } : {}),
+    ...(parseError ? { parseError } : {}),
+    ...(errorBody ? { errorBody } : {}),
+    ...(mapError ? { mapError } : {}),
   });
   try {
     await result.handler(streamRes);
@@ -694,12 +709,7 @@ async function route(req, res) {
       // pre-content upstream 429/500 then becomes a real HTTP status instead of
       // a 200 SSE error frame. Heartbeats/role-only primes are buffered (bounded
       // by the wrapper) and flushed with the first real frame.
-      const commitMsRaw = process.env.WINDSURFAPI_STREAM_COMMIT_MS;
-      const commitMs = commitMsRaw === undefined || commitMsRaw === ''
-        ? undefined
-        : (Number.isFinite(Number(commitMsRaw)) && Number(commitMsRaw) >= 0
-          ? Math.min(Number(commitMsRaw), 14_000)
-          : undefined);
+      const commitMs = resolveStreamCommitMs();
       const streamHeaders = { 'Access-Control-Allow-Origin': '*', ...modelHeaders, ...result.headers };
       await serveChatStream(res, result, {
         headers: streamHeaders,
@@ -829,15 +839,27 @@ async function route(req, res) {
       'openai-organization': 'org-windsurf-proxy',
     };
     if (result.stream) {
-      res.writeHead(result.status, { 'Access-Control-Allow-Origin': '*', ...modelHeaders, ...result.headers });
-      try {
-        await result.handler(res);
-      } finally {
-        // The row was recorded when the descriptor was ready; the stream itself
-        // runs inside result.handler, so its real wall time is only known here.
-        // Patch the same row instead of recording a second one.
-        updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt });
-      }
+      const commitMs = resolveStreamCommitMs();
+      const streamHeaders = { 'Access-Control-Allow-Origin': '*', ...modelHeaders, ...result.headers };
+      await serveChatStream(res, result, {
+        headers: streamHeaders,
+        requestId,
+        commitMs,
+        protocol: 'responses',
+        // The Responses translator emits response.created/in_progress before any
+        // content, and a pre-content failure as response.failed. Hold only the
+        // lifecycle frames; commit on the first content item.
+        isBootstrap: (obj) => obj?.type === 'response.created' || obj?.type === 'response.in_progress',
+        parseError: (obj) => (obj?.type === 'response.failed' && obj.response?.error ? obj.response.error : null),
+        errorBody: (error, status) => ({
+          error: {
+            message: error?.message || 'Upstream stream error',
+            type: normalizeOpenAIErrorType(error?.type, status),
+            ...(error?.code ? { code: error.code } : {}),
+          },
+        }),
+        onDone: () => updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode }),
+      });
     } else {
       for (const [k, v] of Object.entries(modelHeaders)) res.setHeader(k, v);
       if (result.headers) {
@@ -1010,8 +1032,17 @@ async function route(req, res) {
       'anthropic-version': anthropicVersion,
     };
     if (result.stream) {
-      res.writeHead(result.status, { 'Access-Control-Allow-Origin': '*', ...anthropicHeaders, ...result.headers });
-      await result.handler(res);
+      const commitMs = resolveStreamCommitMs();
+      await serveChatStream(res, result, {
+        headers: { 'Access-Control-Allow-Origin': '*', ...anthropicHeaders, ...result.headers },
+        requestId,
+        commitMs,
+        protocol: 'messages',
+        isBootstrap: (obj) => obj?.type === 'message_start' || obj?.type === 'ping',
+        parseError: (obj) => (obj?.type === 'error' && obj.error ? obj.error : null),
+        errorBody: (error, status) => toAnthropicError(status, error?.type, error?.message).body,
+        onDone: () => updateRequest(ringRow?.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode }),
+      });
     } else {
       for (const [k, v] of Object.entries(anthropicHeaders)) res.setHeader(k, v);
       // Forward the handler's own headers. The STREAM branch above already spreads
@@ -1072,8 +1103,19 @@ async function route(req, res) {
     }, { stream: wantStream, alt });
     const geminiHeaders = { 'request-id': 'req_' + randomUUID() };
     if (result.stream) {
-      res.writeHead(result.status, { 'Access-Control-Allow-Origin': '*', ...geminiHeaders, ...result.headers });
-      await result.handler(res);
+      const commitMs = resolveStreamCommitMs();
+      await serveChatStream(res, result, {
+        headers: { 'Access-Control-Allow-Origin': '*', ...geminiHeaders, ...result.headers },
+        requestId: geminiHeaders['request-id'],
+        commitMs,
+        protocol: 'gemini',
+        isBootstrap: (obj) => Array.isArray(obj?.candidates)
+          && obj.candidates.length > 0
+          && obj.candidates.every((c) => !c?.finishReason && (c?.content?.parts || []).every((p) => !p?.text && !p?.functionCall)),
+        parseError: (obj) => (obj?.error && typeof obj.error === 'object' ? obj.error : null),
+        errorBody: (error, status) => geminiError(status, error?.type, error?.message).body,
+        onDone: () => updateRequest(ringRow?.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode }),
+      });
     } else {
       for (const [k, v] of Object.entries(geminiHeaders)) res.setHeader(k, v);
       // Same divergence as the Anthropic route above: the stream branch spreads

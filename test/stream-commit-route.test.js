@@ -61,6 +61,41 @@ describe('serveChatStream route wiring', () => {
     assert.match(res.body, /hi/);
   });
 
+  it('gates a Responses pre-content response.failed into 429', async () => {
+    const res = fakeRes();
+    const created = 'event: response.created\ndata: {"type":"response.created"}\n\n';
+    const failed = 'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"message":"busy","type":"rate_limit_error","code":"RATE_LIMITED"}}}\n\n';
+    await serveChatStream(res, {
+      status: 200,
+      async handler(target) { target.write(created); target.write(failed); target.end(); },
+    }, {
+      headers: {}, requestId: 'r1', commitMs: undefined, protocol: 'responses',
+      isBootstrap: (obj) => obj?.type === 'response.created' || obj?.type === 'response.in_progress',
+      parseError: (obj) => (obj?.type === 'response.failed' && obj.response?.error ? obj.response.error : null),
+      errorBody: (error, status) => ({ error: { message: error?.message, type: status === 429 ? 'rate_limit_error' : 'api_error', code: error?.code } }),
+    });
+    assert.equal(res.statusCode, 429);
+    assert.match(res.body, /rate_limit_error/);
+  });
+
+  it('commits a Responses content delta as SSE 200', async () => {
+    const res = fakeRes();
+    await serveChatStream(res, {
+      status: 200,
+      async handler(target) {
+        target.write('event: response.created\ndata: {"type":"response.created"}\n\n');
+        target.write('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hi"}\n\n');
+        target.end();
+      },
+    }, {
+      headers: {}, requestId: 'r1', commitMs: undefined, protocol: 'responses',
+      isBootstrap: (obj) => obj?.type === 'response.created' || obj?.type === 'response.in_progress',
+      parseError: (obj) => (obj?.type === 'response.failed' && obj.response?.error ? obj.response.error : null),
+    });
+    assert.equal(res.statusCode, 200);
+    assert.match(res.body, /response.output_text.delta/);
+  });
+
   it('closes a committed socket when the handler throws', async () => {
     const res = fakeRes();
     await assert.rejects(serveChatStream(res, {
