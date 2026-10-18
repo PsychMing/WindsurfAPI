@@ -49,7 +49,8 @@ import { getLogs, subscribeToLogs, unsubscribeFromLogs } from './logger.js';
 import { getProxyConfig, getProxyConfigMasked, setGlobalProxy, setAccountProxy, removeProxy, getEffectiveProxy } from './proxy-config.js';
 import { MODELS, MODEL_TIER_ACCESS as _TIER_TABLE, getTierModels as _getTierModels, filterModelKeysByCloudCatalog } from '../models.js';
 import { buildConnectReachability } from '../handlers/models.js';
-import { FREE_REACHABLE_SELECTORS, getLiveCatalog } from '../devin-connect-models.js';
+import { FREE_REACHABLE_SELECTORS, getLiveCatalog, getSnapshotSelectors, resolveConnectSelector } from '../devin-connect-models.js';
+import { buildCatalogDiff } from './catalog-diff.js';
 import { listRequests, requestRingStats } from './request-ring.js';
 import { windsurfLogin, refreshFirebaseToken, reRegisterWithCodeium } from './windsurf-login.js';
 import { getModelAccessConfig, setModelAccessMode, setModelAccessList, addModelToList, removeModelFromList, setDefaultModel } from './model-access.js';
@@ -2351,6 +2352,16 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       }
     }
     return json(res, 200, { models });
+  }
+
+  // Live-vs-snapshot catalog diff for the dashboard. Read-only; it reports set
+  // differences and alias resolution, never entitlement.
+  if (subpath === '/models/catalog' && method === 'GET') {
+    return json(res, 200, buildCatalogDiff({
+      live: getLiveCatalog(),
+      snapshot: getSnapshotSelectors(),
+      resolve: resolveConnectSelector,
+    }));
   }
 
   // ─── Model Access Control ──────────────────────────────

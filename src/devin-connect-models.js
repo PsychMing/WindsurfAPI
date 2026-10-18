@@ -262,6 +262,9 @@ export function hasLiveCatalog() { return _liveSelectors.size > 0; }
 /** The full decoded live catalog rows from the last good sync (may be []). */
 export function getLiveCatalog() { return _liveCatalog; }
 
+/** Frozen cold-start selectors (the committed snapshot), for dashboard diffing. */
+export function getSnapshotSelectors() { return [...CATALOG_SELECTORS]; }
+
 /**
  * Replace the live DEVIN_CONNECT selector set from a fresh GetCliModelConfigs
  * fetch. Called by auth.js after fetchCatalog(). Accepts the decoded catalog
