@@ -46,6 +46,11 @@ describe('tool names', () => {
     assert.equal(toUpstream.get('ok'), 'ok');
   });
 
+  it('never exceeds a small maxLen', () => {
+    assert.equal(sanitizeToolName('abcdefghijklmnop', 8).length, 8);
+    assert.equal(sanitizeToolName('abcdefghijklmnop', 4).length, 4);
+  });
+
   it('sanitizeToolName never returns empty', () => {
     assert.equal(sanitizeToolName('///'), '___');
     assert.equal(sanitizeToolName(''), '');

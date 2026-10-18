@@ -31,6 +31,12 @@ describe('tool-id hygiene', () => {
     assert.equal(sanitizeToolId('call.with:dots/slash'), 'call_with_dots_slash');
   });
 
+  it('never exceeds a small maxLen', () => {
+    assert.equal(sanitizeToolId('abcdefghijklmnop', { maxLen: 8 }).length, 8);
+    assert.equal(sanitizeToolId('abcdefghijklmnop', { maxLen: 4 }).length, 4);
+    assert.equal(wireToolId('call', '', 'seed', 0, { maxLen: 8 }).length, 8);
+  });
+
   it('synth ids are deterministic per seed/slot and differ across seeds', () => {
     const a = synthToolId('call', 'resp_a', 0);
     const b = synthToolId('call', 'resp_a', 0);

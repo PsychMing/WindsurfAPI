@@ -32,8 +32,12 @@ export function sanitizeToolId(id, { maxLen = MAX_TOOL_ID_LEN, charsetOnly = fal
   if (isValidToolId(raw, { maxLen, charsetOnly })) return raw;
   let s = raw.replace(/[^A-Za-z0-9_-]/g, '_');
   if (!charsetOnly && s.length > maxLen) {
-    const hash = sha256Hex(s).slice(0, 16);
-    s = `${s.slice(0, Math.max(0, maxLen - 17))}_${hash}`;
+    if (maxLen >= 9) {
+      const hashLen = Math.min(16, maxLen - 1);
+      s = `${s.slice(0, Math.max(0, maxLen - hashLen - 1))}_${sha256Hex(s).slice(0, hashLen)}`;
+    } else {
+      s = s.slice(0, Math.max(0, maxLen));
+    }
   }
   return s;
 }
@@ -45,7 +49,9 @@ export function synthToolId(base, seed, slot) {
 }
 
 export function wireToolId(base, id, seed, slot, opts = {}) {
-  return sanitizeToolId(id, opts) || synthToolId(base, seed, slot);
+  const { maxLen = MAX_TOOL_ID_LEN } = opts;
+  const synth = synthToolId(base, seed, slot);
+  return sanitizeToolId(id, opts) || (maxLen >= 1 ? synth.slice(0, maxLen) : '');
 }
 
 export function foldOrphanResultText(content) {

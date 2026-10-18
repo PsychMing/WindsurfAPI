@@ -80,6 +80,30 @@ describe('Anthropic tool-name boundary', () => {
     assert.equal(start.data.content_block.name, 'a/b');
   });
 
+  it('accumulates a split stream function name before opening the tool block', async () => {
+    const result = await handleMessages({
+      model: 'claude-sonnet-4.6', stream: true,
+      tools: [{ name: 'foo.bar', description: 'x', input_schema: { type: 'object' } }],
+      messages: [{ role: 'user', content: 'go' }],
+    }, {
+      async handleChatCompletions() {
+        return {
+          status: 200, stream: true,
+          async handler(res) {
+            res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'foo_' } }] } }] })}\n\n`);
+            res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { name: 'bar', arguments: '{}' } }] } }] })}\n\n`);
+            res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_use' }] })}\n\n`);
+            res.end('data: [DONE]\n\n');
+          },
+        };
+      },
+    });
+    const res = fakeRes();
+    await result.handler(res);
+    const start = events(res.body).find((e) => e.event === 'content_block_start' && e.data.content_block?.type === 'tool_use');
+    assert.equal(start.data.content_block.name, 'foo.bar');
+  });
+
   it('restores the client name on the non-stream path and maps tool_choice', async () => {
     let captured = null;
     const result = await handleMessages({

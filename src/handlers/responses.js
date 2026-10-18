@@ -1461,6 +1461,7 @@ export async function handleResponses(body, deps = {}) {
   try {
     chatBody = responsesToChat(body);
     toolNameMap = chatBody.__toolNameMap || null;
+    delete chatBody.__toolNameMap;
   } catch (err) {
     return {
       status: 400,

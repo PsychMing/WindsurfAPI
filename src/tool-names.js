@@ -31,8 +31,11 @@ export function sanitizeToolName(name, maxLen = MAX_UPSTREAM_TOOL_NAME) {
   let s = String(name).replace(/[^A-Za-z0-9_-]/g, '_');
   if (s.length === 0) s = 'tool';
   if (s.length > maxLen) {
-    const hash = sha256Hex(s).slice(0, 8);
-    s = `${s.slice(0, Math.max(0, maxLen - 9))}_${hash}`;
+    if (maxLen >= 9) {
+      s = `${s.slice(0, Math.max(0, maxLen - 9))}_${sha256Hex(s).slice(0, 8)}`;
+    } else {
+      s = s.slice(0, Math.max(0, maxLen));
+    }
   }
   return s;
 }

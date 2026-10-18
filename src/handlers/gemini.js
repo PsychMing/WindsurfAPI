@@ -811,6 +811,8 @@ export function geminiError(status, internalType, message) {
 export async function handleGemini(model, body, context = {}, { stream = false, alt = null } = {}) {
   const requestedModel = model || body?.model || 'gemini-2.5-pro';
   const openaiBody = geminiToOpenAI(body, requestedModel);
+  const toolNameMap = openaiBody.__toolNameMap || null;
+  delete openaiBody.__toolNameMap;
   if (process.env.WINDSURFAPI_TOOL_HYGIENE !== '0') {
     openaiBody.messages = normalizeHistoryTail(
       normalizeToolIdsInMessages(openaiBody.messages, { seed: requestedModel }),
@@ -824,7 +826,7 @@ export async function handleGemini(model, body, context = {}, { stream = false, 
     if (result.status !== 200) {
       return withUpstreamHeaders(geminiError(result.status, result.body?.error?.type, result.body?.error?.message), result.headers);
     }
-    return { status: 200, body: openAIToGemini(result.body, requestedModel, openaiBody.__toolNameMap || null) };
+    return { status: 200, body: openAIToGemini(result.body, requestedModel, toolNameMap) };
   }
 
   // Streaming path — ask handleChatCompletions for its streaming handler and
@@ -865,7 +867,7 @@ export async function handleGemini(model, body, context = {}, { stream = false, 
       'X-Accel-Buffering': 'no',
     },
     async handler(realRes) {
-      const translator = new GeminiStreamTranslator(realRes, requestedModel, { mode, toolNameMap: openaiBody.__toolNameMap || null });
+      const translator = new GeminiStreamTranslator(realRes, requestedModel, { mode, toolNameMap });
       const captureRes = createCaptureRes(translator, realRes);
 
       // Forward client disconnect so the upstream is cancelled. Don't call

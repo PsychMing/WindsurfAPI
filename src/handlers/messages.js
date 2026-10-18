@@ -1296,21 +1296,29 @@ class AnthropicStreamTranslator {
     const idx = toolCall.index ?? 0;
     let existing = this.toolCallBufs.get(idx);
     const id = toolCall.id || existing?.id;
-    const name = restoreToolName(toolCall.function?.name, this.toolNameMap) || existing?.name;
+    const rawName = toolCall.function?.name || '';
     const argsChunk = toolCall.function?.arguments || '';
 
     if (!existing) {
-      existing = { id, name, blockIndex: null, argsBuffered: '', pendingArgs: '' };
+      existing = { id, name: '', wireName: '', blockIndex: null, argsBuffered: '', pendingArgs: '' };
       this.toolCallBufs.set(idx, existing);
-    } else {
-      if (id) existing.id = id;
-      if (name) existing.name = name;
+    } else if (id) {
+      existing.id = id;
+    }
+    if (rawName) {
+      // A spec-legal stream may split `function.name` across deltas. Accumulate
+      // until the wire name is known to the request map; a repeated full name is
+      // ignored once it is already known.
+      if (!existing.wireName) existing.wireName = rawName;
+      else if (!this.toolNameMap || !this.toolNameMap.toClient.has(existing.wireName)) existing.wireName += rawName;
+      existing.name = restoreToolName(existing.wireName, this.toolNameMap) || existing.wireName;
     }
     const buf = this.toolCallBufs.get(idx);
+    const nameKnown = !this.toolNameMap || this.toolNameMap.toClient.has(buf.wireName);
     // Open this tool's block the first time we have both id and name. If another
     // block is currently open (text/thinking/another tool), startBlock closes it
     // first, so on return `this.current` is guaranteed to be THIS tool's block.
-    if (buf.blockIndex == null && buf.id && buf.name) {
+    if (buf.blockIndex == null && buf.id && buf.name && nameKnown) {
       this.startBlock('tool_use', { id: buf.id, name: buf.name });
       buf.blockIndex = this.current.index;
     }
@@ -1488,6 +1496,10 @@ class AnthropicStreamTranslator {
     // truncated tool call is diagnosable. (Reopening a closed block is not
     // spec-legal in Anthropic's stream, so we log rather than re-emit.)
     for (const buf of this.toolCallBufs.values()) {
+      if (buf.blockIndex == null && buf.id && buf.name) {
+        this.startBlock('tool_use', { id: buf.id, name: buf.name });
+        buf.blockIndex = this.current.index;
+      }
       if (buf.pendingArgs) {
         log.warn(`messages: dropped ${buf.pendingArgs.length} buffered tool_use arg char(s) for tool "${buf.name || 'unknown'}" (id=${buf.id || 'none'}) — fragments arrived after the block closed (interleaved stream)`);
       }
@@ -1667,6 +1679,7 @@ export async function handleMessages(body, context = {}) {
     );
   }
   const toolNameMap = openaiBody.__toolNameMap || null;
+  delete openaiBody.__toolNameMap;
   // anthropicToOpenAI attaches __cachePolicy only when the request carried
   // cache_control breakpoints; reuse it for the local cache-token estimate.
   const cachePolicy = openaiBody.__cachePolicy || null;
