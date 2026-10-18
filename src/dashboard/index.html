@@ -6875,7 +6875,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         <td style="color:${a.errorCount > 0 ? 'var(--error)' : 'inherit'};font-variant-numeric:tabular-nums;text-align:right;">${a.errorCount}</td>
         <td class="text-sm nowrap" style="font-variant-numeric:tabular-nums;">${a.lastUsed ? new Date(a.lastUsed).toLocaleString() : '-'}</td>
         <td class="nowrap">
-          <code title="${I18n.t('action.revealKey')}" role="button" tabindex="0" aria-label="${I18n.t('action.revealKey')}" style="cursor:pointer" onclick="App.revealAndCopyKey('${this.escJsAttr(a.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.revealAndCopyKey('${this.escJsAttr(a.id)}')}">${this.esc(a.apiKey_masked || a.keyPrefix || '')}</code>
+          <code title="${I18n.t('action.revealKey')}" role="button" tabindex="0" aria-label="${I18n.t('action.revealKey')}" style="cursor:pointer" onclick="App.revealAndCopyKey('${this.escJsAttr(a.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.revealAndCopyKey('${this.escJsAttr(a.id)}')}">${this.esc(a.apiKey_masked || a.id || '')}</code>
         </td>
         <td class="nowrap">
           <div class="btn-group">
@@ -7149,7 +7149,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
             </div>
             <div class="detail-kv">
               <span class="k">${T('runtime.accountId')}</span><span class="v"><code>${this.esc(a.id)}</code></span>
-              <span class="k">${T('runtime.apiKey')}</span><span class="v"><code>${this.esc(a.apiKey_masked || a.keyPrefix || '')}</code></span>
+              <span class="k">${T('runtime.apiKey')}</span><span class="v"><code>${this.esc(a.apiKey_masked || a.id || '')}</code></span>
               ${cr.lastError ? `<span class="k">${T('runtime.lastError')}</span><span class="v" style="color:var(--error);font-size:11px">${this.esc(cr.lastError).slice(0, 80)}</span>` : ''}
             </div>
             ${this.renderSpendCells(a.totalSpend)}
