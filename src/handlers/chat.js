@@ -5075,7 +5075,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
     const lastIsTransport = isCascadeTransportError(lastErr);
     log.error(`Chat[${reqId}]: ${tried.length}/${tried.length} accounts hit upstream transient error — surfacing upstream_transient_error`);
     return {
-      status: 502,
+      status: 503,
       body: { error: { message: upstreamTransientErrorMessage(displayModel, tried.length, lastIsTransport ? 'cascade_transport' : 'internal_error'), type: 'upstream_transient_error' } },
     };
   }

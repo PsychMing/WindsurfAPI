@@ -617,7 +617,17 @@ import { neutralizeClientIdentity } from './identity-neutralize.js';
 
 function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
   const cachePolicy = extractCachePolicy(body, promptEstimate);
-  const toolNameMap = buildToolNameMap(body.tools || []);
+  const historyToolNames = [];
+  for (const m of body.messages || []) {
+    if (m?.role !== 'assistant' || !Array.isArray(m.content)) continue;
+    for (const block of m.content) {
+      if (block?.type === 'tool_use' && typeof block.name === 'string' && block.name) historyToolNames.push(block.name);
+    }
+  }
+  const toolNameMap = buildToolNameMap([
+    ...(body.tools || []).map((t) => t?.name).filter(Boolean),
+    ...historyToolNames,
+  ]);
   const mapAnthropicToolChoice = (toolChoice) => {
     if (!toolChoice || typeof toolChoice !== 'object') return toolChoice;
     if (toolChoice.type === 'auto') return 'auto';
@@ -848,7 +858,7 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       ? { parallel_tool_calls: false }
       : {}),
     ...(forwardedToolChoice ? { tool_choice: forwardedToolChoice } : {}),
-    ...(tools.length && [...toolNameMap.toUpstream].some(([k, v]) => k !== v) ? { __toolNameMap: toolNameMap } : {}),
+    ...([...toolNameMap.toUpstream].some(([k, v]) => k !== v) ? { __toolNameMap: toolNameMap } : {}),
     ...(body.thinking ? { thinking: body.thinking } : {}),
     ...(ocEffort ? { reasoning_effort: ocEffort } : {}),
     ...(translatedResponseFormat ? { response_format: translatedResponseFormat } : {}),

@@ -81,6 +81,46 @@ describe('createDeferredSseResponse', () => {
     assert.equal(real.headers['retry-after'], '30');
   });
 
+  it('maps classified error codes to the documented statuses', () => {
+    for (const [code, status] of [['MODEL_BLOCKED', 402], ['QUOTA_EXHAUSTED', 402], ['UPSTREAM_INTERNAL', 503], ['NO_TOKEN', 401], ['RATE_LIMITED', 429]]) {
+      const real = fakeRes();
+      const res = createDeferredSseResponse(real, { status: 200 });
+      res.write(`data: ${JSON.stringify({ error: { message: code, code } })}\n\n`);
+      res.end();
+      assert.equal(real.statusCode, status, code);
+    }
+  });
+
+  it('commits a reasoning-first frame as SSE instead of treating it as a bootstrap', () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200 });
+    res.write(frame({ choices: [{ delta: { reasoning_content: 'think' } }] }));
+    assert.equal(real.statusCode, 200);
+    res.write(frame({ error: { message: 'late', code: 'RATE_LIMITED' } }));
+    res.end();
+    assert.equal(real.statusCode, 200, 'a post-content error must not rewrite the status');
+    assert.match(real.body, /think/);
+  });
+
+  it('flushes headers on an empty commit', () => {
+    let flushed = 0;
+    const real = fakeRes();
+    real.flushHeaders = () => { flushed += 1; };
+    const res = createDeferredSseResponse(real, { status: 200 });
+    res.flushHeaders();
+    assert.equal(real.statusCode, 200);
+    assert.equal(flushed, 1);
+  });
+
+  it('dispose cancels a pending bootstrap timer without committing', async () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200, bootstrapTimeoutMs: 10 });
+    res.dispose();
+    await new Promise((r) => setTimeout(r, 25));
+    assert.equal(real.statusCode, null);
+    assert.equal(res.write('data: x\n\n'), false);
+  });
+
   it('does not rewrite an error that arrives after content committed', () => {
     const real = fakeRes();
     const res = createDeferredSseResponse(real, { status: 200 });

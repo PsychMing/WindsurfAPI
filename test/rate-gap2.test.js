@@ -130,7 +130,7 @@ describe('GAP-3: LS gRPC timeouts classify as transient and rotate accounts', ()
     );
     assert.equal(used.length, 2, 'the LS timeout must be retried on the next account (GAP-3)');
     assert.notEqual(used[0], used[1], 'the retry must land on a different account');
-    assert.equal(result.status, 502);
+    assert.equal(result.status, 503);
     assert.equal(
       result.body.error.type,
       'upstream_transient_error',

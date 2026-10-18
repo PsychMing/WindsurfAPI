@@ -50,6 +50,36 @@ describe('Anthropic tool-name boundary', () => {
     assert.equal(start.data.content_block.name, LONG);
   });
 
+  it('reserves history-only names before sanitizing declared tools', async () => {
+    let captured = null;
+    const result = await handleMessages({
+      model: 'claude-sonnet-4.6', stream: true,
+      tools: [{ name: 'a/b', description: 'x', input_schema: { type: 'object' } }],
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'a_b', input: {} }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' }] },
+      ],
+    }, {
+      async handleChatCompletions(body) {
+        captured = body;
+        return {
+          status: 200, stream: true,
+          async handler(res) {
+            res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: captured.tools[0].function.name, arguments: '{}' } }] } }] })}\n\n`);
+            res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_use' }] })}\n\n`);
+            res.end('data: [DONE]\n\n');
+          },
+        };
+      },
+    });
+    const res = fakeRes();
+    await result.handler(res);
+    assert.equal(captured.tools[0].function.name !== 'a_b', true);
+    assert.equal(captured.messages[0].tool_calls[0].function.name, 'a_b');
+    const start = events(res.body).find((e) => e.event === 'content_block_start' && e.data.content_block?.type === 'tool_use');
+    assert.equal(start.data.content_block.name, 'a/b');
+  });
+
   it('restores the client name on the non-stream path and maps tool_choice', async () => {
     let captured = null;
     const result = await handleMessages({

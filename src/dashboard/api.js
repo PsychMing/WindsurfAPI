@@ -4,6 +4,7 @@
  */
 
 import { config, log } from '../config.js';
+import { accountRef } from '../log-safety.js';
 import {
   existsSync,
   mkdirSync,
@@ -628,7 +629,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   if (subpath === '/pool-events' && method === 'GET') {
     const accounts = getAccountList({ view: 'summary' }).map(a => ({
       id: a.id,
-      ref: a.keyPrefix || a.id,
+      ref: accountRef(a.id),
       status: a.status,
       rateLimited: !!a.rateLimited,
       capacityThrottled: !!a.capacityThrottled,

@@ -195,31 +195,55 @@ export async function getOrganization(cfg, { fetchImpl } = {}) {
 }
 
 /**
+ * Resolve the org id through GET-only endpoints.
+ *
+ * The dashboard read path must not call the write-classified
+ * `POST /users/post-auth`. `GET /users/current-membership` is the primary
+ * source; `GET /organizations` is the fallback and selects `is_primary_org`.
+ * Auth failures are not swallowed: a 401/403 means the token itself is bad.
+ */
+export async function resolveOrgId(cfg, { fetchImpl } = {}) {
+  if (cfg?.orgId) return cfg.orgId;
+  const probeCfg = { ...cfg, orgId: '' };
+  try {
+    const who = await requestJson(probeCfg, 'GET', '/users/current-membership', { fetchImpl });
+    const id = who?.org?.org_id || who?.org_id || who?.organization?.org_id;
+    if (id) return id;
+  } catch (err) {
+    if (err?.status === 401 || err?.status === 403) throw err;
+  }
+  const orgs = await requestJson(probeCfg, 'GET', '/organizations', { fetchImpl });
+  const list = Array.isArray(orgs) ? orgs : (orgs?.organizations || orgs?.orgs || []);
+  const primary = list.find((o) => o?.is_primary_org) || list[0];
+  const id = primary?.org_id || primary?.id;
+  if (!id) {
+    throw Object.assign(new Error('GET /organizations did not return an org id'), {
+      status: 502,
+      type: 'backend_error',
+    });
+  }
+  return id;
+}
+
+/**
  * Read the org's quota/status/daily usage from app.devin.ai.
  *
- * All three are GETs and free (no model credits). If cfg.orgId is absent the
- * zero-cost post-auth probe derives it first; that is the normal path for a
- * single account whose token was added without an org hint.
+ * All four calls are GETs and free (no model credits). The org is resolved by
+ * `resolveOrgId`, never by the write-classified post-auth probe.
  *
  * Returns the raw upstream objects; dashboard normalization lives in
  * `src/dashboard/usage.js` so the wire shape stays testable in isolation.
  */
 export async function getBillingUsage(cfg, { fetchImpl } = {}) {
-  let resolved = cfg;
-  if (!resolved.orgId) {
-    const who = await probePostAuth(resolved, { fetchImpl });
-    if (!who || !who.org_id) {
-      throw Object.assign(new Error('post-auth did not return org_id'), { status: 502, type: 'backend_error' });
-    }
-    resolved = { ...resolved, orgId: who.org_id };
-  }
-  const seg = orgPathSegment(resolved.orgId);
+  const orgId = await resolveOrgId(cfg, { fetchImpl });
+  const resolved = { ...cfg, orgId };
+  const seg = orgPathSegment(orgId);
   const [quota, status, dailyUsage] = await Promise.all([
     requestJson(resolved, 'GET', `/${seg}/billing/quota/usage`, { fetchImpl }),
     requestJson(resolved, 'GET', `/${seg}/billing/status`, { fetchImpl }),
     requestJson(resolved, 'GET', `/${seg}/billing/usage/daily-usage?cycle=current&view=sessions`, { fetchImpl }),
   ]);
-  return { orgId: resolved.orgId, quota, status, dailyUsage };
+  return { quota, status, dailyUsage };
 }
 
 /**

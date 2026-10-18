@@ -315,6 +315,8 @@ describe('GET /pool-events cooldown projection', () => {
     const body = res.json();
     assert.equal(typeof body.ts, 'number', 'the payload must carry a snapshot timestamp');
     const byId = new Map(body.accounts.map(a => [a.id, a]));
+    assert.match(byId.get(healthy.id).ref, /^acct-[0-9a-f]{8}$/);
+    assert.equal('keyPrefix' in byId.get(healthy.id), false);
 
     assert.deepEqual(
       {

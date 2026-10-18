@@ -3754,7 +3754,7 @@ export async function getAccountUsage(id, { force = false } = {}) {
 
   try {
     const raw = await getBillingUsage({ baseUrl: 'https://app.devin.ai/api', token });
-    const value = { ok: true, accountId, orgId: raw.orgId, ...normalizeUsage(raw) };
+    const value = { ok: true, accountId, ...normalizeUsage(raw) };
     _usageCache.set(accountId, { at: Date.now(), value });
     return { ...value, cached: false };
   } catch (e) {
