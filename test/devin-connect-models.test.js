@@ -116,18 +116,20 @@ describe('resolveConnectSelector — live catalog (audit 2026-07-12 snapshot sta
 
   it('live sync recognizes the canonical selector but does NOT pass a family alias through raw (ultracode fix 2026-07-12)', async () => {
     const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-c`);
-    // Real regression case: gpt-5-6-sol-medium is the upstream-accepted selector;
-    // "gpt-5.6-sol" is its FAMILY alias (and NOT in the hand-maintained SELECTOR_MAP).
-    m.setLiveCatalogSelectors([{ selector: 'gpt-5-6-sol-medium', alias: 'gpt-5.6-sol' }]);
+    // Real regression shape: <family>-medium is the upstream-accepted selector;
+    // the bare family name is its alias and is NOT in the hand-maintained
+    // SELECTOR_MAP. (Use a future family so this guard stays valid as the map
+    // grows; gpt-5.6-sol is mapped now.)
+    m.setLiveCatalogSelectors([{ selector: 'gpt-7-future-medium', alias: 'gpt-7-future' }]);
     // The canonical full selector IS recognized from the live catalog.
-    assert.equal(m.resolveConnectSelector('gpt-5-6-sol-medium').mapped, true);
+    assert.equal(m.resolveConnectSelector('gpt-7-future-medium').mapped, true);
     // The family alias must NOT resolve mapped:true off the live set — folding it
     // in made the gateway pass the bare family form to upstream #21 → UPSTREAM_INTERNAL
     // (burns the account). Aliases are the SELECTOR_MAP's job; an unknown one fails
     // closed (degrades to free / 400 under strict), it does NOT pass through raw.
-    const r = m.resolveConnectSelector('gpt-5.6-sol');
+    const r = m.resolveConnectSelector('gpt-7-future');
     assert.equal(r.mapped, false, 'family alias not in SELECTOR_MAP must NOT be treated as a runnable selector');
-    assert.notEqual(r.selector, 'gpt-5.6-sol', 'must never emit the bare family alias as the upstream selector');
+    assert.notEqual(r.selector, 'gpt-7-future', 'must never emit the bare family alias as the upstream selector');
   });
 
   it('a known SELECTOR_MAP alias still resolves correctly (regression guard)', async () => {

@@ -36,6 +36,8 @@ export const MODELS = {
   'claude-sonnet-4.6-thinking-1m':  { name: 'claude-sonnet-4.6-thinking-1m',  provider: 'anthropic', enumValue: 0,   modelUid: 'claude-sonnet-4-6-thinking-1m', credit: 16 },
   'claude-opus-4.6':                { name: 'claude-opus-4.6',                provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-4-6', credit: 6 },
   'claude-opus-4.6-thinking':       { name: 'claude-opus-4.6-thinking',       provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-4-6-thinking', credit: 8 },
+  'claude-opus-4-6-1m':             { name: 'claude-opus-4-6-1m',             provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-4-6-1m', credit: 10 },
+  'claude-opus-4-6-thinking-1m':    { name: 'claude-opus-4-6-thinking-1m',    provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-4-6-thinking-1m', credit: 12 },
   // Claude Opus 4.7 — Windsurf changelog 2026-04-16; new xhigh effort tier vs 4.6.
   // `medium` is the canonical default; low/high/xhigh/max are reasoning tiers,
   // each can be paired with -thinking for visible chain-of-thought.
@@ -63,23 +65,29 @@ export const MODELS = {
   'claude-opus-4-8-max-fast':       { name: 'claude-opus-4-8-max-fast',       provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-4-8-max-fast', credit: 100 },
   // ── added 2026-10-16 from docs.devin.ai modelCostData (public price table); NOT yet frame-verified ──
   // Claude Fable 5.1
-  'claude-fable-5-1-low':           { name: 'claude-fable-5-1-low',           provider: 'anthropic', enumValue: 0,   modelUid: 'claude-fable-5-1-low', credit: 40 },
-  'claude-fable-5-1-medium':        { name: 'claude-fable-5-1-medium',        provider: 'anthropic', enumValue: 0,   modelUid: 'claude-fable-5-1-medium', credit: 50 },
-  'claude-fable-5-1-high':          { name: 'claude-fable-5-1-high',          provider: 'anthropic', enumValue: 0,   modelUid: 'claude-fable-5-1-high', credit: 70 },
-  'claude-fable-5-1-xhigh':         { name: 'claude-fable-5-1-xhigh',         provider: 'anthropic', enumValue: 0,   modelUid: 'claude-fable-5-1-xhigh', credit: 80 },
-  'claude-fable-5-1-max':           { name: 'claude-fable-5-1-max',           provider: 'anthropic', enumValue: 0,   modelUid: 'claude-fable-5-1-max', credit: 100 },
+  'claude-fable-5-1-low':           { name: 'claude-fable-5-1-low',           provider: 'anthropic', enumValue: 0,   modelUid: 'claude-fable-5-1-low', credit: 150 },
+  'claude-fable-5-1-medium':        { name: 'claude-fable-5-1-medium',        provider: 'anthropic', enumValue: 0,   modelUid: 'claude-fable-5-1-medium', credit: 175 },
+  'claude-fable-5-1-high':          { name: 'claude-fable-5-1-high',          provider: 'anthropic', enumValue: 0,   modelUid: 'claude-fable-5-1-high', credit: 200 },
+  'claude-fable-5-1-xhigh':         { name: 'claude-fable-5-1-xhigh',         provider: 'anthropic', enumValue: 0,   modelUid: 'claude-fable-5-1-xhigh', credit: 225 },
+  'claude-fable-5-1-max':           { name: 'claude-fable-5-1-max',           provider: 'anthropic', enumValue: 0,   modelUid: 'claude-fable-5-1-max', credit: 250 },
   // Claude Opus 5.5
-  'claude-opus-5-5-low':            { name: 'claude-opus-5-5-low',            provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-5-low', credit: 75 },
-  'claude-opus-5-5-medium':         { name: 'claude-opus-5-5-medium',         provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-5-medium', credit: 80 },
-  'claude-opus-5-5-high':           { name: 'claude-opus-5-5-high',           provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-5-high', credit: 115 },
-  'claude-opus-5-5-xhigh':          { name: 'claude-opus-5-5-xhigh',          provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-5-xhigh', credit: 155 },
-  'claude-opus-5-5-max':            { name: 'claude-opus-5-5-max',            provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-5-max', credit: 160 },
+  'claude-opus-5-5-low':            { name: 'claude-opus-5-5-low',            provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-5-low', credit: 35 },
+  'claude-opus-5-5-medium':         { name: 'claude-opus-5-5-medium',         provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-5-medium', credit: 45 },
+  'claude-opus-5-5-high':           { name: 'claude-opus-5-5-high',           provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-5-high', credit: 65 },
+  'claude-opus-5-5-xhigh':          { name: 'claude-opus-5-5-xhigh',          provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-5-xhigh', credit: 125 },
+  'claude-opus-5-5-max':            { name: 'claude-opus-5-5-max',            provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-5-max', credit: 150 },
   // Claude Sonnet 5.5
   'claude-sonnet-5-5-low':          { name: 'claude-sonnet-5-5-low',          provider: 'anthropic', enumValue: 0,   modelUid: 'claude-sonnet-5-5-low', credit: 12 },
   'claude-sonnet-5-5-medium':       { name: 'claude-sonnet-5-5-medium',       provider: 'anthropic', enumValue: 0,   modelUid: 'claude-sonnet-5-5-medium', credit: 15 },
   'claude-sonnet-5-5-high':         { name: 'claude-sonnet-5-5-high',         provider: 'anthropic', enumValue: 0,   modelUid: 'claude-sonnet-5-5-high', credit: 20 },
   'claude-sonnet-5-5-xhigh':        { name: 'claude-sonnet-5-5-xhigh',        provider: 'anthropic', enumValue: 0,   modelUid: 'claude-sonnet-5-5-xhigh', credit: 30 },
   'claude-sonnet-5-5-max':          { name: 'claude-sonnet-5-5-max',          provider: 'anthropic', enumValue: 0,   modelUid: 'claude-sonnet-5-5-max', credit: 40 },
+  // Claude Haiku 5.5 — live GetCascadeModelConfigs 2026-10-18.
+  'claude-haiku-5-5-low':           { name: 'claude-haiku-5-5-low',           provider: 'anthropic', enumValue: 0,   modelUid: 'claude-haiku-5-5-low', credit: 3 },
+  'claude-haiku-5-5-medium':        { name: 'claude-haiku-5-5-medium',        provider: 'anthropic', enumValue: 0,   modelUid: 'claude-haiku-5-5-medium', credit: 4 },
+  'claude-haiku-5-5-high':          { name: 'claude-haiku-5-5-high',          provider: 'anthropic', enumValue: 0,   modelUid: 'claude-haiku-5-5-high', credit: 5 },
+  'claude-haiku-5-5-xhigh':         { name: 'claude-haiku-5-5-xhigh',         provider: 'anthropic', enumValue: 0,   modelUid: 'claude-haiku-5-5-xhigh', credit: 8 },
+  'claude-haiku-5-5-max':           { name: 'claude-haiku-5-5-max',           provider: 'anthropic', enumValue: 0,   modelUid: 'claude-haiku-5-5-max', credit: 10 },
 
   // ── Claude 5 family ──────────────────────────────────────
   // fable-5 (2026-06-09) / sonnet-5 (2026-06-30) / opus-5 (2026-07-23) — Devin
@@ -232,29 +240,29 @@ export const MODELS = {
   'gpt-5-6-terra-max':              { name: 'gpt-5-6-terra-max',              provider: 'openai', enumValue: 0,   modelUid: 'gpt-5-6-terra-max', credit: 50 },
   // GPT-6.1 Sol
   'gpt-6-1-sol-low':                { name: 'gpt-6-1-sol-low',                provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-1-sol-low', credit: 30 },
-  'gpt-6-1-sol-medium':             { name: 'gpt-6-1-sol-medium',             provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-1-sol-medium', credit: 50 },
-  'gpt-6-1-sol-high':               { name: 'gpt-6-1-sol-high',               provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-1-sol-high', credit: 90 },
-  'gpt-6-1-sol-xhigh':              { name: 'gpt-6-1-sol-xhigh',              provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-1-sol-xhigh', credit: 150 },
-  'gpt-6-1-sol-max':                { name: 'gpt-6-1-sol-max',                provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-1-sol-max', credit: 200 },
+  'gpt-6-1-sol-medium':             { name: 'gpt-6-1-sol-medium',             provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-1-sol-medium', credit: 40 },
+  'gpt-6-1-sol-high':               { name: 'gpt-6-1-sol-high',               provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-1-sol-high', credit: 50 },
+  'gpt-6-1-sol-xhigh':              { name: 'gpt-6-1-sol-xhigh',              provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-1-sol-xhigh', credit: 70 },
+  'gpt-6-1-sol-max':                { name: 'gpt-6-1-sol-max',                provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-1-sol-max', credit: 100 },
   // GPT-6 Astra
-  'gpt-6-astra-low':                { name: 'gpt-6-astra-low',                provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-astra-low', credit: 30 },
-  'gpt-6-astra-medium':             { name: 'gpt-6-astra-medium',             provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-astra-medium', credit: 50 },
-  'gpt-6-astra-high':               { name: 'gpt-6-astra-high',               provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-astra-high', credit: 90 },
-  'gpt-6-astra-xhigh':              { name: 'gpt-6-astra-xhigh',              provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-astra-xhigh', credit: 150 },
-  'gpt-6-astra-max':                { name: 'gpt-6-astra-max',                provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-astra-max', credit: 200 },
+  'gpt-6-astra-low':                { name: 'gpt-6-astra-low',                provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-astra-low', credit: 100 },
+  'gpt-6-astra-medium':             { name: 'gpt-6-astra-medium',             provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-astra-medium', credit: 200 },
+  'gpt-6-astra-high':               { name: 'gpt-6-astra-high',               provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-astra-high', credit: 400 },
+  'gpt-6-astra-xhigh':              { name: 'gpt-6-astra-xhigh',              provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-astra-xhigh', credit: 375 },
+  'gpt-6-astra-max':                { name: 'gpt-6-astra-max',                provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-astra-max', credit: 500 },
   // GPT-6 Luna
-  'gpt-6-luna-none':                { name: 'gpt-6-luna-none',                provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-luna-none', credit: 3 },
-  'gpt-6-luna-low':                 { name: 'gpt-6-luna-low',                 provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-luna-low', credit: 4 },
-  'gpt-6-luna-medium':              { name: 'gpt-6-luna-medium',              provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-luna-medium', credit: 5 },
-  'gpt-6-luna-high':                { name: 'gpt-6-luna-high',                provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-luna-high', credit: 6 },
-  'gpt-6-luna-xhigh':               { name: 'gpt-6-luna-xhigh',               provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-luna-xhigh', credit: 8 },
-  'gpt-6-luna-max':                 { name: 'gpt-6-luna-max',                 provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-luna-max', credit: 30 },
+  'gpt-6-luna-none':                { name: 'gpt-6-luna-none',                provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-luna-none', credit: 2 },
+  'gpt-6-luna-low':                 { name: 'gpt-6-luna-low',                 provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-luna-low', credit: 3 },
+  'gpt-6-luna-medium':              { name: 'gpt-6-luna-medium',              provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-luna-medium', credit: 4 },
+  'gpt-6-luna-high':                { name: 'gpt-6-luna-high',                provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-luna-high', credit: 5 },
+  'gpt-6-luna-xhigh':               { name: 'gpt-6-luna-xhigh',               provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-luna-xhigh', credit: 6 },
+  'gpt-6-luna-max':                 { name: 'gpt-6-luna-max',                 provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-luna-max', credit: 7 },
   // GPT-6 Sol
-  'gpt-6-sol-none':                 { name: 'gpt-6-sol-none',                 provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-sol-none', credit: 10 },
-  'gpt-6-sol-low':                  { name: 'gpt-6-sol-low',                  provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-sol-low', credit: 30 },
-  'gpt-6-sol-medium':               { name: 'gpt-6-sol-medium',               provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-sol-medium', credit: 50 },
-  'gpt-6-sol-high':                 { name: 'gpt-6-sol-high',                 provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-sol-high', credit: 90 },
-  'gpt-6-sol-xhigh':                { name: 'gpt-6-sol-xhigh',                provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-sol-xhigh', credit: 150 },
+  'gpt-6-sol-none':                 { name: 'gpt-6-sol-none',                 provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-sol-none', credit: 65 },
+  'gpt-6-sol-low':                  { name: 'gpt-6-sol-low',                  provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-sol-low', credit: 135 },
+  'gpt-6-sol-medium':               { name: 'gpt-6-sol-medium',               provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-sol-medium', credit: 145 },
+  'gpt-6-sol-high':                 { name: 'gpt-6-sol-high',                 provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-sol-high', credit: 150 },
+  'gpt-6-sol-xhigh':                { name: 'gpt-6-sol-xhigh',                provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-sol-xhigh', credit: 190 },
   'gpt-6-sol-max':                  { name: 'gpt-6-sol-max',                  provider: 'openai', enumValue: 0,   modelUid: 'gpt-6-sol-max', credit: 200 },
 
   // ── O-series ────────────────────────────────────────────
@@ -291,6 +299,11 @@ export const MODELS = {
   'gemini-3.0-flash-high':          { name: 'gemini-3.0-flash-high',          provider: 'google', enumValue: 0,   modelUid: 'MODEL_GOOGLE_GEMINI_3_0_FLASH_HIGH', credit: 1.75 },
   'gemini-3.1-pro-low':             { name: 'gemini-3.1-pro-low',             provider: 'google', enumValue: 0,   modelUid: 'gemini-3-1-pro-low', credit: 1 },
   'gemini-3.1-pro-high':            { name: 'gemini-3.1-pro-high',            provider: 'google', enumValue: 0,   modelUid: 'gemini-3-1-pro-high', credit: 2 },
+  // Gemini 3.5 Flash — live GetCascadeModelConfigs 2026-10-18.
+  'gemini-3-5-flash-minimal':       { name: 'gemini-3-5-flash-minimal',       provider: 'google', enumValue: 0,   modelUid: 'gemini-3-5-flash-minimal', credit: 2 },
+  'gemini-3-5-flash-low':           { name: 'gemini-3-5-flash-low',           provider: 'google', enumValue: 0,   modelUid: 'gemini-3-5-flash-low', credit: 4 },
+  'gemini-3-5-flash-medium':        { name: 'gemini-3-5-flash-medium',        provider: 'google', enumValue: 0,   modelUid: 'gemini-3-5-flash-medium', credit: 8 },
+  'gemini-3-5-flash-high':          { name: 'gemini-3-5-flash-high',          provider: 'google', enumValue: 0,   modelUid: 'gemini-3-5-flash-high', credit: 9 },
   // ── added 2026-10-16 from docs.devin.ai modelCostData (public price table); NOT yet frame-verified ──
   // Gemini 3.6 Flash
   'gemini-3-6-flash-minimal':       { name: 'gemini-3-6-flash-minimal',       provider: 'google', enumValue: 0,   modelUid: 'gemini-3-6-flash-minimal', credit: 2 },
@@ -375,6 +388,12 @@ export const MODELS = {
   'glm-5':                          { name: 'glm-5',                          provider: 'zhipu', enumValue: 0,   modelUid: 'glm-5', credit: 1.5 },
   'glm-5.1':                        { name: 'glm-5.1',                        provider: 'zhipu', enumValue: 0,   modelUid: 'glm-5-1', credit: 1.5 },
   'glm-5.2':                        { name: 'glm-5.2',                        provider: 'zhipu', enumValue: 0,   modelUid: 'glm-5-2', credit: 1.5 },
+  // GLM-5.2 variants — live GetCascadeModelConfigs 2026-10-18.
+  'glm-5-2-none':                   { name: 'glm-5-2-none',                   provider: 'zhipu', enumValue: 0,   modelUid: 'glm-5-2-none', credit: 1 },
+  'glm-5-2-none-1m':                { name: 'glm-5-2-none-1m',                provider: 'zhipu', enumValue: 0,   modelUid: 'glm-5-2-none-1m', credit: 2 },
+  'glm-5-2-1m':                     { name: 'glm-5-2-1m',                     provider: 'zhipu', enumValue: 0,   modelUid: 'glm-5-2-1m', credit: 3 },
+  'glm-5-2-max':                    { name: 'glm-5-2-max',                    provider: 'zhipu', enumValue: 0,   modelUid: 'glm-5-2-max', credit: 3 },
+  'glm-5-2-max-1m':                 { name: 'glm-5-2-max-1m',                 provider: 'zhipu', enumValue: 0,   modelUid: 'glm-5-2-max-1m', credit: 6 },
   // ── added 2026-10-16 from docs.devin.ai modelCostData (public price table); NOT yet frame-verified ──
   // GLM-5.3 Flash
   'glm-5-3-flash-low':              { name: 'glm-5-3-flash-low',              provider: 'zhipu', enumValue: 0,   modelUid: 'glm-5-3-flash-low', credit: 1 },
@@ -420,6 +439,10 @@ export const MODELS = {
   'swe-2-medium':                   { name: 'swe-2-medium',                   provider: 'windsurf', enumValue: 0, modelUid: 'swe-2-medium', credit: 6, backend: 'special_agent' },
   'swe-2-high':                     { name: 'swe-2-high',                     provider: 'windsurf', enumValue: 0, modelUid: 'swe-2-high', credit: 9, backend: 'special_agent' },
   'swe-2-max':                      { name: 'swe-2-max',                      provider: 'windsurf', enumValue: 0, modelUid: 'swe-2-max', credit: 12, backend: 'special_agent' },
+  // SWE-2 Lightning — live GetCascadeModelConfigs 2026-10-18.
+  'swe-2-medium-lightning':         { name: 'swe-2-medium-lightning',         provider: 'windsurf', enumValue: 0, modelUid: 'swe-2-medium-lightning', credit: 12, backend: 'special_agent' },
+  'swe-2-high-lightning':           { name: 'swe-2-high-lightning',           provider: 'windsurf', enumValue: 0, modelUid: 'swe-2-high-lightning', credit: 18, backend: 'special_agent' },
+  'swe-2-max-lightning':            { name: 'swe-2-max-lightning',            provider: 'windsurf', enumValue: 0, modelUid: 'swe-2-max-lightning', credit: 24, backend: 'special_agent' },
   // ── added 2026-10-16 from docs.devin.ai modelCostData (public price table); NOT yet frame-verified ──
   // SWE-1.7 Lightning
   'swe-1-7-lightning-medium':       { name: 'swe-1-7-lightning-medium',       provider: 'windsurf', enumValue: 0,   modelUid: 'swe-1-7-lightning-medium', credit: 9 },
