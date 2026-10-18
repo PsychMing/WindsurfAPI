@@ -364,6 +364,29 @@ describe('DEVIN_CONNECT cross-account failover — stream', () => {
     assert.ok(frames.some(f => f !== '[DONE]' && f.error), 'surfaced an error frame');
   });
 
+  // A pre-content error must not be closed with [DONE]: the OpenAI stream
+  // contract treats [DONE] as a completed turn, which turns an upstream failure
+  // into a clean empty answer. Content already on the wire keeps the historical
+  // clean-close behavior (the previous test).
+  it('a pre-content upstream error ends without [DONE]', async () => {
+    seed('s-pre-err');
+    __setConnectDeps({
+      streamChatCompletion: async () => {
+        throw Object.assign(new Error('blocked by upstream'), { code: 'CONTENT_BLOCKED' });
+      },
+    });
+
+    const result = await handleChatCompletions(
+      { model: 'swe-1-6-slow', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      { callerKey: '' },
+    );
+    const res = fakeRes();
+    await result.handler(res);
+    const frames = parseFrames(res.body);
+    assert.ok(frames.some(f => f !== '[DONE]' && f.error), 'surfaced an error frame');
+    assert.equal(frames.includes('[DONE]'), false, 'no [DONE] after a pre-content error');
+  });
+
   // R1 (stream): a pre-emit RATE_LIMITED on the first account fails over to a
   // healthy one instead of erroring the stream — replay is safe while !emitted.
   it('R1 stream: fails over on a pre-emit RATE_LIMITED, then streams from the healthy account', async () => {

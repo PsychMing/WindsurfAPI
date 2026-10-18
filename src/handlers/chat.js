@@ -3710,6 +3710,13 @@ async function _handleChatCompletionsInner(body, context = {}) {
             else context.signal.addEventListener('abort', () => abortController.abort(), { once: true });
           }
           let emitted = false;
+          // A pure pre-content error must not be terminated with [DONE]: the
+          // OpenAI stream contract treats [DONE] as "the turn completed", so a
+          // client would report a clean empty answer instead of the upstream
+          // failure. `contentEmitted` distinguishes a real payload (text,
+          // tool_calls, or finish) from the eager role-only prime.
+          let contentEmitted = false;
+          let terminalOk = false;
           // Derive from the name we actually echo, not the raw request name. The adapter
           // normally pre-sets the fingerprint from displayModel, so this is a dormant
           // fallback — but leaving it on reqModelName means a rare fallback emits a
@@ -3726,7 +3733,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
             if (isOpenAIClient && data && data.error && typeof data.error.type === 'string') {
               data.error.type = normalizeOpenAIErrorType(data.error.type);
             }
-            if (!res.writableEnded) { emitted = true; res.write(`data: ${JSON.stringify(data)}\n\n`); }
+            if (!res.writableEnded) {
+              if (Array.isArray(data?.choices) && data.choices.some((c) => c?.delta?.content || c?.delta?.tool_calls || c?.finish_reason)) contentEmitted = true;
+              emitted = true;
+              res.write(`data: ${JSON.stringify(data)}\n\n`);
+            }
           };
           // Point the upstream connect HTTP call at the handler-local controller
           // (not the raw context.signal set at request setup) so a client
@@ -3932,6 +3943,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
               if (acct) triedKeys.push(acct.apiKey);
               const r = await attemptStream(acct);
               if (r.kind === 'ok') {
+                terminalOk = true;
                 lastOkSr = r.sr;
                 // Pin this conversation to the account that just served it, so the
                 // next turn reads the prompt cache back instead of re-writing it.
@@ -4029,7 +4041,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
             }
             // If the client already disconnected, don't try to write to a dead
             // socket — that can leave the handler stuck on a closed connection.
-            if (!abortController.signal.aborted && !res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+            // A pre-content error (`!terminalOk && !contentEmitted`) ends without
+            // [DONE], so a client cannot mistake it for a completed turn.
+            if (!abortController.signal.aborted && !res.writableEnded) {
+              if (terminalOk || contentEmitted) res.write('data: [DONE]\n\n');
+              res.end();
+            }
           } finally {
             unregisterSse();
             stopHeartbeat();
