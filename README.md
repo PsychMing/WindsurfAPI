@@ -428,6 +428,7 @@ curl -X DELETE http://localhost:3003/v1/responses/resp_xxx -H "Authorization: Be
 | `LOG_MAX_FILE_MB` | `0`（关闭） | 单个新写入日志文件的 MiB 上限，示例 `20`；整条 JSONL 记录轮转，不拆行 |
 | `LOG_MAX_TOTAL_MB` | `0`（关闭） | app/error 日志合计的 MiB 上限，示例 `500`；按日期/分段淘汰最旧文件，可能包含当天。超限单条记录跳过磁盘写入。详见 [日志保留策略](docs/ENV-SWITCHES.md#应用磁盘日志) |
 | `WINDSURFAPI_LEAK_TRACE` | off | 推理/内容边界结构化日志(实验性,默认关闭)。开启后输出 `LEAK_TRACE` 前缀日志:原始流事件所属通道(content/reasoning)、think 标记、截断文本样本、settle 时 content/reasoning 字符数。用于在线抓取模型推理泄漏进 content 通道的问题。字段:channel/blockType/think/sample/len/reqId/account/msgId/contentChars/reasoningChars/rerouted |
+| `WAPI_ACCOUNTS_ONLY` | 空（全部） | 每实例账号隔离：逗号分隔的邮箱或账号 id，只从 `accounts.json` 加载匹配账号；大小写不敏感。设为非空但无有效 token 时 fail-closed（不加载任何账号）。多端口共享 `accounts.json` 时用它把每个端口钉到自己的账号 |
 | `WINDSURFAPI_IGNORE_CLOUD_FILTER` | `0` | Cascade 路径下，各账号云端 catalog 同步后，账号池列表展示活跃账号目录的并集，路由则校验所选账号自己的目录；设为 `1` 恢复完整静态 catalog。目录缺失、为空或同步失败时保持 fail-open；`DEVIN_CONNECT` 使用独立 selector catalog |
 | `LS_BINARY_PATH` | `/opt/windsurf/language_server_linux_x64` | LS 二进制位置 |
 | `LS_DATA_DIR` | Linux: `/opt/windsurf/data`；macOS: `~/.windsurf/data` | 每个 proxy 独立的 LS 数据根目录 |

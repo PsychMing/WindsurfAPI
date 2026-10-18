@@ -820,6 +820,25 @@ export function ensureDeviceSeed(account, env = process.env) {
   return account.deviceSeed;
 }
 
+// Per-instance account isolation (PR #194). Multi-port deployments share one
+// accounts.json; without a filter, a port configured for account A can still
+// acquire account B and bind it to A's sticky session. `WAPI_ACCOUNTS_ONLY`
+// is a comma-separated list of emails or account ids. Unset/blank = no filter;
+// a non-blank value with no tokens (e.g. ",") fails closed (loads nothing).
+export function accountsOnlyFilter(env = process.env) {
+  const raw = env.WAPI_ACCOUNTS_ONLY;
+  if (raw == null || String(raw).trim() === '') return null;
+  const tokens = String(raw).split(',').map(token => token.trim()).filter(Boolean);
+  return new Set(tokens.map(token => token.toLowerCase()));
+}
+
+export function accountAllowedByFilter(account, filter) {
+  if (!filter) return true;
+  const email = typeof account?.email === 'string' ? account.email.trim().toLowerCase() : '';
+  const id = typeof account?.id === 'string' ? account.id.trim().toLowerCase() : '';
+  return (email !== '' && filter.has(email)) || (id !== '' && filter.has(id));
+}
+
 function loadAccounts() {
   try {
     migrateReplicaAccountsTo({
@@ -828,11 +847,26 @@ function loadAccounts() {
     });
     if (!existsSync(ACCOUNTS_FILE)) return;
     const data = JSON.parse(readFileSync(ACCOUNTS_FILE, 'utf-8'));
+    const filter = accountsOnlyFilter();
+    let loaded = 0;
+    let filtered = 0;
     for (const a of data) {
       if (accounts.find(x => x.apiKey === a.apiKey)) continue;
-      accounts.push(_deserializeAccount(a));
+      const account = _deserializeAccount(a);
+      if (!accountAllowedByFilter(account, filter)) {
+        filtered++;
+        log.debug(`Account ${safeAccountRef(account)} filtered out by WAPI_ACCOUNTS_ONLY`);
+        continue;
+      }
+      accounts.push(account);
+      loaded++;
     }
-    if (data.length > 0) log.info(`Loaded ${data.length} account(s) from disk`);
+    if (data.length > 0) {
+      log.info(`Loaded ${loaded} account(s) from disk${filter ? ` (WAPI_ACCOUNTS_ONLY; ${filtered} filtered)` : ''}`);
+    }
+    if (filter && loaded === 0 && data.length > 0) {
+      log.warn('WAPI_ACCOUNTS_ONLY matched no accounts; the pool is empty');
+    }
   } catch (e) {
     log.error('Failed to load accounts:', e.message);
   }

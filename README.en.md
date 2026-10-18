@@ -328,6 +328,7 @@ In your client's settings for **Custom OpenAI Compatible**:
 | `LOG_RETENTION_DAYS` | `0` (off) | Application JSONL retention in UTC calendar days including today; e.g. `14`. Cleanup at startup and hourly. Restart after changes. |
 | `LOG_MAX_FILE_MB` | `0` (off) | MiB limit for newly written log files; e.g. `20`. Rotate between complete JSONL records. |
 | `LOG_MAX_TOTAL_MB` | `0` (off) | Combined app/error log MiB budget; e.g. `500`. Evict oldest dated segments, including today's if necessary. Oversized records skip disk persistence. See [disk-log policy](docs/ENV-SWITCHES.md#应用磁盘日志). |
+| `WAPI_ACCOUNTS_ONLY` | empty (all) | Per-instance account isolation: comma-separated emails or account ids; only matching accounts are loaded from `accounts.json`, case-insensitively. A non-blank value with no valid tokens fails closed (loads no accounts). Use it to pin each port of a multi-port deployment to its own account(s) when they share one `accounts.json` |
 | `WINDSURFAPI_IGNORE_CLOUD_FILTER` | `0` | On the Cascade transport, after per-account cloud catalogs sync, pool listings show their union and routing enforces each selected account's catalog. Set to `1` to restore the full static catalog. Missing, empty, or failed catalog syncs fail open. `DEVIN_CONNECT` uses its separate selector catalog. |
 | `LS_BINARY_PATH` | `/opt/windsurf/language_server_linux_x64` | Path to the LS binary. |
 | `LS_PORT` | `42100` | LS gRPC port. |
