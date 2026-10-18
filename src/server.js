@@ -669,7 +669,7 @@ async function route(req, res) {
         try {
           await result.handler(res);
         } finally {
-          updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt });
+          updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode });
         }
       } else {
         const streamRes = createDeferredSseResponse(res, {
@@ -683,10 +683,12 @@ async function route(req, res) {
           await result.handler(streamRes);
         } finally {
           streamRes.dispose();
+          // A handler that throws after committing must not leave the socket open.
+          if (res.headersSent && !res.writableEnded) res.end();
           // The row was recorded when the descriptor was ready; the stream itself
           // runs inside result.handler, so its real wall time is only known here.
           // Patch the same row instead of recording a second one.
-          updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt });
+          updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode });
         }
       }
     } else {

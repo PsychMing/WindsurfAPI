@@ -26,8 +26,7 @@ function dataPayload(frame) {
   const lines = frame.split('\n');
   const data = [];
   for (const line of lines) {
-    if (line.startsWith('data: ')) data.push(line.slice(6));
-    else if (line === 'data:') data.push('');
+    if (line.startsWith('data:')) data.push(line.slice(5).replace(/^[ \t]/, ''));
   }
   return data.join('\n');
 }
@@ -48,7 +47,12 @@ function isBootstrapFrame(frame, protocol) {
     // Role-only prime chunk: no content, no tool call, no finish. Holding it is
     // safe because a client cannot observe anything from it alone.
     if (Array.isArray(obj.choices) && obj.choices.length > 0) {
-      return obj.choices.every((c) => !c?.delta?.content && !c?.delta?.reasoning && !c?.delta?.reasoning_content && !c?.delta?.tool_calls && !c?.finish_reason);
+      return obj.choices.every((c) => {
+        const d = c?.delta;
+        if (!d || c?.finish_reason) return false;
+        return Object.keys(d).every((k) => k === 'role'
+          || ((k === 'content' || k === 'reasoning' || k === 'reasoning_content') && !d[k]));
+      });
     }
   }
   return false;
@@ -61,9 +65,13 @@ function errorFromFrame(frame) {
 }
 
 function mapStatus(error, mapError) {
-  if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) return error.status;
   if (typeof mapError === 'function') return mapError(error).status;
-  return connectErrorToHttp(error?.code).status;
+  if (error?.code) {
+    const byCode = connectErrorToHttp(error.code);
+    if (byCode.status !== 502) return byCode.status;
+  }
+  if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) return error.status;
+  return 502;
 }
 
 function retryAfterSeconds(error) {
@@ -124,7 +132,10 @@ export function createDeferredSseResponse(realRes, {
     const mapped = mapStatus(error, mapError);
     const retry = retryAfterSeconds(error);
     const fallbackType = (mapError ? mapError(error).type : connectErrorToHttp(error?.code).type);
-    const type = normalizeOpenAIErrorType(error?.type || fallbackType, mapped);
+    const type = normalizeOpenAIErrorType(
+      error?.type && error.type !== 'api_error' ? error.type : fallbackType,
+      mapped,
+    );
     const body = errorBody
       ? errorBody(error, mapped)
       : {
@@ -143,6 +154,8 @@ export function createDeferredSseResponse(realRes, {
     if (retry) outHeaders['retry-after'] = String(retry);
     try {
       realRes.writeHead(mapped, outHeaders);
+      headerStatus = mapped;
+      committed = true;
       realRes.end(JSON.stringify(body));
     } catch {
       ended = true;

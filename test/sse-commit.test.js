@@ -91,6 +91,31 @@ describe('createDeferredSseResponse', () => {
     }
   });
 
+  it('derives the official body type from the classified code', () => {
+    for (const [code, type] of [['MODEL_BLOCKED', 'permission_error'], ['QUOTA_EXHAUSTED', 'insufficient_quota'], ['UNAUTHORIZED', 'authentication_error'], ['CONTENT_BLOCKED', 'invalid_request_error']]) {
+      const real = fakeRes();
+      const res = createDeferredSseResponse(real, { status: 200 });
+      res.write(`data: ${JSON.stringify({ error: { message: code, code } })}\n\n`);
+      res.end();
+      assert.equal(JSON.parse(real.body).error.type, type, code);
+    }
+  });
+
+  it('recognizes an error frame without a space after data:', () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200 });
+    res.write('data:{"error":{"message":"busy","code":"RATE_LIMITED"}}\n\n');
+    res.end();
+    assert.equal(real.statusCode, 429);
+  });
+
+  it('commits a function_call-first frame instead of holding it', () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200 });
+    res.write(frame({ choices: [{ delta: { function_call: { name: 'f', arguments: '{}' } } }] }));
+    assert.equal(real.statusCode, 200);
+  });
+
   it('commits a reasoning-first frame as SSE instead of treating it as a bootstrap', () => {
     const real = fakeRes();
     const res = createDeferredSseResponse(real, { status: 200 });
