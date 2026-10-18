@@ -121,8 +121,8 @@ describe('#115 — Edit/MultiEdit → propose_code real ActionSpec encoding (v2.
     });
     assert.ok(Buffer.isBuffer(buf));
     const top = parseFields(buf);
-    // CortexTrajectoryStep.type=1 should be 32 (CORTEX_STEP_TYPE_PROPOSE_CODE)
-    assert.equal(getField(top, 1, 0).value, 32);
+    // CortexTrajectoryStep.type=1 is CortexStepType.PROPOSE_CODE = 24 (the body rides oneof field 32)
+    assert.equal(getField(top, 1, 0).value, 24);
     // oneof body at field 32 → CortexStepProposeCode
     const propose = getField(top, 32, 2);
     assert.ok(propose);
@@ -165,7 +165,7 @@ describe('#115 — web_search ↔ cascade search_web (v2.0.70)', () => {
   it('buildAdditionalStep("search_web") produces field 42 oneof', () => {
     const buf = buildAdditionalStep('search_web', { query: 'q', domain: 'd.com', summary: 's' });
     const top = parseFields(buf);
-    assert.equal(getField(top, 1, 0).value, 42); // step type = SEARCH_WEB
+    assert.equal(getField(top, 1, 0).value, 33); // CortexStepType.SEARCH_WEB = 33; body is field 42
     const body = getField(top, 42, 2);
     assert.ok(body);
     const f = parseFields(body.value);
@@ -199,7 +199,7 @@ describe('#115 — apply_patch unmappable sentinel (v2.0.70)', () => {
     const steps = buildAdditionalStepsFromHistory(messages);
     assert.equal(steps.length, 1);
     const top = parseFields(steps[0]);
-    assert.equal(getField(top, 1, 0).value, 28); // run_command
+    assert.equal(getField(top, 1, 0).value, 21); // CortexStepType.RUN_COMMAND = 21; body is field 28
   });
 });
 
