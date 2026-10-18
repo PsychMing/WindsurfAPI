@@ -3556,6 +3556,7 @@ function publicAccount(a, now, { view = 'full' } = {}) {
     lastProbed: a.lastProbed || 0,
     rateLimitedUntil: a.rateLimitedUntil || 0,
     rateLimited: !!(a.rateLimitedUntil && a.rateLimitedUntil > now),
+    quotaResetAt: a.quotaResetAt || 0,
     rpmUsed,
     rpmLimit,
     credits: cr,

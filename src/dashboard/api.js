@@ -631,6 +631,14 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       rateLimited: !!a.rateLimited,
       capacityThrottled: !!a.capacityThrottled,
       quotaCooled: !!a.quotaCooled,
+      tier: a.tier || 'unknown',
+      balance: a.balance ?? null,
+      errorCount: a.errorCount || 0,
+      cooldownUntil: Math.max(a.rateLimitedUntil || 0, a.quotaResetAt || 0) || null,
+      cooldownReason: a.quotaCooled ? 'quota'
+        : a.rateLimited ? 'rate_limit'
+        : a.capacityThrottled ? 'capacity'
+        : null,
     }));
     return json(res, 200, { accounts, ts: Date.now() });
   }
