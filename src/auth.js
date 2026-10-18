@@ -51,6 +51,10 @@ const ACCOUNTS_FILE = join(config.sharedDataDir || config.dataDir, 'accounts.jso
 // ─── Account pool ──────────────────────────────────────────
 
 const accounts = [];
+// PR #194: accounts filtered out by WAPI_ACCOUNTS_ONLY stay on disk. Without
+// retaining the raw records, the next save would rewrite accounts.json with
+// only this instance's slice and permanently delete every other port's account.
+const filteredAccountRecords = [];
 let _roundRobinIndex = 0;
 let _bindHost = '0.0.0.0';
 
@@ -580,7 +584,7 @@ function startDirtyFlush() {
 export function __flushDirtyAccounts() { flushDirty(); }
 export function __isAccountsDirty() { return _dirty; }
 function _serializeAccounts() {
-  return accounts.map(a => ({
+  const live = accounts.map(a => ({
     id: a.id, email: a.email, apiKey: a.apiKey,
     apiServerUrl: a.apiServerUrl, method: a.method,
     status: a.status, addedAt: a.addedAt,
@@ -624,6 +628,9 @@ function _serializeAccounts() {
     // deriveDeviceBytes + WINDSURFAPI_STABLE_DEVICE.
     ...(a.deviceSeed ? { deviceSeed: a.deviceSeed } : {}),
   }));
+  const liveKeys = new Set(live.map(a => a.apiKey));
+  const preserved = filteredAccountRecords.filter(a => a?.apiKey && !liveKeys.has(a.apiKey));
+  return preserved.length ? [...live, ...preserved] : live;
 }
 
 function saveAccounts() {
@@ -848,6 +855,7 @@ function loadAccounts() {
     if (!existsSync(ACCOUNTS_FILE)) return;
     const data = JSON.parse(readFileSync(ACCOUNTS_FILE, 'utf-8'));
     const filter = accountsOnlyFilter();
+    filteredAccountRecords.length = 0;
     let loaded = 0;
     let filtered = 0;
     for (const a of data) {
@@ -855,6 +863,7 @@ function loadAccounts() {
       const account = _deserializeAccount(a);
       if (!accountAllowedByFilter(account, filter)) {
         filtered++;
+        if (a?.apiKey) filteredAccountRecords.push(a);
         log.debug(`Account ${safeAccountRef(account)} filtered out by WAPI_ACCOUNTS_ONLY`);
         continue;
       }
@@ -874,6 +883,7 @@ function loadAccounts() {
 
 // Test seams: exercise the serialize→load round-trip without disk/dedup.
 export function __serializeAccounts() { return _serializeAccounts(); }
+export function __loadAccountsForTest() { loadAccounts(); }
 export function __deserializeAccount(a, now = Date.now()) { return _deserializeAccount(a, now); }
 export function __maybeRecoverErrorAccount(account, now = Date.now()) {
   return maybeRecoverErrorAccount(account, now);
