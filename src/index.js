@@ -70,9 +70,6 @@ function resetWorkspace() {
       try { rmSync(join(wsBase, name), { recursive: true, force: true }); } catch {}
     }
   } catch {}
-  try {
-    mkdirSync(join(config.dataDir, 'db'), { recursive: true });
-  } catch {}
 }
 
 async function main() {
