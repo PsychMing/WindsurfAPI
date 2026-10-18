@@ -30,6 +30,7 @@ import { handleMessages, handleCountTokens, validateMessagesRequest, validateCou
 import { handleGemini, parseGeminiPath } from './handlers/gemini.js';
 import { handleResponses, handleGetResponse, handleDeleteResponse } from './handlers/responses.js';
 import { handleModels } from './handlers/models.js';
+import { createDeferredSseResponse } from './sse-commit.js';
 import { resolveClineCompat, stripClineNamespace } from './handlers/cline-compat.js';
 import { resolveCcCompat, stripCcNamespace } from './handlers/cc-compat.js';
 import { isExperimentalEnabled, getBackendSwitch } from './runtime-config.js';
@@ -650,9 +651,18 @@ async function route(req, res) {
       'openai-organization': 'org-windsurf-proxy',
     };
     if (result.stream) {
-      res.writeHead(result.status, { 'Access-Control-Allow-Origin': '*', ...modelHeaders, ...result.headers });
+      // Commit gate: hold the first frames until a real payload arrives. A
+      // pre-content upstream 429/500 then becomes a real HTTP status instead of
+      // a 200 SSE error frame. Heartbeats/role-only primes are buffered (bounded
+      // by the wrapper) and flushed with the first real frame.
+      const streamRes = createDeferredSseResponse(res, {
+        status: result.status,
+        headers: { 'Access-Control-Allow-Origin': '*', ...modelHeaders, ...result.headers },
+        protocol: 'openai',
+        requestId,
+      });
       try {
-        await result.handler(res);
+        await result.handler(streamRes);
       } finally {
         // The row was recorded when the descriptor was ready; the stream itself
         // runs inside result.handler, so its real wall time is only known here.
