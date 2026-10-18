@@ -1,7 +1,7 @@
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { config } from '../src/config.js';
-import { addAccountByKey, configureBindHost, removeAccount, _resetLockoutForTests } from '../src/auth.js';
+import { addAccountByKey, configureBindHost, getAccountInternal, removeAccount, _resetLockoutForTests } from '../src/auth.js';
 import { buildBatchProxyBinding, handleDashboardApi } from '../src/dashboard/api.js';
 import {
   recordNativeBridgeDecision,
@@ -262,5 +262,82 @@ describe('dashboard batch import proxy binding', () => {
     assert.ok(legacyA1);
     assert.ok(Array.isArray(legacyA1.tierModels));
     assert.ok(Array.isArray(legacyA1.availableModels));
+  });
+});
+
+// B2: /pool-events exposes the cooldown projection the dashboard's transition
+// notifier diffs. cooldownReason is a precedence chain (quota > rate_limit >
+// capacity > null) and cooldownUntil is max(rateLimitedUntil, quotaResetAt),
+// normalized to null (not 0) when neither deadline is set. This route had zero
+// test references before this block.
+describe('GET /pool-events cooldown projection', () => {
+  it('reports the precedence chain and the max deadline per account state', async () => {
+    _resetRuntimeConfigForTests();
+    config.dashboardPassword = '';
+    config.apiKey = '';
+    configureBindHost('127.0.0.1');
+    process.env.DASHBOARD_ALLOW_NO_AUTH = '1'; // convenience: exercise projection, not auth
+
+    const now = Date.now();
+    const healthy = addTestAccount('pool-events-healthy');
+    const quota = addTestAccount('pool-events-quota');
+    const rate = addTestAccount('pool-events-rate');
+    const capacity = addTestAccount('pool-events-capacity');
+
+    const h = getAccountInternal(healthy.id);
+    h.tier = 'pro';
+    h.credits = { balance: 12.5 };
+    h.errorCount = 3;
+
+    // quota outranks the transient and capacity dimensions; the deadline is the
+    // LATER of the two real deadlines (max, not the reason's own deadline).
+    const q = getAccountInternal(quota.id);
+    q.rateLimitedUntil = now + 60_000;
+    q.quotaResetAt = now + 120_000;
+    q._modelRateLimits = { 'claude-sonnet-4.6': now + 30_000 };
+
+    // rate_limit outranks capacity.
+    const r = getAccountInternal(rate.id);
+    r.rateLimitedUntil = now + 90_000;
+    r.quotaResetAt = 0;
+    r._modelRateLimits = { 'claude-sonnet-4.6': now + 30_000 };
+
+    // capacity alone has no account-wide deadline: cooldownUntil must stay null.
+    const c = getAccountInternal(capacity.id);
+    c.rateLimitedUntil = 0;
+    c.quotaResetAt = 0;
+    c._modelRateLimits = { 'claude-sonnet-4.6': now + 30_000 };
+
+    const res = fakeRes();
+    await handleDashboardApi('GET', '/pool-events', {}, localReq('/pool-events'), res);
+
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.equal(typeof body.ts, 'number', 'the payload must carry a snapshot timestamp');
+    const byId = new Map(body.accounts.map(a => [a.id, a]));
+
+    assert.deepEqual(
+      {
+        status: byId.get(healthy.id).status,
+        tier: byId.get(healthy.id).tier,
+        balance: byId.get(healthy.id).balance,
+        errorCount: byId.get(healthy.id).errorCount,
+        cooldownReason: byId.get(healthy.id).cooldownReason,
+        cooldownUntil: byId.get(healthy.id).cooldownUntil,
+      },
+      { status: 'active', tier: 'pro', balance: 12.5, errorCount: 3, cooldownReason: null, cooldownUntil: null },
+      'a healthy account must project null (not 0) cooldown fields',
+    );
+
+    assert.equal(byId.get(quota.id).cooldownReason, 'quota');
+    assert.equal(byId.get(quota.id).cooldownUntil, now + 120_000,
+      'cooldownUntil must be max(rateLimitedUntil, quotaResetAt)');
+
+    assert.equal(byId.get(rate.id).cooldownReason, 'rate_limit');
+    assert.equal(byId.get(rate.id).cooldownUntil, now + 90_000);
+
+    assert.equal(byId.get(capacity.id).cooldownReason, 'capacity');
+    assert.equal(byId.get(capacity.id).cooldownUntil, null,
+      'a capacity-only account has no account-wide deadline');
   });
 });
