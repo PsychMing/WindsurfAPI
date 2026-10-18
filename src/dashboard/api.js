@@ -50,6 +50,7 @@ import { getProxyConfig, getProxyConfigMasked, setGlobalProxy, setAccountProxy, 
 import { MODELS, MODEL_TIER_ACCESS as _TIER_TABLE, getTierModels as _getTierModels, filterModelKeysByCloudCatalog } from '../models.js';
 import { buildConnectReachability } from '../handlers/models.js';
 import { FREE_REACHABLE_SELECTORS, getLiveCatalog } from '../devin-connect-models.js';
+import { listRequests, requestRingStats } from './request-ring.js';
 import { windsurfLogin, refreshFirebaseToken, reRegisterWithCodeium } from './windsurf-login.js';
 import { getModelAccessConfig, setModelAccessMode, setModelAccessList, addModelToList, removeModelFromList, setDefaultModel } from './model-access.js';
 import { checkMessageRateLimit } from '../windsurf-api.js';
@@ -599,6 +600,23 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         return { total: s.balanceTotal, accounts: s.balanceAccounts };
       })(),
     });
+  }
+
+  // Lightweight request ring for the dashboard's request-level view. Rows are
+  // metadata-only (no headers/prompt/upstream body); the caller is a short hash.
+  if (subpath === '/requests' && method === 'GET') {
+    const u = new URL(req?.url || '/', 'http://localhost');
+    const filter = {};
+    for (const key of ['model', 'status', 'class']) {
+      const value = u.searchParams.get(key);
+      if (value !== null && value !== '') filter[key] = value;
+    }
+    const page = listRequests({
+      cursor: u.searchParams.get('cursor'),
+      limit: u.searchParams.get('limit'),
+      filter,
+    });
+    return json(res, 200, { ...page, ring: requestRingStats() });
   }
 
   // Lightweight pool snapshot for the dashboard's pool-event notifier. Reads the

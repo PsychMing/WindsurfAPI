@@ -35,6 +35,7 @@ import { resolveCcCompat, stripCcNamespace } from './handlers/cc-compat.js';
 import { isExperimentalEnabled, getBackendSwitch } from './runtime-config.js';
 import { resolveModel, getModelInfo } from './models.js';
 import { handleDashboardApi, parseProxyUrl, validateProxyHost, verifyAdminRequest } from './dashboard/api.js';
+import { recordRequest } from './dashboard/request-ring.js';
 import { setAccountProxy } from './dashboard/proxy-config.js';
 import { config, log } from './config.js';
 import { getVersionInfo } from './version.js';
@@ -627,6 +628,15 @@ async function route(req, res) {
     });
     const processingMs = Date.now() - reqStartedAt;
     const requestId = 'req_' + randomUUID();
+    recordRequest({
+      id: requestId,
+      model: body.model,
+      status: result.status,
+      stream: !!result.stream,
+      durationMs: processingMs,
+      class: result.body?.error?.code || (result.status < 400 ? 'ok' : 'error'),
+      caller: callerKey,
+    });
     const modelHeaders = {
       'x-request-id': requestId,
       'openai-model': body.model || '',
@@ -685,6 +695,15 @@ async function route(req, res) {
     });
     const processingMs = Date.now() - reqStartedAt;
     const requestId = 'req_' + randomUUID();
+    recordRequest({
+      id: requestId,
+      model: body.model,
+      status: result.status,
+      stream: !!result.stream,
+      durationMs: processingMs,
+      class: result.body?.error?.code || (result.status < 400 ? 'ok' : 'error'),
+      caller: callerKey,
+    });
     const modelHeaders = {
       'x-request-id': requestId,
       'openai-model': body.model || '',
@@ -738,6 +757,15 @@ async function route(req, res) {
     });
     const processingMs = Date.now() - reqStartedAt;
     const requestId = 'req_' + randomUUID();
+    recordRequest({
+      id: requestId,
+      model: body.model,
+      status: result.status,
+      stream: !!result.stream,
+      durationMs: processingMs,
+      class: result.body?.error?.code || (result.status < 400 ? 'ok' : 'error'),
+      caller: callerKey,
+    });
     const modelHeaders = {
       'x-request-id': requestId,
       'openai-model': body.model || '',
