@@ -61,15 +61,17 @@ v3.9.40 只在 Messages 侧修了 64 字符 wire 上限；这一版把同一类�
 
 - 7/7 路由 smoke 200；昂贵模型 5 个 selector × 4 协议 20/20 200、文本 `PONG`、usage 存在，1.34–4.91 s。
 - 23 个 mode 名全部尝试：6 个 live（`swe-2-medium/high/max`、`gpt-6-astra/sol/1-sol`），17 个预上游 `400 model_not_found`。
-- 工具 2/2（`gpt-6-astra`、`claude-opus-5-5`）；多轮保留 `Ada`；取消干净；12 并发 Haiku 12/12 200；`claude-opus-5-5` 图片 chat 502 / messages 529，Gemini 控制 200。
-- 64 次客户端请求 / 47 次上游调用，list-price 上限 2,792 credits；wire 没有计费标签，**实际扣费未观测**。
+- 工具 2/2（`gpt-6-astra`、`claude-opus-5-5`）；多轮保留 `Ada`；取消干净；12 并发 Haiku 12/12 200。
+- 补测：4 个其他昂贵 selector 的图片 chat 全部 502 `invalid_argument`，加上 opus 的 chat 502 / messages 529，**5 个昂贵 selector 全部拒绝图片**；Gemini 3.5 Flash 控制 200。
+- 正确拼写的 `swe-2-medium/high/max-lightning` 3/3 200；`gpt-6-astra`/`claude-opus-5-5` 的流式 tool call 2/2 200，完整名、完整 args、`finish_reason: tool_calls`、`[DONE]`，未出现 split name。
+- 73 次客户端请求 / 56 次上游调用，list-price 上限 3,491 credits；wire 没有计费标签，**实际扣费未观测**。
 - 证据：`~/.dwgx/ops/research/devinpro-complete-capability-matrix/{MATRIX-REPORT.md,VERIFICATION.md,matrix.json}`。
 
 ## 尚未验证
 
 - **实际计费 debit**：2,792 是乘数上限，不是账单读数。
-- **图片**：`claude-opus-5-5` 的失败是单次双协议观测；其他四个昂贵 selector 的图片未测。
-- **streaming tool deltas**：昂贵模型只测了非流式 tool call；Gemini split 名已由 fake upstream 覆盖，Responses 的 split 名仍可能在 `output_item.added` 中先出现首片（既有 P2，未在本次修复）；live 流式参数增量未覆盖。
+- **图片**：5 个昂贵 selector 的 chat 图片全部失败（4 个本次补测 + opus 既有）；messages 只对 opus 观测到 529，其他四个未重复。
+- **streaming tool deltas**：`gpt-6-astra`/`claude-opus-5-5` 的 live 流式 tool call 已覆盖完整名与完整 args；Gemini split 名由 fake upstream 覆盖；Responses 的 split 名仍可能在 `output_item.added` 中先出现首片（既有 P2，未在本次修复）。
 - **429/402 停止路径**：本轮没有触发，未验证。
 - **Node 20/22**：版本性失败仍在，发布门只声明 Node 24。
 - **Any2API 集成**：Codex `responses` 直通和 Claude `anthropic` 的 live 冒烟尚未跑；`PATCH-G5.diff` 只是提案，未应用。
