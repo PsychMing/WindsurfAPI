@@ -55,7 +55,7 @@ v3.9.40 只在 Messages 侧修了 64 字符 wire 上限；这一版把同一类�
 - **回归缺口**：补 PR/issue 回归 intercepts（9 条无测试行）、#32 no-tools override、#41 短 identity rewrite、sentence-boundary identity rewrite；修复两条静默 no-op 测试，让断言真正执行。
 - **门禁**：本地 `npm test` 5,464 / 5,382 pass / 0 fail / 82 skip；`npm run test:release`/gate 5,382 pass / 0 fail / 82 skip（442 文件）；HMC `a51a0f1` 5,464 / 5,463 pass / 0 fail / 1 skip；`secret-scan` 0；`git diff --check` 0。
 - **wire**：`a51a0f1` 对 `v3.9.40` 270/270 比较全部相同，skip 0。
-- **mutation**：全量 85/85 份规格通过（767 条突变，754 caught，13 条声明 survivor，0 mismatch）；最终 Responses split 修复的 4 个受影响规格在 `a51a0f1` 复跑 20 caught + 1 声明 survivor。
+- **mutation**：全量 85/85 在 `4a173a0` 通过（767 条突变，754 caught，13 条声明 survivor，0 mismatch）；最终 Responses split/custom 修复的 4 个受影响规格在 `a51a0f1` 复跑 20 caught + 1 声明 survivor。
 - **Node**：Node 矩阵在 `27e30f4` 测得——Node 24 全绿；Node 22 仅 `test/s2-a-golden.test.js` 的跨大版本 fixture guard 失败；Node 20 另缺 `test:summary`/`node:sqlite`。发布门以 Node 24 为准，Node 20/22 的兼容策略另行记录。
 
 ## Live 验收（一个 Pro 账号，隔离部署）
