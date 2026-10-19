@@ -703,6 +703,7 @@ async function route(req, res) {
       durationMs: processingMs,
       class: result.body?.error?.code || (result.status < 400 ? 'ok' : 'error'),
       caller: callerKey,
+      protocol: 'openai',
     });
     const modelHeaders = {
       'x-request-id': requestId,
@@ -780,6 +781,7 @@ async function route(req, res) {
       durationMs: processingMs,
       class: result.body?.error?.code || (result.status < 400 ? 'ok' : 'error'),
       caller: callerKey,
+      protocol: 'completions',
     });
     const modelHeaders = {
       'x-request-id': requestId,
@@ -842,6 +844,7 @@ async function route(req, res) {
       durationMs: processingMs,
       class: result.body?.error?.code || (result.status < 400 ? 'ok' : 'error'),
       caller: callerKey,
+      protocol: 'responses',
     });
     const modelHeaders = {
       'x-request-id': requestId,
@@ -1028,6 +1031,8 @@ async function route(req, res) {
     // accept-as-is when unknown). Passed into context as a seam for future
     // version-gated behavior; the translation layer does not branch on it today.
     const anthropicVersion = resolveAnthropicVersion(req);
+    const reqStartedAt = Date.now();
+    const requestId = 'req_' + randomUUID();
     const abortController = bindClientAbort(res);
     const result = await handleMessages(body, {
       callerKey,
@@ -1036,7 +1041,17 @@ async function route(req, res) {
       ccCompat,
       signal: abortController.signal,
     });
-    const requestId = 'req_' + randomUUID();
+    const processingMs = Date.now() - reqStartedAt;
+    const ringRow = recordRequest({
+      id: requestId,
+      model: body.model,
+      status: result.status,
+      stream: !!result.stream,
+      durationMs: processingMs,
+      class: result.body?.error?.code || (result.status < 400 ? 'ok' : 'error'),
+      caller: callerKey,
+      protocol: 'messages',
+    });
     const anthropicHeaders = {
       'request-id': requestId,
       'anthropic-model': body.model || '',
@@ -1053,6 +1068,7 @@ async function route(req, res) {
         isBootstrap: (obj) => obj?.type === 'message_start' || obj?.type === 'ping',
         parseError: (obj) => (obj?.type === 'error' && obj.error ? obj.error : null),
         errorBody: (error, status) => toAnthropicError(status, error?.type, error?.message).body,
+        onDone: () => updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode }),
       });
     } else {
       for (const [k, v] of Object.entries(anthropicHeaders)) res.setHeader(k, v);
@@ -1106,13 +1122,25 @@ async function route(req, res) {
     const alt = new URL(req.url, 'http://localhost').searchParams.get('alt');
     const token = extractToken(req);
     const callerKey = callerKeyFromRequest(req, token, body);
+    const reqStartedAt = Date.now();
+    const geminiHeaders = { 'request-id': 'req_' + randomUUID() };
     const abortController = bindClientAbort(res);
     const result = await handleGemini(parsed.model, body, {
       callerKey,
       nativeBridgeCallerKey: nativeBridgeCallerKeyForRequest(req, token, body, callerKey),
       signal: abortController.signal,
     }, { stream: wantStream, alt });
-    const geminiHeaders = { 'request-id': 'req_' + randomUUID() };
+    const processingMs = Date.now() - reqStartedAt;
+    const ringRow = recordRequest({
+      id: geminiHeaders['request-id'],
+      model: parsed.model,
+      status: result.status,
+      stream: !!result.stream,
+      durationMs: processingMs,
+      class: result.body?.error?.code || (result.status < 400 ? 'ok' : 'error'),
+      caller: callerKey,
+      protocol: 'gemini',
+    });
     if (result.stream) {
       const commitMs = resolveStreamCommitMs();
       await serveChatStream(res, result, {
@@ -1125,6 +1153,7 @@ async function route(req, res) {
           && obj.candidates.every((c) => !c?.finishReason && (c?.content?.parts || []).every((p) => !p?.text && !p?.functionCall)),
         parseError: (obj) => (obj?.error && typeof obj.error === 'object' ? obj.error : null),
         errorBody: (error, status) => geminiError(status, error?.type, error?.message).body,
+        onDone: () => updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode }),
       });
     } else {
       for (const [k, v] of Object.entries(geminiHeaders)) res.setHeader(k, v);

@@ -54,6 +54,7 @@ export function recordRequest(row = {}) {
     stream: !!row.stream,
     durationMs: Number.isFinite(row.durationMs) ? Math.max(0, Math.round(row.durationMs)) : null,
     class: typeof row.class === 'string' ? row.class.slice(0, 80) : null,
+    protocol: typeof row.protocol === 'string' ? row.protocol.slice(0, 32) : null,
     caller: callerRef(row.caller),
   };
   rows[next] = entry;

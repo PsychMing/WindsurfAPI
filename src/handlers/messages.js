@@ -860,7 +860,7 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       ? { parallel_tool_calls: false }
       : {}),
     ...(forwardedToolChoice ? { tool_choice: forwardedToolChoice } : {}),
-    ...([...toolNameMap.toUpstream].some(([k, v]) => k !== v) ? { __toolNameMap: toolNameMap } : {}),
+    ...((tools.length || historyToolNames.length) ? { __toolNameMap: toolNameMap } : {}),
     ...(body.thinking ? { thinking: body.thinking } : {}),
     ...(ocEffort ? { reasoning_effort: ocEffort } : {}),
     ...(translatedResponseFormat ? { response_format: translatedResponseFormat } : {}),
@@ -1315,10 +1315,20 @@ class AnthropicStreamTranslator {
     }
     const buf = this.toolCallBufs.get(idx);
     const nameKnown = !this.toolNameMap || this.toolNameMap.toClient.has(buf.wireName);
-    // Open this tool's block the first time we have both id and name. If another
-    // block is currently open (text/thinking/another tool), startBlock closes it
-    // first, so on return `this.current` is guaranteed to be THIS tool's block.
-    if (buf.blockIndex == null && buf.id && buf.name && nameKnown) {
+    // A spec-legal stream may split function.name across deltas without a name
+    // map (the common valid-name case). Do not open the tool_use block on the
+    // first fragment: wait for a chunk that carries arguments, a name-less
+    // follow-up (the name is settled), a mapped name, or finish(). Opening early
+    // publishes a truncated name that cannot be corrected in Anthropic's stream.
+    const nameSettled = nameKnown && (
+      !!(this.toolNameMap && this.toolNameMap.toClient.has(buf.wireName))
+      || !rawName
+    );
+    // Open this tool's block the first time we have both id and a settled name.
+    // If another block is currently open (text/thinking/another tool), startBlock
+    // closes it first, so on return `this.current` is guaranteed to be THIS tool's
+    // block.
+    if (buf.blockIndex == null && buf.id && buf.name && nameSettled) {
       this.startBlock('tool_use', { id: buf.id, name: buf.name });
       buf.blockIndex = this.current.index;
     }
@@ -1499,6 +1509,10 @@ class AnthropicStreamTranslator {
       if (buf.blockIndex == null && buf.id && buf.name) {
         this.startBlock('tool_use', { id: buf.id, name: buf.name });
         buf.blockIndex = this.current.index;
+        // The name may have been split across deltas; the block is opened only
+        // at finish in that case, so flush the arguments that accumulated while
+        // the block did not yet exist.
+        this.flushToolArgs(buf);
       }
       if (buf.pendingArgs) {
         log.warn(`messages: dropped ${buf.pendingArgs.length} buffered tool_use arg char(s) for tool "${buf.name || 'unknown'}" (id=${buf.id || 'none'}) — fragments arrived after the block closed (interleaved stream)`);
