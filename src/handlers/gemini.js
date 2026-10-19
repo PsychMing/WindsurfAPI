@@ -259,7 +259,7 @@ export function geminiToOpenAI(body, modelFromPath) {
         } else if (queue && queue.length) {
           id = queue.shift();
         } else {
-          id = callIdFor(toolNameMap.toUpstream.get(name) ?? name, callSeq++);
+          id = callIdFor(toolNameMap?.toUpstream.get(name) ?? name, callSeq++);
         }
         const resp = part.functionResponse.response;
         const content = typeof resp === 'string' ? resp : JSON.stringify(resp ?? {});
@@ -298,7 +298,7 @@ export function geminiToOpenAI(body, modelFromPath) {
         tools.push({
           type: 'function',
           function: {
-            name: toolNameMap.toUpstream.get(fd.name) ?? fd.name,
+            name: toolNameMap?.toUpstream.get(fd.name) ?? fd.name,
             description: fd.description || '',
             // `parametersJsonSchema` is already JSON-Schema (lowercase by
             // definition); `parameters` is Gemini's Schema with UPPERCASE type
@@ -350,7 +350,7 @@ export function geminiToOpenAI(body, modelFromPath) {
 
   const mappedToolChoice = mapGeminiToolChoice(body?.toolConfig);
   const toolChoice = mappedToolChoice?.type === 'function'
-    ? { ...mappedToolChoice, function: { ...mappedToolChoice.function, name: toolNameMap.toUpstream.get(mappedToolChoice.function.name) ?? mappedToolChoice.function.name } }
+    ? { ...mappedToolChoice, function: { ...mappedToolChoice.function, name: toolNameMap?.toUpstream.get(mappedToolChoice.function.name) ?? mappedToolChoice.function.name } }
     : mappedToolChoice;
 
   return {

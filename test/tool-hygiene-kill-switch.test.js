@@ -74,4 +74,16 @@ describe('WINDSURFAPI_TOOL_HYGIENE=0 restores raw passthrough', () => {
       assert.equal(item.call_id, rawId);
     });
   });
+
+  it('leaves the Gemini request tool name raw', async () => {
+    await withHygiene('0', async () => {
+      const out = geminiToOpenAI({
+        contents: [{ role: 'user', parts: [{ text: 'x' }] }],
+        tools: [{ functionDeclarations: [{ name: 'foo.bar' }] }],
+      });
+      assert.equal(out.tools[0].function.name, 'foo.bar');
+      assert.equal(out.__toolNameMap, undefined);
+    });
+  });
+
 });
