@@ -83,12 +83,16 @@ const GRPC_STATUS = {
 };
 
 const TYPE_STATUS = {
+  invalid_request_error: 400,
+  not_found_error: 404,
+  request_too_large: 413,
   rate_limit_error: 429,
   rate_limit_exceeded: 429,
   authentication_error: 401,
   permission_error: 403,
   insufficient_quota: 402,
   capacity_error: 503,
+  api_error: 500,
   overloaded_error: 529,
   timeout_error: 504,
 };

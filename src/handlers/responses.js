@@ -12,7 +12,7 @@ import { safeLogValue } from '../log-safety.js';
 import { log } from '../config.js';
 import { SseFramer } from '../sse-framer.js';
 import { buildToolNameMap, restoreToolName } from '../tool-names.js';
-import { normalizeToolIdsInMessages, sanitizeToolId } from '../tool-ids.js';
+import { normalizeToolIdsInMessages, sanitizeToolId, toolHygieneEnabled } from '../tool-ids.js';
 import { normalizeHistoryTail } from '../history-normalize.js';
 
 function genResponseId() {
@@ -399,8 +399,12 @@ function normalizeResponseTextFormat(format) {
 export function responsesToChat(body) {
   const messages = [];
   const tools = flattenResponseTools(collectResponseTools(body));
-  const toolNameMap = buildToolNameMap(tools.map((t) => t.function?.name || t.name).filter(Boolean));
-  const hasNameRewrites = [...toolNameMap.toUpstream].some(([client, wire]) => client !== wire);
+  const toolNameMap = toolHygieneEnabled()
+    ? buildToolNameMap(tools.map((t) => t.function?.name || t.name).filter(Boolean))
+    : null;
+  const hasNameRewrites = toolNameMap
+    ? [...toolNameMap.toUpstream].some(([client, wire]) => client !== wire)
+    : false;
   // How many LEADING messages came from the request-level `instructions` field
   // (as opposed to an `input` conversation item). Reported on the result rather
   // than tagged onto the message objects: those get deep-compared in tests and
@@ -491,7 +495,7 @@ export function responsesToChat(body) {
   }
 
   for (const t of tools) {
-    if (t?.function?.name) t.function.name = toolNameMap.toUpstream.get(t.function.name) ?? t.function.name;
+    if (t?.function?.name) t.function.name = toolNameMap?.toUpstream.get(t.function.name) ?? t.function.name;
   }
   const responseFormat = normalizeResponseTextFormat(body.text?.format);
   let forwardedToolChoice = body.tool_choice != null
@@ -502,7 +506,7 @@ export function responsesToChat(body) {
       ...forwardedToolChoice,
       function: {
         ...forwardedToolChoice.function,
-        name: toolNameMap.toUpstream.get(forwardedToolChoice.function.name) ?? forwardedToolChoice.function.name,
+        name: toolNameMap?.toUpstream.get(forwardedToolChoice.function.name) ?? forwardedToolChoice.function.name,
       },
     };
   }
@@ -519,7 +523,7 @@ export function responsesToChat(body) {
     ...(responseFormat ? { response_format: responseFormat } : {}),
     // Internal, stripped before the upstream call (same convention as __route).
     ...(instructionsLead ? { __instructionsLead: instructionsLead } : {}),
-    ...(hasNameRewrites ? { __toolNameMap: toolNameMap } : {}),
+    ...(hasNameRewrites && toolNameMap ? { __toolNameMap: toolNameMap } : {}),
   };
 }
 
@@ -581,6 +585,10 @@ function reasoningItem(id, text, status = 'completed') {
   };
 }
 
+function clientToolId(id) {
+  return toolHygieneEnabled() ? sanitizeToolId(id) : (id || '');
+}
+
 function functionCallItem(toolCall, status = 'completed', requestedTools = [], toolNameMap = null) {
   const wireName = toolCall.function?.name || 'unknown';
   const name = restoreToolName(wireName, toolNameMap) || wireName;
@@ -596,7 +604,7 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = [], t
       : argsText;
     return {
       type: 'custom_tool_call',
-      call_id: sanitizeToolId(toolCall.id) || `call_${randomUUID().slice(0, 8)}`,
+      call_id: clientToolId(toolCall.id) || `call_${randomUUID().slice(0, 8)}`,
       name: responseTool.originalName || name,
       ...(responseTool.namespace ? { namespace: responseTool.namespace } : {}),
       input,
@@ -608,10 +616,10 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = [], t
     return {
       type: responseTool.type === 'web_search' ? 'web_search_call' : 'function_call',
       ...(responseTool.type === 'web_search'
-        ? { id: sanitizeToolId(toolCall.id) || `ws_${randomUUID().replace(/-/g, '').slice(0, 24)}` }
+        ? { id: clientToolId(toolCall.id) || `ws_${randomUUID().replace(/-/g, '').slice(0, 24)}` }
         : {
             id: genFunctionCallId(),
-            call_id: sanitizeToolId(toolCall.id) || `call_${randomUUID().slice(0, 8)}`,
+            call_id: clientToolId(toolCall.id) || `call_${randomUUID().slice(0, 8)}`,
             name: responseTool.originalName || name,
             ...(responseTool.namespace ? { namespace: responseTool.namespace } : {}),
           }),
@@ -631,7 +639,7 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = [], t
   return {
     type: 'function_call',
     id: genFunctionCallId(),
-    call_id: sanitizeToolId(toolCall.id) || `call_${randomUUID().slice(0, 8)}`,
+    call_id: clientToolId(toolCall.id) || `call_${randomUUID().slice(0, 8)}`,
     name: responseTool?.originalName || name,
     ...(responseTool?.namespace ? { namespace: responseTool.namespace } : {}),
     arguments: argsText,
@@ -904,6 +912,7 @@ class ResponsesStreamTranslator {
         webSearch: false,
         responseTool: null,
         callId: toolCall.id || null,
+        wireName: null,
         toolName: null,
       };
       this.toolCalls.set(idx, existing);
@@ -945,9 +954,15 @@ class ResponsesStreamTranslator {
       this.send('response.output_item.added', { output_index: existing.outputIndex, item });
     };
 
-    if (toolCall.id) existing.callId = sanitizeToolId(toolCall.id) || existing.callId;
+    if (toolCall.id) existing.callId = clientToolId(toolCall.id) || existing.callId;
     if (toolCall.function?.name) {
-      const wireName = toolCall.function.name;
+      const rawName = toolCall.function.name;
+      // function.name may be split across deltas. Accumulate idempotently so a
+      // repeated full name does not duplicate and a prefix does not win.
+      if (!existing.wireName) existing.wireName = rawName;
+      else if (rawName === existing.wireName || rawName.startsWith(existing.wireName)) existing.wireName = rawName;
+      else if (!existing.wireName.startsWith(rawName)) existing.wireName += rawName;
+      const wireName = existing.wireName;
       const clientName = restoreToolName(wireName, this.toolNameMap) || wireName;
       existing.toolName = clientName;
       const requestedTool = this.resolveRequestedTool(wireName);
@@ -957,15 +972,25 @@ class ResponsesStreamTranslator {
         existing.custom = responseTool.type === 'custom';
         existing.webSearch = responseTool.type === 'web_search' || responseTool.type === 'tool_search';
       }
-      ensureItem(wireName, existing.responseTool);
-      existing.item.name = existing.responseTool?.originalName || clientName;
-      if (existing.responseTool?.namespace) existing.item.namespace = existing.responseTool.namespace;
+      // With a request name map we know the full wire name as soon as it
+      // matches; without one, wait for arguments or finish() before opening
+      // output_item.added, so the first event cannot publish a truncated name.
+      if (this.toolNameMap?.toClient.has(wireName)) {
+        ensureItem(wireName, existing.responseTool);
+        existing.item.name = existing.responseTool?.originalName || clientName;
+        if (existing.responseTool?.namespace) existing.item.namespace = existing.responseTool.namespace;
+      }
     }
 
     const argsChunk = toolCall.function?.arguments ?? '';
     if (argsChunk !== '') existing.argChunks.push(stringifyMaybe(argsChunk));
-    if (!existing.item && !existing.toolName) return;
-    ensureItem(existing.toolName || 'unknown', existing.responseTool);
+    if (!existing.item) {
+      // Do not open on arguments alone: the name may arrive in a later delta
+      // and change the item type (custom/web_search). A name-only delta also
+      // waits for arguments, a known mapped name, or finishToolCalls().
+      if (!existing.toolName || argsChunk === '') return;
+      ensureItem(existing.wireName || existing.toolName || 'unknown', existing.responseTool);
+    }
 
     if (existing.item.type === 'web_search_call') {
       if (existing.callId) existing.item.id = existing.callId;
@@ -996,7 +1021,7 @@ class ResponsesStreamTranslator {
         tc.item = {
           type: 'function_call',
           id: genFunctionCallId(),
-          call_id: sanitizeToolId(tc.callId) || `call_${randomUUID().slice(0, 8)}`,
+          call_id: clientToolId(tc.callId) || `call_${randomUUID().slice(0, 8)}`,
           name: tc.toolName || 'unknown',
           arguments: '',
           status: 'in_progress',
@@ -1556,7 +1581,7 @@ export async function handleResponses(body, deps = {}) {
     }
   }
 
-  if (process.env.WINDSURFAPI_TOOL_HYGIENE !== '0'
+  if (toolHygieneEnabled()
     && (chatBody.messages || []).some((m) => m?.role === 'assistant')) {
     chatBody = {
       ...chatBody,

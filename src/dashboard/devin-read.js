@@ -377,8 +377,14 @@ export function resolveAccount(id) {
 
   // app.devin.ai accepts the Devin session token; DEVIN_BACKEND_TOKEN is a
   // different credential class and 401s on the GET read surface. Prefer the
-  // session token, then fall back for deployments that only set the backend one.
-  const token = String(process.env.DEVIN_CONNECT_TOKEN || process.env.DEVIN_BACKEND_TOKEN || '').trim();
+  // session token, then fall back for deployments that only set the backend
+  // token or the documented single-token WINDSURF_API_KEY shape.
+  const token = String(
+    process.env.DEVIN_CONNECT_TOKEN
+      || process.env.DEVIN_BACKEND_TOKEN
+      || process.env.WINDSURF_API_KEY
+      || '',
+  ).trim();
   if (token) return { ok: true, accountId: 'env-token', token, accountRef: accountRef('env-token') };
   return { ok: false, error: 'no_account', status: 503 };
 }

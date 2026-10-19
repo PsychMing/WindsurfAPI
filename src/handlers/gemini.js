@@ -27,7 +27,7 @@ import { handleChatCompletions, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
 import { SseFramer } from '../sse-framer.js';
 import { buildToolNameMap, restoreToolName, sanitizeToolName } from '../tool-names.js';
-import { normalizeToolIdsInMessages, sanitizeToolId } from '../tool-ids.js';
+import { normalizeToolIdsInMessages, sanitizeToolId, toolHygieneEnabled } from '../tool-ids.js';
 import { normalizeHistoryTail } from '../history-normalize.js';
 
 // ─── finish_reason mapping (OpenAI → Gemini) ────────────────────
@@ -181,8 +181,12 @@ export function geminiToOpenAI(body, modelFromPath) {
   const allowedNames = Array.isArray(body?.toolConfig?.functionCallingConfig?.allowedFunctionNames)
     ? body.toolConfig.functionCallingConfig.allowedFunctionNames.filter((n) => typeof n === 'string' && n)
     : [];
-  const toolNameMap = buildToolNameMap([...declaredNames, ...historyNames, ...allowedNames]);
-  const hasNameRewrites = [...toolNameMap.toUpstream].some(([client, wire]) => client !== wire);
+  const toolNameMap = toolHygieneEnabled()
+    ? buildToolNameMap([...declaredNames, ...historyNames, ...allowedNames])
+    : null;
+  const hasNameRewrites = toolNameMap
+    ? [...toolNameMap.toUpstream].some(([client, wire]) => client !== wire)
+    : false;
 
   const pendingIdsByName = new Map();
   let callSeq = 0;
@@ -227,10 +231,10 @@ export function geminiToOpenAI(body, modelFromPath) {
       } else if (part.functionCall) {
         const seq = callSeq++;
         const clientName = part.functionCall.name || 'unknown';
-        const wireName = toolNameMap.toUpstream.get(clientName) ?? clientName;
+        const wireName = toolNameMap?.toUpstream.get(clientName) ?? clientName;
         const explicitId = part.functionCall.id == null || part.functionCall.id === ''
           ? ''
-          : sanitizeToolId(String(part.functionCall.id));
+          : (toolHygieneEnabled() ? sanitizeToolId(String(part.functionCall.id)) : String(part.functionCall.id));
         const id = explicitId || callIdFor(wireName, seq);
         // Enqueue every call: a functionResponse may legally omit `id`, and FIFO
         // must pair to this call instead of minting a second id.
@@ -245,7 +249,7 @@ export function geminiToOpenAI(body, modelFromPath) {
         const name = part.functionResponse.name || 'unknown';
         const explicitId = part.functionResponse.id == null || part.functionResponse.id === ''
           ? ''
-          : sanitizeToolId(String(part.functionResponse.id));
+          : (toolHygieneEnabled() ? sanitizeToolId(String(part.functionResponse.id)) : String(part.functionResponse.id));
         const queue = pendingIdsByName.get(name);
         let id;
         if (explicitId) {
@@ -498,11 +502,19 @@ class GeminiStreamTranslator {
     const idx = tc.index ?? 0;
     let existing = this.toolCallBufs.get(idx);
     if (!existing) {
-      existing = { id: tc.id, name: tc.function?.name, argsBuffered: '' };
+      existing = { id: tc.id, wireName: '', name: '', argsBuffered: '' };
       this.toolCallBufs.set(idx, existing);
-    } else {
-      if (tc.id) existing.id = tc.id;
-      if (tc.function?.name) existing.name = tc.function.name;
+    } else if (tc.id) {
+      existing.id = tc.id;
+    }
+    const rawName = tc.function?.name;
+    if (rawName) {
+      // function.name may be split across deltas. Accumulate idempotently: a
+      // repeated full name replaces the prefix, a prefix does not duplicate.
+      if (!existing.wireName) existing.wireName = rawName;
+      else if (rawName === existing.wireName || rawName.startsWith(existing.wireName)) existing.wireName = rawName;
+      else if (!existing.wireName.startsWith(rawName)) existing.wireName += rawName;
+      existing.name = restoreToolName(existing.wireName, this.toolNameMap) || existing.wireName;
     }
     if (tc.function?.arguments) existing.argsBuffered += tc.function.arguments;
   }
@@ -820,7 +832,7 @@ export async function handleGemini(model, body, context = {}, { stream = false, 
   const openaiBody = geminiToOpenAI(body, requestedModel);
   const toolNameMap = openaiBody.__toolNameMap || null;
   delete openaiBody.__toolNameMap;
-  if (process.env.WINDSURFAPI_TOOL_HYGIENE !== '0') {
+  if (toolHygieneEnabled()) {
     openaiBody.messages = normalizeHistoryTail(
       normalizeToolIdsInMessages(openaiBody.messages, { seed: requestedModel }),
       { fold: true },

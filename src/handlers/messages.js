@@ -16,7 +16,7 @@ import { handleChatCompletions, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
 import { SseFramer } from '../sse-framer.js';
 import { buildToolNameMap, restoreToolName } from '../tool-names.js';
-import { normalizeToolIdsInMessages } from '../tool-ids.js';
+import { normalizeToolIdsInMessages, toolHygieneEnabled } from '../tool-ids.js';
 import { normalizeHistoryTail } from '../history-normalize.js';
 import { leakTraceEnabled, thinkMarkersIn, leakSample } from '../leak-trace.js';
 
@@ -626,10 +626,12 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       if (block?.type === 'tool_use' && typeof block.name === 'string' && block.name) historyToolNames.push(block.name);
     }
   }
-  const toolNameMap = buildToolNameMap([
-    ...(body.tools || []).map((t) => t?.name).filter(Boolean),
-    ...historyToolNames,
-  ]);
+  const toolNameMap = toolHygieneEnabled()
+    ? buildToolNameMap([
+      ...(body.tools || []).map((t) => t?.name).filter(Boolean),
+      ...historyToolNames,
+    ])
+    : null;
   const mapAnthropicToolChoice = (toolChoice) => {
     if (!toolChoice || typeof toolChoice !== 'object') return toolChoice;
     if (toolChoice.type === 'auto') return 'auto';
@@ -731,7 +733,7 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
           toolCalls.push({
             id,
             type: 'function',
-            function: { name: toolNameMap.toUpstream.get(block.name) ?? block.name, arguments: JSON.stringify(block.input ?? {}) },
+            function: { name: toolNameMap?.toUpstream.get(block.name) ?? block.name, arguments: JSON.stringify(block.input ?? {}) },
           });
         } else if (block.type === 'tool_result') {
           // B2: flatten sub-blocks without dropping non-text (image) blocks.
@@ -795,7 +797,7 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
     acc.push({
       type: 'function',
       function: {
-        name: toolNameMap.toUpstream.get(t.name) ?? t.name,
+        name: toolNameMap?.toUpstream.get(t.name) ?? t.name,
         description: t.description || '',
         parameters: t.input_schema || {},
       },
@@ -811,7 +813,7 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
   const mappedToolChoice = body.tool_choice ? mapAnthropicToolChoice(body.tool_choice) : undefined;
   const forwardedToolChoice = pruneToolChoice(
     mappedToolChoice?.type === 'function'
-      ? { ...mappedToolChoice, function: { ...mappedToolChoice.function, name: toolNameMap.toUpstream.get(mappedToolChoice.function.name) ?? mappedToolChoice.function.name } }
+      ? { ...mappedToolChoice, function: { ...mappedToolChoice.function, name: toolNameMap?.toUpstream.get(mappedToolChoice.function.name) ?? mappedToolChoice.function.name } }
       : mappedToolChoice,
     tools,
   );
@@ -860,7 +862,7 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       ? { parallel_tool_calls: false }
       : {}),
     ...(forwardedToolChoice ? { tool_choice: forwardedToolChoice } : {}),
-    ...((tools.length || historyToolNames.length) ? { __toolNameMap: toolNameMap } : {}),
+    ...((tools.length || historyToolNames.length) && toolNameMap ? { __toolNameMap: toolNameMap } : {}),
     ...(body.thinking ? { thinking: body.thinking } : {}),
     ...(ocEffort ? { reasoning_effort: ocEffort } : {}),
     ...(translatedResponseFormat ? { response_format: translatedResponseFormat } : {}),
@@ -1690,7 +1692,7 @@ export async function handleMessages(body, context = {}) {
   const ccActive = !!context.ccCompat?.active;
   const promptEstimate = { tokens: 0 };
   const openaiBody = anthropicToOpenAI(body, ccActive, promptEstimate);
-  if (process.env.WINDSURFAPI_TOOL_HYGIENE !== '0') {
+  if (toolHygieneEnabled()) {
     openaiBody.messages = normalizeHistoryTail(
       normalizeToolIdsInMessages(openaiBody.messages, { seed: msgId }),
       { fold: true },

@@ -135,29 +135,44 @@ export function normalizeToolIdsInMessages(messages, { seed = '', maxLen = MAX_T
     if (isValidToolId(id, opts)) reserved.add(id);
   }
 
-  const map = new Map();
-  for (const tc of assistantCalls) {
-    const raw = tc?.id;
-    if (raw && isValidToolId(raw, opts)) map.set(raw, raw);
-  }
-  for (const raw of resultIds) {
-    if (raw && isValidToolId(raw, opts)) map.set(raw, raw);
-  }
-
+  // A raw id may legitimately appear more than once (some clients reuse the
+  // same id for parallel calls). Valid ids stay identity on the first call;
+  // later calls get a unique wire id, and results pair FIFO to the calls in
+  // order. A single raw->wire map would collapse both calls onto one id and
+  // make the second result indistinguishable from the first.
+  const wireQueues = new Map();
   let slot = 0;
   const callWire = new Map();
   for (const tc of assistantCalls) {
     const raw = tc?.id;
-    if (raw && map.has(raw)) { callWire.set(tc, map.get(raw)); continue; }
-    const base = raw ? sanitizeToolId(raw, opts) : synthToolId('call', seed, slot++);
-    const wire = uniqueToolId(base, reserved, maxLen);
+    let wire;
+    if (raw && isValidToolId(raw, opts)) {
+      const queue = wireQueues.get(raw);
+      if (!queue) {
+        wire = raw;
+        wireQueues.set(raw, [wire]);
+      } else {
+        wire = uniqueToolId(raw, reserved, maxLen);
+        queue.push(wire);
+      }
+    } else {
+      const base = raw ? sanitizeToolId(raw, opts) : synthToolId('call', seed, slot++);
+      wire = uniqueToolId(base, reserved, maxLen);
+      if (raw) wireQueues.set(raw, [wire]);
+    }
     callWire.set(tc, wire);
-    if (raw) map.set(raw, wire);
   }
-  for (const raw of resultIds) {
-    if (!raw || map.has(raw)) continue;
-    const base = sanitizeToolId(raw, opts);
-    if (base) map.set(raw, uniqueToolId(base, reserved, maxLen));
+
+  const resultWire = new Map();
+  for (const m of messages) {
+    if (m?.role !== 'tool' || !m.tool_call_id) continue;
+    const queue = wireQueues.get(m.tool_call_id);
+    if (queue && queue.length) {
+      resultWire.set(m, queue.shift());
+      continue;
+    }
+    const base = sanitizeToolId(m.tool_call_id, opts);
+    if (base) resultWire.set(m, uniqueToolId(base, reserved, maxLen));
   }
 
   let changed = false;
@@ -166,7 +181,7 @@ export function normalizeToolIdsInMessages(messages, { seed = '', maxLen = MAX_T
       let localChanged = false;
       const calls = m.tool_calls.map((tc) => {
         const raw = tc?.id;
-        const id = callWire.get(tc) || (raw ? map.get(raw) : null);
+        const id = callWire.get(tc);
         if (id && id !== raw) {
           localChanged = true;
           return { ...tc, id };
@@ -179,7 +194,7 @@ export function normalizeToolIdsInMessages(messages, { seed = '', maxLen = MAX_T
       }
     }
     if (m?.role === 'tool' && m.tool_call_id) {
-      const id = map.get(m.tool_call_id) || m.tool_call_id;
+      const id = resultWire.get(m) || m.tool_call_id;
       if (id !== m.tool_call_id) {
         changed = true;
         return { ...m, tool_call_id: id };
@@ -190,27 +205,47 @@ export function normalizeToolIdsInMessages(messages, { seed = '', maxLen = MAX_T
   return changed ? out : messages;
 }
 
+export function toolHygieneEnabled() {
+  return process.env.WINDSURFAPI_TOOL_HYGIENE !== '0';
+}
+
 export function foldOrphanToolResults(messages) {
   if (!Array.isArray(messages)) return messages;
   const known = knownToolCallIds(messages);
   let changed = false;
   const out = [];
+  let pending = [];
+
+  // Fold only after the contiguous tool run that contains the orphan. Inserting
+  // a user message immediately after an assistant tool_call (while a valid tool
+  // result for that call is still pending) breaks the required
+  // assistant(tool_calls) -> tool(result) adjacency and re-orphans the valid
+  // result. Buffering until the run ends preserves both the content and the
+  // valid pair.
+  const flush = () => {
+    if (!pending.length) return;
+    const folded = neutralizeToolResultBody(pending.join('\n\n'));
+    pending = [];
+    const prev = out[out.length - 1];
+    if (prev?.role === 'user') {
+      out[out.length - 1] = { ...prev, content: appendText(prev.content, folded) };
+    } else {
+      out.push({ role: 'user', content: folded });
+    }
+  };
+
   for (const m of messages) {
     if (m?.role === 'tool' && (!m.tool_call_id || !known.has(m.tool_call_id))) {
       changed = true;
-      const folded = neutralizeToolResultBody(
+      pending.push(
         `${m.tool_call_id ? `[tool result for ${m.tool_call_id}]\n` : '[tool result]\n'}${foldOrphanResultText(m.content)}`,
       );
-      const prev = out[out.length - 1];
-      if (prev?.role === 'user') {
-        out[out.length - 1] = { ...prev, content: appendText(prev.content, folded) };
-      } else {
-        out.push({ role: 'user', content: folded });
-      }
-    } else {
-      out.push(m);
+      continue;
     }
+    if (m?.role !== 'tool') flush();
+    out.push(m);
   }
+  flush();
   return changed ? out : messages;
 }
 

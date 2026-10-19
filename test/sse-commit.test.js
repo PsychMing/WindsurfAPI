@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDeferredSseResponse } from '../src/sse-commit.js';
+import { toAnthropicError } from '../src/handlers/messages.js';
 
 function fakeRes() {
   return {
@@ -88,6 +89,22 @@ describe('createDeferredSseResponse', () => {
       res.write(`data: ${JSON.stringify({ error: { message: code, code } })}\n\n`);
       res.end();
       assert.equal(real.statusCode, status, code);
+    }
+  });
+
+  it('maps an unclassified Anthropic error type to its official status', () => {
+    for (const [type, status] of [['invalid_request_error', 400], ['not_found_error', 404], ['request_too_large', 413], ['api_error', 500]]) {
+      const real = fakeRes();
+      const res = createDeferredSseResponse(real, {
+        status: 200,
+        protocol: 'messages',
+        parseError: (obj) => (obj?.type === 'error' ? obj.error : null),
+        errorBody: (error, httpStatus) => toAnthropicError(httpStatus, error?.type, error?.message).body,
+      });
+      res.write(frame({ type: 'error', error: { type, message: 'x' } }));
+      res.end();
+      assert.equal(real.statusCode, status, type);
+      assert.equal(JSON.parse(real.body).error.type, type);
     }
   });
 

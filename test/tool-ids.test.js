@@ -77,6 +77,23 @@ describe('tool-id hygiene', () => {
     assert.equal(out[2].tool_call_id, second);
   });
 
+  it('converges duplicate raw ids to distinct wire ids and pairs results FIFO', () => {
+    const messages = [
+      { role: 'assistant', tool_calls: [
+        { id: 'dup', function: { name: 'f' } },
+        { id: 'dup', function: { name: 'f' } },
+      ] },
+      { role: 'tool', tool_call_id: 'dup', content: 'first' },
+      { role: 'tool', tool_call_id: 'dup', content: 'second' },
+    ];
+    const out = normalizeToolIdsInMessages(messages);
+    const [first, second] = out[0].tool_calls.map((tc) => tc.id);
+    assert.notEqual(first, second);
+    assert.equal(first, 'dup');
+    assert.equal(out[1].tool_call_id, first);
+    assert.equal(out[2].tool_call_id, second);
+  });
+
   it('never exceeds maxLen when many ids sanitize to the same short stem', () => {
     const raw = ['a.b', 'a/b', 'a b', 'a@b', 'a#b', 'a$b', 'a%b', 'a^b', 'a&b', 'a*b',
       'a+b', 'a=b', 'a|b', 'a~b', 'a`b', 'a?b', 'a!b'];
@@ -119,6 +136,18 @@ describe('tool-id hygiene', () => {
 
   it('uses the empty-result placeholder for whitespace-only orphans', () => {
     assert.equal(foldOrphanResultText('   '), EMPTY_RESULT_TEXT);
+  });
+
+  it('folds an orphan after the valid tool run, not between assistant and tool', () => {
+    const messages = [
+      { role: 'assistant', content: '', tool_calls: [{ id: 'call_ok', function: { name: 'f' } }] },
+      { role: 'tool', tool_call_id: 'missing', content: 'orphan output' },
+      { role: 'tool', tool_call_id: 'call_ok', content: 'valid output' },
+    ];
+    const out = foldOrphanToolResults(messages);
+    assert.deepEqual(out.map((m) => m.role), ['assistant', 'tool', 'user']);
+    assert.equal(out[1].tool_call_id, 'call_ok');
+    assert.match(out[2].content, /orphan output/);
   });
 
   it('synthesizes an interrupted result for a non-trailing call', () => {

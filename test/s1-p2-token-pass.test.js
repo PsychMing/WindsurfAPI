@@ -77,6 +77,7 @@ function messagesHarness({ baseline = false, poisonIterator = false } = {}) {
       annotateRiskyReadToolResult: value => value,
       extractCallerSubKey: () => '',
       buildToolNameMap: () => ({ toUpstream: new Map(), toClient: new Map() }),
+      toolHygieneEnabled: () => true,
       normalizeToolIdsInMessages: (messages) => messages,
       normalizeHistoryTail: (messages) => messages,
       restoreToolName: name => name,
