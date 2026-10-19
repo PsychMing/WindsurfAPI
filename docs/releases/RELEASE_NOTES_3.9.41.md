@@ -1,6 +1,6 @@
 # v3.9.41
 
-本版是 v3.9.40 之后的一次大补丁：**90+ 个提交，57 个 feat/fix**。没有协议兼容性破坏，没有新增协议路由，默认 wire 字节保持不变（`d014855` 对 `v3.9.40` 的 270/270 比较全部相同）。内容集中在五块：工具名/ID/历史的跨方言卫生、SSE 提交门与错误状态、Dashboard 的只读观测面、Devin Connect 的目录/传输/重试修复，以及账号、日志、统计与缓存的可运维性。
+本版是 v3.9.40 之后的一次大补丁：**90+ 个提交，57 个 feat/fix**。没有协议兼容性破坏，没有新增协议路由，默认 wire 字节保持不变（`3a0bd28` 对 `v3.9.40` 的 270/270 比较全部相同）。内容集中在五块：工具名/ID/历史的跨方言卫生、SSE 提交门与错误状态、Dashboard 的只读观测面、Devin Connect 的目录/传输/重试修复，以及账号、日志、统计与缓存的可运维性。
 
 **影响面**：默认开启的工具卫生会改变少数畸形工具名/ID 的线上形状；SSE 提交门默认等待 5 秒，预内容错误现在能以真实 HTTP 状态返回；新增若干默认关闭的日志/ACP 开关和 Dashboard 只读接口。没有改协议字段、没有改默认路由、没有改上游 wire。昂贵模型 live 矩阵只覆盖一个 Pro 账号的一次部署，不等同于对所有账号等级的承诺。
 
@@ -53,7 +53,7 @@ v3.9.40 只在 Messages 侧修了 64 字符 wire 上限；这一版把同一类�
 - **startServer 真实 HTTP 测试**：`test/startserver-harness-shapes.test.js` 现在覆盖 chat/Messages/Responses/Gemini 的成功、非流式、两请求 tool loop、并行 tool calls、split tool delta、600 KB body、OpenAI/Anthropic 图片和 ring `protocol` 字段；`test/startserver-cancel.test.js` 用真实 socket 断开证明一次上游尝试且服务仍健康；`test/review-history-coverage.test.js` 区分 1M 的 900 KB 与普通 600 KB 预算。
 - **回归缺口**：补 PR/issue 回归 intercepts（9 条无测试行）、#32 no-tools override、#41 短 identity rewrite、sentence-boundary identity rewrite；修复两条静默 no-op 测试，让断言真正执行。
 - **门禁**：本地 `npm test` 5,461 / 5,379 pass / 0 fail / 82 skip；`npm run test:release`/gate 5,379 pass / 0 fail / 82 skip（442 文件）；HMC `d014855` 5,460 / 5,459 pass / 0 fail / 1 skip；`secret-scan` 0；`git diff --check` 0。
-- **wire**：`d014855` 对 `v3.9.40` 270/270 比较全部相同，skip 0（代码与最终 `461e6a6` 相同，只差 baseline pin）。
+- **wire**：`3a0bd28` 对 `v3.9.40` 270/270 比较全部相同，skip 0。
 - **mutation**：`d014855` + `461e6a6` 全量 85/85 份规格通过（767 条突变，754 caught，13 条声明 survivor，0 mismatch）。
 - **Node**：Node 矩阵在 `27e30f4` 测得——Node 24 全绿；Node 22 仅 `test/s2-a-golden.test.js` 的跨大版本 fixture guard 失败；Node 20 另缺 `test:summary`/`node:sqlite`。发布门以 Node 24 为准，Node 20/22 的兼容策略另行记录。
 
