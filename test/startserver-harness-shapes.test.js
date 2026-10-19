@@ -429,4 +429,35 @@ describe('startServer harness-shaped success paths', () => {
     }
   });
 
+
+  it('carries OpenAI and Anthropic user images through the real router', async () => {
+    nonStreamBehavior = 'text';
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    try {
+      const chat = await post('/v1/chat/completions', {
+        model: 'claude-haiku-5-5-low', stream: false,
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: 'What is in this image?' },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${png}` } },
+        ] }],
+      });
+      const chatBody = await chat.json();
+      assert.equal(chat.status, 200, JSON.stringify(chatBody));
+      assert.match(JSON.stringify(lastParams.messages), /image_url/);
+
+      const messages = await post('/v1/messages', {
+        model: 'claude-haiku-5-5-low', max_tokens: 16, stream: false,
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: 'What is in this image?' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: png } },
+        ] }],
+      });
+      const messagesBody = await messages.json();
+      assert.equal(messages.status, 200, JSON.stringify(messagesBody));
+      assert.match(JSON.stringify(lastParams.messages), /image_url/);
+    } finally {
+      nonStreamBehavior = 'tool';
+    }
+  });
+
 });
