@@ -11,8 +11,8 @@
 v3.9.40 只在 Messages 侧修了 64 字符 wire 上限；这一版把同一类问题扩到三种方言和请求历史：
 
 - **两遍工具名映射**：先收集本次请求的工具名，再在 egress 时恢复客户端原名；Messages 的 split `function.name`（`get_` + `weather`）不再以首片开块，等完整名确认后再发 `content_block_start`，延迟到达的参数在 finish 前补 flush（`src/handlers/messages.js`，`test/startserver-harness-shapes.test.js`）。
-- **工具 ID 卫生**：新增 `src/tool-ids.js`，对过长/重复/空 ID 做确定性收敛；`src/tool-names.js` 负责 64 字符 wire 名的双向映射；Responses、Gemini、Messages 三条 egress 都接入了同一套守卫（`WINDSURFAPI_TOOL_HYGIENE=0` 可回到原始透传）。
-- **历史尾部规范化**：`src/history-normalize.js` 保留 assistant/tool 轮次和数组内容，不再把 `content` 数组压成字符串或丢掉中间轮；工具结果与后续 assistant 文本的配对在压缩后仍可解析。
+- **工具 ID 卫生**：新增 `src/tool-ids.js`，对过长/重复/空 ID 做确定性收敛；重复 raw ID 会按调用顺序分配唯一 wire ID，结果按 FIFO 配对；`src/tool-names.js` 负责 64 字符 wire 名的双向映射；Responses、Gemini、Messages 三条 egress 都接入了同一套守卫。`WINDSURFAPI_TOOL_HYGIENE=0` 现在真正关闭名称映射、ID 清洗和历史规范化（发布审计 P1-1）。
+- **历史尾部规范化**：`src/history-normalize.js` 保留 assistant/tool 轮次和数组内容，不再把 `content` 数组压成字符串或丢掉中间轮；孤儿 tool result 只在连续 tool 段结束后折叠成 user 文本，绝不插在 assistant tool_call 和它的有效 tool result 之间（发布审计 P1-2）。
 - **边界测试**：新增/扩展 `test/tool-*.test.js`、`test/request-tail-contract.test.js`、`test/startserver-harness-shapes.test.js`，覆盖 split 名、重复 ID、64 字符边界、空工具数组、非对象部件和真实 HTTP 流。
 
 ### SSE：预内容错误不再伪装成 200，帧边界不再靠运气
@@ -50,11 +50,11 @@ v3.9.40 只在 Messages 侧修了 64 字符 wire 上限；这一版把同一类�
 
 ## 工程与门禁
 
-- **startServer 真实 HTTP 测试**：新增 `test/startserver-harness-shapes.test.js`，覆盖 HTTP 成功、tool loop、split tool delta、600 KB body、Messages/Responses/Gemini ring `protocol` 字段；不是只测转换函数的单元测试。
+- **startServer 真实 HTTP 测试**：`test/startserver-harness-shapes.test.js` 现在覆盖 chat/Messages/Responses/Gemini 的成功、非流式、两请求 tool loop、并行 tool calls、split tool delta、600 KB body、OpenAI/Anthropic 图片和 ring `protocol` 字段；`test/startserver-cancel.test.js` 用真实 socket 断开证明一次上游尝试且服务仍健康；`test/review-history-coverage.test.js` 区分 1M 的 900 KB 与普通 600 KB 预算。
 - **回归缺口**：补 PR/issue 回归 intercepts（9 条无测试行）、#32 no-tools override、#41 短 identity rewrite、sentence-boundary identity rewrite；修复两条静默 no-op 测试，让断言真正执行。
-- **门禁**：本地 `npm run test:release` 5,443 / 5,361 pass / 0 fail / 82 skip；HMC `4e7ebaa` 5,443 / 5,442 pass / 0 fail / 1 skip；`npm run gate` PASS；`secret-scan` 0；`git diff --check` 0。
-- **wire**：`4e7ebaa` 对 `v3.9.40` 270/270 比较全部相同，skip 0；provenance 记录在 `.agent/absorption-20261018/WIRE-270-4e7ebaa.md`。
-- **mutation**：`4e7ebaa` 全量 85/85 份规格通过（767 条突变，754 caught，13 条声明 survivor，0 mismatch；逐规格日志在 `.agent/absorption-20261018/mutation-4e7ebaa/`）。`27e30f4` 的上一轮结果相同。
+- **门禁**：本地 `npm test` 5,460 / 5,378 pass / 0 fail / 82 skip（新增审计回归后）；HMC `4e7ebaa` 5,443 / 5,442 pass / 0 fail / 1 skip；最终 release 提交的 `npm run test:release`/gate 见发布证据；`secret-scan` 0；`git diff --check` 0。
+- **wire**：`4e7ebaa` 对 `v3.9.40` 270/270 比较全部相同，skip 0；审计修复后的最终提交会重新跑 wire（见发布证据）。
+- **mutation**：`4e7ebaa` 全量 85/85 份规格通过（767 条突变，754 caught，13 条声明 survivor，0 mismatch）；审计修复后的最终提交会重新跑 sweep（见发布证据）。
 - **Node**：Node 矩阵在 `27e30f4` 测得——Node 24 全绿；Node 22 仅 `test/s2-a-golden.test.js` 的跨大版本 fixture guard 失败；Node 20 另缺 `test:summary`/`node:sqlite`。发布门以 Node 24 为准，Node 20/22 的兼容策略另行记录。
 
 ## Live 验收（一个 Pro 账号，隔离部署）
@@ -69,7 +69,7 @@ v3.9.40 只在 Messages 侧修了 64 字符 wire 上限；这一版把同一类�
 
 - **实际计费 debit**：2,792 是乘数上限，不是账单读数。
 - **图片**：`claude-opus-5-5` 的失败是单次双协议观测；其他四个昂贵 selector 的图片未测。
-- **streaming tool deltas**：昂贵模型只测了非流式 tool call；流式参数增量未覆盖。
+- **streaming tool deltas**：昂贵模型只测了非流式 tool call；Gemini split 名已由 fake upstream 覆盖，Responses 的 split 名仍可能在 `output_item.added` 中先出现首片（既有 P2，未在本次修复）；live 流式参数增量未覆盖。
 - **429/402 停止路径**：本轮没有触发，未验证。
 - **Node 20/22**：版本性失败仍在，发布门只声明 Node 24。
 - **Any2API 集成**：Codex `responses` 直通和 Claude `anthropic` 的 live 冒烟尚未跑；`PATCH-G5.diff` 只是提案，未应用。

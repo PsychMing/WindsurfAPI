@@ -48,7 +48,7 @@ v3.9.40 之后的一次大补丁（85 个内容提交，56 feat/fix；另有 1 �
 tool name 不再以首片开块；SSE 提交门在写 200 前裁决预内容错误，混合帧/CRLF/超长帧有共用 framer；
 Dashboard 补账号用量、池冷却、请求环、目录差异和计费 burn-down，密钥前缀不再渲染；Connect 刷新
 live 目录/模型并修传输与限流重试；账号过滤、日志保留/轮转、ACP 原生配置均为默认关的可选项。
-默认 wire 不变（270/270），本地/HMC 全量绿；昂贵模型 5 selector × 4 协议 20/20 200。无协议兼容性
+发布审计后补：`WINDSURFAPI_TOOL_HYGIENE=0` 完整回滚、重复 tool ID/FIFO 配对、孤儿结果不拆 tool 对、Anthropic 错误状态补齐、Gemini split 名与 Dashboard token fallback。默认 wire 不变（270/270），本地/HMC 全量绿；昂贵模型 5 selector × 4 协议 20/20 200。无协议兼容性
 破坏；实际计费 debit、其余模型图片和 Any2API live 集成仍未验证。
 
 ### [v3.9.40](docs/releases/RELEASE_NOTES_3.9.40.md) · 2026-10-07
