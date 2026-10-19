@@ -13,6 +13,7 @@ v3.9.40 只在 Messages 侧修了 64 字符 wire 上限；这一版把同一类�
 - **两遍工具名映射**：先收集本次请求的工具名，再在 egress 时恢复客户端原名；Messages 的 split `function.name`（`get_` + `weather`）不再以首片开块，等完整名确认后再发 `content_block_start`，延迟到达的参数在 finish 前补 flush（`src/handlers/messages.js`，`test/startserver-harness-shapes.test.js`）。
 - **工具 ID 卫生**：新增 `src/tool-ids.js`，对过长/重复/空 ID 做确定性收敛；重复 raw ID 会按调用顺序分配唯一 wire ID，结果按 FIFO 配对；`src/tool-names.js` 负责 64 字符 wire 名的双向映射；Responses、Gemini、Messages 三条 egress 都接入了同一套守卫。`WINDSURFAPI_TOOL_HYGIENE=0` 现在真正关闭名称映射、ID 清洗和历史规范化（发布审计 P1-1）。
 - **历史尾部规范化**：`src/history-normalize.js` 保留 assistant/tool 轮次和数组内容，不再把 `content` 数组压成字符串或丢掉中间轮；孤儿 tool result 只在连续 tool 段结束后折叠成 user 文本，绝不插在 assistant tool_call 和它的有效 tool result 之间（发布审计 P1-2）。
+- **Responses split 流名**：`function.name` 被拆成多片时，工具事件与 post-tool 文本先缓冲，等完整名确认后再发 `output_item.added`；参数增量边界和 message/tool 顺序保持不变（`src/handlers/responses.js`，`test/stream-split-tool-name.test.js`）。
 - **边界测试**：新增/扩展 `test/tool-*.test.js`、`test/request-tail-contract.test.js`、`test/startserver-harness-shapes.test.js`，覆盖 split 名、重复 ID、64 字符边界、空工具数组、非对象部件和真实 HTTP 流。
 
 ### SSE：预内容错误不再伪装成 200，帧边界不再靠运气
@@ -52,7 +53,7 @@ v3.9.40 只在 Messages 侧修了 64 字符 wire 上限；这一版把同一类�
 
 - **startServer 真实 HTTP 测试**：`test/startserver-harness-shapes.test.js` 现在覆盖 chat/Messages/Responses/Gemini 的成功、非流式、两请求 tool loop、并行 tool calls、split tool delta、600 KB body、OpenAI/Anthropic 图片和 ring `protocol` 字段；`test/startserver-cancel.test.js` 用真实 socket 断开证明一次上游尝试且服务仍健康；`test/review-history-coverage.test.js` 区分 1M 的 900 KB 与普通 600 KB 预算。
 - **回归缺口**：补 PR/issue 回归 intercepts（9 条无测试行）、#32 no-tools override、#41 短 identity rewrite、sentence-boundary identity rewrite；修复两条静默 no-op 测试，让断言真正执行。
-- **门禁**：本地 `npm test` 5,461 / 5,379 pass / 0 fail / 82 skip；`npm run test:release`/gate 5,379 pass / 0 fail / 82 skip（442 文件）；HMC `d014855` 5,460 / 5,459 pass / 0 fail / 1 skip；`secret-scan` 0；`git diff --check` 0。
+- **门禁**：本地 `npm test` 5,463 / 5,381 pass / 0 fail / 82 skip；`npm run test:release`/gate 5,381 pass / 0 fail / 82 skip（442 文件）；HMC `d014855` 5,460 / 5,459 pass / 0 fail / 1 skip；`secret-scan` 0；`git diff --check` 0。
 - **wire**：`3a0bd28` 对 `v3.9.40` 270/270 比较全部相同，skip 0。
 - **mutation**：`d014855` + `461e6a6` 全量 85/85 份规格通过（767 条突变，754 caught，13 条声明 survivor，0 mismatch）。
 - **Node**：Node 矩阵在 `27e30f4` 测得——Node 24 全绿；Node 22 仅 `test/s2-a-golden.test.js` 的跨大版本 fixture guard 失败；Node 20 另缺 `test:summary`/`node:sqlite`。发布门以 Node 24 为准，Node 20/22 的兼容策略另行记录。
@@ -71,7 +72,7 @@ v3.9.40 只在 Messages 侧修了 64 字符 wire 上限；这一版把同一类�
 
 - **实际计费 debit**：3,491 是乘数上限，不是账单读数。
 - **图片**：5 个昂贵 selector 的 chat 图片全部失败（4 个本次补测 + opus 既有）；messages 只对 opus 观测到 529，其他四个未重复。
-- **streaming tool deltas**：`gpt-6-astra`/`claude-opus-5-5` 的 live 流式 tool call 已覆盖完整名与完整 args；Gemini split 名由 fake upstream 覆盖；Responses 的 split 名仍可能在 `output_item.added` 中先出现首片（既有 P2，未在本次修复）。
+- **streaming tool deltas**：`gpt-6-astra`/`claude-opus-5-5` 的 live 流式 tool call 已覆盖完整名与完整 args；Gemini 与 Responses 的 split 名均由 fake upstream 覆盖，`output_item.added` 携带完整名。
 - **429/402 停止路径**：本轮没有触发，未验证。
 - **Node 20/22**：版本性失败仍在，发布门只声明 Node 24。
 - **Any2API 集成**：Codex `responses` 直通和 Claude `anthropic` 的 live 冒烟尚未跑；`PATCH-G5.diff` 只是提案，未应用。
