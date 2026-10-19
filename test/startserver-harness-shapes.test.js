@@ -378,9 +378,19 @@ describe('startServer harness-shaped success paths', () => {
     assert.match(JSON.stringify(lastParams.messages), /temperature/);
   });
 
-  it('settles split tool names in the Gemini stream', async () => {
+  it('settles split tool names in Responses and Gemini streams', async () => {
     streamBehavior = 'tool';
     try {
+      const responses = await post('/v1/responses', {
+        model: 'claude-haiku-5-5-low', stream: true, store: false,
+        input: 'What is the weather in Tokyo?',
+        tools: [{ type: 'function', name: 'get_weather', parameters: { type: 'object', properties: { city: { type: 'string' } } } }],
+      });
+      const responsesBody = await responses.text();
+      assert.equal(responses.status, 200, responsesBody);
+      const added = sseData(responsesBody).find((e) => e.type === 'response.output_item.added' && e.item?.type === 'function_call');
+      assert.equal(added?.item?.name, 'get_weather', responsesBody);
+
       const gemini = await post('/v1beta/models/claude-haiku-5-5-low:streamGenerateContent?alt=sse', {
         contents: [{ role: 'user', parts: [{ text: 'What is the weather in Tokyo?' }] }],
         tools: [{ functionDeclarations: [{ name: 'get_weather' }] }],

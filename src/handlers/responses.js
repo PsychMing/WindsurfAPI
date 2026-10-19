@@ -723,6 +723,10 @@ class ResponsesStreamTranslator {
     this.nextOutputIndex = 0;
     this.outputItems = [];
     this.toolCalls = new Map();
+    // Tool events buffered until a split function.name is settled. Without this,
+    // output_item.added publishes the first fragment (e.g. "get_") and the name
+    // cannot be corrected in the Responses event contract.
+    this.deferred = null;
     this.finalUsage = {};
     this.sequenceNumber = 0;
     // Did the upstream stream ever deliver a terminal chunk? Every real success
@@ -733,11 +737,39 @@ class ResponsesStreamTranslator {
     this.sawTerminalChunk = false;
   }
 
-  send(event, data) {
+  _write(event, data) {
     if (!this.res.writableEnded) {
       const payload = { type: event, sequence_number: this.sequenceNumber++, ...data };
       this.res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
     }
+  }
+
+  send(event, data) {
+    if (this.deferred) {
+      const isText = event.startsWith('response.output_text.')
+        || event.startsWith('response.content_part.')
+        || (event === 'response.output_item.added' && data?.item?.type === 'message')
+        || (event === 'response.output_item.done' && data?.item?.type === 'message');
+      (isText ? this.deferred.text : this.deferred.events).push({ event, data });
+      return;
+    }
+    this._write(event, data);
+  }
+
+  flushDeferred() {
+    if (!this.deferred) return;
+    const { events, text } = this.deferred;
+    this.deferred = null;
+    for (const entry of [...events, ...text]) this._write(entry.event, entry.data);
+  }
+
+  knownToolName(name) {
+    if (!name) return false;
+    if (this.toolNameMap?.toClient?.has(name)) return true;
+    return this.requestedTools.some((t) => {
+      const n = t?.function?.name || t?.name || (t?.__response_tool?.type === 'web_search' ? 'web_search' : null);
+      return n === name;
+    });
   }
 
   responseBase(status, output = []) {
@@ -860,6 +892,10 @@ class ResponsesStreamTranslator {
    * Anthropic on identical frames opens content_block index=2 for the second text,
    * which is the shape this brings the Responses exit in line with.
    */
+  closeTextBeforeTool() {
+    this.sealMessageSegment();
+  }
+
   sealMessageSegment() {
     if (!this.messageStarted || this.messageDone) return;
     this.finishMessage();
@@ -912,7 +948,9 @@ class ResponsesStreamTranslator {
         webSearch: false,
         responseTool: null,
         callId: toolCall.id || null,
+        wireName: null,
         toolName: null,
+        pendingArgDeltas: [],
       };
       this.toolCalls.set(idx, existing);
     }
@@ -955,7 +993,13 @@ class ResponsesStreamTranslator {
 
     if (toolCall.id) existing.callId = clientToolId(toolCall.id) || existing.callId;
     if (toolCall.function?.name) {
-      const wireName = toolCall.function.name;
+      const rawName = toolCall.function.name;
+      // function.name may be split across deltas. Accumulate idempotently: a
+      // repeated full name replaces the prefix, a prefix does not duplicate.
+      if (!existing.wireName) existing.wireName = rawName;
+      else if (rawName === existing.wireName || rawName.startsWith(existing.wireName)) existing.wireName = rawName;
+      else if (!existing.wireName.startsWith(rawName)) existing.wireName += rawName;
+      const wireName = existing.wireName;
       const clientName = restoreToolName(wireName, this.toolNameMap) || wireName;
       existing.toolName = clientName;
       const requestedTool = this.resolveRequestedTool(wireName);
@@ -965,15 +1009,27 @@ class ResponsesStreamTranslator {
         existing.custom = responseTool.type === 'custom';
         existing.webSearch = responseTool.type === 'web_search' || responseTool.type === 'tool_search';
       }
-      ensureItem(wireName, existing.responseTool);
-      existing.item.name = existing.responseTool?.originalName || clientName;
-      if (existing.responseTool?.namespace) existing.item.namespace = existing.responseTool.namespace;
+      // A known full name can open immediately. An unknown fragment must wait:
+      // publishing output_item.added with the fragment would be uncorrectable.
+      if (!this.deferred && this.knownToolName(wireName)) {
+        ensureItem(wireName, existing.responseTool);
+        existing.item.name = existing.responseTool?.originalName || clientName;
+        if (existing.responseTool?.namespace) existing.item.namespace = existing.responseTool.namespace;
+      } else if (!this.deferred) {
+        this.closeTextBeforeTool();
+        this.deferred = { events: [], text: [] };
+      }
     }
 
     const argsChunk = toolCall.function?.arguments ?? '';
-    if (argsChunk !== '') existing.argChunks.push(stringifyMaybe(argsChunk));
+    if (argsChunk !== '') {
+      const chunk = stringifyMaybe(argsChunk);
+      existing.argChunks.push(chunk);
+      if (this.deferred) existing.pendingArgDeltas.push(chunk);
+    }
+    if (this.deferred) return;
     if (!existing.item && !existing.toolName) return;
-    ensureItem(existing.toolName || 'unknown', existing.responseTool);
+    ensureItem(existing.wireName || existing.toolName || 'unknown', existing.responseTool);
 
     if (existing.item.type === 'web_search_call') {
       if (existing.callId) existing.item.id = existing.callId;
@@ -1042,6 +1098,28 @@ class ResponsesStreamTranslator {
         this.outputItems[tc.outputIndex] = complete;
         continue;
       }
+      const pendingDeltas = tc.pendingArgDeltas || [];
+      if (pendingDeltas.length) {
+        for (const delta of pendingDeltas) {
+          this.send('response.function_call_arguments.delta', {
+            item_id: tc.item.id,
+            output_index: tc.outputIndex,
+            delta,
+          });
+        }
+        tc.pendingArgDeltas = [];
+        tc.emittedArgsLength = args.length;
+      } else {
+        const pendingArgs = args.slice(tc.emittedArgsLength || 0);
+        if (pendingArgs) {
+          this.send('response.function_call_arguments.delta', {
+            item_id: tc.item.id,
+            output_index: tc.outputIndex,
+            delta: pendingArgs,
+          });
+          tc.emittedArgsLength = args.length;
+        }
+      }
       this.send('response.function_call_arguments.done', {
         item_id: tc.item.id,
         output_index: tc.outputIndex,
@@ -1102,6 +1180,7 @@ class ResponsesStreamTranslator {
     this.finishReasoning();
     this.finishToolCalls();
     if (this.messageStarted || this.text) this.finishMessage();
+    this.flushDeferred();
     // Same truncation rule as the non-streaming path (see chatToResponse):
     // 'incomplete' is reserved for length / content_filter, everything else closes
     // as 'completed'.
@@ -1151,6 +1230,7 @@ class ResponsesStreamTranslator {
     // Marks the turn as NOT committable to the response store: a failed stream
     // has no complete assistant reply to chain from.
     this.failed = true;
+    this.deferred = null;
     this.start();
     // Resolve the authoritative {status,type} from the DEVIN_CONNECT classification
     // first, exactly like messages.js and gemini.js do. Reading only err.type
