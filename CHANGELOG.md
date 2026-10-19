@@ -44,7 +44,7 @@ flowchart LR
 
 ### [v3.9.41](docs/releases/RELEASE_NOTES_3.9.41.md) · 2026-10-19（待发布）
 
-v3.9.40 之后的一次大补丁（92 个提交，57 feat/fix）：工具名/ID/历史跨三方言收敛，Messages 的 split
+v3.9.40 之后的一次大补丁（90+ 个提交，57 feat/fix）：工具名/ID/历史跨三方言收敛，Messages 的 split
 tool name 不再以首片开块；SSE 提交门在写 200 前裁决预内容错误，混合帧/CRLF/超长帧有共用 framer；
 Dashboard 补账号用量、池冷却、请求环、目录差异和计费 burn-down，密钥前缀不再渲染；Connect 刷新
 live 目录/模型并修传输与限流重试；账号过滤、日志保留/轮转、ACP 原生配置均为默认关的可选项。
