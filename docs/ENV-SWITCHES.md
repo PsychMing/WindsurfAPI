@@ -204,6 +204,7 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 |---|---|---|
 | `DEVIN_CONNECT_WIRE_MAX_TOKENS` | `8192` | 请求里 `max_tokens` 的默认值（`devin-connect.js`，要求正整数否则回落 8192）。和 `handlers/messages.js`、`gemini.js` 里的 `\|\| 8192` 是一套。**在模块加载时求值一次**，改它要重启。 |
 | `DEVIN_CONNECT_CATALOG_TTL_MS` | `300000`（5 分钟） | 每账号成功在线目录的复用时长（`auth.js`，有限数且 `>=10000` 才接受，否则回落 5 分钟）。TTL 内复用 last-known-good；过期后并行按账号刷新。空响应和失败不覆盖已有目录，也不推进成功时间。 |
+| `DEVIN_CONNECT_MAX_INFLIGHT_PER_ACCOUNT` | `0`（关闭） | 单账号并发在途请求硬上限（`auth.js`，非负安全整数；`0` = 不改变选择）。设为 `N > 0` 时，账号选择跳过已达 N 个在途请求的账号（含 sticky 绑定），让突发流量分散或 429，而不是继续堆在单账号。陈旧计数由 15 分钟下限的清扫回收。 |
 | `WINDSURFAPI_TOOL_DESC_MAX` | `500` | 工具描述的字符上限（`toolDescMax()`，要求 `>= 0` 的有限数否则回落 500）。**`0` = 不限长**，不是"全砍掉"。注释说明当前只用于长度阈值判断。 |
 | `CASCADE_1M_HISTORY_BYTES` | `900000` | 1M 上下文模型的历史字节预算（`client.js`，`positiveIntEnv`）。非 1M 模型走 `CASCADE_MAX_HISTORY_BYTES`（默认 `600000`）。 |
 | `CASCADE_MAX_HISTORY_BYTES` | `600000` | 非 1M 模型的历史字节预算（`client.js`，`positiveIntEnv`）。源码注释记着这个默认值的来历：早先是 400KB，**200KB 曾导致 30+ 轮工具调用的会话静默丢上下文**，所以调到 600KB 留出余量。调小之前先想清楚这一点。此前只作为上一行的说明文字出现，没有自己的条目。 |

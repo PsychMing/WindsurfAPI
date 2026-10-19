@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 191 份发布说明</a> ·
+  <a href="docs/releases/">全部 192 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **191** 份,v2.0.6 → v3.9.40 |
+| 发布说明 | **192** 份,v2.0.6 → v3.9.41 |
 | git tag | 202 个（截至 2026-10-15） |
-| 当前 | **v3.9.40**(2026-10-07) |
+| 当前 | **v3.9.41**(2026-10-19, 待发布) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -41,6 +41,15 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.9.41](docs/releases/RELEASE_NOTES_3.9.41.md) · 2026-10-19（待发布）
+
+v3.9.40 之后的一次大补丁（85 个内容提交，56 feat/fix；另有 1 个 release 元数据提交）：工具名/ID/历史跨三方言收敛，Messages 的 split
+tool name 不再以首片开块；SSE 提交门在写 200 前裁决预内容错误，混合帧/CRLF/超长帧有共用 framer；
+Dashboard 补账号用量、池冷却、请求环、目录差异和计费 burn-down，密钥前缀不再渲染；Connect 刷新
+live 目录/模型并修传输与限流重试；账号过滤、日志保留/轮转、ACP 原生配置均为默认关的可选项。
+默认 wire 不变（270/270），本地/HMC 全量绿；昂贵模型 5 selector × 4 协议 20/20 200。无协议兼容性
+破坏；实际计费 debit、其余模型图片和 Any2API live 集成仍未验证。
 
 ### [v3.9.40](docs/releases/RELEASE_NOTES_3.9.40.md) · 2026-10-07
 
