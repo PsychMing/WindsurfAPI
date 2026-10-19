@@ -1057,14 +1057,32 @@ class ResponsesStreamTranslator {
       if (tc.done) continue;
       tc.done = true;
       if (!tc.item) {
-        tc.item = {
-          type: 'function_call',
-          id: genFunctionCallId(),
-          call_id: clientToolId(tc.callId) || `call_${randomUUID().slice(0, 8)}`,
-          name: tc.toolName || 'unknown',
-          arguments: '',
-          status: 'in_progress',
-        };
+        const rt = tc.responseTool;
+        tc.item = rt?.type === 'custom'
+          ? {
+              type: 'custom_tool_call',
+              call_id: clientToolId(tc.callId) || `call_${randomUUID().slice(0, 8)}`,
+              name: rt.originalName || tc.toolName || 'unknown',
+              ...(rt.namespace ? { namespace: rt.namespace } : {}),
+              input: '',
+              status: 'in_progress',
+            }
+          : rt?.type === 'web_search'
+            ? {
+                type: 'web_search_call',
+                id: clientToolId(tc.callId) || `ws_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+                status: 'in_progress',
+                action: { type: 'search', query: '' },
+              }
+            : {
+                type: 'function_call',
+                id: genFunctionCallId(),
+                call_id: clientToolId(tc.callId) || `call_${randomUUID().slice(0, 8)}`,
+                name: tc.toolName || 'unknown',
+                ...(rt?.namespace ? { namespace: rt.namespace } : {}),
+                arguments: '',
+                status: 'in_progress',
+              };
         this.send('response.output_item.added', { output_index: tc.outputIndex, item: tc.item });
       }
       const args = tc.argChunks.join('');

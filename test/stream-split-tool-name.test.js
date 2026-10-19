@@ -92,4 +92,28 @@ describe('streaming split function.name is settled before egress', () => {
     assert.deepEqual(done.map((e) => e.output_index), [0, 1, 2]);
   });
 
+
+  it('keeps a split custom tool name on a custom_tool_call item', async () => {
+    const frames = [
+      chunk({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_custom', type: 'function', function: { name: 'run' } }] } }] }),
+      chunk({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { name: 'ner', arguments: '{"input":"echo hi"}' } }] } }] }),
+      chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }),
+      'data: [DONE]\n\n',
+    ];
+    const result = await handleResponses({
+      model: 'gpt-5.2', stream: true, input: 'hi',
+      tools: [{ type: 'custom', name: 'runner', description: 'Run shell' }],
+    }, { ...streamDeps(frames), context: { callerKey: 'api:split-custom:user:t' } });
+    const res = fakeRes();
+    await result.handler(res);
+    const events = sseJson(res.body);
+    const added = events.find((e) => e.type === 'response.output_item.added');
+    const done = events.find((e) => e.type === 'response.output_item.done');
+    assert.equal(added.item.type, 'custom_tool_call');
+    assert.equal(added.item.name, 'runner');
+    assert.equal(done.item.type, 'custom_tool_call');
+    assert.equal(done.item.name, 'runner');
+    assert.equal(done.item.input, 'echo hi');
+  });
+
 });
