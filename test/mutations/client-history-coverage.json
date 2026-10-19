@@ -3,7 +3,7 @@
     "test/client-panel-retry.test.js",
     "test/review-history-coverage.test.js"
   ],
-  "expectBaselinePass": 13,
+  "expectBaselinePass": 14,
   "mutations": [
     {
       "name": "GPT-08: the rebuilt history stops updating its coverage, so a truncated recovery reports full history",
