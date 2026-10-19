@@ -69,7 +69,7 @@ v3.9.40 只在 Messages 侧修了 64 字符 wire 上限；这一版把同一类�
 
 ## 尚未验证
 
-- **实际计费 debit**：2,792 是乘数上限，不是账单读数。
+- **实际计费 debit**：3,491 是乘数上限，不是账单读数。
 - **图片**：5 个昂贵 selector 的 chat 图片全部失败（4 个本次补测 + opus 既有）；messages 只对 opus 观测到 529，其他四个未重复。
 - **streaming tool deltas**：`gpt-6-astra`/`claude-opus-5-5` 的 live 流式 tool call 已覆盖完整名与完整 args；Gemini split 名由 fake upstream 覆盖；Responses 的 split 名仍可能在 `output_item.added` 中先出现首片（既有 P2，未在本次修复）。
 - **429/402 停止路径**：本轮没有触发，未验证。
