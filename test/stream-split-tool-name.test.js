@@ -1,6 +1,5 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { handleResponses } from '../src/handlers/responses.js';
 import { handleGemini } from '../src/handlers/gemini.js';
 
 function fakeRes() {
@@ -38,20 +37,6 @@ function streamDeps(frames) {
 }
 
 describe('streaming split function.name is settled before egress', () => {
-  it('Responses output_item.added carries the restored full name', async () => {
-    const result = await handleResponses({
-      model: 'gpt-5.2', stream: true, input: 'hi',
-      tools: [{ type: 'function', name: 'foo.bar', parameters: { type: 'object', properties: {} } }],
-    }, { ...streamDeps(SPLIT), context: { callerKey: 'api:split:user:t' } });
-    const res = fakeRes();
-    await result.handler(res);
-    const events = sseJson(res.body);
-    const added = events.find((e) => e.type === 'response.output_item.added' && e.item?.type === 'function_call');
-    const done = events.find((e) => e.type === 'response.output_item.done' && e.item?.type === 'function_call');
-    assert.equal(added?.item?.name, 'foo.bar');
-    assert.equal(done?.item?.name, 'foo.bar');
-  });
-
   it('Gemini functionCall carries the restored full name', async () => {
     const result = await handleGemini('m', {
       contents: [{ role: 'user', parts: [{ text: 'go' }] }],

@@ -16,6 +16,7 @@ let server;
 let port;
 let lastParams = null;
 let streamBehavior = 'text';
+let nonStreamBehavior = 'tool';
 
 function completion(message, finish = 'stop') {
   return {
@@ -41,6 +42,7 @@ before(async () => {
   __setConnectDeps({
     toChatCompletion: async (params) => {
       lastParams = params;
+      if (nonStreamBehavior === 'text') return completion({ role: 'assistant', content: 'PONG' });
       if (Array.isArray(params.messages) && params.messages.some((m) => m?.role === 'tool')) {
         return completion({ role: 'assistant', content: '22' });
       }
@@ -55,6 +57,16 @@ before(async () => {
       }, 'tool_calls');
     },
     streamChatCompletion: async (_params, send) => {
+      if (streamBehavior === 'parallel') {
+        send({ id: 'chatcmpl-harness', object: 'chat.completion.chunk', created: 0, model: 'claude-haiku-5-5-low', choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
+        send({ id: 'chatcmpl-harness', object: 'chat.completion.chunk', created: 0, model: 'claude-haiku-5-5-low', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_a', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Tokyo"}' } }] }, finish_reason: null }] });
+        send({ id: 'chatcmpl-harness', object: 'chat.completion.chunk', created: 0, model: 'claude-haiku-5-5-low', choices: [{ index: 0, delta: { tool_calls: [{ index: 1, id: 'call_b', type: 'function', function: { name: 'get_time', arguments: '{"zone":"UTC"}' } }] }, finish_reason: null }] });
+        send({ id: 'chatcmpl-harness', object: 'chat.completion.chunk', created: 0, model: 'claude-haiku-5-5-low', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
+        return { content: '', reasoning: '', toolCalls: [
+          { id: 'call_a', name: 'get_weather', arguments: '{"city":"Tokyo"}' },
+          { id: 'call_b', name: 'get_time', arguments: '{"zone":"UTC"}' },
+        ], finish_reason: 'tool_calls', usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } };
+      }
       if (streamBehavior === 'tool') {
         send({ id: 'chatcmpl-harness', object: 'chat.completion.chunk', created: 0, model: 'claude-haiku-5-5-low', choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
         send({ id: 'chatcmpl-harness', object: 'chat.completion.chunk', created: 0, model: 'claude-haiku-5-5-low', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_harness_1', type: 'function', function: { name: 'get_', arguments: '{"city":' } }] }, finish_reason: null }] });
@@ -102,6 +114,13 @@ function post(path, body) {
     headers: { authorization: 'Bearer test-harness-key', 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+function sseData(body) {
+  return body.split(/\r?\n\r?\n/).filter(Boolean)
+    .map((frame) => frame.split('\n').find((line) => line.startsWith('data: '))?.slice(6))
+    .filter((data) => data && data.trim() !== '[DONE]')
+    .map((data) => JSON.parse(data));
 }
 
 describe('startServer harness-shaped success paths', () => {
@@ -247,4 +266,167 @@ describe('startServer harness-shaped success paths', () => {
     assert.ok(Array.isArray(parsed), 'default Gemini stream is a JSON array');
     assert.match(arrayBody, /PONG/);
   });
+
+  it('serves non-stream success for Messages, Responses, and Gemini', async () => {
+    nonStreamBehavior = 'text';
+    try {
+    const messages = await post('/v1/messages', {
+      model: 'claude-haiku-5-5-low', max_tokens: 16, stream: false,
+      messages: [{ role: 'user', content: 'Reply with exactly: PONG' }],
+    });
+    const messagesBody = await messages.json();
+    assert.equal(messages.status, 200, JSON.stringify(messagesBody));
+    assert.equal(messagesBody.content?.[0]?.type, 'text');
+    assert.match(messagesBody.content?.[0]?.text || '', /PONG/);
+
+    const responses = await post('/v1/responses', {
+      model: 'claude-haiku-5-5-low', stream: false, store: false,
+      input: 'Reply with exactly: PONG',
+    });
+    const responsesBody = await responses.json();
+    assert.equal(responses.status, 200, JSON.stringify(responsesBody));
+    assert.match(JSON.stringify(responsesBody.output), /PONG/);
+
+    const gemini = await post('/v1beta/models/claude-haiku-5-5-low:generateContent', {
+      contents: [{ role: 'user', parts: [{ text: 'Reply with exactly: PONG' }] }],
+    });
+    const geminiBody = await gemini.json();
+    assert.equal(gemini.status, 200, JSON.stringify(geminiBody));
+    assert.match(JSON.stringify(geminiBody.candidates), /PONG/);
+    } finally {
+      nonStreamBehavior = 'tool';
+    }
+  });
+
+  it('runs a Responses function_call -> function_call_output -> final answer loop', async () => {
+    const tools = [{ type: 'function', name: 'get_weather', parameters: { type: 'object', properties: { city: { type: 'string' } } } }];
+    const first = await post('/v1/responses', {
+      model: 'claude-haiku-5-5-low', stream: false, store: false,
+      input: 'What is the weather in Tokyo?', tools,
+    });
+    const firstBody = await first.json();
+    assert.equal(first.status, 200, JSON.stringify(firstBody));
+    const call = firstBody.output?.find((item) => item.type === 'function_call');
+    assert.ok(call, JSON.stringify(firstBody));
+    assert.equal(call.name, 'get_weather');
+
+    const second = await post('/v1/responses', {
+      model: 'claude-haiku-5-5-low', stream: false, store: false,
+      input: [
+        { role: 'user', content: 'What is the weather in Tokyo?' },
+        { type: 'function_call', call_id: call.call_id, name: call.name, arguments: call.arguments },
+        { type: 'function_call_output', call_id: call.call_id, output: '{"temperature":22}' },
+        { role: 'user', content: 'Reply with just the number.' },
+      ],
+      tools,
+    });
+    const secondBody = await second.json();
+    assert.equal(second.status, 200, JSON.stringify(secondBody));
+    assert.match(JSON.stringify(secondBody.output), /22/);
+    assert.match(JSON.stringify(lastParams.messages), /temperature/);
+  });
+
+  it('runs a Messages tool_use -> tool_result -> final answer loop', async () => {
+    const tools = [{ name: 'get_weather', input_schema: { type: 'object', properties: { city: { type: 'string' } } } }];
+    const first = await post('/v1/messages', {
+      model: 'claude-haiku-5-5-low', max_tokens: 64, stream: false,
+      tools, messages: [{ role: 'user', content: 'What is the weather in Tokyo?' }],
+    });
+    const firstBody = await first.json();
+    assert.equal(first.status, 200, JSON.stringify(firstBody));
+    const call = firstBody.content?.find((block) => block.type === 'tool_use');
+    assert.ok(call, JSON.stringify(firstBody));
+    assert.equal(call.name, 'get_weather');
+
+    const second = await post('/v1/messages', {
+      model: 'claude-haiku-5-5-low', max_tokens: 64, stream: false, tools,
+      messages: [
+        { role: 'user', content: 'What is the weather in Tokyo?' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: call.id, name: call.name, input: call.input }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: '{"temperature":22}' }] },
+        { role: 'user', content: 'Reply with just the number.' },
+      ],
+    });
+    const secondBody = await second.json();
+    assert.equal(second.status, 200, JSON.stringify(secondBody));
+    assert.match(JSON.stringify(secondBody.content), /22/);
+    assert.match(JSON.stringify(lastParams.messages), /temperature/);
+  });
+
+  it('runs a Gemini functionCall -> functionResponse -> final answer loop', async () => {
+    const tools = [{ functionDeclarations: [{ name: 'get_weather', parameters: { type: 'object', properties: { city: { type: 'string' } } } }] }];
+    const first = await post('/v1beta/models/claude-haiku-5-5-low:generateContent', {
+      contents: [{ role: 'user', parts: [{ text: 'What is the weather in Tokyo?' }] }], tools,
+    });
+    const firstBody = await first.json();
+    assert.equal(first.status, 200, JSON.stringify(firstBody));
+    const call = firstBody.candidates?.[0]?.content?.parts?.find((part) => part.functionCall)?.functionCall;
+    assert.ok(call, JSON.stringify(firstBody));
+    assert.equal(call.name, 'get_weather');
+
+    const second = await post('/v1beta/models/claude-haiku-5-5-low:generateContent', {
+      contents: [
+        { role: 'user', parts: [{ text: 'What is the weather in Tokyo?' }] },
+        { role: 'model', parts: [{ functionCall: { name: call.name, args: call.args } }] },
+        { role: 'user', parts: [{ functionResponse: { name: call.name, response: { temperature: 22 } } }] },
+        { role: 'user', parts: [{ text: 'Reply with just the number.' }] },
+      ], tools,
+    });
+    const secondBody = await second.json();
+    assert.equal(second.status, 200, JSON.stringify(secondBody));
+    assert.match(JSON.stringify(secondBody.candidates), /22/);
+    assert.match(JSON.stringify(lastParams.messages), /temperature/);
+  });
+
+  it('settles split tool names in the Gemini stream', async () => {
+    streamBehavior = 'tool';
+    try {
+      const gemini = await post('/v1beta/models/claude-haiku-5-5-low:streamGenerateContent?alt=sse', {
+        contents: [{ role: 'user', parts: [{ text: 'What is the weather in Tokyo?' }] }],
+        tools: [{ functionDeclarations: [{ name: 'get_weather' }] }],
+      });
+      const geminiBody = await gemini.text();
+      assert.equal(gemini.status, 200, geminiBody);
+      const call = sseData(geminiBody)
+        .flatMap((frame) => frame.candidates?.[0]?.content?.parts || [])
+        .find((part) => part.functionCall)?.functionCall;
+      assert.equal(call?.name, 'get_weather', geminiBody);
+    } finally {
+      streamBehavior = 'text';
+    }
+  });
+
+  it('keeps parallel tool calls distinct in Responses and Gemini streams', async () => {
+    streamBehavior = 'parallel';
+    try {
+      const responses = await post('/v1/responses', {
+        model: 'claude-haiku-5-5-low', stream: true, store: false, input: 'Use both tools',
+        tools: [
+          { type: 'function', name: 'get_weather', parameters: { type: 'object' } },
+          { type: 'function', name: 'get_time', parameters: { type: 'object' } },
+        ],
+      });
+      const responsesBody = await responses.text();
+      assert.equal(responses.status, 200, responsesBody);
+      const responseCalls = sseData(responsesBody)
+        .filter((e) => e.type === 'response.output_item.done' && e.item?.type === 'function_call')
+        .map((e) => e.item.name);
+      assert.deepEqual(responseCalls, ['get_weather', 'get_time'], responsesBody);
+
+      const gemini = await post('/v1beta/models/claude-haiku-5-5-low:streamGenerateContent?alt=sse', {
+        contents: [{ role: 'user', parts: [{ text: 'Use both tools' }] }],
+        tools: [{ functionDeclarations: [{ name: 'get_weather' }, { name: 'get_time' }] }],
+      });
+      const geminiBody = await gemini.text();
+      assert.equal(gemini.status, 200, geminiBody);
+      const geminiCalls = sseData(geminiBody)
+        .flatMap((frame) => frame.candidates?.[0]?.content?.parts || [])
+        .filter((part) => part.functionCall)
+        .map((part) => part.functionCall.name);
+      assert.deepEqual(geminiCalls, ['get_weather', 'get_time'], geminiBody);
+    } finally {
+      streamBehavior = 'text';
+    }
+  });
+
 });

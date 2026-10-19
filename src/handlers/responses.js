@@ -912,7 +912,6 @@ class ResponsesStreamTranslator {
         webSearch: false,
         responseTool: null,
         callId: toolCall.id || null,
-        wireName: null,
         toolName: null,
       };
       this.toolCalls.set(idx, existing);
@@ -956,13 +955,7 @@ class ResponsesStreamTranslator {
 
     if (toolCall.id) existing.callId = clientToolId(toolCall.id) || existing.callId;
     if (toolCall.function?.name) {
-      const rawName = toolCall.function.name;
-      // function.name may be split across deltas. Accumulate idempotently so a
-      // repeated full name does not duplicate and a prefix does not win.
-      if (!existing.wireName) existing.wireName = rawName;
-      else if (rawName === existing.wireName || rawName.startsWith(existing.wireName)) existing.wireName = rawName;
-      else if (!existing.wireName.startsWith(rawName)) existing.wireName += rawName;
-      const wireName = existing.wireName;
+      const wireName = toolCall.function.name;
       const clientName = restoreToolName(wireName, this.toolNameMap) || wireName;
       existing.toolName = clientName;
       const requestedTool = this.resolveRequestedTool(wireName);
@@ -972,25 +965,15 @@ class ResponsesStreamTranslator {
         existing.custom = responseTool.type === 'custom';
         existing.webSearch = responseTool.type === 'web_search' || responseTool.type === 'tool_search';
       }
-      // With a request name map we know the full wire name as soon as it
-      // matches; without one, wait for arguments or finish() before opening
-      // output_item.added, so the first event cannot publish a truncated name.
-      if (this.toolNameMap?.toClient.has(wireName)) {
-        ensureItem(wireName, existing.responseTool);
-        existing.item.name = existing.responseTool?.originalName || clientName;
-        if (existing.responseTool?.namespace) existing.item.namespace = existing.responseTool.namespace;
-      }
+      ensureItem(wireName, existing.responseTool);
+      existing.item.name = existing.responseTool?.originalName || clientName;
+      if (existing.responseTool?.namespace) existing.item.namespace = existing.responseTool.namespace;
     }
 
     const argsChunk = toolCall.function?.arguments ?? '';
     if (argsChunk !== '') existing.argChunks.push(stringifyMaybe(argsChunk));
-    if (!existing.item) {
-      // Do not open on arguments alone: the name may arrive in a later delta
-      // and change the item type (custom/web_search). A name-only delta also
-      // waits for arguments, a known mapped name, or finishToolCalls().
-      if (!existing.toolName || argsChunk === '') return;
-      ensureItem(existing.wireName || existing.toolName || 'unknown', existing.responseTool);
-    }
+    if (!existing.item && !existing.toolName) return;
+    ensureItem(existing.toolName || 'unknown', existing.responseTool);
 
     if (existing.item.type === 'web_search_call') {
       if (existing.callId) existing.item.id = existing.callId;
