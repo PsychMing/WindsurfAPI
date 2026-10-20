@@ -10,7 +10,7 @@
 // the error-body shape. The first integration is the OpenAI chat route.
 
 import { Buffer } from 'node:buffer';
-import { findFrameEnd } from './sse-framer.js';
+import { findFrameEnd, parseSseLine } from './sse-framer.js';
 import { connectErrorToHttp, normalizeOpenAIErrorType, clientRetryAfterSeconds } from './handlers/chat.js';
 
 const DEFAULT_MAX_FRAMES = 48;
@@ -18,15 +18,23 @@ const DEFAULT_MAX_BYTES = 1024 * 1024;
 const DEFAULT_BOOTSTRAP_MS = 5_000;
 const MAX_BOOTSTRAP_MS = 14_000;
 
+// A heartbeat frame is comment-only. A leading comment on a frame that also
+// carries data must not make that data a bootstrap.
 function isCommentFrame(frame) {
-  return frame.startsWith(':');
+  let sawComment = false;
+  for (const line of frame.split(/\r\n|\n|\r/)) {
+    if (line === '') continue;
+    if (!line.startsWith(':')) return false;
+    sawComment = true;
+  }
+  return sawComment;
 }
 
 function dataPayload(frame) {
-  const lines = frame.split('\n');
   const data = [];
-  for (const line of lines) {
-    if (line.startsWith('data:')) data.push(line.slice(5).replace(/^[ \t]/, ''));
+  for (const line of frame.split(/\r\n|\n|\r/)) {
+    const parsed = parseSseLine(line);
+    if (parsed?.field === 'data') data.push(parsed.value);
   }
   return data.join('\n');
 }

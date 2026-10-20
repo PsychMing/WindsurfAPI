@@ -211,3 +211,106 @@ describe('createDeferredSseResponse', () => {
     assert.equal(real.statusCode, 200, 'fourth bootstrap frame commits');
   });
 });
+
+describe('createDeferredSseResponse line endings', () => {
+  const errorFrame = (sep) => `event: error${sep}data: {"error":{"code":"RATE_LIMITED","message":"busy","retry_after_ms":2500}}${sep}${sep}`;
+
+  it('maps a pre-content error frame for LF, CRLF, and CR', () => {
+    for (const sep of ['\n', '\r\n', '\r']) {
+      const real = fakeRes();
+      const res = createDeferredSseResponse(real, { status: 200 });
+      res.write(errorFrame(sep));
+      res.end();
+      assert.equal(real.statusCode, 429, JSON.stringify(sep));
+      assert.equal(real.headers['retry-after'], '30', JSON.stringify(sep));
+      assert.equal(JSON.parse(real.body).error.code, 'RATE_LIMITED', JSON.stringify(sep));
+    }
+  });
+
+  it('decodes a frame that mixes legal line separators', () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200 });
+    res.write('event: error\r\ndata: {"error":{"code":"RATE_LIMITED","message":"busy"}}\r\n\r');
+    res.end();
+    assert.equal(real.statusCode, 429);
+  });
+
+  it('holds a CR-only role prime and then commits the raw SSE bytes', () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const prime = 'data: {"choices":[{"delta":{"role":"assistant"}}]}\r\r';
+    const content = 'data: {"choices":[{"delta":{"content":"hi"}}]}\r\r';
+    res.write(prime);
+    assert.equal(real.statusCode, null, 'CR-only role prime must not commit');
+    res.write(content);
+    res.end();
+    assert.equal(real.statusCode, 200);
+    assert.equal(real.headers['content-type'], 'text/event-stream');
+    assert.equal(real.body, prime + content);
+  });
+
+  it('maps a bootstrap-then-error stream at every byte cut for every legal separator', () => {
+    for (const sep of ['\n', '\r\n', '\r']) {
+      const bytes = Buffer.from(`: prime${sep}${sep}event: error${sep}data: {"error":{"code":"RATE_LIMITED","message":"busy"}}${sep}${sep}`);
+      for (let cut = 0; cut <= bytes.length; cut += 1) {
+        const real = fakeRes();
+        const res = createDeferredSseResponse(real, { status: 200 });
+        res.write(bytes.subarray(0, cut));
+        res.write(bytes.subarray(cut));
+        res.end();
+        assert.equal(real.statusCode, 429, `sep ${JSON.stringify(sep)} cut ${cut}`);
+        assert.equal(JSON.parse(real.body).error.code, 'RATE_LIMITED', `sep ${JSON.stringify(sep)} cut ${cut}`);
+      }
+    }
+  });
+
+  it('does not rewrite a committed payload when a CR-only error follows', () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200 });
+    const content = 'data: {"choices":[{"delta":{"content":"partial"}}]}\r\r';
+    const error = 'data: {"error":{"message":"died","code":"UPSTREAM_ERROR"}}\r\r';
+    res.write(content);
+    res.write(error);
+    res.end();
+    assert.equal(real.statusCode, 200);
+    assert.equal(real.body, content + error);
+  });
+
+  it('commits a comment-leading frame that carries real content', () => {
+    for (const sep of ['\n', '\r\n', '\r']) {
+      const content = `: hello${sep}data: {"choices":[{"delta":{"content":"real"}}]}${sep}${sep}`;
+      const error = `data: {"error":{"message":"late","code":"RATE_LIMITED"}}${sep}${sep}`;
+      const stream = Buffer.from(content + error);
+      for (let cut = 0; cut <= stream.length; cut += 1) {
+        const real = fakeRes();
+        const res = createDeferredSseResponse(real, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+        res.write(stream.subarray(0, cut));
+        res.write(stream.subarray(cut));
+        res.end();
+        assert.equal(real.statusCode, 200, `sep ${JSON.stringify(sep)} cut ${cut}`);
+        assert.equal(real.body, content + error, `sep ${JSON.stringify(sep)} cut ${cut}`);
+      }
+    }
+  });
+
+  it('still holds a comment-leading role-only prime', () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200 });
+    const prime = ': hi\ndata: {"choices":[{"delta":{"role":"assistant"}}]}\n\n';
+    const content = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n';
+    res.write(prime);
+    assert.equal(real.statusCode, null, 'role-only prime must not commit');
+    res.write(content);
+    res.end();
+    assert.equal(real.statusCode, 200);
+    assert.equal(real.body, prime + content);
+  });
+
+  it('maps a comment-leading error frame', () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200 });
+    res.write(': note\ndata: {"error":{"code":"RATE_LIMITED","message":"busy"}}\n\n');
+    res.end();
+    assert.equal(real.statusCode, 429);
+  });
+});
