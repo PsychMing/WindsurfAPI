@@ -3,7 +3,7 @@
     "test/terminal-event-guard.test.js",
     "test/stream-error.test.js"
   ],
-  "expectBaselinePass": 27,
+  "expectBaselinePass": 28,
   "mutations": [
     {
       "name": "Responses: the original defect — processChunk stops consulting `finished`, so response.failed is followed by output_text.delta",
