@@ -13,6 +13,7 @@ import {
   redactRequestLogText,
 } from '../src/handlers/chat.js';
 import { handleMessages } from '../src/handlers/messages.js';
+import { serveChatStream } from '../src/server.js';
 
 const createdAccountIds = [];
 
@@ -37,6 +38,19 @@ function fakeRes() {
   return {
     body: '',
     writableEnded: false,
+    headersSent: false,
+    statusCode: null,
+    headers: {},
+    writeHead(status, headers) {
+      this.statusCode = status;
+      Object.assign(this.headers, headers || {});
+      this.headersSent = true;
+      return this;
+    },
+    setHeader(name, value) { this.headers[String(name).toLowerCase()] = value; },
+    getHeader(name) { return this.headers[String(name).toLowerCase()]; },
+    removeHeader(name) { delete this.headers[String(name).toLowerCase()]; },
+    flushHeaders() { this.headersSent = true; },
     write(chunk) { this.body += String(chunk); return true; },
     end(chunk) {
       if (chunk) this.write(chunk);
@@ -212,7 +226,7 @@ describe('stream error protocol', () => {
     assert.equal(finish.choices[0].finish_reason, 'stop');
   });
 
-  it('still sends a structured stream error when only an empty role chunk was emitted', async () => {
+  it('still sends a structured stream error when only an empty role chunk was emitted, without [DONE]', async () => {
     const account = addAccountByKey(`empty-deadline-${Date.now()}-${Math.random().toString(36).slice(2)}`, 'empty-deadline');
     createdAccountIds.push(account.id);
 
@@ -246,7 +260,63 @@ describe('stream error protocol', () => {
     // error.type; the specific condition is still carried in `code`.
     assert.match(res.body, /"type":"api_error"/);
     assert.match(res.body, /"code":"windsurf_provider_deadline"/);
-    assert.match(res.body, /data: \[DONE\]/);
+    // [DONE] is the OpenAI stream's "completed" marker. A pre-content failure
+    // has not completed anything, so the error frame must be the last signal;
+    // a client (or relay) that sees [DONE] would treat the turn as a clean empty
+    // answer and may drop the error entirely.
+    assert.equal(res.body.includes('data: [DONE]'), false, 'no [DONE] after a pre-content error');
+  });
+
+  it('route: an error after the SSE bootstrap commit is not followed by [DONE]', async () => {
+    const account = addAccountByKey(`late-precontent-${Date.now()}-${Math.random().toString(36).slice(2)}`, 'late-precontent');
+    createdAccountIds.push(account.id);
+
+    class LatePreContentDeadlineClient {
+      async cascadeChat() {
+        // The SSE gate's bootstrap timer (5 ms in this test) commits HTTP 200
+        // first; the failure arrives after that commit, so the gate cannot
+        // rewrite the status. The handler must still end with the error frame
+        // alone, not error + [DONE].
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        throw new Error('Encountered retryable error from model provider: context deadline exceeded (Client.Timeout or context cancellation while reading body)');
+      }
+    }
+
+    const result = await handleChatCompletions({
+      model: 'gemini-2.5-flash',
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    }, {
+      async waitForAccount(tried, _signal, _maxWaitMs, modelKey) {
+        return tried.length === 0 ? getApiKey(tried, modelKey) : null;
+      },
+      async ensureLs() {},
+      getLsFor() {
+        return { port: 17777, csrfToken: 'csrf', generation: 1 };
+      },
+      WindsurfClient: LatePreContentDeadlineClient,
+    });
+
+    const res = fakeRes();
+    let onDoneCalls = 0;
+    await serveChatStream(res, result, {
+      headers: { 'Content-Type': 'text/event-stream' },
+      commitMs: 5,
+      onDone: () => { onDoneCalls += 1; },
+    });
+
+    const frames = res.body
+      .split('\n\n')
+      .filter(Boolean)
+      .filter(frame => !frame.startsWith(':'))
+      .map(frame => frame.split('\n').find(line => line.startsWith('data: '))?.slice(6))
+      .filter(Boolean);
+    assert.equal(res.statusCode, 200, 'the bootstrap timer committed before the error arrived');
+    assert.ok(frames.some(frame => frame !== '[DONE]' && JSON.parse(frame).error), 'the error frame must survive the committed 200');
+    assert.equal(frames.includes('[DONE]'), false, 'a committed 200 must not gain a success sentinel after the error');
+    assert.ok(frames.at(-1) !== '[DONE]' && JSON.parse(frames.at(-1)).error, 'the error frame must be the last signal');
+    assert.equal(res.writableEnded, true, 'the response must be closed');
+    assert.equal(onDoneCalls, 1, 'cleanup must still run exactly once');
   });
 
   it('routes oversized Connect frame parser errors to onError without throwing from data handlers', async () => {

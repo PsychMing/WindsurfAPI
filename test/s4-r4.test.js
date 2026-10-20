@@ -13,13 +13,14 @@ function run(options = {}) {
   const boom = () => { throw new Error('sensitive-token-in-error'); };
   const res = {
     writableEnded: false,
+    endAttempts: 0,
     write(text) {
       if (options.errorWrite && text.includes('"error"')) boom();
       if (options.doneWrite && text === 'data: [DONE]\n\n') boom();
       if (options.finishWrite && text.includes('"finish_reason":"stop"')) boom();
       writes.push(text); return true;
     },
-    end() { if (options.endFail) boom(); this.writableEnded = true; },
+    end() { this.endAttempts += 1; if (options.endFail) boom(); this.writableEnded = true; },
   };
   // Collaborator contract: this unchanged helper emits one finish then DONE.
   // The separate full-handler integration test also exercises its real definition.
@@ -63,33 +64,40 @@ function run(options = {}) {
 }
 const done = r => r.writes.filter(x => x === 'data: [DONE]\n\n').length;
 
-test('R4 an error-frame-only write failure still writes DONE and one diagnostic warn', () => {
+test('R4 an error-frame-only write failure ends without DONE and reports one redacted warn', () => {
   const r = run({ errorWrite: true });
-  assert.equal(done(r), 1, 'DONE is independent of error-frame delivery');
+  assert.equal(done(r), 0, 'a pre-content failure must not claim a clean finish');
   assert.equal(r.warnings.length, 1);
   assert.match(r.warnings[0], /stage=error-frame/);
   assert.doesNotMatch(r.warnings.join(''), /sensitive-token-in-error/);
   assert.equal(r.res.writableEnded, true);
+  assert.equal(r.res.endAttempts, 1, 'the failed error-frame write must not skip end');
 });
 
-test('R4 a broken warning logger uses the fallback sink without blocking DONE', () => {
+test('R4 a broken warning logger uses the fallback sink and still ends without DONE', () => {
   const r = run({ errorWrite: true, logWarnFail: true });
-  assert.equal(done(r), 1); assert.equal(r.fallback.length, 1);
+  assert.equal(done(r), 0);
+  assert.equal(r.fallback.length, 1);
   assert.match(r.fallback[0], /stage=error-frame.*logger=failed/);
+  assert.equal(r.res.endAttempts, 1);
 });
 
-test('R4 a failed DONE write does not erase the error frame or skip end', () => {
-  const r = run({ doneWrite: true });
-  assert.ok(r.writes.some(x => x.includes('"error"')));
+test('R4 a failed DONE write on a partial failure keeps the synthetic finish and still ends', () => {
+  const r = run({ partial: true, doneWrite: true });
+  assert.ok(r.writes.some(x => x.includes('"finish_reason":"stop"')), 'the synthetic finish must already be on the wire');
+  assert.equal(r.writes.some(x => x.includes('"error"')), false, 'a partial failure has no error frame');
   assert.match(r.warnings.join(''), /stage=done/);
   assert.equal(r.res.writableEnded, true);
+  assert.equal(r.res.endAttempts, 1);
 });
 
-test('R4 a flush failure does not suppress other flushes, the error frame or DONE', () => {
+test('R4 a flush failure does not suppress other flushes or the error frame', () => {
   const r = run({ pathFail: true });
   assert.deepEqual(r.visited, ['egress', 'think']);
-  assert.ok(r.writes.some(x => x.includes('"error"'))); assert.equal(done(r), 1);
+  assert.ok(r.writes.some(x => x.includes('"error"')));
+  assert.equal(done(r), 0, 'a pre-content failure ends on the error frame');
   assert.match(r.warnings.join(''), /stage=egress-tail/);
+  assert.equal(r.res.endAttempts, 1);
 });
 
 test('R4 a failed held tail or synthetic finish cannot prevent partial DONE', () => {
@@ -114,22 +122,37 @@ test('R4 synthetic finish markers remain internal-only and successful terminatio
 test('R4 classification and ordinary error logging cannot block terminal delivery', () => {
   for (const flags of [{ classifyFail: true }, { logErrorFail: true }]) {
     const r = run(flags);
-    assert.equal(done(r), 1);
+    assert.equal(done(r), 0, 'a pre-content failure has no success sentinel');
     assert.equal(r.res.writableEnded, true);
+    assert.equal(r.res.endAttempts, 1);
     assert.equal(r.warnings.length, 1);
   }
 });
 
 test('R4 end failures are diagnosed rather than escaping the finalizer', () => {
   const r = run({ endFail: true });
-  assert.equal(done(r), 1); assert.match(r.warnings.join(''), /stage=end/);
+  assert.equal(done(r), 0);
+  assert.match(r.warnings.join(''), /stage=end/);
+  assert.equal(r.res.endAttempts, 1, 'the end attempt must still happen');
 });
 
-test('R4 a stop-gate flush failure still delivers the error frame and DONE', () => {
+test('R4 a stop-gate flush failure still delivers the error frame and ends without DONE', () => {
   const r = run({ gateFail: true });
-  assert.equal(done(r), 1);
+  assert.equal(done(r), 0);
   assert.ok(r.writes.some(x => x.includes('"error"')));
   assert.equal(r.warnings.length, 1);
   assert.match(r.warnings[0], /stage=content-gate-tail/);
   assert.equal(r.res.writableEnded, true);
+  assert.equal(r.res.endAttempts, 1);
+});
+
+test('R4 a pre-content failure never writes the success sentinel', () => {
+  // Explicit guard against restoring the unconditional DONE stage: the error
+  // frame is the last signal a pre-content failure is allowed to emit.
+  const r = run({});
+  assert.ok(r.writes.some(x => x.includes('"error"')));
+  assert.equal(done(r), 0);
+  assert.equal(r.writes.at(-1).includes('"error"'), true, 'the error frame must be the last write');
+  assert.equal(r.res.writableEnded, true);
+  assert.equal(r.res.endAttempts, 1);
 });

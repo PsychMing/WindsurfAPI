@@ -7159,7 +7159,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           });
         }
         failureStage('done', () => {
-          if (!res.writableEnded) res.write('data: [DONE]\n\n');
+          // A pre-content failure has no completed turn to close. [DONE] is the
+          // OpenAI "clean finish" marker; writing it after the error frame lets
+          // clients and relays treat a failed request as an empty success. The
+          // DEVIN_CONNECT path already guards the same sentinel with
+          // terminalOk || contentEmitted (see the stream-exit block above).
+          if (emittedClientPayload && !res.writableEnded) res.write('data: [DONE]\n\n');
         });
         failureStage('end', () => {
           if (!res.writableEnded) res.end();

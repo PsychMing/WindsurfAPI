@@ -13,6 +13,7 @@ import {
   foldOrphanToolResults,
   synthesizeMissingResults,
 } from '../src/tool-ids.js';
+import { normalizeHistoryTail } from '../src/history-normalize.js';
 
 describe('tool-id hygiene', () => {
   it('leaves a valid id byte-identical', () => {
@@ -90,6 +91,97 @@ describe('tool-id hygiene', () => {
     const [first, second] = out[0].tool_calls.map((tc) => tc.id);
     assert.notEqual(first, second);
     assert.equal(first, 'dup');
+    assert.equal(out[1].tool_call_id, first);
+    assert.equal(out[2].tool_call_id, second);
+  });
+
+  it('pairs results FIFO for duplicated malformed and overlength ids', () => {
+    for (const raw of ['a.b', 'x'.repeat(MAX_TOOL_ID_LEN + 6)]) {
+      const messages = [
+        { role: 'assistant', tool_calls: [
+          { id: raw, function: { name: 'first' } },
+          { id: raw, function: { name: 'second' } },
+        ] },
+        { role: 'tool', tool_call_id: raw, content: 'first-result' },
+        { role: 'tool', tool_call_id: raw, content: 'second-result' },
+      ];
+      const out = normalizeToolIdsInMessages(messages, { seed: 'malformed-dup' });
+      const [first, second] = out[0].tool_calls.map((tc) => tc.id);
+      assert.notEqual(first, second, raw);
+      assert.equal(out[1].tool_call_id, first, raw);
+      assert.equal(out[2].tool_call_id, second, raw);
+      assert.equal(out[1].content, 'first-result');
+      assert.equal(out[2].content, 'second-result');
+    }
+  });
+
+  it('keeps FIFO for duplicated malformed ids across successive assistant turns', () => {
+    const messages = [
+      { role: 'assistant', tool_calls: [{ id: 'a.b', function: { name: 'first' } }] },
+      { role: 'tool', tool_call_id: 'a.b', content: 'first-result' },
+      { role: 'assistant', tool_calls: [{ id: 'a.b', function: { name: 'second' } }] },
+      { role: 'tool', tool_call_id: 'a.b', content: 'second-result' },
+    ];
+    const out = normalizeToolIdsInMessages(messages);
+    const first = out[0].tool_calls[0].id;
+    const second = out[2].tool_calls[0].id;
+    assert.notEqual(first, second);
+    assert.equal(out[1].tool_call_id, first);
+    assert.equal(out[3].tool_call_id, second);
+  });
+
+  it('keeps a valid reserved id when a malformed duplicate sanitizes into it', () => {
+    const messages = [
+      { role: 'assistant', tool_calls: [
+        { id: 'a_b', function: { name: 'valid' } },
+        { id: 'a.b', function: { name: 'malformed-first' } },
+        { id: 'a.b', function: { name: 'malformed-second' } },
+      ] },
+      { role: 'tool', tool_call_id: 'a_b', content: 'valid-result' },
+      { role: 'tool', tool_call_id: 'a.b', content: 'malformed-first-result' },
+      { role: 'tool', tool_call_id: 'a.b', content: 'malformed-second-result' },
+    ];
+    const out = normalizeToolIdsInMessages(messages);
+    const [valid, first, second] = out[0].tool_calls.map((tc) => tc.id);
+    assert.equal(valid, 'a_b');
+    assert.notEqual(first, second);
+    assert.equal(out[1].tool_call_id, valid);
+    assert.equal(out[2].tool_call_id, first);
+    assert.equal(out[3].tool_call_id, second);
+  });
+
+  it('normalizeHistoryTail preserves both results of duplicated malformed ids without folding', () => {
+    const messages = [
+      { role: 'assistant', tool_calls: [
+        { id: 'a.b', function: { name: 'first' } },
+        { id: 'a.b', function: { name: 'second' } },
+      ] },
+      { role: 'tool', tool_call_id: 'a.b', content: 'first-result' },
+      { role: 'tool', tool_call_id: 'a.b', content: 'second-result' },
+    ];
+    const normalized = normalizeToolIdsInMessages(messages, { seed: 'history-dup' });
+    const out = normalizeHistoryTail(normalized, { fold: true });
+    assert.deepEqual(out.map((m) => m.role), ['assistant', 'tool', 'tool'],
+      'both results must stay tool messages; neither may be folded into user text');
+    const [first, second] = out[0].tool_calls.map((tc) => tc.id);
+    assert.equal(out[1].tool_call_id, first);
+    assert.equal(out[2].tool_call_id, second);
+    assert.equal(out[1].content, 'first-result');
+    assert.equal(out[2].content, 'second-result');
+  });
+
+  it('pairs duplicated malformed ids FIFO in charset-only mode', () => {
+    const messages = [
+      { role: 'assistant', tool_calls: [
+        { id: 'a.b', function: { name: 'first' } },
+        { id: 'a.b', function: { name: 'second' } },
+      ] },
+      { role: 'tool', tool_call_id: 'a.b', content: 'first-result' },
+      { role: 'tool', tool_call_id: 'a.b', content: 'second-result' },
+    ];
+    const out = normalizeToolIdsInMessages(messages, { charsetOnly: true });
+    const [first, second] = out[0].tool_calls.map((tc) => tc.id);
+    assert.notEqual(first, second);
     assert.equal(out[1].tool_call_id, first);
     assert.equal(out[2].tool_call_id, second);
   });

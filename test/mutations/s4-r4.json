@@ -6,8 +6,8 @@
     {
       "name": "Independent DONE stage is disabled",
       "file": "src/handlers/chat.js",
-      "anchor": "        failureStage('done', () => {\n          if (!res.writableEnded) res.write('data: [DONE]\\n\\n');\n        });",
-      "replacement": "        failureStage('done', () => {\n          // Mutant: omit terminal sentinel.\n        });",
+      "anchor": "          if (emittedClientPayload && !res.writableEnded) res.write('data: [DONE]\\n\\n');",
+      "replacement": "          // Mutant: omit terminal sentinel.",
       "expectCaught": true
     },
     {
@@ -39,5 +39,5 @@
       "expectCaught": true
     }
   ],
-  "expectBaselinePass": 9
+  "expectBaselinePass": 10
 }

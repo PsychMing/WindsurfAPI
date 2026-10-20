@@ -158,7 +158,14 @@ export function normalizeToolIdsInMessages(messages, { seed = '', maxLen = MAX_T
     } else {
       const base = raw ? sanitizeToolId(raw, opts) : synthToolId('call', seed, slot++);
       wire = uniqueToolId(base, reserved, maxLen);
-      if (raw) wireQueues.set(raw, [wire]);
+      if (raw) {
+        // A malformed raw id can repeat exactly like a valid one (parallel calls
+        // or successive turns). Keep the same FIFO queue the valid-id branch
+        // uses; overwriting it would bind every result to the last call.
+        const queue = wireQueues.get(raw);
+        if (queue) queue.push(wire);
+        else wireQueues.set(raw, [wire]);
+      }
     }
     callWire.set(tc, wire);
   }
