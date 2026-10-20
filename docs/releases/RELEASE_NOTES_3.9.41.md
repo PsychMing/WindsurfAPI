@@ -1,5 +1,7 @@
 # v3.9.41
 
+> **2026-10-21 维护增量**：代码候选 `f2b938d` 在本文原有 2026-10-19 证据之上补了工具历史、终态与 SSE 修复；旧数字保留为当日快照，当前门禁数字见文末「2026-10-21 维护增量」。版本号与发布状态未改。
+
 本版是 v3.9.40 之后的一次大补丁：**90+ 个提交，57 个 feat/fix**。没有协议兼容性破坏，没有新增协议路由，默认 wire 字节保持不变（`a51a0f1` 对 `v3.9.40` 的 270/270 比较全部相同）。内容集中在五块：工具名/ID/历史的跨方言卫生、SSE 提交门与错误状态、Dashboard 的只读观测面、Devin Connect 的目录/传输/重试修复，以及账号、日志、统计与缓存的可运维性。
 
 **影响面**：默认开启的工具卫生会改变少数畸形工具名/ID 的线上形状；SSE 提交门默认等待 5 秒，预内容错误现在能以真实 HTTP 状态返回；新增若干默认关闭的日志/ACP 开关和 Dashboard 只读接口。没有改协议字段、没有改默认路由、没有改上游 wire。昂贵模型 live 矩阵只覆盖一个 Pro 账号的一次部署，不等同于对所有账号等级的承诺。
@@ -76,6 +78,18 @@ v3.9.40 只在 Messages 侧修了 64 字符 wire 上限；这一版把同一类�
 - **429/402 停止路径**：本轮没有触发，未验证。
 - **Node 20/22**：版本性失败仍在，发布门只声明 Node 24。
 - **Any2API 集成**：Codex `responses` 直通和 Claude `anthropic` 的 live 冒烟尚未跑；`PATCH-G5.diff` 只是提案，未应用。
+
+## 2026-10-21 维护增量（代码候选 `f2b938d`）
+
+本段是发布候选上的后续维护；原始 2026-10-19 证据保留为当日快照。以下数字只对应 `f2b938dfd04f6771d18e4db723e2944fae555057` 的代码与测试树；后续仅文档变更不改变该证据。
+
+- **工具历史**：畸形/超长 raw tool id 不再覆盖已有 FIFO 队列，后续调用与结果仍按到达顺序绑定；合法 id 与确定性映射不变（`src/tool-ids.js`、`test/tool-ids.test.js`）。
+- **终态**：预内容 Cascade 失败只发错误帧，不再追加成功 `[DONE]`；已交付部分内容的失败仍走既有 synthetic finish + 单次 `[DONE]` 兼容路径（`src/handlers/chat.js`、`test/s4-r4.test.js`、`test/stream-error.test.js`）。
+- **SSE 语义**：framer 的 payload 上限与网络分片无关；LF/CRLF/CR 统一；`data`/`event` 等字段允许空值；注释开头的内容不会被后续错误替换；忽略行、data、event 分别记账，dispatch 时合计仍受限（`src/sse-framer.js`、`test/sse-framer.test.js`）。
+- **SSE 性能**：分隔符扫描改为单游标 `/[\r\n]/g`，大批量帧从二次降为线性；本机 Node 24 固定批次观测 160k 帧约 28 ms（修复前约 3.6 s），不作为通用延迟保证（`src/sse-framer.js`）。
+- **平台门**：Windows `npm run gate`（含 `test:release`）**5,415 pass / 0 fail / 82 skip**（442 文件）；Linux release **5,497 pass / 0 fail / 0 skip**（442 文件）；wire **270/270** 对 `v3.9.40`。
+- **Linux 首次聚合 gate**：**exit 2**，原因是 detached clone 缺少 `origin/master`；这不是零退出。补跑缺失层 `spec-baseline-check` 得到 **85 specs / 0 drift / 0 untrustworthy**（base `6fd35b3`）。受影响 mutation 规格共 **11** 个预期：**10 caught + 1 个已声明 survivor**（`s4-r4` 5/5；`terminal-event-guard` 5 caught + 1 declared）。
+- **相关项目（独立）**：Any2API 候选 `a4b3406` 的 LF 集成树 `go test ./...` 为 **18 ok + 1 no-test / 0 fail**；二进制已构建并固定哈希。其 live 结果不在本版范围，不作为本版证据。
 
 ## 升级注意
 

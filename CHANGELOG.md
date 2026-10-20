@@ -51,6 +51,16 @@ live 目录/模型并修传输与限流重试；账号过滤、日志保留/轮�
 发布审计后补：`WINDSURFAPI_TOOL_HYGIENE=0` 完整回滚、重复 tool ID/FIFO 配对、孤儿结果不拆 tool 对、Anthropic 错误状态补齐、Gemini split 名与 Dashboard token fallback。默认 wire 不变（270/270），本地/HMC 全量绿；昂贵模型 5 selector × 4 协议 20/20 200。无协议兼容性
 破坏；实际计费 debit、其余模型图片和 Any2API live 集成仍未验证。
 
+**2026-10-21 维护增量（代码候选 `f2b938d`，旧数字为 2026-10-19 快照）**：畸形/超长 tool id 保留
+FIFO 队列；预内容 Cascade 失败不再追加成功 `[DONE]`；SSE framer 与网络分片无关，支持 LF/CRLF/CR、
+空字段和注释开头内容，分隔符扫描改为单游标。本机 Node 24 固定批次观测 160k 帧约 28 ms（修复前约
+3.6 s），不作为通用延迟保证。Windows `npm run gate`（含 `test:release`）**5,415 pass / 0 fail /
+82 skip**，Linux release **5,497 pass / 0 fail / 0 skip**，wire **270/270**；受影响 mutation 共
+**11** 个预期（10 caught + 1 declared survivor）。Linux 首次聚合 gate **exit 2** 是 detached clone
+缺 `origin/master`，补跑缺失层为 **85 specs / 0 drift / 0 untrustworthy**。Any2API 候选 `a4b3406`
+是独立项目：LF 集成树 `go test ./...` 为 **18 ok + 1 no-test / 0 fail**，二进制已构建并固定哈希；
+其 live 结果不在本版范围，不作为本版证据。
+
 ### [v3.9.40](docs/releases/RELEASE_NOTES_3.9.40.md) · 2026-10-07
 
 畸形输入不再打成 500 或变成上游文本:带 per-user scope 的 `content:[null]`、`system:[null]` 和
