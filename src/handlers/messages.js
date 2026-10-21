@@ -746,6 +746,15 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
             toolName: toolNameById.get(block.tool_use_id),
             isError: !!block.is_error,
           });
+          // B2 (GFHarness probe C): is_error used to be read ONLY by the Read
+          // stub heuristic above, so a failed Bash/Edit/etc. result reached the
+          // model as an ordinary success output. Neither the OpenAI-shaped tool
+          // message nor the Cascade request encoder has an is_error slot (the
+          // proto's field 7 exists only on the response delta), so the flag is
+          // carried in the one field the model reads — the content. A fixed
+          // prefix keeps every failed result distinguishable and non-error
+          // results byte-identical.
+          if (block.is_error) content = `[tool error] ${content}`;
           toolResults.push({ role: 'tool', tool_call_id: block.tool_use_id, content });
         }
       }
@@ -780,6 +789,23 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
   // a server_tool_result for.
   const droppedServerTools = [];
   const convertedServerTools = [];
+  const droppedDuplicateTools = [];
+  // GFHarness: duplicate tool names were forwarded verbatim — a caller function
+  // named `web_search` plus the web_search_20250305 conversion produced
+  // `tools: ["web_search", "web_search"]`. Duplicate names are ambiguous for the
+  // model and rejected by Anthropic's own API, so the forwarded list is
+  // deduplicated deterministically: one definition per wire name, first caller
+  // definition wins. A caller-declared function always shadows the synthesized
+  // conversion regardless of array order (the client can only execute names it
+  // declared), so caller names are pre-scanned rather than discovered in order.
+  const callerToolNames = new Set();
+  for (const t of body.tools || []) {
+    if (t?.type === 'web_search_20250305') continue;
+    if (t?.type && SERVER_SIDE_ANTHROPIC_TOOL_TYPES.has(t.type)) continue;
+    const name = toolNameMap?.toUpstream.get(t?.name) ?? t?.name;
+    if (typeof name === 'string' && name) callerToolNames.add(name);
+  }
+  const emittedToolNames = new Set();
   const tools = (body.tools || []).reduce((acc, t) => {
     if (t?.type && SERVER_SIDE_ANTHROPIC_TOOL_TYPES.has(t.type)) {
       droppedServerTools.push(t.type);
@@ -789,15 +815,29 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
     if (t?.type === 'web_search_20250305') {
       const converted = convertServerSideTool(t);
       if (converted) {
-        acc.push(converted);
-        convertedServerTools.push('web_search_20250305→web_search');
+        const name = converted.function.name;
+        if (callerToolNames.has(name) || emittedToolNames.has(name)) {
+          droppedDuplicateTools.push(name);
+        } else {
+          emittedToolNames.add(name);
+          acc.push(converted);
+          convertedServerTools.push('web_search_20250305→web_search');
+        }
       }
       return acc;
+    }
+    const name = toolNameMap?.toUpstream.get(t.name) ?? t.name;
+    if (typeof name === 'string' && name) {
+      if (emittedToolNames.has(name)) {
+        droppedDuplicateTools.push(name);
+        return acc;
+      }
+      emittedToolNames.add(name);
     }
     acc.push({
       type: 'function',
       function: {
-        name: toolNameMap?.toUpstream.get(t.name) ?? t.name,
+        name,
         description: t.description || '',
         parameters: t.input_schema || {},
       },
@@ -809,6 +849,9 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
   }
   if (convertedServerTools.length) {
     log.info(`messages: converted ${convertedServerTools.length} server-side tool(s) [${convertedServerTools.join(',')}]`);
+  }
+  if (droppedDuplicateTools.length) {
+    log.warn(`messages: dropped ${droppedDuplicateTools.length} duplicate tool definition(s) [${[...new Set(droppedDuplicateTools)].join(',')}] — one definition per name, first caller definition wins`);
   }
   const mappedToolChoice = body.tool_choice ? mapAnthropicToolChoice(body.tool_choice) : undefined;
   const forwardedToolChoice = pruneToolChoice(
@@ -1115,6 +1158,15 @@ class AnthropicStreamTranslator {
     this.current = null;
     this.blockIndex = 0;
     this.toolCallBufs = new Map();   // index → { id, name, argsBuffered }
+    // B1: text/thinking that arrived while a tool_use block was open. Anthropic
+    // allows only one open content block and a tool_use block is never reopened,
+    // so emitting text immediately would close the tool and strand every later
+    // argument fragment (GFHarness probe B assembled `{"path"`, which Claude Code
+    // cannot parse). Held deltas are emitted in arrival order once every tool
+    // block has closed; when the open tool's arguments already form complete
+    // JSON it is closed first and the text streams in place, keeping ordinary
+    // non-interleaved streams byte-identical.
+    this.heldDeltas = [];
     this.finalUsage = null;
     this.stopReason = 'end_turn';
     // B5/SEED-C3a: the request's accepted stop_sequences (used to validate the
@@ -1248,6 +1300,7 @@ class AnthropicStreamTranslator {
 
   emitTextDelta(text) {
     if (!text) return;
+    if (this.holdIfToolBlockOpen('text', text)) return;
     if (this.current?.type !== 'text') this.startBlock('text');
     this.send('content_block_delta', {
       type: 'content_block_delta',
@@ -1258,12 +1311,52 @@ class AnthropicStreamTranslator {
 
   emitThinkingDelta(text) {
     if (!text) return;
+    if (this.holdIfToolBlockOpen('thinking', text)) return;
     if (this.current?.type !== 'thinking') this.startBlock('thinking');
     this.send('content_block_delta', {
       type: 'content_block_delta',
       index: this.current.index,
       delta: { type: 'thinking_delta', thinking: text },
     });
+  }
+
+  // B1: a tool_use block stays open across a text/thinking delta unless its
+  // arguments are already complete JSON (then no fragment can legally follow and
+  // the block is closed in stream order). Holding is the lossless choice: a
+  // block is never reopened, so the alternative drops the fragments that follow.
+  // Returns true when the delta was held instead of emitted.
+  holdIfToolBlockOpen(type, text) {
+    if (this.current?.type !== 'tool_use') return false;
+    const buf = this.toolBufForBlockIndex(this.current.index);
+    if (buf && this.toolArgsComplete(buf)) {
+      this.closeCurrentBlock();
+      return false;
+    }
+    const last = this.heldDeltas[this.heldDeltas.length - 1];
+    if (last && last.type === type) last.text += text;
+    else this.heldDeltas.push({ type, text });
+    return true;
+  }
+
+  // True when the accumulated argument bytes already form one complete JSON
+  // value. An empty buffer is NOT complete — a block may open on the name and
+  // receive its arguments in later deltas.
+  toolArgsComplete(buf) {
+    const json = (buf?.argsBuffered || '') + (buf?.pendingArgs || '');
+    if (!json) return false;
+    try { JSON.parse(json); return true; } catch { return false; }
+  }
+
+  // Emit the deltas held during tool_use blocks, in arrival order. Only called
+  // once no tool block is open, so emitText/Thinking cannot re-hold.
+  flushHeldDeltas() {
+    if (!this.heldDeltas.length) return;
+    const held = this.heldDeltas;
+    this.heldDeltas = [];
+    for (const d of held) {
+      if (d.type === 'thinking') this.emitThinkingDelta(d.text);
+      else this.emitTextDelta(d.text);
+    }
   }
 
   // Find the tool buffer whose open block has this content-block index.
@@ -1495,7 +1588,6 @@ class AnthropicStreamTranslator {
       });
       return;
     }
-    this.messageStopped = true;
     // Ensure message_start is always sent: Claude Code needs a complete event
     // sequence, and without this it sees message_delta + message_stop with no
     // preceding start and reports "Content block not found".
@@ -1507,10 +1599,14 @@ class AnthropicStreamTranslator {
     // terminal signal regardless of whether content started.
     if (!this.messageStarted) this.startMessage();
     this.closeCurrentBlock();
+    // NOTE: `messageStopped` is deliberately NOT set yet — error() below is a
+    // no-op once it is, and the unrepresentable-tool check must be able to fail
+    // the stream. Nothing between here and that check can re-enter finish().
     // Open every tool still held at finish: either its name settled late (the
     // block is opened only now) or another tool_use block was current when it
     // became openable (emitToolCallDelta holds it so the current tool keeps its
     // block). Each gets its complete buffered arguments in one delta.
+    let unrepresentable = null;
     for (const buf of this.toolCallBufs.values()) {
       if (buf.blockIndex == null && buf.id && buf.name) {
         this.startBlock('tool_use', { id: buf.id, name: buf.name });
@@ -1520,18 +1616,34 @@ class AnthropicStreamTranslator {
         // the block did not yet exist.
         this.flushToolArgs(buf);
       }
-      // B1: the residual loss that remains is TEXT/thinking interleaving. A text
-      // delta closes the current tool_use block; a later fragment for that tool
-      // has no legal place to go (a block is never reopened), so it is surfaced
-      // as a warning instead of dropped silently. Tool-vs-tool interleaving no
-      // longer reaches this branch — the second tool is held until finish.
-      if (buf.pendingArgs) {
-        log.warn(`messages: dropped ${buf.pendingArgs.length} buffered tool_use arg char(s) for tool "${buf.name || 'unknown'}" (id=${buf.id || 'none'}) — fragments arrived after the block closed (interleaved stream)`);
-      }
+      // A tool_use block is never reopened, so argument bytes still buffered for
+      // a call whose block cannot be opened (missing id/name) or was already
+      // closed have no legal destination. Emitting the block with a partial
+      // `input` is the truncated-JSON defect this translator must not produce,
+      // so the stream is failed explicitly below instead.
+      if (buf.pendingArgs) unrepresentable = buf;
     }
     // The held tools opened above are current one at a time; close the last one
     // so every content_block_start has its content_block_stop before the
     // message_delta. No-op when the loop opened nothing.
+    this.closeCurrentBlock();
+    if (unrepresentable) {
+      // error() returns immediately once messageStopped is set, so this check
+      // runs while the guard is still clear and aborts before message_delta:
+      // the client sees an explicit error instead of a tool_use whose input is
+      // invalid JSON.
+      this.error({
+        status: 502,
+        type: 'upstream_error',
+        message: `Upstream tool call "${unrepresentable.name || 'unknown'}" (id=${unrepresentable.id || 'none'}) cannot be represented: ${unrepresentable.pendingArgs.length} argument byte(s) arrived with no openable tool_use block`,
+      });
+      return;
+    }
+    this.messageStopped = true;
+    // B1: text/thinking held while a tool block was open goes out now, in
+    // arrival order, after the tool blocks that had to stay open for their
+    // fragments. flushHeldDeltas opens the trailing text/thinking block.
+    this.flushHeldDeltas();
     this.closeCurrentBlock();
     const u = this.finalUsage || {};
     // A1/G2: the final message_delta carries the AUTHORITATIVE upstream usage.
