@@ -194,26 +194,41 @@ cd WindsurfAPI
 # Language Server binary — auto-detects Linux/macOS, one-click download + chmod
 bash install-ls.sh
 
-# Download chain: WindsurfAPI release → public LS mirror
-#   https://github.com/dwgx/windsurf-ls-release/releases/latest/download
-# → Exafunction/codeium fallback. For a private mirror or rollback, set:
-#   WINDSURFAPI_LS_RELEASE=https://github.com/<owner>/<repo>/releases/latest/download bash install-ls.sh
-
+# Download chain (manifest-driven, fail-closed):
+#   1. Read https://windsurf-stable.codeium.com/api/versions
+#   2. Pick the newest pinned stable release in ls-pins.json (currently 3.10.67)
+#      and require the manifest's commit + archive sha256 to match the pin
+#   3. Download the desktop archive → verify archive sha256 → extract the LS →
+#      verify the inner binary sha256
+# Any mismatch exits non-zero; there is no silent fallback to the old mirror.
+#
+# Print the plan without downloading (recommended before the first install):
+#   bash install-ls.sh --dry-run
+#
+# Pin a version / override the source:
+#   bash install-ls.sh --version 3.10.67
+#   WINDSURFAPI_LS_VERSION=3.10.67 bash install-ls.sh
+#   WINDSURFAPI_LS_MANIFEST_URL=<url|local path> bash install-ls.sh
+#   WINDSURFAPI_LS_PINS=/path/to/ls-pins.json bash install-ls.sh
+#
+# Roll back to the pinned 3.5.17 (explicit dwgx/windsurf-ls-release v3.5.17 tag):
+#   bash install-ls.sh --rollback
+#   same as: bash install-ls.sh --version 3.5.17 --allow-mirror
+#
 # Default install paths:
 #   Linux x64:           /opt/windsurf/language_server_linux_x64
-#   Linux arm64:         /opt/windsurf/language_server_linux_arm
 #   macOS Apple Silicon: $HOME/.windsurf/language_server_macos_arm
 #   macOS Intel:         $HOME/.windsurf/language_server_macos_x64
+#   Linux arm64:         no upstream archive; install a desktop binary with --file.
 
 # Or use a local binary you already have:
 #   bash install-ls.sh /path/to/language_server_linux_x64
-# Or specify a custom URL:
-#   bash install-ls.sh --url https://example.com/language_server_linux_x64
+# Or specify a custom URL (prefer --sha256; without it the installer warns):
+#   bash install-ls.sh --url https://example.com/language_server_linux_x64 --sha256 <64-hex>
 
-# ⚠️ LS binary is old / want a different source?
-# The default download chain now uses the dwgx/windsurf-ls-release public mirror.
-# If the mirror does not cover your platform yet, copy the LS binary out of
-# the Windsurf desktop app bundle:
+# ⚠️ Platform not covered by the upstream archive / want a different source?
+# Upstream only ships linux-x64, darwin-arm64 and darwin-x64 desktop archives.
+# For other platforms, copy the LS binary out of the Windsurf desktop app:
 #
 #   macOS:   "$HOME/Library/Application Support/Windsurf/resources/app/extensions/windsurf/bin/language_server_macos_arm"
 #   Linux:   "$HOME/.windsurf/bin/language_server_linux_x64"

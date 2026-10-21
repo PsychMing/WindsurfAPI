@@ -115,12 +115,14 @@ async function main() {
       log.info(`Language server binary missing at ${binaryPath}`);
       log.info(`Auto-installing via ${scriptPath} — this runs once.`);
       try {
-        // Bounded so a slow/black-holed network (curl with no timeout inside the
-        // script) can't hang boot forever — the HTTP server binds after this.
+        // Bounded so a slow/black-holed network can't hang boot forever. The
+        // upstream desktop archive is ~345 MB; install-ls.sh allows 60 s for
+        // the manifest plus 900 s for the archive, so leave headroom for
+        // extraction and hashing.
         execSync(`bash "${scriptPath}"`, {
           stdio: 'inherit',
           env: { ...process.env, LS_INSTALL_PATH: binaryPath },
-          timeout: 180000,
+          timeout: 1020000,
         });
         log.info('Language server binary installed.');
       } catch (err) {
@@ -163,7 +165,7 @@ async function main() {
     } catch (err) {
       log.error(`Language server failed to start: ${err.message}`);
       log.error('Chat completions will not work without the language server.');
-      log.error('Run: bash install-ls.sh (now uses Windsurf desktop LS, not stale Exafunction)');
+      log.error('Run: bash install-ls.sh (pinned upstream manifest; no fallback source)');
     }
     } else {
       log.info('LS default prewarm disabled (LS_PREWARM_DEFAULT=0 or LS_MAX_INSTANCES=1); LS starts lazily on first request');

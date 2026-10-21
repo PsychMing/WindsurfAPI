@@ -335,24 +335,28 @@ describe('#60 — config.js import integrity smoke', () => {
   });
 });
 
-describe('#200 — install-ls.sh prints the fallback URLs before downloading', () => {
+describe('#200 — install-ls.sh prints the download URL before downloading', () => {
   const SCRIPT = srcText('install-ls.sh');
 
-  it('announces every fallback URL it tries', () => {
-    assert.match(SCRIPT, /log "Trying WindsurfAPI release: \$our_url"/);
-    assert.match(SCRIPT, /log "Trying maintained Windsurf LS mirror: \$ws_url"/);
-    assert.match(SCRIPT, /log "Downloading: \$url"/);
+  it('announces every URL it downloads', () => {
+    assert.match(SCRIPT, /log "Fetching manifest: \$LS_MANIFEST"/);
+    assert.match(SCRIPT, /log "Downloading: \$URL"/);
+    assert.match(SCRIPT, /log "Downloading from: \$INPUT_URL"/);
+    assert.match(SCRIPT, /--progress-bar/);
   });
 
-  it('each attempt prints its URL immediately before a progress-bar download', () => {
+  it('prints each URL immediately before its download call', () => {
     assert.match(
       SCRIPT,
-      /log "Trying WindsurfAPI release: \$our_url"\s*\n\s*if curl -fL --progress-bar -o "\$TMP_TARGET" "\$our_url"/,
+      /log "Downloading: \$URL"\s*\n\s*download "\$URL" "\$TMP_ARCHIVE"/,
     );
     assert.match(
       SCRIPT,
-      /log "Trying maintained Windsurf LS mirror: \$ws_url"\s*\n\s*if curl -fL --progress-bar -o "\$TMP_TARGET" "\$ws_url"/,
+      /log "Downloading from: \$INPUT_URL"\s*\n\s*download "\$INPUT_URL" "\$TMP_TARGET"/,
     );
-    assert.match(SCRIPT, /log "Downloading: \$url"\s*\n\s*curl -fL --progress-bar -o "\$TMP_TARGET" "\$url"/);
+    assert.match(
+      SCRIPT,
+      /log "Fetching manifest: \$LS_MANIFEST"\s*\n\s*if ! curl -fsSL[^\n]*\n\s*-o "\$TMP_MANIFEST" "\$LS_MANIFEST"/,
+    );
   });
 });

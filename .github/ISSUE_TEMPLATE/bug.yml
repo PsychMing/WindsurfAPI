@@ -124,10 +124,10 @@ body:
     attributes:
       label: 环境 / Environment
       description: |
-        Node 版本、操作系统、CPU 架构、部署方式、LS binary 来源（WindsurfAPI release / dwgx/windsurf-ls-release public mirror / Windsurf 桌面端 / Exafunction release / 自定义 WINDSURFAPI_LS_RELEASE / 其他）
+        Node 版本、操作系统、CPU 架构、部署方式、LS binary 来源（install-ls.sh 默认固定 3.10.67 / 3.5.17 rollback mirror / 桌面端本地文件 / 自定义 WINDSURFAPI_LS_VERSION 或 WINDSURFAPI_LS_MANIFEST_URL / 其他）
         Node version, OS, CPU arch, deployment mode, and LS binary source.
       placeholder: |
         Node: v20.x
         OS: Ubuntu 22.04
         Arch: x64
-        LS: WINDSURFAPI_LS_RELEASE unset, fallback release ...
+        LS: install-ls.sh default (pinned 3.10.67), WINDSURFAPI_LS_VERSION unset

@@ -238,25 +238,40 @@ cd WindsurfAPI
 # Language Server 二进制 —— 自动检测 Linux/macOS，一键下载 + chmod
 bash install-ls.sh
 
-# 下载链：WindsurfAPI release → 公开 LS mirror
-#   https://github.com/dwgx/windsurf-ls-release/releases/latest/download
-# → Exafunction/codeium fallback。需要私有镜像或回滚时可设置：
-#   WINDSURFAPI_LS_RELEASE=https://github.com/<owner>/<repo>/releases/latest/download bash install-ls.sh
-
+# 下载链（manifest 驱动，fail-closed）：
+#   1. 读取 https://windsurf-stable.codeium.com/api/versions
+#   2. 选 ls-pins.json 里最新的固定版本（当前 3.10.67），并要求 manifest 的
+#      commit + archive sha256 与 pin 完全一致
+#   3. 下载桌面端归档 → 校验 archive sha256 → 解出 LS → 校验内层 binary sha256
+#   任何一步不符都退出非 0；不会静默回落到旧 mirror。
+#
+# 先看计划、不下载（推荐首次安装前跑）：
+#   bash install-ls.sh --dry-run
+#
+# 固定版本 / 覆盖来源：
+#   bash install-ls.sh --version 3.10.67
+#   WINDSURFAPI_LS_VERSION=3.10.67 bash install-ls.sh
+#   WINDSURFAPI_LS_MANIFEST_URL=<url|本地路径> bash install-ls.sh
+#   WINDSURFAPI_LS_PINS=/path/to/ls-pins.json bash install-ls.sh
+#
+# 回滚到固定 3.5.17（显式使用 dwgx/windsurf-ls-release 的 v3.5.17 tag）：
+#   bash install-ls.sh --rollback
+#   等价于 bash install-ls.sh --version 3.5.17 --allow-mirror
+#
 # 默认安装路径：
 #   Linux x64:          /opt/windsurf/language_server_linux_x64
-#   Linux arm64:        /opt/windsurf/language_server_linux_arm
 #   macOS Apple Silicon: $HOME/.windsurf/language_server_macos_arm
 #   macOS Intel:        $HOME/.windsurf/language_server_macos_x64
+#   Linux arm64:        上游没有 arm64 归档；用 --file 装桌面端拷出的 binary。
 
 # 如果想用本地已下好的 binary：
 #   bash install-ls.sh /path/to/language_server_linux_x64
-# 或者指定 URL：
-#   bash install-ls.sh --url https://example.com/language_server_linux_x64
+# 或者指定 URL（建议同时给 --sha256；不给会打印 warning）：
+#   bash install-ls.sh --url https://example.com/language_server_linux_x64 --sha256 <64-hex>
 
-# ⚠️ LS binary 版本偏旧 / 想换一个来源？
-# 默认下载链已接入 dwgx/windsurf-ls-release 公开 mirror。
-# 如果 mirror 暂未覆盖你的平台，仍可把 Windsurf 桌面端本体里的 LS binary 拷过来：
+# ⚠️ 平台不在上游归档里 / 想换一个来源？
+# 上游只提供 linux-x64、darwin-arm64、darwin-x64 三种桌面端归档。
+# 其它平台可把 Windsurf 桌面端本体里的 LS binary 拷过来：
 #
 #   macOS:   "$HOME/Library/Application Support/Windsurf/resources/app/extensions/windsurf/bin/language_server_macos_arm"
 #   Linux:   "$HOME/.windsurf/bin/language_server_linux_x64"
