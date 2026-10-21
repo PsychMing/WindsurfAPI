@@ -59,6 +59,12 @@ const _counters = {
   // the upstream is stalling or the deployment is misconfigured, not that the pool
   // is dying.
   transport_fault: 0,
+  // the LOCAL frame queue hit its cap because the consumer was slower than the
+  // upstream stream (QUEUE_OVERFLOW in devin-connect.js). Not an account fault —
+  // the upstream and its token are healthy — so it carries no errorCount penalty.
+  // A spike means DEVIN_CONNECT_MAX_QUEUE_FRAMES/BYTES or a downstream writer is
+  // the bottleneck, not the pool.
+  queue_overflow: 0,
   // liveness probe pre-emptively recovered a dying token
   liveness_recovered: 0,
   // router-model (adaptive/arena-*) AssignModel resolution failed → fell back

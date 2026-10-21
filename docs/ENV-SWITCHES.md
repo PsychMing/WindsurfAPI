@@ -1,12 +1,16 @@
 # 环境变量参考（补 .env.example 未收录的部分）
 
 README 的表格列常用变量，[.env.example](../.env.example) 是完整清单 —— 两者合计覆盖
-78 个。本文补齐**剩下 82 个只存在于源码里**的开关：注释很全，但运营翻不到。
+81 个。本文补齐**剩下 83 个只存在于源码里**的开关：注释很全，但运营翻不到。
 （2026-10-16 按 `d3f0490` 重测：全量 **157**。旧值 158 / 74 / 84 是 `ab4e66f` 树的口径：
 `9031b9b` 把 `CASCADE_MAX_WAIT_MS` 写进 README（覆盖 +1），`054806a` 删掉一个开关的读取点
 （全量 −1）。重测命令就是下面那段脚本。
 2026-10-18 @`706fc11` 重测：**160**；新增 `WINDSURFAPI_STREAM_COMMIT_MS`、
-`WINDSURFAPI_TOOL_HYGIENE` 与 `DEVIN_BACKEND_TOKEN` 三个读取点/文档项。）
+`WINDSURFAPI_TOOL_HYGIENE` 与 `DEVIN_BACKEND_TOKEN` 三个读取点/文档项。
+2026-10-22 在有界队列分支（base `e2c8547`）重测：**164**；新增
+`DEVIN_CONNECT_MAX_QUEUE_FRAMES`、`DEVIN_CONNECT_MAX_QUEUE_BYTES` 与
+`DEVIN_CONNECT_RELOGIN_QUEUE_TIMEOUT_MS` 三个读取点，同时收录进 `.env.example`
+（故上句覆盖数 78→81）。）
 
 数开关**别用裸 `grep 'env\.'`**，有两个坑：一是 `WINDSURFAPI_TRACE` 这类名字是
 `WINDSURFAPI_TRACE_DIR` 的前缀，正则不加边界会重复计数；二是**相当一部分读取点
@@ -205,6 +209,9 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | `DEVIN_CONNECT_WIRE_MAX_TOKENS` | `8192` | 请求里 `max_tokens` 的默认值（`devin-connect.js`，要求正整数否则回落 8192）。和 `handlers/messages.js`、`gemini.js` 里的 `\|\| 8192` 是一套。**在模块加载时求值一次**，改它要重启。 |
 | `DEVIN_CONNECT_CATALOG_TTL_MS` | `300000`（5 分钟） | 每账号成功在线目录的复用时长（`auth.js`，有限数且 `>=10000` 才接受，否则回落 5 分钟）。TTL 内复用 last-known-good；过期后并行按账号刷新。空响应和失败不覆盖已有目录，也不推进成功时间。 |
 | `DEVIN_CONNECT_MAX_INFLIGHT_PER_ACCOUNT` | `0`（关闭） | 单账号并发在途请求硬上限（`auth.js`，非负安全整数；`0` = 不改变选择）。设为 `N > 0` 时，账号选择跳过已达 N 个在途请求的账号（含 sticky 绑定），让突发流量分散或 429，而不是继续堆在单账号。陈旧计数由 15 分钟下限的清扫回收。 |
+| `DEVIN_CONNECT_MAX_QUEUE_FRAMES` | `4096` | DEVIN_CONNECT 流解码后事件队列的帧数上限（`devin-connect.js` 的 `streamChat`，`positiveIntEnv`，非正整数回落 4096）。队列到一半时 `res.pause()` 把背压交给 TCP；单个 chunk 仍把队列推过上限时以 `QUEUE_OVERFLOW` 失败并丢弃已缓冲事件（pause 拦不住同一个同步循环）。低于高水位时事件序列与暂停行为都不变。 |
+| `DEVIN_CONNECT_MAX_QUEUE_BYTES` | `8388608`（8 MiB） | 同一队列的字节上限（`devin-connect.js`，`positiveIntEnv`）。按事件估算：文本长度 ×2 + reasoning 签名长度 ×2 + hex dump 长度 + 每事件 96 字节；与上一行任一先到即触发同样的 `QUEUE_OVERFLOW`。 |
+| `DEVIN_CONNECT_RELOGIN_QUEUE_TIMEOUT_MS` | `60000`（60 秒） | 全局重登并发门（`auth.js` 的 `acquireReloginSlot`，`positiveIntEnv`）里排队等槽位的最长时间。超时后 waiter 从 FIFO 移除、该次 `reLoginAccount` 返回 `false`，不再无限挂起；持有槽位的登录本身不受此限制。调用方传 `AbortSignal` 可提前取消排队。 |
 | `WINDSURFAPI_TOOL_DESC_MAX` | `500` | 工具描述的字符上限（`toolDescMax()`，要求 `>= 0` 的有限数否则回落 500）。**`0` = 不限长**，不是"全砍掉"。注释说明当前只用于长度阈值判断。 |
 | `CASCADE_1M_HISTORY_BYTES` | `900000` | 1M 上下文模型的历史字节预算（`client.js`，`positiveIntEnv`）。非 1M 模型走 `CASCADE_MAX_HISTORY_BYTES`（默认 `600000`）。 |
 | `CASCADE_MAX_HISTORY_BYTES` | `600000` | 非 1M 模型的历史字节预算（`client.js`，`positiveIntEnv`）。源码注释记着这个默认值的来历：早先是 400KB，**200KB 曾导致 30+ 轮工具调用的会话静默丢上下文**，所以调到 600KB 留出余量。调小之前先想清楚这一点。此前只作为上一行的说明文字出现，没有自己的条目。 |
@@ -277,8 +284,9 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | `WINDSURFAPI_QUOTA_COOLDOWN` | **开**（`true`） | `bool` | 配额冷却。 |
 | `WINDSURFAPI_ON_DEMAND_RESERVE_USD` | `0` | 0–100000 | 按需消费的预留额度（`float`，美元）。**涉及真实花钱，改前想清楚。** |
 
-至此三前缀开关 **161** 个全部有据可查（2026-10-22 按 `release/3.9.42` 的集成树重测；`e3e39d9`
-上为 160，本版 C2 新增 `WINDSURFAPI_MAX_DRAIN_MS` 一个读取点）：`.env.example` + README 覆盖 78 个（含 PR #249
+至此三前缀开关 **164** 个全部有据可查（2026-10-22 按 `e2c8547` 重测；该基线上为 161，
+本分支新增 `DEVIN_CONNECT_MAX_QUEUE_FRAMES`、`DEVIN_CONNECT_MAX_QUEUE_BYTES` 与
+`DEVIN_CONNECT_RELOGIN_QUEUE_TIMEOUT_MS` 三个读取点）：`.env.example` + README 覆盖 81 个（含 PR #249
 的 `WINDSURFAPI_LEAK_TRACE`），本文覆盖其余 83 个。这个不变式由
 [`test/docs-consistency-guard.test.js`](../test/docs-consistency-guard.test.js) 的
 「every switch read in src/ is findable in some reader-facing doc」守着 ——
