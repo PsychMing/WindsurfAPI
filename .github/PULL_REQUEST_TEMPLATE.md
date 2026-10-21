@@ -23,8 +23,12 @@
      npm run test:release          # 权威口径 / the authoritative gate
      node --import ./test/setup-env.mjs --test test/你的.test.js
 
-     Node 22 会让一条 absolute-deadline 测试挂起并连带取消约 80 个 —— 那不是你的 bug。
-     Node 22 hangs one deadline test and cancels ~80 others; not your bug. -->
+     Node 20 上 `test/mutate-verify-harness.test.js` 和 `test/spec-baseline-check.test.js`
+     会失败：Node 20 的 test runner 不发 `test:summary` 事件（环境限制，不是你的 bug）；
+     `node:sqlite` 也不存在，本地导入的 4 条测试不会被收集。Node 22/24 应全绿。
+     On Node 20 those two harness self-tests fail because the runner emits no `test:summary`
+     events (environment limit, not your bug); `node:sqlite` is absent, so 4 import tests are
+     not collected. Node 22/24 should be green. -->
 
 ## Checklist
 
