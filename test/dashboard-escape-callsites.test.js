@@ -68,32 +68,28 @@ const TEXT_CONTENT_SINKS = /textContent|innerText|\.title\s*=|toast\(/;
  *                         double-encode the visible text.
  */
 const REVIEWED_NOT_SINKS = [
-  { line: 4856, field: 'status', expr: 'hr.status', why: 'C numeric-or-http: Response.status in an Error message; Response.status is always a Number' },
-  { line: 5068, field: 'id', expr: 'a.id', why: 'A not-in-DOM: `sig` is a cache comparison string, discarded, never assigned to innerHTML' },
-  { line: 5068, field: 'status', expr: 'a.status', why: 'A not-in-DOM: same `sig` cache comparison string' },
-  { line: 5165, field: 'name', expr: 'name', why: 'D already-escaped: local `name` is this.esc(a.email || String(a.id)) at line 5156' },
-  { line: 6745, field: 'status', expr: 'h.status (login history)', why: 'A not-in-DOM: feeds errCode/errMsg, both this.esc()ed at the sink on line 6746' },
-  { line: 6895, field: 'id', expr: 'encodeURIComponent(id)', why: 'B url-or-selector: percent-encoded into the /accounts/<id> fetch path' },
-  { line: 7236, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id> fetch path (PATCH spend policy)' },
-  { line: 7317, field: 'id', expr: 'models.map(m => ...)', why: 'A not-in-DOM: map callback head; the rendered m.id is this.esc()ed in its own title attribute' },
-  { line: 7397, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id>/refresh-credits fetch path' },
-  { line: 7802, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id> fetch path (PATCH tier)' },
-  { line: 7830, field: 'id', expr: 'id', why: 'B url-or-selector: querySelector(`.model-row[data-detail="${id}"]`) selector, not markup' },
-  { line: 7865, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id> fetch path (bulk enable)' },
-  { line: 7866, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id> fetch path (bulk disable)' },
-  { line: 7867, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id>/refresh-credits fetch path (bulk refresh)' },
-  { line: 7868, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id>/probe fetch path (bulk probe)' },
-  { line: 7869, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id> fetch path (bulk delete)' },
-  { line: 7883, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id> fetch path (single delete)' },
-  { line: 8097, field: 'id', expr: 'id', why: 'B url-or-selector: /proxy/accounts/<id> fetch path' },
-  // C: `num(id, ...)` is called with ten hardcoded literals ('brk-err-threshold',
-  // 'set-ip-lock-minutes', ...) at lines 9282-9291 and 9439-9667, and nothing else.
-  { line: 9504, field: 'id', expr: 'id', why: 'C numeric-or-http: `num()` id argument is a hardcoded literal at every call site' },
-  { line: 9505, field: 'id', expr: 'id', why: 'C numeric-or-http: `num()` id argument is a hardcoded literal at every call site' },
-  { line: 9666, field: 'id', expr: 'id', why: 'C numeric-or-http: `num()` id argument is a hardcoded literal at every call site' },
-  { line: 9667, field: 'id', expr: 'id', why: 'C numeric-or-http: `num()` id argument is a hardcoded literal at every call site' },
-  { line: 9871, field: 'status', expr: 'stats.error ?? accounts.filter(a => a.status === ...).length', why: 'C numeric-or-http: the interpolated value is a count, not the status string' },
-  { line: 9977, field: 'status', expr: 'res.status', why: 'C numeric-or-http: Response.status in an Error message; Response.status is always a Number' },
+  { line: 5070, field: 'status', expr: 'hr.status', why: 'C numeric-or-http: Response.status in an Error message; Response.status is always a Number' },
+  { line: 5282, field: 'id', expr: 'a.id', why: 'A not-in-DOM: `sig` is a cache comparison string, discarded, never assigned to innerHTML' },
+  { line: 5282, field: 'status', expr: 'a.status', why: 'A not-in-DOM: same `sig` cache comparison string' },
+  { line: 5379, field: 'name', expr: 'name', why: 'D already-escaped: local `name` is this.esc(a.email || String(a.id)) on the line above' },
+  { line: 6959, field: 'status', expr: 'h.status (login history)', why: 'A not-in-DOM: feeds errCode/errMsg, both this.esc()ed at the sink' },
+  { line: 7110, field: 'id', expr: 'encodeURIComponent(id)', why: 'B url-or-selector: percent-encoded into the /accounts/<id> fetch path' },
+  { line: 7503, field: 'id', expr: 'CSS.escape(String(ev.id))', why: 'B url-or-selector: CSS.escape into a querySelector selector, not markup' },
+  { line: 7838, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id> fetch path (PATCH spend policy)' },
+  { line: 7919, field: 'id', expr: 'models.map(m => ...)', why: 'A not-in-DOM: map callback head; the rendered m.id is this.esc()ed in its own title attribute' },
+  { line: 7999, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id>/refresh-credits fetch path' },
+  { line: 8423, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id> fetch path (PATCH tier)' },
+  { line: 8432, field: 'id', expr: 'CSS.escape(String(id))', why: 'B url-or-selector: CSS.escape into a querySelector selector, not markup' },
+  { line: 8480, field: 'id', expr: 'id', why: 'B url-or-selector: querySelector(`.model-row[data-detail="${id}"]`) selector, not markup' },
+  { line: 8575, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id> fetch path (reset errors)' },
+  { line: 8579, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id> fetch path (single delete)' },
+  { line: 8795, field: 'id', expr: 'id', why: 'B url-or-selector: /proxy/accounts/<id> fetch path' },
+  // C: `num(id, ...)` is called with hardcoded literals at every call site.
+  { line: 10202, field: 'id', expr: 'id', why: 'C numeric-or-http: `num()` id argument is a hardcoded literal at every call site' },
+  { line: 10203, field: 'id', expr: 'id', why: 'C numeric-or-http: same hardcoded literal' },
+  { line: 10364, field: 'id', expr: 'id', why: 'C numeric-or-http: same hardcoded literal' },
+  { line: 10365, field: 'id', expr: 'id', why: 'C numeric-or-http: same hardcoded literal' },
+  { line: 10626, field: 'status', expr: 'res.status', why: 'C numeric-or-http: Response.status in an Error message; Response.status is always a Number' },
 ];
 
 function dashboardSource() {
@@ -213,11 +209,10 @@ describe('dashboard escape call sites (not just the helpers)', () => {
     // tests above already fail on a revert; these name the regression in one line.
     const src = dashboardSource();
     const pins = [
-      ['account id in the account table', /<code class="text-xs">\$\{this\.esc\(a\.id\)\}/],
-      ['account status badge in the account table', /class="badge no-dot \$\{this\.esc\(a\.status\)\}">\$\{this\.esc\(a\.status\)\}/],
+      ['account id in the account table', /<code class="text-xs">\$\{this\.esc\(a\.id\)\}<\/code>/],
+      ['account status label in the account table', /class="badge \$\{meta\.cls\}">\$\{this\.accountStateLabel\(meta\)\}<\/span>/],
       ['account id in the account detail card', /<code>\$\{this\.esc\(a\.id\)\}<\/code>/],
-      ['account status badge in the account detail card', /class="badge \$\{this\.esc\(a\.status\)\}">\$\{this\.esc\(a\.status\)\}/],
-      ['account status badge in the bans table', /class="badge \$\{this\.esc\(a\.status\)\}">\$\{this\.esc\(a\.status\)\}/],
+      ['account status badge in the account detail card', /class="badge \$\{this\.esc\(a\.status\)\}">\$\{this\.esc\(a\.status\)\}<\/span>/],
       ['imported account id/status in the login result', /this\.esc\(r\.account\.id\)[\s\S]{0,120}this\.esc\(r\.account\.status\)/],
       ['field descriptor name in data-name', /data-name="\$\{this\.esc\(f\.name\)\}"/],
       ['model id in the detail chip title', /title="\$\{this\.esc\(m\.id\)\}"/],
@@ -225,6 +220,13 @@ describe('dashboard escape call sites (not just the helpers)', () => {
     for (const [what, re] of pins) {
       assert.match(src, re, `${what} must stay behind this.esc(); this pin exists so a revert names itself`);
     }
+    // The merged table renders the RESOLVED state (server `state` / ladder), not
+    // the raw status string, so no badge class may interpolate a.status directly.
+    assert.doesNotMatch(src, /class="badge[^"]*\$\{a\.status\}/,
+      'the account row badge must render the resolved state, not the raw status field');
+    // The detail surface is a drawer, not a colspan row.
+    assert.doesNotMatch(src, /account-detail-row/,
+      'the inline detail row was replaced by #acct-drawer; a revert must fail here');
   });
 
   it('reads the shipped file, not a copy', () => {

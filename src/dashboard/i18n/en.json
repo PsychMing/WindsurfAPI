@@ -1047,6 +1047,88 @@
       "label": "Export",
       "done": "Exported {{count}} accounts",
       "failed": "Export failed"
+    },
+    "add": {
+      "button": "Add account",
+      "title": "Add account",
+      "desc": "Log in, paste a credential, bulk import, or scan this machine",
+      "tabsLabel": "Add account methods",
+      "tab": {
+        "login": "Login",
+        "paste": "Paste credential",
+        "import": "Bulk import",
+        "local": "Local scan"
+      },
+      "localTitle": "Import from this machine's Windsurf",
+      "localDesc": "Read credentials from the local Windsurf client (loopback only)",
+      "reloginHint": "Email prefilled from the row. A successful login adds or reuses that account."
+    },
+    "toolbar": {
+      "fleet": "Pool operations",
+      "view": "View options",
+      "probeAll": "Probe all",
+      "refreshAll": "Refresh all balances"
+    },
+    "filter": {
+      "searchPlaceholder": "Search email / ID / label",
+      "allStatus": "All statuses",
+      "statusTitle": "Filter by status",
+      "flagged": "Needs attention",
+      "count": "Showing {{shown}} / {{total}}",
+      "clear": "Clear filters"
+    },
+    "status": {
+      "active": "Healthy",
+      "disabled": "Disabled",
+      "error": "Error",
+      "quotaCooled": "Quota exhausted",
+      "rateLimited": "Rate limited",
+      "capacity": "Model busy",
+      "nearLimit": "Near limit",
+      "watch": "Has errors",
+      "resumesIn": "resumes in {{time}}",
+      "errorCount": "Error count",
+      "blockedCount": "Blocked models"
+    },
+    "kpi": {
+      "total": "Accounts",
+      "active": "Active",
+      "disabled": "Disabled",
+      "flagged": "Needs attention",
+      "rateLimited": "Rate limited",
+      "balance": "Pool balance",
+      "balanceSub": "{{count}} accounts"
+    },
+    "subtitle": "{{total}} total · {{active}} active · {{flagged}} need attention · balance ${{balance}}",
+    "selectAllPage": "Select this page",
+    "selectRow": "Select account",
+    "row": {
+      "menu": "Account actions",
+      "details": "View details",
+      "probe": "Probe tier / models",
+      "refreshBalance": "Refresh balance",
+      "blockedModels": "Block models",
+      "relogin": "Log in again"
+    },
+    "batch": {
+      "selectPage": "Select {{count}} on this page",
+      "selectAll": "Select all {{total}}",
+      "reset": "Reset errors",
+      "export": "Export selected",
+      "viewFailures": "View failures",
+      "failedTitle": "{{count}} failed",
+      "tooMany": "Select at most {{max}} accounts at once"
+    },
+    "op": {
+      "probing": "Probing 0/{{total}}…",
+      "refreshing": "Refreshing balances for {{total}} accounts…",
+      "done": "{{ok}} succeeded · {{fail}} failed"
+    },
+    "empty": {
+      "poolTitle": "No accounts yet",
+      "poolSub": "Log in or import an account to start the pool.",
+      "filterTitle": "No accounts match these filters",
+      "filterSub": "Clear a filter to see the rest of the pool."
     }
   },
   "account": {

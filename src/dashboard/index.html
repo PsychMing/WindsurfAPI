@@ -4,9 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title data-i18n="pageTitle.main">WindsurfAPI bydwgx1337 控制台</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script>
   // Set theme before first paint to avoid a light-cream FOUC (default is dark).
   try {
@@ -17,100 +14,122 @@
 <style>
 :root {
   color-scheme: light;     /* native controls (date pickers, scrollbars) = light */
-  /* ── Cool-neutral light theme (KiroStudio-style: no warm cast) ── */
-  --paper:      #fafafa;   /* neutral grey-white main background */
-  --paper-2:    #f4f4f5;   /* secondary surface */
-  --paper-3:    #ececee;   /* faint zone base */
-  --ink:        #18181b;   /* neutral near-black (zinc-900) */
-  --ink-soft:   #3f3f46;
-  --mid-gray:   #a1a1aa;
+  /* ── Workshop Paper · light (workbuddy tokens via UIResearch §2.1 / UIPlan
+     card A). Ratios measured 2026-10-22 with WCAG 2.2 sRGB math; see
+     evidence/AccountUI.md for the badge-pair proof. ── */
+  --paper:      #efebe0;
+  --paper-2:    #e9e5d6;
+  --paper-3:    #e0dbc9;
+  --ink:        #1f1e1b;
+  --ink-soft:   #3a3833;
+  --mid-gray:   #6a675e;
 
   /* legacy var names kept (referenced site-wide), remapped to new semantics */
   --bg: var(--paper);
-  --bg-elev: var(--paper);
-  --surface: #ffffff;
-  --surface-2: var(--paper-2);
-  --surface-3: var(--paper-3);
-  --border: rgba(24,24,27,.10);
-  --border-strong: rgba(24,24,27,.18);
-  --text: var(--ink);
-  --text-muted: #71717a;
-  --text-dim: #a1a1aa;
+  --bg-elev: var(--paper-2);
+  --surface: #ffffff;      /* 1.19 vs paper */
+  --surface-2: #e9e5d6;    /* 1.26 vs surface */
+  --surface-3: #e0dbc9;    /* 1.10 vs surface-2 */
+  --border: #d5cfbc;
+  --border-strong: #c5bfab;
+  --text: var(--ink);      /* 16.67 on surface */
+  --text-muted: #5c5a52;   /* 6.91 on surface */
+  --text-dim: #6a675e;     /* 5.65 on surface — was #a1a1aa (2.56 FAIL) */
+  --text-faint: #a19d92;   /* disabled + decorative only, never body copy */
 
-  /* Anthropic accent — signature clay orange */
-  --accent: #d97757;
-  --accent-hover: #c56245;
-  --accent-soft: rgba(217,119,87,.14);
-  --blue: #6a9bcc;
-  --green: #788c5d;
-  --success: #788c5d;
-  --success-soft: rgba(120,140,93,.16);
-  --warn: #d9a257;
-  --warn-soft: rgba(217,162,87,.16);
-  --error: #c65d4e;
-  --error-soft: rgba(198,93,78,.14);
-  --tip-bg: rgba(24,24,27,.98);
-  --tip-fg: #fafafa;
-  --tip-border: rgba(250,250,250,.14);
-  --info: #6a9bcc;
-  --info-soft: rgba(106,155,204,.16);
+  --accent: #a14427;       /* 6.23 surface / 5.06 accent-soft */
+  --accent-hover: #8a3a20;
+  --accent-soft: rgba(161,68,39,.14);
+  --on-accent: #ffffff;    /* 6.23 on accent */
+  --blue: #4a6f96;
+  --green: #3f6428;
+  --success: #3f6428;      /* 6.85 */
+  --success-soft: rgba(63,100,40,.14);
+  --warn: #8a5a12;         /* 5.91 */
+  --warn-soft: rgba(138,90,18,.14);
+  --error: #a33a2f;        /* 6.56 */
+  --error-soft: rgba(163,58,47,.14);
+  --info: #3f6389;         /* 6.25 */
+  --info-soft: rgba(63,99,137,.14);
+  --think: #6f4f7c;        /* 6.81 */
+  --think-soft: rgba(111,79,124,.12);
+  --tip-bg: #1f1e1b;
+  --tip-fg: #f6f2ea;
+  --tip-border: rgba(246,242,234,.16);
 
-  /* data-viz palette (KiroStudio-style): req = blue line+area, succ = green
-     rate, err = red. Shared by the stats-page charts. */
-  --chart-req:  #4c9aff;
-  --chart-succ: #4a9d6a;
-  --chart-err:  #e0524a;
-  --chart-blue: #4c9aff;
-  --grid: rgba(24,24,27,.09);
+  /* data-viz palette: req = blue line+area, succ = green rate, err = red. */
+  --chart-req:  #4a6f96;
+  --chart-succ: #3f6428;
+  --chart-err:  #a33a2f;
+  --chart-blue: #4a6f96;
+  --grid: rgba(31,30,27,.10);
 
-  /* modern geometry — soft, clean, no sketch */
+  /* geometry — 12 card / 8 control / 14 section */
   --radius: 12px;
   --radius-sm: 8px;
-  --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px rgba(24,24,27,.05), 0 1px 3px rgba(24,24,27,.08);
-  --shadow: 0 2px 4px rgba(24,24,27,.04), 0 4px 12px rgba(24,24,27,.06);
-  --shadow-lg: 0 8px 24px rgba(24,24,27,.10), 0 2px 8px rgba(24,24,27,.06);
+  --radius-lg: 14px;
+  --page-pad: clamp(16px, 2vw, 36px);
+  --shadow-sm: 0 1px 2px rgba(31,30,27,.05), 0 1px 3px rgba(31,30,27,.07);
+  --shadow: 0 2px 4px rgba(31,30,27,.04), 0 4px 14px rgba(31,30,27,.06);
+  --shadow-lg: 0 8px 24px rgba(31,30,27,.10), 0 2px 8px rgba(31,30,27,.06);
   --ink-shadow-soft: var(--shadow-sm);
 
-  /* font stacks */
-  --font: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  --serif: var(--font);
+  /* font stacks — local system sans (no Google Fonts dependency) */
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-display: ui-serif, Georgia, 'Source Han Serif SC', 'SimSun', serif;
+  --serif: var(--font-display);
   --hand: var(--font);
-  --mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  --mono: 'Cascadia Code', 'Consolas', 'SFMono-Regular', monospace;
 }
 
 /* ── Dark theme (toggle via [data-theme="dark"] on <html>) ── */
 [data-theme="dark"] {
   color-scheme: dark;      /* native controls follow the dark theme */
-  /* Cool-neutral dark theme (KiroStudio Vercel-style near-black, zero warm cast) */
-  --paper: #0a0a0a;
-  --paper-2: #141414;
-  --paper-3: #1f1f1f;
-  --ink: #ededed;
-  --ink-soft: #c4c4c6;
-  --mid-gray: #8a8a8f;
+  /* ── Workshop Paper · dark (same warm ladder; default theme) ── */
+  --paper: #1f1e1b;
+  --paper-2: #2d2c25;
+  --paper-3: #38362f;
+  --ink: #edebe3;
+  --ink-soft: #d6d3c9;
+  --mid-gray: #96938a;
   --bg: var(--paper);
   --bg-elev: var(--paper-2);
-  --surface: #141414;
-  --surface-2: #1c1c1c;
-  --surface-3: #262626;
-  --border: rgba(255,255,255,.10);
-  --border-strong: rgba(255,255,255,.18);
-  --text: var(--ink);
-  --text-muted: #a1a1aa;
-  --text-dim: #71717a;
-  --accent-soft: rgba(217,119,87,.20);
-  --success-soft: rgba(120,140,93,.22);
-  --warn-soft: rgba(217,162,87,.22);
-  --error-soft: rgba(198,93,78,.22);
-  --info-soft: rgba(106,155,204,.22);
-  --grid: rgba(255,255,255,.09);
-  --tip-bg: rgba(28,28,30,.98);
-  --tip-fg: var(--text);
-  --tip-border: rgba(255,255,255,.14);
-  --shadow-sm: 0 1px 2px rgba(0,0,0,.3), 0 1px 3px rgba(0,0,0,.4);
-  --shadow: 0 2px 4px rgba(0,0,0,.3), 0 4px 12px rgba(0,0,0,.4);
-  --shadow-lg: 0 8px 24px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.4);
+  --surface: #2d2c25;      /* 1.19 vs paper */
+  --surface-2: #38362f;    /* 1.16 */
+  --surface-3: #433f37;    /* 1.15 */
+  --border: #4f4b42;
+  --border-strong: #5d584e;
+  --text: var(--ink);      /* 11.74 */
+  --text-muted: #b5b2a8;   /* 6.61 */
+  --text-dim: #9a978e;     /* 4.80 — was #71717a (3.81 FAIL) */
+  --text-faint: #6f6c63;
+  --accent: #e88a68;       /* 5.52 */
+  --accent-hover: #f0967a;
+  --accent-soft: rgba(232,138,104,.16);
+  --on-accent: #1f1e1b;    /* 6.56 — white would be 2.54 (workbuddy's bug) */
+  --success: #8fae78;      /* 5.67 */
+  --success-soft: rgba(143,174,120,.16);
+  --warn: #d9b25f;         /* 7.00 */
+  --warn-soft: rgba(217,178,95,.16);
+  --error: #d97b72;        /* 4.69 */
+  --error-soft: rgba(217,123,114,.16);
+  --info: #8ab4d9;         /* 6.41 */
+  --info-soft: rgba(138,180,217,.16);
+  --think: #bfa3cc;
+  --think-soft: rgba(191,163,204,.16);
+  --blue: #8ab4d9;
+  --green: #8fae78;
+  --chart-req: #8ab4d9;
+  --chart-succ: #8fae78;
+  --chart-err: #d97b72;
+  --chart-blue: #8ab4d9;
+  --grid: rgba(237,235,227,.10);
+  --tip-bg: #2d2c25;
+  --tip-fg: #edebe3;
+  --tip-border: rgba(237,235,227,.16);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.30), 0 1px 3px rgba(0,0,0,.40);
+  --shadow: 0 2px 4px rgba(0,0,0,.30), 0 4px 14px rgba(0,0,0,.40);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,.50), 0 2px 8px rgba(0,0,0,.40);
 }
 /* dark: top inset highlight gives cards/sections a subtle glass depth */
 [data-theme="dark"] .card,
@@ -189,7 +208,7 @@ code {
   border-radius: 8px;
   background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
   display: flex; align-items: center; justify-content: center;
-  font-weight: 800; color: #fff; font-size: 15px;
+  font-weight: 800; color: var(--on-accent); font-size: 15px;
   box-shadow: 0 4px 12px var(--accent-soft);
 }
 .sidebar .brand-name { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
@@ -245,8 +264,9 @@ code {
 .main {
   margin-left: 232px;
   flex: 1; min-width: 0;
-  padding: 28px 36px 40px;
+  padding: 20px var(--page-pad) 60px;
   min-height: 100vh;
+  max-width: 2000px;
   /* min-width:0 lets this flex column shrink; .table-wrap owns horizontal scroll (accounts was 1628px @1440). */
 }
 .page-header {
@@ -604,7 +624,7 @@ code {
 
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   border-color: var(--accent);
   box-shadow: 0 1px 3px var(--accent-soft);
 }
@@ -622,17 +642,17 @@ code {
 
 .btn-danger {
   background: var(--error);
-  color: #fff;
+  color: var(--on-accent);
   border-color: var(--error);
 }
-.btn-danger:hover:not(:disabled) { background: #dc2626; border-color: #dc2626; }
+.btn-danger:hover:not(:disabled) { filter: brightness(.92); }
 
 .btn-success {
   background: var(--success);
-  color: #fff;
+  color: var(--on-accent);
   border-color: var(--success);
 }
-.btn-success:hover:not(:disabled) { background: #16a34a; border-color: #16a34a; }
+.btn-success:hover:not(:disabled) { filter: brightness(.92); }
 
 .btn-sm { padding: 5px 10px; font-size: 12px; }
 .btn-xs { padding: 3px 8px; font-size: 11px; }
@@ -641,7 +661,7 @@ code {
 .btn-group { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 
 .btn.active, .btn.active:hover {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent); color: var(--on-accent); border-color: var(--accent);
 }
 
 /* ─── Switch ──────────────────────────────────── */
@@ -660,7 +680,7 @@ code {
 .switch input:checked + .switch-slider {
   background: var(--accent); border-color: var(--accent);
 }
-.switch input:checked + .switch-slider::before { transform: translateX(18px); background: #fff; }
+.switch input:checked + .switch-slider::before { transform: translateX(18px); background: var(--on-accent); }
 
 /* ─── Form Controls ───────────────────────────── */
 .input, .select, .textarea {
@@ -1021,44 +1041,14 @@ tbody tr:hover td { background: var(--surface-2); }
   padding-top: 5px;
   padding-bottom: 5px;
 }
+.table-pagination .cs { width: auto; min-width: 84px; }
 .table-pagination .page-label {
   min-width: 160px;
   text-align: center;
   color: var(--text-muted);
 }
 
-/* ─── Account detail panel (expand-in-row) ──────────── */
-.expand-chevron {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--text-dim);
-  cursor: pointer;
-  transition: all .15s ease;
-  font-size: 10px;
-  margin-right: 6px;
-  vertical-align: middle;
-}
-.expand-chevron:hover {
-  color: var(--text);
-  background: var(--surface-2);
-  border-color: var(--border);
-}
-.expand-chevron:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); color: var(--text); }
-.expand-chevron.open {
-  color: var(--accent);
-  transform: rotate(90deg);
-}
-.account-detail-row > td {
-  padding: 0 !important;
-  background: var(--paper-2) !important;
-  border-bottom: 1px solid var(--border) !important;
-}
+/* ─── Account detail (drawer body) ──────────────────── */
 .account-detail-wrap {
   padding: 20px 28px;
   background: linear-gradient(180deg, var(--accent-soft), transparent 80%);
@@ -1236,32 +1226,39 @@ tbody tr:hover td { background: var(--surface-2); }
   font-weight: 600;
   line-height: 1.5;
   border: 1px solid transparent;
+  /* AA rule (UIResearch §2.4): the LABEL is --text on a 14/16% soft wash
+     (8.44–13.69:1 both themes); the HUE lives in the 6 px dot, where 3:1 is
+     the graphical-object floor. workbuddy's hue-on-soft labels measured
+     3.69–5.58 and failed AA in four pairs — do not restore that. */
+  color: var(--text);
+  background: var(--surface-3);
+  --badge-dot: var(--text-dim);
 }
 .badge::before {
   content: '';
   width: 6px; height: 6px;
   border-radius: 50%;
-  background: currentColor;
+  background: var(--badge-dot);
 }
 .badge.active, .badge.running, .badge.success {
   background: var(--success-soft);
-  color: var(--success);
+  --badge-dot: var(--success);
 }
 .badge.error, .badge.stopped {
   background: var(--error-soft);
-  color: var(--error);
+  --badge-dot: var(--error);
 }
 .badge.disabled, .badge.muted {
   background: var(--surface-3);
-  color: var(--text-muted);
+  --badge-dot: var(--text-dim);
 }
 .badge.warn {
   background: var(--warn-soft);
-  color: var(--warn);
+  --badge-dot: var(--warn);
 }
 .badge.info, .badge.pro {
   background: var(--info-soft);
-  color: var(--info);
+  --badge-dot: var(--info);
 }
 .badge.no-dot::before { display: none; }
 
@@ -1276,7 +1273,7 @@ tbody tr:hover td { background: var(--surface-2); }
   text-transform: uppercase;
   letter-spacing: .04em;
 }
-.tier.pro { background: linear-gradient(135deg, var(--accent), var(--accent-hover)); color: #fff; }
+.tier.pro { background: var(--accent); color: var(--on-accent); }
 .tier.free { background: var(--info-soft); color: var(--info); }
 .tier.expired { background: var(--error-soft); color: var(--error); }
 .tier.unknown { background: var(--surface-3); color: var(--text-muted); }
@@ -1456,8 +1453,8 @@ tbody tr:hover td { background: var(--surface-2); }
   font-weight: 700;
   letter-spacing: .02em;
 }
-.chip-badge.free { background: var(--success); color: #fff; }
-.chip-badge.paid { background: var(--warn); color: #fff; }
+.chip-badge.free { background: var(--success); color: var(--on-accent); }
+.chip-badge.paid { background: var(--warn); color: var(--on-accent); }
 .model-chip .remove {
   color: var(--error);
   font-weight: 700;
@@ -1587,7 +1584,7 @@ tbody tr:hover td { background: var(--surface-2); }
   background: rgba(255,255,255,.03);
 }
 .seg-btn.active {
-  color: #fff;
+  color: var(--on-accent);
   background: var(--accent);
   box-shadow: var(--ink-shadow-soft);
 }
@@ -1712,7 +1709,7 @@ tbody tr:hover td { background: var(--surface-2); }
   transition: color .15s ease, border-color .15s ease, background .15s ease, box-shadow .15s ease, transform .15s ease;
 }
 .help-tip:hover, .help-tip:focus-visible {
-  color: #fff; border-color: var(--accent);
+  color: var(--on-accent); border-color: var(--accent);
   background: var(--accent); transform: translateY(-.5px);
 }
 .help-tip:focus-visible { box-shadow: 0 0 0 3px var(--accent-soft); }
@@ -1988,7 +1985,7 @@ tbody tr:hover td { background: var(--surface-2); }
   border-radius: 14px;
   background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
   display: flex; align-items: center; justify-content: center;
-  font-weight: 800; font-size: 22px; color: #fff;
+  font-weight: 800; font-size: 22px; color: var(--on-accent);
   box-shadow: 0 10px 30px var(--accent-soft);
 }
 .login-box h3 { text-align: center; font-size: 18px; margin-bottom: 8px; }
@@ -2121,7 +2118,239 @@ tbody tr:hover td { background: var(--surface-2); }
   overflow: hidden; clip: rect(0, 0, 0, 0);
   white-space: nowrap; border: 0;
 }
+/* ─── Merged account management page (2026-10-22 account-UI merge) ─────
+   Geometry follows workbuddy2api-hub via UIResearch §2.2/§3; colours come from
+   the token blocks above. Row target 44 px comfortable / 36 px compact. */
+.acct-kpis {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.acct-kpi { padding: 12px 16px; border-left: 1px solid var(--border); min-width: 0; }
+.acct-kpi:first-child { border-left: 0; }
+.acct-kpi-label {
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.acct-kpi-value { font-size: 22px; font-weight: 700; line-height: 1.2; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.acct-kpi-sub { font-size: 11px; color: var(--text-dim); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.acct-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.tb-group {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+}
+.tb-group .btn { border-color: transparent; background: transparent; }
+.tb-group .btn:hover:not(:disabled) { background: var(--surface); border-color: var(--border); }
+.acct-op-status { font-size: 12px; color: var(--text-muted); min-height: 18px; }
+
+.acct-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.acct-filters .input, .acct-filters .select { width: auto; height: 32px; padding-top: 4px; padding-bottom: 4px; }
+.acct-filters .cs { width: auto; flex: 0 0 auto; min-width: 150px; }
+.acct-filters .cs-trigger { height: 32px; padding-top: 4px; padding-bottom: 4px; }
+.acct-filters .input { flex: 1 1 240px; min-width: 160px; max-width: 360px; }
+.chip-toggle {
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
+  border: 1px solid var(--border-strong); border-radius: 999px; background: transparent;
+  color: var(--text-muted); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.chip-toggle:hover { color: var(--text); background: var(--surface-2); }
+.chip-toggle[aria-pressed="true"] {
+  background: var(--error-soft); border-color: var(--error); color: var(--text);
+}
+.chip-toggle[aria-pressed="true"]::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--error); }
+.acct-filter-count { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.acct-filter-clear[hidden] { display: none; }
+
+#accounts-table { min-width: 1070px; table-layout: fixed; }
+#accounts-table th, #accounts-table td { padding: 5px 16px; }
+#accounts-table .acct-check-col { width: 40px; padding-left: 12px; padding-right: 0; }
+#accounts-table .acct-account-col { width: auto; min-width: 260px; }
+#accounts-table .acct-tier-col { width: 88px; }
+#accounts-table .acct-state-col { width: 150px; }
+#accounts-table .acct-quota-col { width: 168px; }
+#accounts-table .acct-models-col { width: 92px; }
+#accounts-table .acct-rpm-col { width: 96px; }
+#accounts-table .acct-last-col { width: 132px; }
+#accounts-table .acct-actions-col { width: 44px; padding-left: 4px; padding-right: 8px; }
+#accounts-table tbody td { overflow: hidden; }
+#accounts-table.accounts-compact th, #accounts-table.accounts-compact td { padding: 4px 12px; font-size: 12px; }
+#accounts-table.accounts-compact .acct-name { font-size: 12.5px; }
+#accounts-table.accounts-compact .acct-line2 { font-size: 10px; }
+
+.acct-line1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.acct-name { font-size: 13.5px; font-weight: 600; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-open { border: 0; background: none; padding: 0; color: var(--text); font-family: inherit; text-align: left; cursor: pointer; }
+.acct-open:hover { color: var(--accent); text-decoration: underline; }
+.acct-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
+.acct-line2 { display: flex; align-items: center; gap: 6px; font-size: 11px; line-height: 1.3; color: var(--text-dim); min-width: 0; }
+.acct-line2 code { background: transparent; border: 0; padding: 0; font-size: 11px; color: var(--text-dim); }
+.acct-line2 .acct-key { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-chip {
+  display: inline-flex; align-items: center; max-width: 120px; height: 18px; padding: 0 6px;
+  border-radius: 999px; border: 1px dashed var(--border-strong);
+  font-size: 10px; line-height: 16px; color: var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none;
+}
+.method-chip { font-size: 10px; color: var(--text-dim); flex: none; }
+.acct-band { box-shadow: inset 3px 0 0 var(--text-dim); }
+.acct-state { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.acct-state-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.acct-countdown { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.acct-error-count { font-size: 10px; color: var(--error); font-weight: 600; }
+.acct-batch-chip { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 4px; }
+.acct-batch-chip.ok { background: var(--success-soft); color: var(--text); }
+.acct-batch-chip.fail { background: var(--error-soft); color: var(--text); }
+
+.row-menu-btn {
+  display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+  border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent;
+  color: var(--text-muted); font-size: 16px; line-height: 1; cursor: pointer;
+}
+.row-menu-btn:hover, .row-menu-btn[aria-expanded="true"] { background: var(--surface-2); border-color: var(--border); color: var(--text); }
+.row-menu-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.row-menu {
+  position: fixed; z-index: 160; min-width: 190px; padding: 5px;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+}
+.row-menu [role="menuitem"] {
+  display: flex; align-items: center; width: 100%; padding: 7px 10px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+}
+.row-menu [role="menuitem"]:hover, .row-menu [role="menuitem"]:focus-visible { background: var(--surface-2); outline: none; }
+.row-menu [role="menuitem"].danger { color: var(--error); }
+.row-menu .menu-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+
+#accounts-batch-bar {
+  position: sticky; bottom: 0; z-index: 4;
+  margin: 0; padding: 10px 12px; border-radius: 0;
+  border: 0; border-top: 1px solid var(--border);
+  background: var(--surface-2); box-shadow: 0 -8px 18px -14px rgba(31,30,27,.55);
+  flex-wrap: wrap;
+}
+#accounts-batch-bar .batch-scope { font-size: 12px; color: var(--text-muted); }
+#accounts-batch-bar .batch-scope button {
+  border: 0; background: transparent; padding: 0 2px; color: var(--accent);
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: underline;
+}
+#accounts-batch-bar .batch-progress { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+#accounts-batch-bar .batch-fail-link { border: 0; background: transparent; color: var(--error); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; }
+#accounts-batch-bar .batch-fail-pop {
+  position: absolute; bottom: calc(100% + 6px); left: 12px; max-width: 520px; max-height: 220px; overflow: auto;
+  padding: 10px 12px; background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-lg); font-size: 12px;
+}
+#accounts-batch-bar .batch-fail-pop ul { margin: 6px 0 0; padding-left: 18px; }
+#accounts-batch-bar .batch-fail-pop li { margin: 2px 0; color: var(--text-muted); word-break: break-all; }
+
+.acct-empty { padding: 32px 16px; text-align: center; }
+.acct-empty-title { font-family: var(--font-display); font-size: 15px; font-weight: 600; }
+.acct-empty-sub { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+.acct-empty-actions { margin-top: 14px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.acct-empty.is-error .acct-empty-title { color: var(--error); }
+
+/* Detail drawer (replaces the colspan=12 detail row) */
+.acct-drawer-mask {
+  position: fixed; inset: 0; z-index: 140;
+  background: rgba(15,23,42,.45); backdrop-filter: blur(2px);
+}
+.acct-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 141;
+  width: min(480px, 100vw); display: flex; flex-direction: column;
+  background: var(--surface); border-left: 1px solid var(--border); box-shadow: var(--shadow-lg);
+}
+.acct-drawer.hidden, .acct-drawer-mask.hidden { display: none; }
+.acct-drawer-head { display: flex; align-items: flex-start; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.acct-drawer-title { font-size: 15px; font-weight: 700; line-height: 1.3; word-break: break-all; }
+.acct-drawer-sub { font-size: 11px; color: var(--text-dim); margin-top: 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.acct-drawer-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
+.acct-drawer-foot {
+  position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 12px 20px; border-top: 1px solid var(--border); background: var(--surface-2);
+}
+.acct-drawer-foot .spacer { flex: 1; }
+.acct-drawer .account-detail-wrap { padding: 0; background: none; }
+.acct-drawer .detail-grid { grid-template-columns: 1fr; gap: 12px; margin-bottom: 0; }
+.acct-drawer .detail-card { border-radius: var(--radius); }
+
+/* Add-account modal: 4 tabs (login / paste / import / local) */
+.add-modal { width: min(720px, 100%); max-width: 720px; max-height: 88vh; display: flex; flex-direction: column; }
+.add-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 20px 10px; }
+.add-tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.add-tab {
+  padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent;
+  color: var(--text-muted); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.add-tab:hover { color: var(--text); }
+.add-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.add-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.add-modal-body { padding: 16px 20px 20px; overflow-y: auto; }
+.add-panel { display: none; }
+.add-panel.active { display: block; }
+.add-result { margin-top: 14px; }
+.add-result .section { margin-bottom: 0; }
+.add-panel .section { border: 0; box-shadow: none; margin-bottom: 12px; }
+.add-panel .section-header { padding: 0 0 8px; border-bottom: 0; }
+.add-panel .section-body { padding: 0; }
+.add-panel .section-body.tight { padding: 0; }
+.add-panel .field-row { margin-bottom: 10px; }
+
+@media (max-width: 1100px) {
+  .acct-kpis { grid-template-columns: repeat(3, 1fr); }
+  .acct-kpi:nth-child(4) { border-left: 0; }
+  .acct-kpi:nth-child(n+4) { border-top: 1px solid var(--border); }
+  #accounts-table { min-width: 1070px; }
+}
+@media (max-width: 720px) {
+  .acct-kpis { grid-template-columns: repeat(2, 1fr); }
+  .acct-kpi { border-left: 0; }
+  .acct-kpi:nth-child(even) { border-left: 1px solid var(--border); }
+  .acct-kpi:nth-child(n+3) { border-top: 1px solid var(--border); }
+  .acct-filters .input { max-width: none; flex-basis: 100%; }
+  #accounts-table { min-width: 0; table-layout: auto; }
+  #accounts-table thead { display: none; }
+  #accounts-table, #accounts-table tbody { display: block; width: 100%; }
+  #accounts-table tr {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px;
+    padding: 12px; margin: 0 0 10px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface);
+  }
+  #accounts-table td { display: block; border: 0; padding: 2px 0; overflow: visible; }
+  #accounts-table td[data-label]::before {
+    content: attr(data-label); display: block; font-size: 10px; font-weight: 600;
+    letter-spacing: .04em; text-transform: uppercase; color: var(--text-dim);
+  }
+  #accounts-table td.acct-account-cell, #accounts-table td.acct-check-cell { grid-column: 1 / -1; }
+  #accounts-table td.acct-check-cell { display: flex; align-items: center; gap: 8px; }
+  #accounts-table td.acct-actions-cell { grid-column: 1 / -1; display: flex; justify-content: flex-end; padding-top: 6px; }
+  #accounts-table .acct-band { box-shadow: none; }
+  .table-wrap { overflow-x: visible; }
+  .acct-drawer { width: 100%; top: auto; height: 88vh; border-left: 0; border-top: 1px solid var(--border); border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+  #accounts-batch-bar { position: fixed; left: 12px; right: 12px; bottom: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); box-shadow: var(--shadow-lg); }
+}
+.acct-blocked-count { margin-left:4px; padding:0 4px; border-radius:4px; background:var(--warn-soft); color:var(--text); font-size:10px; font-weight:600; }
+.acct-quota { font-size: 10px; line-height: 1.25; min-width: 0; }
+.acct-quota-head { display: flex; align-items: center; gap: 4px; font-size: 10.5px; white-space: nowrap; overflow: hidden; }
+.acct-quota-head b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.acct-quota-head > span:last-child { margin-left: auto; }
+.acct-quota-bar { display: flex; align-items: center; gap: 3px; margin-top: 1px; line-height: 1; }
+.acct-quota-label { width: 10px; flex: none; font-size: 9px; font-weight: 600; color: var(--text-dim); }
+.acct-quota-track { flex: 1; height: 3px; background: var(--surface-3); border-radius: 2px; overflow: hidden; min-width: 30px; }
+.acct-quota-track.na { outline: 1px dashed var(--text-dim); outline-offset: -1px; }
+.acct-quota-pct { width: 26px; text-align: right; font-size: 9px; font-variant-numeric: tabular-nums; }
+.acct-state { gap: 4px; flex-wrap: nowrap; min-width: 0; }
+.acct-state .badge { padding: 1px 6px; font-size: 10.5px; flex: none; }
+.acct-state-dot { flex: none; }
+.acct-countdown { flex: none; padding: 0 4px; border-radius: 4px; background: var(--surface-2); font-variant-numeric: tabular-nums; }
+.acct-open { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 </style>
+
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 <!-- Firebase signInWithPopup was removed: on a self-hosted public origin it always
      fails with auth/unauthorized-domain (Firebase authorized-domain lock). Quick
@@ -2155,14 +2384,6 @@ tbody tr:hover td { background: var(--surface-2); }
       <a href="#accounts" data-panel="accounts">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         <span data-i18n="nav.accounts">账号管理</span>
-      </a>
-      <a href="#windsurf-login" data-panel="windsurf-login">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-        <span data-i18n="nav.windsurf-login">登录取号</span>
-      </a>
-      <a href="#bans" data-panel="bans">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        <span data-i18n="nav.bans">异常监测</span>
       </a>
     </div>
     <div class="nav-group">
@@ -2355,382 +2576,91 @@ tbody tr:hover td { background: var(--surface-2); }
     </div>
   </section>
 
-  <!-- Windsurf Login -->
-  <section class="panel" id="p-windsurf-login">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title" data-i18n="page.windsurf-login">登录取号</h1>
-        <div class="page-subtitle" data-i18n="pageSubtitle.windsurf-login">支持 Google / GitHub / 邮箱密码 三种方式登录 Windsurf 获取 API Key</div>
-      </div>
-    </div>
-
-    <div class="section">
-      <div class="section-header">
-        <div>
-          <div class="section-title" data-i18n="section.oauthLogin.title">快捷登录（推荐）</div>
-          <div class="section-desc" data-i18n="section.oauthLogin.desc">用你的 Google 或 GitHub 账号直接登录 Windsurf 无需密码</div>
-        </div>
-      </div>
-      <div class="section-body">
-        <div style="display:flex;gap:12px;flex-wrap:wrap">
-          <button class="btn" onclick="App.oauthLogin('google')" id="oauth-google-btn" style="background:#4285F4;color:#fff;padding:10px 24px;font-weight:600;display:flex;align-items:center;gap:8px">
-            <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.9 33.1 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.2-2.7-.4-3.9z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.5 15.5 18.8 12 24 12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.6-11.2-8.5l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.2-2.7-.4-3.9z"/></svg>
-            <span data-i18n="oauth.google">Google 登录</span>
-          </button>
-          <button class="btn" onclick="App.oauthLogin('github')" id="oauth-github-btn" style="background:#24292e;color:#fff;padding:10px 24px;font-weight:600;display:flex;align-items:center;gap:8px">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.08-.73.08-.73 1.2.08 1.84 1.23 1.84 1.23 1.07 1.83 2.81 1.3 3.5 1 .1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 016.02 0c2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.8 5.63-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.21.7.82.58C20.56 21.8 24 17.3 24 12 24 5.37 18.63 0 12 0z"/></svg>
-            <span data-i18n="oauth.github">GitHub 登录</span>
-          </button>
-        </div>
-        <div id="oauth-status" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
-        <div id="oauth-token-step" class="hidden" style="margin-top:14px;padding:14px;background:var(--surface-2);border-radius:var(--radius);border-left:3px solid var(--accent)">
-          <div style="font-weight:600;margin-bottom:6px" data-i18n="oauth.step2Title">② 粘贴 Windsurf 返回的 Token</div>
-          <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px" data-i18n="oauth.step2Desc">在新标签完成登录后 复制整条回调地址栏 URL(或页面显示的 Token)粘到这里点添加</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            <input id="oauth-token-input" type="text" class="input" style="flex:1;min-width:260px" data-i18n-placeholder="oauth.urlOrTokenPlaceholder" placeholder="粘贴回调 URL 或 Auth Token...">
-            <button class="btn btn-primary" onclick="App.submitOAuthToken()" data-i18n="oauth.addWithToken">用 Token 添加</button>
-          </div>
-          <a id="oauth-manual-link" href="#" class="hidden" onclick="return App.openWindsurfSignin(event)" style="display:inline-block;margin-top:8px;font-size:12px;color:var(--accent)" data-i18n="oauth.openManually">登录页没弹出来？点这里手动打开</a>
-        </div>
-      </div>
-    </div>
-
-    <!-- SEALED 2026-07-06: email-OTP login is blocked by Cloudflare Turnstile
-         whose sitekey is domain-bound to windsurf.com — a self-hosted dashboard
-         cannot render the widget, so this panel can never work here. Hidden from
-         the UI; the backend code (email-otp-login.js + /email-otp/* endpoints)
-         is kept intact behind this seal in case upstream drops turnstile.
-         See docs-internal/workflow-results/otp-login-2026-07-06/VERIFIED-otp-flow.md -->
-    <div class="section hidden" data-sealed="email-otp-turnstile-blocked">
-      <div class="section-header">
-        <div>
-          <div class="section-title" data-i18n="section.emailOtpLogin.title">邮箱验证码登录 / Email Code Login</div>
-          <div class="section-desc" data-i18n="section.emailOtpLogin.desc">无需密码，通过邮箱验证码注册新账号 — 需完成 Cloudflare 人机验证</div>
-        </div>
-      </div>
-      <div class="section-body">
-        <div id="otp-turnstile-container" style="margin-bottom:16px"></div>
-        <div class="field-row">
-          <div class="field">
-            <label class="field-label" data-i18n="field.email.label">邮箱</label>
-            <input id="otp-email" class="input" data-i18n-placeholder="field.email.placeholder" placeholder="your-email@example.com" autocomplete="off">
-          </div>
-          <div class="field">
-            <label class="field-label" data-i18n="field.firstName.label">名字 / First Name</label>
-            <input id="otp-firstname" class="input" data-i18n-placeholder="field.firstName.placeholder" placeholder="John" autocomplete="off">
-          </div>
-        </div>
-        <div class="field-row-actions">
-          <button class="btn btn-primary" onclick="App.sendOtpCode()" id="otp-send-btn" disabled>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
-            <span data-i18n="action.sendCode">发送验证码</span>
-          </button>
-        </div>
-        <div id="otp-send-status" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
-
-        <div id="otp-complete-section" class="hidden" style="margin-top:16px;padding-top:16px;border-top:1px dashed var(--border)">
-          <div class="field-row">
-            <div class="field">
-              <label class="field-label" data-i18n="field.otpCode.label">验证码 / OTP Code</label>
-              <input id="otp-code" class="input" placeholder="123456" autocomplete="off" maxlength="6" onkeydown="if(event.key==='Enter')App.completeOtpLogin()">
-              <div class="field-hint" data-i18n="field.otpCode.hint">从邮箱获取 6 位验证码</div>
-            </div>
-            <div class="field">
-              <label class="field-label" data-i18n="field.lastName.label">姓氏 / Last Name（可选）</label>
-              <input id="otp-lastname" class="input" data-i18n-placeholder="field.lastName.placeholder" placeholder="Doe" autocomplete="off">
-            </div>
-          </div>
-          <div class="field-row-actions">
-            <button class="btn btn-primary" onclick="App.completeOtpLogin()" id="otp-complete-btn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-              <span data-i18n="action.login">登录</span>
-            </button>
-            <label class="checkbox" style="margin-left:auto">
-              <input type="checkbox" id="otp-auto-add" checked>
-              <span class="box"></span>
-              <span data-i18n="field.autoAdd">登录成功自动加入账号池</span>
-            </label>
-          </div>
-          <div id="otp-complete-status" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="section">
-      <div class="section-header">
-        <div>
-          <div class="section-title" data-i18n="section.emailLogin.title">邮箱登录</div>
-          <div class="section-desc" data-i18n="section.emailLogin.desc">先检测账号登录方式：有密码的账号用密码登录，OAuth/邮箱验证码账号用验证码登录</div>
-        </div>
-      </div>
-      <div class="section-body">
-        <div class="field-row">
-          <div class="field">
-            <label class="field-label" data-i18n="field.email.label">邮箱</label>
-            <input id="wl-email" class="input" data-i18n-placeholder="field.email.placeholder" placeholder="your-email@example.com" autocomplete="off" onblur="App.windsurfProbeFromInput()">
-            <div class="field-hint" id="wl-probe-status"></div>
-          </div>
-          <div class="field" id="wl-password-field">
-            <label class="field-label" data-i18n="field.password.label">密码</label>
-            <input id="wl-password" class="input" type="password" data-i18n-placeholder="field.password.placeholder" placeholder="••••••••" autocomplete="off" onkeydown="if(event.key==='Enter')App.windsurfLogin()">
-          </div>
-        </div>
-        <div class="field-row-actions">
-          <button class="btn btn-primary" onclick="App.windsurfLogin()" id="wl-btn">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-            <span data-i18n="action.login">登录</span>
-          </button>
-          <label class="checkbox" style="margin-left:auto">
-            <input type="checkbox" id="wl-auto-add" checked>
-            <span class="box"></span>
-            <span data-i18n="field.autoAdd">登录成功自动加入账号池</span>
-          </label>
-        </div>
-        <!-- Email-code path: shown when the probe reports has_password:false.
-             The code is requested explicitly by the operator, never auto-sent. -->
-        <div id="wl-email-code-field" class="hidden" style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">
-          <div class="field-row">
-            <div class="field">
-              <label class="field-label" data-i18n="field.otpCode.label">验证码 / OTP Code</label>
-              <input id="wl-email-code" class="input" inputmode="numeric" autocomplete="one-time-code" maxlength="10" data-i18n-placeholder="field.otpCode.placeholder" placeholder="123456" onkeydown="if(event.key==='Enter')App.windsurfCompleteEmailCode()">
-              <div class="field-hint" data-i18n="field.otpCode.hint">从邮箱获取 6 位验证码</div>
-            </div>
-            <div class="field" style="align-self:flex-end">
-              <button class="btn btn-outline" onclick="App.windsurfSendEmailCode()" id="wl-send-code-btn">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
-                <span data-i18n="action.sendCode">发送验证码</span>
-              </button>
-            </div>
-          </div>
-          <div class="field-row-actions">
-            <button class="btn btn-primary" onclick="App.windsurfCompleteEmailCode()" id="wl-code-login-btn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
-              <span data-i18n="action.verifyAndLogin">验证并登录</span>
-            </button>
-          </div>
-          <div id="wl-code-status" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
-        </div>
-        <!-- OAuth-only path: has_password:false and no email connection. -->
-        <div id="wl-oauth-hint" class="hidden" style="margin-top:14px;padding:12px;background:var(--surface-2);border-radius:var(--radius);border-left:3px solid var(--accent)">
-          <div class="text-sm" data-i18n="emailLogin.oauthOnlyHint">该账号没有密码，也不支持邮箱验证码。请用上面的 Google / GitHub 按钮登录，或粘贴 show-auth-token 页面的 Token。</div>
-          <button class="btn btn-outline" style="margin-top:8px" onclick="App.showOAuthTokenStep()" data-i18n="emailLogin.useToken">改用 Token 登录</button>
-        </div>
-        <label class="checkbox" style="margin-top:10px" data-i18n-title="field.storeCredentialHint" title="加密保存密码用于自动续期">
-          <input type="checkbox" id="wl-store-cred">
-          <span class="box"></span>
-          <span data-i18n="field.storeCredential">加密保存密码以在会话失效时自动续期</span>
-        </label>
-        <div style="margin-top:16px;padding-top:16px;border-top:1px dashed var(--border)">
-          <label class="field-label" data-i18n="field.batchInput.label">批量导入</label>
-          <textarea
-            id="wl-batch-input"
-            class="textarea"
-            rows="6"
-            placeholder="user1@mail.com  pass123&#10;http://proxy:8080 user2@mail.com  pass456&#10;socks5://user:pass@1.2.3.4:1080 user3@mail.com  pass789"
-          ></textarea>
-          <div class="field-hint" data-i18n="field.batchInput.hint">每行一个账号。支持：<code>邮箱 密码</code>、<code>邮箱----密码</code>、<code>邮箱|密码</code>、<code>邮箱,密码</code>、<code>邮箱:密码</code>。也支持上传 JSON 文件。代理可选，格式：<code>[代理] 邮箱 密码</code>。</div>
-          <input id="wl-batch-file" type="file" accept=".json,application/json" class="hidden" onchange="App.handleWindsurfBatchFile(event)">
-          <div class="field-row-actions">
-            <button class="btn btn-outline" onclick="App.pasteWindsurfBatch()">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>
-              <span data-i18n="action.readClipboard">读取剪贴板</span>
-            </button>
-            <button class="btn btn-outline" onclick="App.triggerWindsurfBatchFile()">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              <span data-i18n="action.uploadJson">上传 JSON</span>
-            </button>
-            <button class="btn btn-ghost hidden" id="wl-batch-file-clear" onclick="App.clearWindsurfBatchFile()">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              <span data-i18n="action.clearFile">清除文件</span>
-            </button>
-            <button class="btn btn-primary" onclick="App.windsurfLoginBatch()" id="wl-batch-btn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M3 5h18"/><path d="M3 12h18"/><path d="M3 19h18"/></svg>
-              <span data-i18n="action.batchImport">批量导入并登录</span>
-            </button>
-          </div>
-          <div class="field-hint" id="wl-batch-file-status" data-i18n="batch.fileNone">未选择 JSON 文件</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="section hidden" id="wl-result"></div>
-
-    <div class="section">
-      <div class="section-header">
-        <div>
-          <div class="section-title" data-i18n="section.loginHistory.title">登录历史</div>
-          <div class="section-desc" data-i18n="section.loginHistory.desc">本地记录最近 50 条登录操作</div>
-        </div>
-      </div>
-      <div class="section-body tight">
-        <div class="table-wrap">
-          <table id="wl-history-table">
-            <thead><tr><th data-i18n="table.header.time">时间</th><th data-i18n="table.header.email">邮箱</th><th data-i18n="table.header.status">状态</th><th data-i18n="table.header.proxy">代理</th><th data-i18n="table.header.action">操作</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <div class="section" id="wl-proxy-section">
-      <div class="section-header">
-        <div>
-          <div class="section-title" data-i18n="section.loginProxy.title">登录代理（可选）</div>
-          <div class="section-desc" data-i18n="section.loginProxy.desc">为本次登录指定代理；留空则使用全局代理设置。代理生效后账号的后续聊天请求也会经此代理出站</div>
-        </div>
-      </div>
-      <div class="section-body">
-        <div class="field-row">
-          <div class="field" style="max-width:120px">
-            <label class="field-label" data-i18n="field.type.label">类型</label>
-            <select id="wl-proxy-type" class="select">
-              <option value="http">HTTP</option>
-              <option value="https">HTTPS</option>
-              <option value="socks5">SOCKS5</option>
-            </select>
-          </div>
-          <div class="field" style="flex:2">
-            <label class="field-label" data-i18n="field.proxyHost.label">主机</label>
-            <input id="wl-proxy-host" class="input" data-i18n-placeholder="field.proxyHost.placeholder" placeholder="留空=使用全局">
-          </div>
-          <div class="field" style="max-width:110px">
-            <label class="field-label" data-i18n="field.port.label">端口</label>
-            <input id="wl-proxy-port" class="input" data-i18n-placeholder="field.port.placeholder" placeholder="8080" type="number">
-          </div>
-          <div class="field">
-            <label class="field-label" data-i18n="field.username.label">用户名</label>
-            <input id="wl-proxy-user" class="input" data-i18n-placeholder="field.username.placeholder" placeholder="可选">
-          </div>
-          <div class="field">
-            <label class="field-label" data-i18n="field.passwordProxy.label">密码</label>
-            <input id="wl-proxy-pass" class="input" type="password" data-i18n-placeholder="field.passwordProxy.placeholder" placeholder="可选">
-          </div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
-          <button class="btn btn-outline btn-sm" onclick="App.testLoginProxy()" id="wl-proxy-test-btn">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
-            <span data-i18n="proxy.test.button">测试代理</span>
-          </button>
-          <span id="wl-proxy-test-result" class="text-sm text-muted"></span>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <!-- Accounts -->
   <section class="panel" id="p-accounts">
     <div class="page-header">
       <div>
         <h1 class="page-title" data-i18n="page.accounts">账号管理</h1>
-        <div class="page-subtitle" data-i18n="pageSubtitle.accounts">维护账号池，探测各账号订阅层级与可用模型</div>
+        <div class="page-subtitle" id="accounts-subtitle" data-i18n="pageSubtitle.accounts">维护账号池，探测各账号订阅层级与可用模型</div>
       </div>
-      <div class="btn-group">
-        <button class="btn btn-outline" onclick="App.refreshAllCredits()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.24-2.52L3 21"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.24 2.52L21 3"/><path d="M21 3v6h-6"/><path d="M3 21v-6h6"/></svg>
-          <span data-i18n="action.refresh">刷新余额</span>
-        </button>
-        <button class="btn btn-outline" onclick="App.probeAll()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <span data-i18n="action.probe">全部探测</span>
-        </button>
-      </div>
+      <button class="btn btn-primary" onclick="App.openAddAccountModal('login')" id="accounts-add-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span data-i18n="accounts.add.button">添加账号</span>
+      </button>
     </div>
     <!-- v2.0.57 Fix 5 — drought mode banner: shown only when every active
          account has weekly% < 5. Hidden by default; loadDrought() flips it. -->
-    <div id="drought-banner" class="banner banner-warn" style="display:none;margin:0 0 16px;padding:14px 18px;border-radius:var(--radius);background:var(--warn-soft);border:1px solid rgba(245,158,11,.35);color:var(--warn)">
+    <div id="drought-banner" class="banner banner-warn" style="display:none;margin:0 0 16px;padding:14px 18px;border-radius:var(--radius);background:var(--warn-soft);border:1px solid var(--border-strong);color:var(--text)">
       <strong data-i18n="drought.title">配额预警：</strong>
       <span id="drought-message" data-i18n="drought.body">所有账号本周配额都低于阈值，建议补账号或等待重置</span><span data-i18n-tip="drought"></span>
       <span id="drought-detail" class="text-sm text-muted" style="margin-left:8px"></span>
     </div>
 
-    <div class="section">
-      <div class="section-header">
-        <div>
-          <div class="section-title" data-i18n="section.addAccount.title">添加账号</div>
-          <div class="section-desc" data-i18n="section.addAccount.desc">支持 API Key 或 Auth Token 两种方式</div>
-        </div>
+    <!-- KPI strip — six cells, one panel, zero extra requests (stats rides the list response). -->
+    <div class="acct-kpis" id="accounts-kpis" aria-live="polite"></div>
+
+    <!-- Fleet toolbar: long-running pool operations live here, not in the page header. -->
+    <div class="acct-toolbar">
+      <div class="tb-group" role="group" data-i18n-aria-label="accounts.toolbar.fleet">
+        <button class="btn btn-outline btn-sm" onclick="App.probeAll()" data-i18n="accounts.toolbar.probeAll">全部探测</button>
+        <button class="btn btn-outline btn-sm" onclick="App.refreshAllCredits()" data-i18n="accounts.toolbar.refreshAll">刷新全部余额</button>
+        <button class="btn btn-outline btn-sm" onclick="App.exportAccounts()" data-i18n="accounts.export.label">导出</button>
       </div>
-      <div class="section-body">
-        <div style="padding:8px 12px;margin-bottom:12px;background:var(--surface-2);border-radius:var(--radius);font-size:12px;color:var(--text-muted);line-height:1.6">
-          <span data-i18n="help.tokenGuide">推荐用 Token 方式添加账号 点</span>
-          <a href="https://windsurf.com/show-auth-token" target="_blank" style="color:var(--accent);font-weight:600">windsurf.com/show-auth-token</a>
-          <span data-i18n="help.tokenGuideEnd">登录后复制 Token 粘贴到下面就行 所有登录方式（邮箱/Google/GitHub）都能用</span>
-        </div>
-        <div class="field-row">
-          <div class="field" style="max-width:180px">
-            <label class="field-label" data-i18n="field.type.label">类型</label>
-            <select id="acc-type" class="select">
-              <option value="token" selected>Auth Token</option>
-              <option value="api_key">API Key</option>
-            </select>
-          </div>
-          <div class="field" style="flex:2">
-            <label class="field-label" data-i18n="field.key.label">Key / Token</label>
-            <input id="acc-key" class="input" data-i18n-placeholder="field.key.placeholder" placeholder="粘贴 Auth Token">
-          </div>
-          <div class="field" style="max-width:200px">
-            <label class="field-label" data-i18n="field.label.label">标签</label>
-            <input id="acc-label" class="input" data-i18n-placeholder="field.label.placeholder" placeholder="可选">
-          </div>
-        </div>
-        <div class="field-row" style="margin-top:12px">
-          <div class="field" style="flex:1">
-            <label class="field-label" data-i18n="field.proxy.label">代理</label>
-            <input id="acc-proxy" class="input" data-i18n-placeholder="field.proxy.placeholder" placeholder="http://proxy:8080 或 socks5://user:pass@host:port（可选）">
-          </div>
-        </div>
-        <div class="field-hint" style="margin-top:4px" data-i18n="field.proxy.hint">留空则使用全局代理设置</div>
-        <div class="field-row-actions">
-          <button class="btn btn-primary" onclick="App.addAccount()" data-i18n="action.add">添加账号</button>
-          <button id="local-import-btn" class="btn btn-outline" onclick="App.discoverLocalWindsurf()" data-i18n="action.importLocal" data-i18n-title="action.importLocalTitle" title="从本地 Windsurf 客户端读取已登录的凭证（仅本机访问）">从本地 Windsurf 导入</button>
-        </div>
-        <div id="local-import-hint" style="margin-top:8px;color:var(--text-muted);font-size:12px;line-height:1.6"></div>
-        <div id="local-windsurf-result" style="margin-top:12px"></div>
-        <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px">
-          <div class="section-title" style="font-size:14px" data-i18n="section.smartImport.title">智能导入</div>
-          <div class="text-sm text-muted" style="margin:4px 0 10px" data-i18n="section.smartImport.desc">粘贴即识别,支持批量。自动识别 Session Token / show-auth-token 链接 / Firebase Refresh / 邮箱密码 / 标签配对,可混合。auth1_ 是中间票,不能当池密钥。</div>
-          <textarea id="import-text-area" class="input" rows="5" style="width:100%;font-family:var(--mono);font-size:12px;resize:vertical" data-i18n-placeholder="section.smartImport.placeholder" placeholder="devin-session-token$...  或  show-auth-token 链接  或  email----password  每行一个,可混合"></textarea>
-          <div style="margin-top:10px"><button class="btn btn-primary" onclick="App.importAccountsFromText()" data-i18n="section.smartImport.button">智能导入</button></div>
-          <div id="import-text-result" style="margin-top:10px"></div>
-        </div>
+      <div class="tb-group" role="group" data-i18n-aria-label="accounts.toolbar.view">
+        <button class="btn btn-ghost btn-sm" id="accounts-density-btn" onclick="App.toggleAccountsDensity()" aria-pressed="false" data-i18n-title="accounts.density.title" title="切换紧凑/宽松密度"><span data-i18n="accounts.density.label">紧凑</span></button>
       </div>
+      <span class="acct-op-status" id="accounts-op-status" aria-live="polite"></span>
     </div>
 
-    <div id="ls-pool-card"></div>
+    <!-- Filter bar: search / tier / status / flagged / count / clear. Every control
+         maps to a server query param, so a filter never silently means "this page". -->
+    <div class="acct-filters" role="search">
+      <input id="accounts-search" type="search" class="input" autocomplete="off" oninput="App.onAccountsSearchInput(this.value)" data-i18n-placeholder="accounts.filter.searchPlaceholder" placeholder="搜索邮箱 / ID / 标签">
+      <select id="accounts-tier-filter" class="select" onchange="App.setAccountsTier(this.value)" data-i18n-title="accounts.tierFilter.title" title="按层级筛选">
+        <option value="" data-i18n="accounts.tierFilter.all">全部层级</option>
+        <option value="pro" data-i18n="accounts.tierFilter.pro">Pro</option>
+        <option value="free" data-i18n="accounts.tierFilter.free">Free</option>
+        <option value="unknown" data-i18n="accounts.tierFilter.unknown">未知</option>
+        <option value="expired" data-i18n="accounts.tierFilter.expired">已过期</option>
+      </select>
+      <select id="accounts-status-filter" class="select" onchange="App.setAccountsStatus(this.value)" data-i18n-title="accounts.filter.statusTitle" title="按状态筛选">
+        <option value="" data-i18n="accounts.filter.allStatus">全部状态</option>
+        <option value="active" data-i18n="accounts.status.active">正常</option>
+        <option value="disabled" data-i18n="accounts.status.disabled">停用</option>
+        <option value="error" data-i18n="accounts.status.error">异常</option>
+        <option value="quota_cooled" data-i18n="accounts.status.quotaCooled">配额耗尽</option>
+        <option value="rate_limited" data-i18n="accounts.status.rateLimited">限流中</option>
+        <option value="capacity" data-i18n="accounts.status.capacity">模型繁忙</option>
+        <option value="near_limit" data-i18n="accounts.status.nearLimit">接近上限</option>
+        <option value="watch" data-i18n="accounts.status.watch">有错误</option>
+      </select>
+      <button class="chip-toggle" id="accounts-flagged-toggle" aria-pressed="false" onclick="App.toggleAccountsFlagged()" data-i18n="accounts.filter.flagged">仅异常</button>
+      <span class="acct-filter-count" id="accounts-filter-count"></span>
+      <button class="btn btn-ghost btn-xs acct-filter-clear" id="accounts-filter-clear" onclick="App.clearAccountsFilters()" hidden data-i18n="accounts.filter.clear">清除筛选</button>
+    </div>
 
     <div class="section">
-      <div class="section-header">
-        <div>
-          <div class="section-title" data-i18n="section.accountList.title">账号列表</div>
-          <div class="section-desc" data-i18n="section.accountList.desc">点击探测按钮可单独更新某个账号的能力信息</div>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <select id="accounts-tier-filter" class="select" style="max-width:160px" onchange="App.setAccountsTier(this.value)" data-i18n-title="accounts.tierFilter.title" title="按层级筛选">
-            <option value="" data-i18n="accounts.tierFilter.all">全部层级</option>
-            <option value="pro" data-i18n="accounts.tierFilter.pro">Pro</option>
-            <option value="free" data-i18n="accounts.tierFilter.free">Free</option>
-            <option value="unknown" data-i18n="accounts.tierFilter.unknown">未知</option>
-            <option value="expired" data-i18n="accounts.tierFilter.expired">已过期</option>
-          </select>
-          <button class="btn btn-ghost btn-sm" id="accounts-density-btn" onclick="App.toggleAccountsDensity()" data-i18n-title="accounts.density.title" title="切换紧凑/宽松密度"><span data-i18n="accounts.density.label">紧凑</span></button>
-          <button class="btn btn-outline btn-sm" onclick="App.exportAccounts()" data-i18n-title="accounts.export.title" title="导出全部账号（不含密钥）"><span data-i18n="accounts.export.label">导出</span></button>
-        </div>
-      </div>
       <div class="section-body tight">
         <div id="accounts-batch-bar" class="batch-bar" style="display:none">
           <span class="batch-count" id="accounts-batch-count"></span>
+          <span class="batch-scope" id="accounts-batch-scope"></span>
           <div class="btn-group">
             <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('enable')" data-i18n="batchOps.enable">启用</button>
             <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('disable')" data-i18n="batchOps.disable">禁用</button>
-            <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('refresh')" data-i18n="batchOps.refresh">刷新额度</button>
             <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('probe')" data-i18n="batchOps.probe">探测</button>
+            <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('refresh')" data-i18n="batchOps.refresh">刷新额度</button>
+            <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('reset')" data-i18n="accounts.batch.reset">重置错误</button>
+            <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('export')" data-i18n="accounts.batch.export">导出所选</button>
             <button class="btn btn-ghost btn-xs" style="color:var(--error)" onclick="App.batchAccountOp('delete')" data-i18n="batchOps.delete">删除</button>
             <button class="btn btn-ghost btn-xs" onclick="App.clearAccountSelection()" data-i18n="batchOps.clear">清除选择</button>
           </div>
+          <span class="batch-progress" id="accounts-batch-progress" aria-live="polite"></span>
+          <button class="batch-fail-link" id="accounts-batch-fail" hidden onclick="App.toggleBatchFailures()" data-i18n="accounts.batch.viewFailures">查看失败</button>
+          <div class="batch-fail-pop" id="accounts-batch-fail-pop" hidden></div>
         </div>
         <div class="table-wrap">
           <table id="accounts-table">
-            <thead><tr><th style="width:28px;text-align:center"><input type="checkbox" id="accounts-select-all" aria-label="Select all" onchange="App.toggleSelectAllAccounts(this.checked)"></th><th data-i18n="table.header.id">ID</th><th data-i18n="table.header.label">标签</th><th data-i18n="table.header.tier">层级</th><th data-i18n="table.header.rpm">RPM</th><th class="th-help" data-i18n="table.header.quota" data-i18n-title="creditsBar.columnTooltip" title="配额使用情况&#10;&#10;日 — 每日高级请求剩余百分比（重置频繁）&#10;周 — 每周高级请求剩余百分比（Trial 账号重点看这条）&#10;&#10;数值越高 = 剩余越多 = 越安全&#10;悬停单条进度条可查看重置时间">配额</th><th data-i18n="table.header.models">可用模型</th><th data-i18n="table.header.status">状态</th><th data-i18n="table.header.error">错误</th><th data-i18n="table.header.lastUsed">最后使用</th><th data-i18n="table.header.key">Key</th><th data-i18n="table.header.action">操作</th></tr></thead>
+            <thead><tr><th class="acct-check-col" style="text-align:center"><input type="checkbox" id="accounts-select-all" aria-label="选择本页" data-i18n-aria-label="accounts.selectAllPage" data-i18n-title="accounts.selectAllPage" title="选择本页" onchange="App.toggleSelectAllAccounts(this.checked)"></th><th class="acct-account-col" data-i18n="table.header.account">账号</th><th class="acct-tier-col" data-i18n="table.header.tier">层级</th><th class="acct-state-col" data-i18n="table.header.status">状态</th><th class="acct-quota-col th-help" data-i18n="table.header.quota" data-i18n-title="creditsBar.columnTooltip" title="配额使用情况">配额</th><th class="acct-models-col" data-i18n="table.header.models">模型</th><th class="acct-rpm-col" data-i18n="table.header.rpm">RPM</th><th class="acct-last-col" data-i18n="table.header.lastUsed">最后使用</th><th class="acct-actions-col" data-i18n="table.header.action">操作</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
@@ -2747,7 +2677,315 @@ tbody tr:hover td { background: var(--surface-2); }
         </div>
       </div>
     </div>
+
+    <!-- Detail drawer: replaces the old inline detail row (a colspan cell). -->
+    <div class="acct-drawer-mask hidden" id="acct-drawer-mask" onclick="App.closeAccountDrawer()"></div>
+    <aside class="acct-drawer hidden" id="acct-drawer" role="dialog" aria-modal="true" aria-labelledby="acct-drawer-title" tabindex="-1">
+      <div class="acct-drawer-head">
+        <div style="min-width:0;flex:1">
+          <div class="acct-drawer-title" id="acct-drawer-title"></div>
+          <div class="acct-drawer-sub" id="acct-drawer-sub"></div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="App.closeAccountDrawer()" aria-label="关闭" data-i18n-aria-label="action.close">×</button>
+      </div>
+      <div class="acct-drawer-body" id="acct-drawer-body"></div>
+      <div class="acct-drawer-foot" id="acct-drawer-foot"></div>
+    </aside>
   </section>
+
+  <!-- Add / login / import modal — the ONLY entry point for new credentials. -->
+  <div class="modal-overlay hidden" id="add-account-overlay" role="presentation" onclick="if(event.target===this)App.closeAddAccountModal()">
+    <div class="modal add-modal" role="dialog" aria-modal="true" aria-labelledby="add-modal-title">
+      <div class="modal-header add-modal-head">
+        <div>
+          <div class="modal-title" id="add-modal-title" data-i18n="accounts.add.title">添加账号</div>
+          <div class="modal-desc" data-i18n="accounts.add.desc">登录、粘贴凭证、批量导入或从本机导入</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="App.closeAddAccountModal()" aria-label="关闭" data-i18n-aria-label="action.close">×</button>
+      </div>
+      <div class="add-tabs" role="tablist" data-i18n-aria-label="accounts.add.tabsLabel">
+        <button class="add-tab active" role="tab" id="add-tab-login" aria-selected="true" aria-controls="add-panel-login" onclick="App.switchAddTab('login')" data-i18n="accounts.add.tab.login">登录</button>
+        <button class="add-tab" role="tab" id="add-tab-paste" aria-selected="false" aria-controls="add-panel-paste" onclick="App.switchAddTab('paste')" data-i18n="accounts.add.tab.paste">粘贴凭证</button>
+        <button class="add-tab" role="tab" id="add-tab-import" aria-selected="false" aria-controls="add-panel-import" onclick="App.switchAddTab('import')" data-i18n="accounts.add.tab.import">批量导入</button>
+        <button class="add-tab" role="tab" id="add-tab-local" aria-selected="false" aria-controls="add-panel-local" onclick="App.switchAddTab('local')" data-i18n="accounts.add.tab.local">本机扫描</button>
+      </div>
+      <div class="add-modal-body">
+        <div class="add-panel active" id="add-panel-login" role="tabpanel" aria-labelledby="add-tab-login">
+          <div class="section">
+            <div class="section-header">
+              <div>
+                <div class="section-title" data-i18n="section.oauthLogin.title">快捷登录（推荐）</div>
+                <div class="section-desc" data-i18n="section.oauthLogin.desc">用你的 Google 或 GitHub 账号直接登录 Windsurf 无需密码</div>
+              </div>
+            </div>
+            <div class="section-body">
+              <div style="display:flex;gap:12px;flex-wrap:wrap">
+                <button class="btn" onclick="App.oauthLogin('google')" id="oauth-google-btn" style="background:#4285F4;color:#fff;padding:10px 24px;font-weight:600;display:flex;align-items:center;gap:8px">
+                  <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.9 33.1 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.2-2.7-.4-3.9z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.5 15.5 18.8 12 24 12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.6-11.2-8.5l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.2-2.7-.4-3.9z"/></svg>
+                  <span data-i18n="oauth.google">Google 登录</span>
+                </button>
+                <button class="btn" onclick="App.oauthLogin('github')" id="oauth-github-btn" style="background:#24292e;color:#fff;padding:10px 24px;font-weight:600;display:flex;align-items:center;gap:8px">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.08-.73.08-.73 1.2.08 1.84 1.23 1.84 1.23 1.07 1.83 2.81 1.3 3.5 1 .1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 016.02 0c2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.8 5.63-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.21.7.82.58C20.56 21.8 24 17.3 24 12 24 5.37 18.63 0 12 0z"/></svg>
+                  <span data-i18n="oauth.github">GitHub 登录</span>
+                </button>
+              </div>
+              <div id="oauth-status" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
+              <div id="oauth-token-step" class="hidden" style="margin-top:14px;padding:14px;background:var(--surface-2);border-radius:var(--radius);border-left:3px solid var(--accent)">
+                <div style="font-weight:600;margin-bottom:6px" data-i18n="oauth.step2Title">② 粘贴 Windsurf 返回的 Token</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px" data-i18n="oauth.step2Desc">在新标签完成登录后 复制整条回调地址栏 URL(或页面显示的 Token)粘到这里点添加</div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                  <input id="oauth-token-input" type="text" class="input" style="flex:1;min-width:260px" data-i18n-placeholder="oauth.urlOrTokenPlaceholder" placeholder="粘贴回调 URL 或 Auth Token...">
+                  <button class="btn btn-primary" onclick="App.submitOAuthToken()" data-i18n="oauth.addWithToken">用 Token 添加</button>
+                </div>
+                <a id="oauth-manual-link" href="#" class="hidden" onclick="return App.openWindsurfSignin(event)" style="display:inline-block;margin-top:8px;font-size:12px;color:var(--accent)" data-i18n="oauth.openManually">登录页没弹出来？点这里手动打开</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-header">
+              <div>
+                <div class="section-title" data-i18n="section.emailLogin.title">邮箱登录</div>
+                <div class="section-desc" data-i18n="section.emailLogin.desc">先检测账号登录方式：有密码的账号用密码登录，OAuth/邮箱验证码账号用验证码登录</div>
+              </div>
+            </div>
+            <div class="section-body">
+              <div class="field-row">
+                <div class="field">
+                  <label class="field-label" data-i18n="field.email.label">邮箱</label>
+                  <input id="wl-email" class="input" data-i18n-placeholder="field.email.placeholder" placeholder="your-email@example.com" autocomplete="off" onblur="App.windsurfProbeFromInput()">
+                  <div class="field-hint" id="wl-probe-status"></div>
+                </div>
+                <div class="field" id="wl-password-field">
+                  <label class="field-label" data-i18n="field.password.label">密码</label>
+                  <input id="wl-password" class="input" type="password" data-i18n-placeholder="field.password.placeholder" placeholder="••••••••" autocomplete="off" onkeydown="if(event.key==='Enter')App.windsurfLogin()">
+                </div>
+              </div>
+              <div class="field-row-actions">
+                <button class="btn btn-primary" onclick="App.windsurfLogin()" id="wl-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+                  <span data-i18n="action.login">登录</span>
+                </button>
+                <label class="checkbox" style="margin-left:auto">
+                  <input type="checkbox" id="wl-auto-add" checked>
+                  <span class="box"></span>
+                  <span data-i18n="field.autoAdd">登录成功自动加入账号池</span>
+                </label>
+              </div>
+              <!-- Email-code path: shown when the probe reports has_password:false.
+                   The code is requested explicitly by the operator, never auto-sent. -->
+              <div id="wl-email-code-field" class="hidden" style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">
+                <div class="field-row">
+                  <div class="field">
+                    <label class="field-label" data-i18n="field.otpCode.label">验证码 / OTP Code</label>
+                    <input id="wl-email-code" class="input" inputmode="numeric" autocomplete="one-time-code" maxlength="10" data-i18n-placeholder="field.otpCode.placeholder" placeholder="123456" onkeydown="if(event.key==='Enter')App.windsurfCompleteEmailCode()">
+                    <div class="field-hint" data-i18n="field.otpCode.hint">从邮箱获取 6 位验证码</div>
+                  </div>
+                  <div class="field" style="align-self:flex-end">
+                    <button class="btn btn-outline" onclick="App.windsurfSendEmailCode()" id="wl-send-code-btn">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                      <span data-i18n="action.sendCode">发送验证码</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="field-row-actions">
+                  <button class="btn btn-primary" onclick="App.windsurfCompleteEmailCode()" id="wl-code-login-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+                    <span data-i18n="action.verifyAndLogin">验证并登录</span>
+                  </button>
+                </div>
+                <div id="wl-code-status" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
+              </div>
+              <!-- OAuth-only path: has_password:false and no email connection. -->
+              <div id="wl-oauth-hint" class="hidden" style="margin-top:14px;padding:12px;background:var(--surface-2);border-radius:var(--radius);border-left:3px solid var(--accent)">
+                <div class="text-sm" data-i18n="emailLogin.oauthOnlyHint">该账号没有密码，也不支持邮箱验证码。请用上面的 Google / GitHub 按钮登录，或粘贴 show-auth-token 页面的 Token。</div>
+                <button class="btn btn-outline" style="margin-top:8px" onclick="App.showOAuthTokenStep()" data-i18n="emailLogin.useToken">改用 Token 登录</button>
+              </div>
+              <label class="checkbox" style="margin-top:10px" data-i18n-title="field.storeCredentialHint" title="加密保存密码用于自动续期">
+                <input type="checkbox" id="wl-store-cred">
+                <span class="box"></span>
+                <span data-i18n="field.storeCredential">加密保存密码以在会话失效时自动续期</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="section" id="wl-proxy-section">
+            <div class="section-header">
+              <div>
+                <div class="section-title" data-i18n="section.loginProxy.title">登录代理（可选）</div>
+                <div class="section-desc" data-i18n="section.loginProxy.desc">为本次登录指定代理；留空则使用全局代理设置。代理生效后账号的后续聊天请求也会经此代理出站</div>
+              </div>
+            </div>
+            <div class="section-body">
+              <div class="field-row">
+                <div class="field" style="max-width:120px">
+                  <label class="field-label" data-i18n="field.type.label">类型</label>
+                  <select id="wl-proxy-type" class="select">
+                    <option value="http">HTTP</option>
+                    <option value="https">HTTPS</option>
+                    <option value="socks5">SOCKS5</option>
+                  </select>
+                </div>
+                <div class="field" style="flex:2">
+                  <label class="field-label" data-i18n="field.proxyHost.label">主机</label>
+                  <input id="wl-proxy-host" class="input" data-i18n-placeholder="field.proxyHost.placeholder" placeholder="留空=使用全局">
+                </div>
+                <div class="field" style="max-width:110px">
+                  <label class="field-label" data-i18n="field.port.label">端口</label>
+                  <input id="wl-proxy-port" class="input" data-i18n-placeholder="field.port.placeholder" placeholder="8080" type="number">
+                </div>
+                <div class="field">
+                  <label class="field-label" data-i18n="field.username.label">用户名</label>
+                  <input id="wl-proxy-user" class="input" data-i18n-placeholder="field.username.placeholder" placeholder="可选">
+                </div>
+                <div class="field">
+                  <label class="field-label" data-i18n="field.passwordProxy.label">密码</label>
+                  <input id="wl-proxy-pass" class="input" type="password" data-i18n-placeholder="field.passwordProxy.placeholder" placeholder="可选">
+                </div>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
+                <button class="btn btn-outline btn-sm" onclick="App.testLoginProxy()" id="wl-proxy-test-btn">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
+                  <span data-i18n="proxy.test.button">测试代理</span>
+                </button>
+                <span id="wl-proxy-test-result" class="text-sm text-muted"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-header">
+              <div>
+                <div class="section-title" data-i18n="section.loginHistory.title">登录历史</div>
+                <div class="section-desc" data-i18n="section.loginHistory.desc">本地记录最近 50 条登录操作</div>
+              </div>
+            </div>
+            <div class="section-body tight">
+              <div class="table-wrap">
+                <table id="wl-history-table">
+                  <thead><tr><th data-i18n="table.header.time">时间</th><th data-i18n="table.header.email">邮箱</th><th data-i18n="table.header.status">状态</th><th data-i18n="table.header.proxy">代理</th><th data-i18n="table.header.action">操作</th></tr></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="add-panel" id="add-panel-paste" role="tabpanel" aria-labelledby="add-tab-paste">
+          <div class="section">
+            <div class="section-header">
+              <div>
+                <div class="section-title" data-i18n="section.addAccount.title">添加账号</div>
+                <div class="section-desc" data-i18n="section.addAccount.desc">支持 API Key 或 Auth Token 两种方式</div>
+              </div>
+            </div>
+            <div class="section-body">
+              <div style="padding:8px 12px;margin-bottom:12px;background:var(--surface-2);border-radius:var(--radius);font-size:12px;color:var(--text-muted);line-height:1.6">
+                <span data-i18n="help.tokenGuide">推荐用 Token 方式添加账号 点</span>
+                <a href="https://windsurf.com/show-auth-token" target="_blank" style="color:var(--accent);font-weight:600">windsurf.com/show-auth-token</a>
+                <span data-i18n="help.tokenGuideEnd">登录后复制 Token 粘贴到下面就行 所有登录方式（邮箱/Google/GitHub）都能用</span>
+              </div>
+              <div class="field-row">
+                <div class="field" style="max-width:180px">
+                  <label class="field-label" data-i18n="field.type.label">类型</label>
+                  <select id="acc-type" class="select">
+                    <option value="token" selected>Auth Token</option>
+                    <option value="api_key">API Key</option>
+                  </select>
+                </div>
+                <div class="field" style="flex:2">
+                  <label class="field-label" data-i18n="field.key.label">Key / Token</label>
+                  <input id="acc-key" class="input" data-i18n-placeholder="field.key.placeholder" placeholder="粘贴 Auth Token">
+                </div>
+                <div class="field" style="max-width:200px">
+                  <label class="field-label" data-i18n="field.label.label">标签</label>
+                  <input id="acc-label" class="input" data-i18n-placeholder="field.label.placeholder" placeholder="可选">
+                </div>
+              </div>
+              <div class="field-row" style="margin-top:12px">
+                <div class="field" style="flex:1">
+                  <label class="field-label" data-i18n="field.proxy.label">代理</label>
+                  <input id="acc-proxy" class="input" data-i18n-placeholder="field.proxy.placeholder" placeholder="http://proxy:8080 或 socks5://user:pass@host:port（可选）">
+                </div>
+              </div>
+              <div class="field-hint" style="margin-top:4px" data-i18n="field.proxy.hint">留空则使用全局代理设置</div>
+              <div class="field-row-actions">
+                <button class="btn btn-primary" onclick="App.addAccount()" data-i18n="action.add">添加账号</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="add-panel" id="add-panel-import" role="tabpanel" aria-labelledby="add-tab-import">
+          <div class="section">
+            <div class="section-header">
+              <div>
+                <div class="section-title" data-i18n="section.smartImport.title">智能导入</div>
+                <div class="section-desc" data-i18n="section.smartImport.desc">粘贴即识别,支持批量。自动识别 Session Token / show-auth-token 链接 / Firebase Refresh / 邮箱密码 / 标签配对,可混合。auth1_ 是中间票,不能当池密钥。</div>
+              </div>
+            </div>
+            <div class="section-body">
+              <textarea id="import-text-area" class="input" rows="5" style="width:100%;font-family:var(--mono);font-size:12px;resize:vertical" data-i18n-placeholder="section.smartImport.placeholder" placeholder="devin-session-token$...  或  show-auth-token 链接  或  email----password  每行一个,可混合"></textarea>
+              <div style="margin-top:10px"><button class="btn btn-primary" onclick="App.importAccountsFromText()" data-i18n="section.smartImport.button">智能导入</button></div>
+              <div id="import-text-result" style="margin-top:10px"></div>
+            </div>
+          </div>
+          <div class="section">
+            <div class="section-header">
+              <div>
+                <div class="section-title" data-i18n="field.batchInput.label">批量导入</div>
+                <div class="section-desc" data-i18n="field.batchInput.hint">每行一个账号。支持：邮箱 密码、邮箱----密码、邮箱|密码、邮箱,密码、邮箱:密码。也支持上传 JSON 文件。代理可选，格式：[代理] 邮箱 密码。</div>
+              </div>
+            </div>
+            <div class="section-body">
+              <textarea id="wl-batch-input" class="textarea" rows="6" placeholder="user1@mail.com  pass123&#10;http://proxy:8080 user2@mail.com  pass456&#10;socks5://user:pass@1.2.3.4:1080 user3@mail.com  pass789"></textarea>
+              <input id="wl-batch-file" type="file" accept=".json,application/json" class="hidden" onchange="App.handleWindsurfBatchFile(event)">
+              <div class="field-row-actions">
+                <button class="btn btn-outline" onclick="App.pasteWindsurfBatch()">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>
+                  <span data-i18n="action.readClipboard">读取剪贴板</span>
+                </button>
+                <button class="btn btn-outline" onclick="App.triggerWindsurfBatchFile()">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  <span data-i18n="action.uploadJson">上传 JSON</span>
+                </button>
+                <button class="btn btn-ghost hidden" id="wl-batch-file-clear" onclick="App.clearWindsurfBatchFile()">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  <span data-i18n="action.clearFile">清除文件</span>
+                </button>
+                <button class="btn btn-primary" onclick="App.windsurfLoginBatch()" id="wl-batch-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M3 5h18"/><path d="M3 12h18"/><path d="M3 19h18"/></svg>
+                  <span data-i18n="action.batchImport">批量导入并登录</span>
+                </button>
+              </div>
+              <div class="field-hint" id="wl-batch-file-status" data-i18n="batch.fileNone">未选择 JSON 文件</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="add-panel" id="add-panel-local" role="tabpanel" aria-labelledby="add-tab-local">
+          <div class="section">
+            <div class="section-header">
+              <div>
+                <div class="section-title" data-i18n="accounts.add.localTitle">从本机 Windsurf 导入</div>
+                <div class="section-desc" data-i18n="accounts.add.localDesc">读取本机 Windsurf 客户端已登录的凭证（仅 loopback 访问）</div>
+              </div>
+            </div>
+            <div class="section-body">
+              <div class="field-row-actions">
+                <button id="local-import-btn" class="btn btn-outline" onclick="App.discoverLocalWindsurf()" data-i18n="action.importLocal" data-i18n-title="action.importLocalTitle" title="从本地 Windsurf 客户端读取已登录的凭证（仅本机访问）">从本地 Windsurf 导入</button>
+              </div>
+              <div id="local-import-hint" style="margin-top:8px;color:var(--text-muted);font-size:12px;line-height:1.6"></div>
+              <div id="local-windsurf-result" style="margin-top:12px"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="add-result hidden" id="wl-result"></div>
+      </div>
+    </div>
+  </div>
+
 
   <!-- Models -->
   <section class="panel" id="p-settings">
@@ -3160,44 +3398,6 @@ tbody tr:hover td { background: var(--surface-2); }
             <thead><tr><th data-i18n="table.header.accountId">账号 ID</th><th data-i18n="table.header.requests">请求</th><th data-i18n="table.header.success">成功</th><th data-i18n="table.header.errors">错误</th><th data-i18n="table.header.successRate">成功率</th></tr></thead>
             <tbody></tbody>
           </table>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Bans -->
-  <section class="panel" id="p-bans">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title" data-i18n="page.bans">异常监测</h1>
-        <div class="page-subtitle" data-i18n="pageSubtitle.bans">追踪错误账号和异常状态</div>
-      </div>
-    </div>
-    <div class="metrics-grid" id="ban-cards"></div>
-    <div class="section">
-      <div class="section-header">
-        <div>
-          <div class="section-title" data-i18n="section.banStatus.title">账号健康状况</div>
-          <div class="section-desc" data-i18n="section.banStatus.desc">因错误、封禁或限流被标记的账号</div>
-        </div>
-      </div>
-      <div class="section-body tight">
-        <div class="table-wrap">
-          <table id="ban-table">
-            <thead><tr><th data-i18n="table.header.account">账号</th><th data-i18n="table.header.status">状态</th><th data-i18n="table.header.errorCount">错误数</th><th data-i18n="table.header.lastUsed">最后使用</th><th data-i18n="table.header.action">操作</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <div class="table-pagination" id="ban-pagination">
-          <button class="btn btn-ghost btn-xs" id="ban-prev" onclick="App.setBansPage(App.bansPage - 1)" data-i18n="action.prev">上一页</button>
-          <span class="page-label" id="ban-page-label">-</span>
-          <select class="select" id="ban-page-size" onchange="App.setBansPageSize(this.value)">
-            <option value="25">25</option>
-            <option value="50">50</option>
-            <option value="100">100</option>
-            <option value="200">200</option>
-          </select>
-          <button class="btn btn-ghost btn-xs" id="ban-next" onclick="App.setBansPage(App.bansPage + 1)" data-i18n="action.next">下一页</button>
         </div>
       </div>
     </div>
@@ -3642,8 +3842,6 @@ const App = {
   accountsHasMore: false,
   proxyPage: 1,
   proxyPageSize: Number(localStorage.getItem('proxyAccountsPageSize') || 50),
-  bansPage: 1,
-  bansPageSize: Number(localStorage.getItem('bansPageSize') || 50),
   _accountDetails: new Map(),
 
   applyLang() {
@@ -3801,9 +3999,9 @@ const App = {
     const activePanelId = document.querySelector('.panel.active')?.id?.replace(/^p-/, '');
     if (!activePanelId) return;
     const loaders = {
-      overview: 'loadOverview', 'windsurf-login': 'loadWindsurfLogin',
+      overview: 'loadOverview',
       accounts: 'loadAccounts', models: 'loadModels', proxy: 'loadProxy',
-      logs: 'loadLogs', stats: 'loadStats', bans: 'loadBans',
+      logs: 'loadLogs', stats: 'loadStats',
       experimental: 'loadExperimental', credits: 'loadCredits', settings: 'loadSettings',
     };
     const loader = loaders[activePanelId];
@@ -4166,6 +4364,19 @@ docker compose up -d --force-recreate</pre>
   },
 
   navigate(panel) {
+    // Removed pages stay reachable as aliases so old docs links do not 404:
+    // #windsurf-login opens the add modal on its 登录 tab; #bans lands on
+    // 账号管理 with 仅异常 on. Neither is a destination in the sidebar.
+    if (panel === 'windsurf-login') {
+      this.navigate('accounts');
+      this.openAddAccountModal('login');
+      return;
+    }
+    if (panel === 'bans') {
+      this.accountsFlagged = true;
+      this.navigate('accounts');
+      return;
+    }
     this._overviewLoadGeneration = (this._overviewLoadGeneration || 0) + 1;
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.sidebar nav a').forEach(a => a.classList.remove('active'));
@@ -4185,9 +4396,9 @@ docker compose up -d --force-recreate</pre>
     this._teardownFires();
 
     const loaders = {
-      overview: 'loadOverview', 'windsurf-login': 'loadWindsurfLogin',
+      overview: 'loadOverview',
       accounts: 'loadAccounts', models: 'loadModels', proxy: 'loadProxy',
-      logs: 'loadLogs', stats: 'loadStats', bans: 'loadBans',
+      logs: 'loadLogs', stats: 'loadStats',
       experimental: 'loadExperimental',
       credits: 'loadCredits', settings: 'loadSettings',
     };
@@ -4456,6 +4667,9 @@ docker compose up -d --force-recreate</pre>
       if (!this.password && !this._noAuth) return;
       const r = await this.api('GET', '/pool-events').catch(() => null);
       if (!r || !Array.isArray(r.accounts)) return;
+      // 20 s diff, no re-render: repaint only the rows whose resolved state
+      // changed (UIResearch §3.12). The table itself refreshes on demand.
+      this._patchAccountStates(r.accounts);
       const events = this._poolPush(r.accounts, Date.now());
       for (const e of events) {
         const sev = e.severity === 'success' ? 'success' : (e.severity === 'error' ? 'error' : 'info');
@@ -6762,15 +6976,6 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   },
 
   // ─── Accounts ────────────────────────────────
-  accountsListUrl({ page = this.accountsPage, pageSize = this.accountsPageSize, filter = '', tier = '' } = {}) {
-    const qs = new URLSearchParams();
-    qs.set('view', 'summary');
-    qs.set('page', String(Math.max(1, Number(page) || 1)));
-    qs.set('pageSize', String(Math.max(1, Math.min(200, Number(pageSize) || 50))));
-    if (filter) qs.set('filter', filter);
-    if (tier) qs.set('tier', tier);
-    return `/accounts?${qs.toString()}`;
-  },
 
   renderTablePagination(prefix, d = {}, pageStateKey, pageSizeStateKey) {
     const total = Number(d.total || 0);
@@ -6830,34 +7035,58 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const table = document.getElementById('accounts-table');
     if (table) table.classList.toggle('accounts-compact', !!this.accountsCompact);
     const btn = document.getElementById('accounts-density-btn');
-    if (btn) btn.classList.toggle('active', !!this.accountsCompact);
+    if (btn) {
+      btn.classList.toggle('active', !!this.accountsCompact);
+      btn.setAttribute('aria-pressed', this.accountsCompact ? 'true' : 'false');
+    }
   },
 
   async exportAccounts() {
     try {
-      // Export the whole pool's summary view (metadata only — keyPrefix + masked
-      // key, never raw tokens). Build the URL directly so pageSize can exceed the
-      // 200 clamp in accountsListUrl (backend allows up to 1000). Honors the active
-      // tier filter so it exports exactly what the list is showing.
+      // Export exactly what the list is showing: same q/status/tier/flagged
+      // filters, whole filtered set (metadata only — masked key, never tokens).
+      // pageSize may exceed the 200 list clamp (backend allows up to 1000).
       const qs = new URLSearchParams({ view: 'summary', page: '1', pageSize: '1000' });
       if (this.accountsTier) qs.set('tier', this.accountsTier);
+      if (this.accountsFlagged) qs.set('filter', 'flagged');
+      if (this.accountsQuery) qs.set('q', this.accountsQuery);
+      if (this.accountsStatus) qs.set('status', this.accountsStatus);
       const r = await this.api('GET', `/accounts?${qs.toString()}`);
       // A failed read used to download an empty pool file and toast "exported
       // 0 accounts" (#257). Keep the failure visible instead of producing it.
       if (r?.success === false) return;
       const accounts = r.accounts || [];
-      const payload = { _exportedAt: new Date().toISOString(), count: accounts.length, tier: this.accountsTier || 'all', accounts };
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `windsurfapi-accounts-${new Date().toISOString().slice(0, 10)}.json`;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 100);
+      const payload = {
+        _exportedAt: new Date().toISOString(),
+        count: accounts.length,
+        tier: this.accountsTier || 'all',
+        status: this.accountsStatus || 'all',
+        flagged: !!this.accountsFlagged,
+        q: this.accountsQuery || '',
+        accounts,
+      };
+      this.downloadAccountsJson(payload);
       this.toast(I18n.t('accounts.export.done', { count: accounts.length }), 'success');
     } catch (e) {
       this.toast(I18n.t('accounts.export.failed') + ': ' + (e.message || ''), 'error');
     }
+  },
+
+  downloadAccountsJson(payload) {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `windsurfapi-accounts-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 100);
+  },
+
+  async exportSelectedAccounts(ids) {
+    const accounts = ids.map((id) => this._accountsById?.get(id)).filter(Boolean);
+    if (!accounts.length) return;
+    this.downloadAccountsJson({ _exportedAt: new Date().toISOString(), count: accounts.length, selection: true, accounts });
+    this.toast(I18n.t('accounts.export.done', { count: accounts.length }), 'success');
   },
 
   setProxyPage(page) {
@@ -6875,20 +7104,6 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this.loadProxy();
   },
 
-  setBansPage(page) {
-    const next = Math.max(1, Number(page) || 1);
-    if (next === this.bansPage) return;
-    this.bansPage = next;
-    this.loadBans();
-  },
-
-  setBansPageSize(value) {
-    const next = Math.max(1, Math.min(200, Number(value) || 50));
-    this.bansPageSize = next;
-    this.bansPage = 1;
-    localStorage.setItem('bansPageSize', String(next));
-    this.loadBans();
-  },
 
   async getAccountDetail(id, { force = false } = {}) {
     if (!force && this._accountDetails?.has(id)) return this._accountDetails.get(id);
@@ -6899,233 +7114,636 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     return d.account;
   },
 
-  async loadAccounts() {
-    // v2.0.57 Fix 5 — refresh drought banner alongside accounts so a low
-    // pool state shows up the moment the user opens the panel.
-    this.loadDrought();
-    // The "从本地 Windsurf 导入" button lives in this (p-accounts) panel, so its
-    // loopback-only availability must be pre-checked here too — not just in
-    // loadWindsurfLogin — or on a public bind it stays enabled and 403s on click.
-    this.checkLocalImportAvailability();
-    const [d, ov] = await Promise.all([
-      this.api('GET', this.accountsListUrl({ tier: this.accountsTier })),
-      this.api('GET', '/overview').catch(() => null),
-    ]);
-    // 401 / lockout / network / stale-epoch: do not paint an empty table
-    // over a still-valid pool (#257). Overlay / toast already told the
-    // operator to re-auth. Any non-array (including `{}`) is a failed GET.
-    if (!Array.isArray(d?.accounts)) return;
-    // Reflect persisted tier filter + density on the toolbar controls.
+  // ─── Accounts (merged page, 2026-10-22) ───────────────────────────────
+  // Query state. Every filter is a server param so pagination, the count text
+  // and "select all N" can never disagree with the rows on screen.
+  accountsStatus: '',
+  accountsFlagged: false,
+  accountsQuery: '',
+  _accountsById: new Map(),
+  _drawerAccountId: null,
+  _batchResults: new Map(),
+
+  accountsListUrl({ page = this.accountsPage, pageSize = this.accountsPageSize, filter = '', tier = '', q = '', status = '', sort = '', order = '' } = {}) {
+    const qs = new URLSearchParams();
+    qs.set('view', 'summary');
+    qs.set('page', String(Math.max(1, Number(page) || 1)));
+    qs.set('pageSize', String(Math.max(1, Math.min(200, Number(pageSize) || 50))));
+    if (filter) qs.set('filter', filter);
+    if (tier) qs.set('tier', tier);
+    if (q) qs.set('q', q);
+    if (status) qs.set('status', status);
+    if (sort) qs.set('sort', sort);
+    if (order) qs.set('order', order);
+    return `/accounts?${qs.toString()}`;
+  },
+
+  onAccountsSearchInput(value) {
+    this.accountsQuery = String(value || '').trim();
+    clearTimeout(this._accountsSearchTimer);
+    this._accountsSearchTimer = setTimeout(() => {
+      this.accountsPage = 1;
+      this.loadAccounts();
+    }, 300);
+  },
+
+  setAccountsStatus(value) {
+    const allowed = ['', 'active', 'disabled', 'error', 'quota_cooled', 'rate_limited', 'capacity', 'near_limit', 'watch'];
+    this.accountsStatus = allowed.includes(value) ? value : '';
+    this.accountsPage = 1;
+    this.loadAccounts();
+  },
+
+  toggleAccountsFlagged() {
+    this.accountsFlagged = !this.accountsFlagged;
+    this.accountsPage = 1;
+    this.loadAccounts();
+  },
+
+  clearAccountsFilters() {
+    this.accountsQuery = '';
+    this.accountsStatus = '';
+    this.accountsTier = '';
+    this.accountsFlagged = false;
+    this.accountsPage = 1;
+    const search = document.getElementById('accounts-search');
+    if (search) search.value = '';
+    this.loadAccounts();
+  },
+
+  renderAccountsFilterState(d = {}) {
     const tierSel = document.getElementById('accounts-tier-filter');
     if (tierSel && tierSel.value !== this.accountsTier) tierSel.value = this.accountsTier;
-    this.applyAccountsDensity();
-    const instances = ov?.langServer?.instances || [];
-    const lsCap = ov?.langServer?.maxInstances || '-';
-    const poolCard = document.getElementById('ls-pool-card');
-    if (poolCard) {
-      if (instances.length > 0) {
-        poolCard.innerHTML = `
-          <div class="section">
-            <div class="section-header">
-              <div>
-                <div class="section-title">${I18n.t('section.lsPool.sectionTitle')}</div>
-                <div class="section-desc">${I18n.t('section.lsPool.sectionDesc', { count: instances.length })}</div>
-              </div>
-            </div>
-            <div class="section-body">
-              <div class="ls-pool">
-                ${instances.map(i => `
-                  <div class="ls-inst">
-                    <div class="ls-key">
-                      <span class="ls-dot ${i.ready ? '' : 'pending'}"></span>
-                      ${this.esc(i.key === 'default' ? I18n.t('section.lsPool.defaultInstance') : i.key.replace(/^px_/, ''))}
-                    </div>
-                    <div class="ls-meta">${I18n.t('section.lsPool.port')} ${i.port} · PID ${i.pid || '-'}</div>
-                    <div class="ls-meta">RSS ${i.rssBytes ? this.fmtBytes(i.rssBytes) : '-'} · Active ${i.activeRequests || 0} · Idle ${i.idleMs != null ? this.fmtMs(i.idleMs) : '-'}</div>
-                    <div class="ls-meta">Processes ${i.processCount || '-'} · Cap ${lsCap}</div>
-                    <div class="ls-meta">${this.esc(i.proxy || I18n.t('section.lsPool.noProxy'))}</div>
-                  </div>
-                `).join('')}
-              </div>
-              ${this.renderLsPoolTelemetry(ov?.langServer || {})}
-            </div>
-          </div>`;
-      } else {
-        poolCard.innerHTML = '';
-      }
+    const statusSel = document.getElementById('accounts-status-filter');
+    if (statusSel && statusSel.value !== this.accountsStatus) statusSel.value = this.accountsStatus;
+    const flaggedBtn = document.getElementById('accounts-flagged-toggle');
+    if (flaggedBtn) flaggedBtn.setAttribute('aria-pressed', this.accountsFlagged ? 'true' : 'false');
+    const clearBtn = document.getElementById('accounts-filter-clear');
+    const anyFilter = !!(this.accountsQuery || this.accountsStatus || this.accountsTier || this.accountsFlagged);
+    if (clearBtn) clearBtn.hidden = !anyFilter;
+    const count = document.getElementById('accounts-filter-count');
+    if (count) {
+      count.textContent = I18n.t('accounts.filter.count', {
+        shown: (d.accounts || []).length,
+        total: Number(d.total || 0),
+      });
     }
-    const tbody = document.querySelector('#accounts-table tbody');
+    const sub = document.getElementById('accounts-subtitle');
+    const stats = d.stats || {};
+    if (sub) {
+      sub.textContent = I18n.t('accounts.subtitle', {
+        total: Number(stats.total || 0),
+        active: Number(stats.active || 0),
+        flagged: Number(stats.flagged || 0),
+        balance: Number(stats.balanceTotal || 0).toFixed(2),
+      });
+    }
+  },
+
+  // Same precedence ladder as src/auth.js resolveAccountState(). The server
+  // sends `state`; this is the fallback for a summary produced by an older
+  // backend (and keeps the row honest if the field is missing).
+  accountStateOf(a) {
+    if (!a) return 'active';
+    if (a.status === 'disabled') return 'disabled';
+    if (a.status === 'error') return 'error';
+    if (a.quotaCooled) return 'quota_cooled';
+    if (a.rateLimited) return 'rate_limited';
+    if (a.capacityThrottled) return 'capacity';
+    const limit = Number(a.rpmLimit || 0);
+    const used = Number(a.rpmUsed || 0);
+    if (limit > 0 && used / limit >= 0.9) return 'near_limit';
+    if (Number(a.errorCount || 0) > 0) return 'watch';
+    return 'active';
+  },
+
+  accountStateMeta(state) {
+    switch (state) {
+      case 'disabled': return { labelKey: 'accounts.status.disabled', cls: 'disabled', band: 'var(--text-dim)' };
+      case 'error': return { labelKey: 'accounts.status.error', cls: 'error', band: 'var(--error)' };
+      case 'quota_cooled': return { labelKey: 'accounts.status.quotaCooled', cls: 'warn', band: 'var(--error)' };
+      case 'rate_limited': return { labelKey: 'accounts.status.rateLimited', cls: 'warn', band: 'var(--error)' };
+      case 'capacity': return { labelKey: 'accounts.status.capacity', cls: 'info', band: 'var(--warn)' };
+      case 'near_limit': return { labelKey: 'accounts.status.nearLimit', cls: 'warn', band: 'var(--warn)' };
+      case 'watch': return { labelKey: 'accounts.status.watch', cls: 'warn', band: 'var(--warn)' };
+      default: return { labelKey: 'accounts.status.active', cls: 'active', band: 'var(--success)' };
+    }
+  },
+
+  accountStateLabel(meta) {
+    const key = meta?.labelKey || 'accounts.status.active';
+    return I18n.t(key);
+  },
+
+  renderAccountsKpis(stats = {}, total = 0) {
+    const el = document.getElementById('accounts-kpis');
+    if (!el) return;
+    const balance = Number(stats.balanceTotal || 0);
+    const cell = (labelKey, value, sub, tone) => `
+      <div class="acct-kpi">
+        <div class="acct-kpi-label">${I18n.t(labelKey)}</div>
+        <div class="acct-kpi-value"${tone ? ` style="color:${tone}"` : ''}>${value}</div>
+        ${sub ? `<div class="acct-kpi-sub">${sub}</div>` : ''}
+      </div>`;
+    el.innerHTML = [
+      cell('accounts.kpi.total', Number(stats.total ?? total ?? 0)),
+      cell('accounts.kpi.active', Number(stats.active || 0), '', 'var(--success)'),
+      cell('accounts.kpi.disabled', Number(stats.disabled || 0)),
+      cell('accounts.kpi.flagged', Number(stats.flagged || 0), '', 'var(--warn)'),
+      cell('accounts.kpi.rateLimited', Number(stats.rateLimited || 0), '', 'var(--warn)'),
+      cell('accounts.kpi.balance', `$${balance.toFixed(2)}`, I18n.t('accounts.kpi.balanceSub', { count: Number(stats.balanceAccounts || 0) })),
+    ].join('');
+  },
+
+  async loadAccounts() {
+    // Drought banner is pool-level and lives on this page (v2.0.57 Fix 5).
+    this.loadDrought();
+    const d = await this.api('GET', this.accountsListUrl({
+      page: this.accountsPage,
+      pageSize: this.accountsPageSize,
+      filter: this.accountsFlagged ? 'flagged' : '',
+      tier: this.accountsTier,
+      q: this.accountsQuery,
+      status: this.accountsStatus,
+    }));
+    // A failed GET (401 / lockout / network) must leave the last valid table
+    // painted — never replace a real pool with an empty one (#257).
+    if (!Array.isArray(d?.accounts)) return;
     this.renderAccountsPagination(d);
+    this.renderAccountsKpis(d.stats || {}, d.total);
+    this.renderAccountsFilterState(d);
+    this.renderAccountsTable(d);
+    this.applyAccountsDensity();
+    this.startAccountsClock();
+  },
+
+  renderAccountsTable(d = {}) {
+    const tbody = document.querySelector('#accounts-table tbody');
+    if (!tbody) return;
+    const accounts = d.accounts || [];
+    this._accountsById = new Map(accounts.map((a) => [a.id, a]));
+    if (!accounts.length) {
+      tbody.innerHTML = this.renderAccountsEmpty(d);
+      this._updateBatchBar();
+      return;
+    }
+    tbody.innerHTML = accounts.map((a) => this.renderAccountRow(a)).join('');
+    const pageIds = accounts.map((a) => a.id);
+    const selectedOnPage = pageIds.filter((id) => this._selectedAccounts?.has(id)).length;
+    const all = document.getElementById('accounts-select-all');
+    if (all) {
+      all.checked = selectedOnPage > 0 && selectedOnPage === pageIds.length;
+      all.indeterminate = selectedOnPage > 0 && selectedOnPage < pageIds.length;
+    }
+    this._updateBatchBar();
+  },
+
+  renderAccountRow(a) {
+    const state = a.state || this.accountStateOf(a);
+    const meta = this.accountStateMeta(state);
+    const tier = a.tier || 'unknown';
     const tierLabel = { pro: 'PRO', free: 'FREE', expired: I18n.t('tier.expiredLabel'), unknown: I18n.t('tier.unknown') };
-    // Derive a single health level per account for the left status band, from
-    // real fields only (status / rateLimited / errorCount / RPM saturation).
-    // ok=healthy, watch=some errors, high=RPM saturated, limited=rate-limited or
-    // disabled/error status. Purely presentational — no handler/state change.
-    const healthLevel = (a) => {
-      if (a.status === 'error' || a.status === 'disabled' || a.rateLimited) return 'limited';
-      const rl = a.rpmLimit ?? 0, ru = a.rpmUsed ?? 0;
-      if (rl > 0 && ru / rl >= 0.9) return 'high';
-      if ((a.errorCount || 0) > 0) return 'watch';
-      return 'ok';
-    };
-    const bandColor = { ok: 'var(--success)', watch: 'var(--warn)', high: 'var(--warn)', limited: 'var(--error)' };
-    const accounts = (d.accounts || []).map(a => (
-      this._expandedAccounts?.has(a.id) && this._accountDetails?.has(a.id)
-        ? { ...a, ...this._accountDetails.get(a.id) }
-        : a
-    ));
-    tbody.innerHTML = accounts.map(a => {
-      const tier = a.tier || 'unknown';
-      // GetUserStatus snapshot — authoritative plan/trial/credit info (may be null)
-      const us = a.userStatus || null;
-      const usTipLines = [];
-      let tierSubline = '';
-      if (us) {
-        if (us.planName) usTipLines.push(I18n.t('tooltip.plan', { plan: us.planName }));
-        if (us.trialEndMs) {
-          const daysLeft = Math.max(0, Math.ceil((us.trialEndMs - Date.now()) / 86400000));
-          usTipLines.push(I18n.t('tooltip.trialEnds', { date: new Date(us.trialEndMs).toLocaleDateString(), days: daysLeft }));
-          tierSubline = `${daysLeft}d trial`;
-        } else if (us.planName) {
-          tierSubline = us.planName.length > 12 ? us.planName.slice(0, 12) + '…' : us.planName;
-        }
-        if (us.monthlyPromptCredits > 0) {
-          usTipLines.push(I18n.t('tooltip.promptCredits', { used: us.promptCreditsUsed, total: us.monthlyPromptCredits }));
-        }
-        if (us.monthlyFlowCredits > 0) {
-          usTipLines.push(I18n.t('tooltip.flowCredits', { used: us.flowCreditsUsed, total: us.monthlyFlowCredits }));
-        }
-        if (us.allowedModels?.length) {
-          usTipLines.push(I18n.t('tooltip.allowedModels', { count: us.allowedModels.length }));
-        }
-        if (a.userStatusLastFetched) {
-          const ago = Math.round((Date.now() - a.userStatusLastFetched) / 60000);
-          usTipLines.push(I18n.t('tooltip.fetchedAgo', { mins: ago }));
-        }
+    const us = a.userStatus || null;
+    const usTipLines = [];
+    let tierSubline = '';
+    if (us) {
+      if (us.planName) usTipLines.push(I18n.t('tooltip.plan', { plan: us.planName }));
+      if (us.trialEndMs) {
+        const daysLeft = Math.max(0, Math.ceil((us.trialEndMs - Date.now()) / 86400000));
+        usTipLines.push(I18n.t('tooltip.trialEnds', { date: new Date(us.trialEndMs).toLocaleDateString(), days: daysLeft }));
+        tierSubline = `${daysLeft}d trial`;
+      } else if (us.planName) {
+        tierSubline = us.planName.length > 12 ? us.planName.slice(0, 12) + '…' : us.planName;
       }
-      const tierTooltip = usTipLines.length
-        ? usTipLines.join('\n')
-        : I18n.t('status.clickToEditTier');
-
-      // Compact summary: avail/total + 编辑 button. Clicking opens modal.
-      const tierModels = a.tierModels || [];
-      const tierModelCount = a.tierModelCount ?? tierModels.length;
-      const blockedCount = a.blockedModelCount ?? (a.blockedModels || []).length;
-      const availCount = Math.max(0, tierModelCount - blockedCount);
-      const capsHtml = tierModelCount
-        ? `<button class="btn btn-ghost btn-xs" style="min-width:96px" onclick="App.openBlockedModal('${this.escJsAttr(a.id)}')" title="${I18n.t('account.editModels')}">
-             <span style="color:var(--success);font-weight:600">${availCount}</span>
-             <span style="color:var(--text-dim)">/${tierModelCount}</span>
-             ${blockedCount > 0 ? `<span class="badge warn" style="margin-left:4px">-${blockedCount}</span>` : ''}
-           </button>`
-        : `<span class="text-xs text-dim">-</span>`;
-      const rateLimitBadge = a.rateLimited ? ` <span class="badge warn">${I18n.t('card.rateLimit.badge')}</span>`
-        : (a.capacityThrottled ? ` <span class="badge" style="background:var(--info-bg,rgba(96,165,250,.15));color:var(--info,#60a5fa)" title="${this.esc(I18n.t('card.capacity.tip'))}">${I18n.t('card.capacity.badge')}</span>` : '');
-      const rpmUsed = a.rpmUsed ?? 0;
-      const rpmLimit = a.rpmLimit ?? 0;
-      const rpmPct = rpmLimit > 0 ? Math.min(100, Math.round((rpmUsed / rpmLimit) * 100)) : 0;
-      const rpmColor = rpmPct >= 90 ? 'var(--error)' : rpmPct >= 60 ? 'var(--warn)' : 'var(--success)';
-      const rpmCell = rpmLimit > 0
-        ? `<div style="min-width:90px">
-            <div class="text-xs" style="display:flex;justify-content:space-between;margin-bottom:2px">
-              <span>${rpmUsed}/${rpmLimit}</span><span style="color:${rpmColor}">${rpmPct}%</span>
-            </div>
-            <div style="height:4px;background:var(--surface-3);border-radius:2px;overflow:hidden">
-              <div style="height:100%;width:${rpmPct}%;background:${rpmColor};transition:width .3s"></div>
-            </div>
-           </div>`
-        : `<span class="text-xs text-dim">-</span>`;
-
-      // Credit / quota cell — collapses the legacy credit contract and the
-      // newer daily/weekly percent contract into a single progress bar.
-      const cr = a.credits || null;
-      let creditCell;
-      if (!cr) {
-        creditCell = `<span class="text-xs text-dim">${I18n.t('status.notFetched')}</span>`;
-      } else if (cr.lastError && cr.percent == null && !cr.prompt?.limit) {
-        creditCell = `<span class="text-xs" style="color:var(--error)" title="${this.esc(cr.lastError)}">${I18n.t('status.fetchFailed')}</span>`;
-      } else {
-        const planName = cr.planName || '-';
-        const fetchedAgo = cr.fetchedAt ? Math.round((Date.now() - cr.fetchedAt) / 60000) + 'm ago' : '-';
-        const barColor = (v) => v == null ? 'var(--text-dim)' : v <= 10 ? 'var(--error)' : v <= 30 ? 'var(--warn)' : 'var(--success)';
-        const bar = (label, pct, detail) => {
-          const noData = pct == null;
-          const v = noData ? 0 : Math.max(0, Math.min(100, pct));
-          const c = noData ? 'var(--text-dim)' : barColor(v);
-          // v2.0.75 (#123 wnfilm): when upstream did not return the
-          // bucket (dailyPercent=null but weeklyPercent has a value)
-          // the bar previously read "--%" with a faint trough — easy
-          // to mistake for a refresh failure. Print "N/A" with a
-          // dashed bar so it's visually distinct from a 0% / failure
-          // state, and mirror the explanation into the tooltip.
-          return `<div style="display:flex;align-items:center;gap:3px;margin-top:2px" title="${detail}">
-            <span class="text-xs" style="width:14px;flex-shrink:0;color:var(--text-dim);font-size:10px;font-weight:600">${label}</span>
-            <div style="flex:1;height:4px;background:var(--surface-3);border-radius:2px;overflow:hidden;min-width:40px${noData ? ';outline:1px dashed var(--text-dim);outline-offset:-1px' : ''}">
-              <div style="height:100%;width:${noData ? 0 : v}%;background:${c};border-radius:2px;transition:width .4s ease"></div>
-            </div>
-            <span class="text-xs" style="width:28px;text-align:right;color:${c};font-size:10px;font-style:${noData ? 'italic' : 'normal'}">${noData ? 'N/A' : v.toFixed(0)+'%'}</span>
-          </div>`;
-        };
-        const fmtReset = (unix) => unix ? new Date(unix * 1000).toLocaleString() : I18n.t('creditsBar.noResetTime');
-        const dailyTip = cr.dailyPercent != null
-          ? I18n.t('creditsBar.dailyDetail', { pct: cr.dailyPercent.toFixed(0), reset: fmtReset(cr.dailyResetAt) })
-          : I18n.t('creditsBar.dailyNA');
-        const weeklyTip = cr.weeklyPercent != null
-          ? I18n.t('creditsBar.weeklyDetail', { pct: cr.weeklyPercent.toFixed(0), reset: fmtReset(cr.weeklyResetAt) })
-          : I18n.t('creditsBar.weeklyNA');
-        const shortD = I18n.t('creditsBar.dailyShort');
-        const shortW = I18n.t('creditsBar.weeklyShort');
-        creditCell = `<div style="min-width:120px;max-width:160px">
-            <div class="text-xs" style="margin-bottom:2px"><b>${this.esc(planName.slice(0, 12))}</b> <span style="color:var(--text-dim)">${fetchedAgo}</span></div>
-            ${bar(shortD, cr.dailyPercent, dailyTip)}
-            ${bar(shortW, cr.weeklyPercent, weeklyTip)}
-            ${a.balance != null ? `<div class="text-xs" style="margin-top:3px;color:var(--success);font-weight:700" title="${this.esc(I18n.t('account.balance.tip'))}">$${Number(a.balance).toFixed(2)} <span style="color:var(--text-dim);font-weight:400;font-size:10px">${I18n.t('account.balance.label')}</span></div>` : ''}
-          </div>`;
-      }
-      const isExpanded = this._expandedAccounts?.has(a.id);
-      const hl = healthLevel(a);
-      const hlColor = bandColor[hl];
-      const hlLabel = I18n.t('status.healthLevel.' + hl);
-      const isSelected = this._selectedAccounts?.has(a.id);
-      return `
-      <tr${isExpanded ? ' class="expanded"' : ''}>
-        <td style="text-align:center"><input type="checkbox" class="acct-select" data-id="${this.escJsAttr(a.id)}"${isSelected ? ' checked' : ''} aria-label="Select ${this.esc(a.id)}" onchange="App.toggleAccountSelect('${this.escJsAttr(a.id)}',this.checked)"></td>
-        <td style="box-shadow: inset 3px 0 0 ${hlColor};" title="${this.esc(hlLabel)}">
-          <button class="expand-chevron ${isExpanded ? 'open' : ''}" onclick="App.toggleAccountDetail('${this.escJsAttr(a.id)}')" title="${I18n.t('account.detail.toggle')}" aria-label="${I18n.t('account.detail.toggle')}" aria-expanded="${isExpanded ? 'true' : 'false'}">▸</button>
-          <code>${this.esc(a.id)}</code>
+      if (us.monthlyPromptCredits > 0) usTipLines.push(I18n.t('tooltip.promptCredits', { used: us.promptCreditsUsed, total: us.monthlyPromptCredits }));
+      if (us.monthlyFlowCredits > 0) usTipLines.push(I18n.t('tooltip.flowCredits', { used: us.flowCreditsUsed, total: us.monthlyFlowCredits }));
+      if (us.allowedModels?.length) usTipLines.push(I18n.t('tooltip.allowedModels', { count: us.allowedModels.length }));
+      if (a.userStatusLastFetched) usTipLines.push(I18n.t('tooltip.fetchedAgo', { mins: Math.round((Date.now() - a.userStatusLastFetched) / 60000) }));
+    }
+    const tierTooltip = usTipLines.length ? usTipLines.join('\n') : I18n.t('status.clickToEditTier');
+    const isSelected = this._selectedAccounts?.has(a.id);
+    const batch = this._batchResults?.get(a.id);
+    const batchChip = batch
+      ? `<span class="acct-batch-chip ${batch.ok ? 'ok' : 'fail'}" title="${this.esc(batch.error || '')}">${batch.ok ? '✓' : '✗'}</span>`
+      : '';
+    const label = String(a.label || '').trim();
+    const labelChip = label && label !== a.email
+      ? `<span class="note-chip" title="${this.esc(label)}">${this.esc(label)}</span>`
+      : '';
+    return `
+      <tr data-id="${this.esc(a.id)}"${isSelected ? ' class="acct-selected"' : ''}>
+        <td class="acct-check-cell" style="text-align:center">
+          <input type="checkbox" class="acct-select" data-id="${this.esc(a.id)}"${isSelected ? ' checked' : ''} aria-label="${I18n.t('accounts.selectRow')}" onchange="App.toggleAccountSelect(this.dataset.id, this.checked)">
         </td>
-        <td>${this.esc(a.email)}</td>
-        <td>
+        <td class="acct-account-cell acct-band" style="box-shadow: inset 3px 0 0 ${meta.band};" title="${this.esc(this.accountStateLabel(meta))}">
+          <div class="acct-line1">
+            <button type="button" class="acct-name acct-open" onclick="App.openAccountDrawer('${this.escJsAttr(a.id)}')" title="${this.esc(I18n.t('accounts.row.details'))}">${this.esc(a.email || a.id)}</button>
+            ${labelChip}
+            <span class="method-chip">${this.esc(a.method || '')}</span>
+          </div>
+          <div class="acct-line2">
+            <code class="text-xs">${this.esc(a.id)}</code>
+            <code class="acct-key" title="${this.esc(a.apiKey_masked || '')}">${this.esc(a.apiKey_masked || '')}</code>
+          </div>
+        </td>
+        <td class="acct-tier-cell" data-label="${this.esc(I18n.t('table.header.tier'))}">
           <div style="display:flex;flex-direction:column;gap:2px">
             <span class="tier ${this.esc(tier)}" role="button" tabindex="0" aria-label="${I18n.t('status.clickToEditTier')}" style="cursor:pointer" title="${this.esc(tierTooltip)}" onclick="App.overrideTier('${this.escJsAttr(a.id)}','${this.escJsAttr(tier)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.overrideTier('${this.escJsAttr(a.id)}','${this.escJsAttr(tier)}')}">${tierLabel[tier] || this.esc(tier)}${a.tierManual ? ' ✎' : ''}</span>
             ${tierSubline ? `<span class="text-xs text-dim" style="font-size:10px">${this.esc(tierSubline)}</span>` : ''}
           </div>
         </td>
-        <td>${rpmCell}</td>
-        <td>${creditCell}</td>
-        <td>${capsHtml}</td>
-        <td><span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:7px;height:7px;border-radius:50%;background:${hlColor};flex:none;"></span><span class="badge no-dot ${this.esc(a.status)}">${this.esc(a.status)}</span>${rateLimitBadge}</span></td>
-        <td style="color:${a.errorCount > 0 ? 'var(--error)' : 'inherit'};font-variant-numeric:tabular-nums;text-align:right;">${a.errorCount}</td>
-        <td class="text-sm nowrap" style="font-variant-numeric:tabular-nums;">${a.lastUsed ? new Date(a.lastUsed).toLocaleString() : '-'}</td>
-        <td class="nowrap">
-          <code title="${I18n.t('action.revealKey')}" role="button" tabindex="0" aria-label="${I18n.t('action.revealKey')}" style="cursor:pointer" onclick="App.revealAndCopyKey('${this.escJsAttr(a.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.revealAndCopyKey('${this.escJsAttr(a.id)}')}">${this.esc(a.apiKey_masked || a.id || '')}</code>
+        <td class="acct-state-cell" data-label="${this.esc(I18n.t('table.header.status'))}">${this.renderStatusCell(a, state, meta, batchChip)}</td>
+        <td class="acct-quota-cell" data-label="${this.esc(I18n.t('table.header.quota'))}">${this.renderQuotaCell(a)}</td>
+        <td class="acct-models-cell" data-label="${this.esc(I18n.t('table.header.models'))}">${this.renderModelsCell(a)}</td>
+        <td class="acct-rpm-cell" data-label="${this.esc(I18n.t('table.header.rpm'))}">${this.renderRpmCell(a)}</td>
+        <td class="acct-last-cell" data-label="${this.esc(I18n.t('table.header.lastUsed'))}" title="${a.lastUsed ? this.esc(new Date(a.lastUsed).toLocaleString()) : ''}">${this.fmtAgoShort(a.lastUsed)}</td>
+        <td class="acct-actions-cell">
+          <button class="row-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-label="${I18n.t('accounts.row.menu')}" onclick="App.openRowMenu(event, this.closest('tr').dataset.id)">⋯</button>
         </td>
-        <td class="nowrap">
-          <div class="btn-group">
-            <button class="btn btn-ghost btn-xs" onclick="App.probeAccount('${this.escJsAttr(a.id)}')" title="${I18n.t('action.probeTitle')}">${I18n.t('action.probe')}</button>
-            <button class="btn btn-ghost btn-xs" onclick="App.refreshCredits('${this.escJsAttr(a.id)}')" title="${I18n.t('account.credits.refreshTitle')}">${I18n.t('table.header.credits')}</button>
-            ${a.status === 'active'
-              ? `<button class="btn btn-ghost btn-xs" onclick="App.toggleAccount('${this.escJsAttr(a.id)}','disabled')">${I18n.t('action.disable')}</button>`
-              : `<button class="btn btn-success btn-xs" onclick="App.toggleAccount('${this.escJsAttr(a.id)}','active')">${I18n.t('action.enable')}</button>`}
-            <button class="btn btn-ghost btn-xs" onclick="App.resetErrors('${this.escJsAttr(a.id)}')">${I18n.t('action.reset')}</button>
-            <button class="btn btn-ghost btn-xs" style="color:var(--error)" onclick="App.deleteAccount('${this.escJsAttr(a.id)}')">${I18n.t('action.delete')}</button>
-          </div>
-        </td>
-      </tr>${isExpanded ? `<tr class="account-detail-row"><td colspan="12">${this.renderAccountDetail(a)}</td></tr>` : ''}`;
-    }).join('') || `<tr class="empty-row"><td colspan="12">${I18n.t('table.empty.accounts')}</td></tr>`;
+      </tr>`;
   },
 
-  _expandedAccounts: new Set(),
+  renderStatusCell(a, state, meta, extra = '') {
+    const until = state === 'quota_cooled' ? Number(a.quotaResetAt || 0)
+      : state === 'rate_limited' ? Number(a.rateLimitedUntil || 0)
+        : 0;
+    const countdown = until > Date.now()
+      ? `<span class="acct-countdown" data-until="${until}" title="${this.esc(I18n.t('accounts.status.resumesIn', { time: this.fmtCountdown(until - Date.now()) }))}">${this.esc(this.fmtCountdown(until - Date.now()))}</span>`
+      : '';
+    const errors = Number(a.errorCount || 0) > 0
+      ? `<span class="acct-error-count" title="${I18n.t('accounts.status.errorCount')}">⚠${Number(a.errorCount)}</span>`
+      : '';
+    return `<div class="acct-state">
+      <span class="acct-state-dot" style="background:${meta.band}"></span>
+      <span class="badge ${meta.cls}">${this.accountStateLabel(meta)}</span>
+      ${errors}${countdown}${extra}
+    </div>`;
+  },
+
+  renderQuotaCell(a) {
+    const cr = a.credits || null;
+    if (!cr) return `<span class="text-xs text-dim">${I18n.t('status.notFetched')}</span>`;
+    if (cr.lastError && cr.percent == null && !cr.prompt?.limit) {
+      return `<span class="text-xs" style="color:var(--error)" title="${this.esc(cr.lastError)}">${I18n.t('status.fetchFailed')}</span>`;
+    }
+    const planName = cr.planName || '-';
+    const fetchedAgo = cr.fetchedAt ? `${Math.round((Date.now() - cr.fetchedAt) / 60000)}m` : '-';
+    const barColor = (v) => v == null ? 'var(--text-dim)' : v <= 10 ? 'var(--error)' : v <= 30 ? 'var(--warn)' : 'var(--success)';
+    const bar = (label, pct, detail) => {
+      const noData = pct == null;
+      const v = noData ? 0 : Math.max(0, Math.min(100, pct));
+      const c = noData ? 'var(--text-dim)' : barColor(v);
+      // #123: a missing bucket renders N/A with a dashed trough — never 0%.
+      return `<div class="acct-quota-bar" title="${this.esc(detail)}">
+        <span class="acct-quota-label">${this.esc(label)}</span>
+        <div class="acct-quota-track${noData ? ' na' : ''}">
+          <div style="height:100%;width:${noData ? 0 : v}%;background:${c};border-radius:2px;transition:width .4s ease"></div>
+        </div>
+        <span class="acct-quota-pct" style="color:${c}">${noData ? 'N/A' : v.toFixed(0) + '%'}</span>
+      </div>`;
+    };
+    const fmtReset = (unix) => unix ? new Date(unix * 1000).toLocaleString() : I18n.t('creditsBar.noResetTime');
+    const dailyTip = cr.dailyPercent != null
+      ? I18n.t('creditsBar.dailyDetail', { pct: cr.dailyPercent.toFixed(0), reset: fmtReset(cr.dailyResetAt) })
+      : I18n.t('creditsBar.dailyNA');
+    const weeklyTip = cr.weeklyPercent != null
+      ? I18n.t('creditsBar.weeklyDetail', { pct: cr.weeklyPercent.toFixed(0), reset: fmtReset(cr.weeklyResetAt) })
+      : I18n.t('creditsBar.weeklyNA');
+    const balanceHtml = a.balance != null
+      ? `<span style="color:var(--success);font-weight:700" title="${this.esc(I18n.t('account.balance.tip'))}">$${Number(a.balance).toFixed(2)}</span>`
+      : '';
+    return `<div class="acct-quota">
+      <div class="acct-quota-head"><b>${this.esc(String(planName).slice(0, 10))}</b> <span style="color:var(--text-dim)">${this.esc(fetchedAgo)}</span>${balanceHtml}</div>
+      ${bar(I18n.t('creditsBar.dailyShort'), cr.dailyPercent, dailyTip)}
+      ${bar(I18n.t('creditsBar.weeklyShort'), cr.weeklyPercent, weeklyTip)}
+    </div>`;
+  },
+
+  renderModelsCell(a) {
+    const tierModelCount = Number(a.tierModelCount ?? (a.tierModels || []).length);
+    const blockedCount = Number(a.blockedModelCount ?? (a.blockedModels || []).length);
+    if (!tierModelCount) return `<span class="text-xs text-dim">-</span>`;
+    const availCount = Math.max(0, tierModelCount - blockedCount);
+    return `<button class="btn btn-ghost btn-xs" style="min-width:72px;padding-left:0" onclick="App.openBlockedModal('${this.escJsAttr(a.id)}')" title="${I18n.t('account.editModels')}">
+      <span style="color:var(--success);font-weight:600">${availCount}</span>
+      <span style="color:var(--text-dim)">/${tierModelCount}</span>
+      ${blockedCount > 0 ? `<span class="acct-blocked-count" title="${I18n.t('accounts.status.blockedCount')}">-${blockedCount}</span>` : ''}
+    </button>`;
+  },
+
+  renderRpmCell(a) {
+    const used = Number(a.rpmUsed || 0);
+    const limit = Number(a.rpmLimit || 0);
+    if (limit <= 0) return `<span class="text-xs text-dim">-</span>`;
+    const pct = Math.min(100, Math.round((used / limit) * 100));
+    const color = pct >= 90 ? 'var(--error)' : pct >= 60 ? 'var(--warn)' : 'var(--success)';
+    return `<div style="min-width:72px">
+      <div class="text-xs" style="display:flex;justify-content:space-between;margin-bottom:2px">
+        <span>${used}/${limit}</span><span style="color:${color}">${pct}%</span>
+      </div>
+      <div style="height:4px;background:var(--surface-3);border-radius:2px;overflow:hidden">
+        <div style="height:100%;width:${pct}%;background:${color};transition:width .3s"></div>
+      </div>
+    </div>`;
+  },
+
+  renderAccountsEmpty(d = {}) {
+    const poolTotal = Number(d?.stats?.total ?? d?.total ?? 0);
+    if (poolTotal === 0) {
+      return `<tr><td colspan="9"><div class="acct-empty">
+        <div class="acct-empty-title">${I18n.t('accounts.empty.poolTitle')}</div>
+        <div class="acct-empty-sub">${I18n.t('accounts.empty.poolSub')}</div>
+        <div class="acct-empty-actions"><button class="btn btn-primary" onclick="App.openAddAccountModal('login')">${I18n.t('accounts.add.button')}</button></div>
+      </div></td></tr>`;
+    }
+    return `<tr><td colspan="9"><div class="acct-empty">
+      <div class="acct-empty-title">${I18n.t('accounts.empty.filterTitle')}</div>
+      <div class="acct-empty-sub">${I18n.t('accounts.empty.filterSub')}</div>
+      <div class="acct-empty-actions"><button class="btn btn-outline btn-sm" onclick="App.clearAccountsFilters()">${I18n.t('accounts.filter.clear')}</button></div>
+    </div></td></tr>`;
+  },
+
+  fmtCountdown(ms) {
+    if (!Number.isFinite(ms) || ms <= 0) return '';
+    const totalMin = Math.ceil(ms / 60000);
+    if (totalMin < 60) return `${totalMin}m`;
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return m ? `${h}h ${m}m` : `${h}h`;
+  },
+
+  fmtAgoShort(ts) {
+    if (!ts) return '-';
+    const s = Math.max(0, Math.floor((Date.now() - new Date(ts).getTime()) / 1000));
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h`;
+    return `${Math.floor(s / 86400)}d`;
+  },
+
+  updateAccountCountdowns() {
+    document.querySelectorAll('#accounts-table .acct-countdown[data-until]').forEach((el) => {
+      const until = Number(el.dataset.until || 0);
+      const text = until > Date.now() ? this.fmtCountdown(until - Date.now()) : '';
+      if (el.textContent !== text) el.textContent = text;
+    });
+  },
+
+  startAccountsClock() {
+    // 30 s local tick: only the countdown TEXT changes. No request, no re-render.
+    // Key must equal the panel id suffix so poll()'s active-panel gate matches.
+    this.poll('accounts', () => this.updateAccountCountdowns(), 30000);
+  },
+
+  // 20 s /pool-events tick (already running globally): diff the resolved state
+  // per account and repaint only that row's status cell + health band.
+  _patchAccountStates(list = []) {
+    if (!document.getElementById('p-accounts')?.classList.contains('active')) return;
+    for (const ev of list) {
+      const row = document.querySelector(`#accounts-table tr[data-id="${CSS.escape(String(ev.id))}"]`);
+      if (!row) continue;
+      const a = this._accountsById?.get(ev.id);
+      if (!a) continue;
+      const merged = {
+        ...a,
+        status: ev.status || a.status,
+        quotaCooled: ev.state === 'quota',
+        rateLimited: ev.state === 'rate_limited',
+        capacityThrottled: ev.state === 'capacity',
+      };
+      const state = this.accountStateOf(merged);
+      if (state === (a.state || this.accountStateOf(a))) continue;
+      a.state = state;
+      a.status = merged.status;
+      a.quotaCooled = merged.quotaCooled;
+      a.rateLimited = merged.rateLimited;
+      a.capacityThrottled = merged.capacityThrottled;
+      const meta = this.accountStateMeta(state);
+      const cell = row.querySelector('.acct-state-cell');
+      if (cell) cell.innerHTML = this.renderStatusCell(a, state, meta);
+      const band = row.querySelector('.acct-band');
+      if (band) band.style.boxShadow = `inset 3px 0 0 ${meta.band}`;
+    }
+  },
+
+  // ─── Row kebab menu ───────────────────────────────────────────────────
+  openRowMenu(ev, id) {
+    if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+    this.closeRowMenu();
+    const a = this._accountsById?.get(id);
+    if (!a) return;
+    const trigger = ev?.currentTarget || ev?.target;
+    const items = [
+      { key: 'accounts.row.probe', act: () => this.probeAccount(id) },
+      { key: 'accounts.row.refreshBalance', act: () => this.refreshCredits(id) },
+      { key: 'accounts.row.blockedModels', act: () => this.openBlockedModal(id) },
+      { key: 'accounts.row.relogin', act: () => this.reloginAccount(id) },
+      { key: a.status === 'active' ? 'action.disable' : 'action.enable', act: () => this.toggleAccount(id, a.status === 'active' ? 'disabled' : 'active') },
+      { key: 'action.reset', act: () => this.resetErrors(id) },
+      { sep: true },
+      { key: 'action.delete', cls: 'danger', act: () => this.deleteAccount(id) },
+    ];
+    const menu = document.createElement('div');
+    menu.className = 'row-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', I18n.t('accounts.row.menu'));
+    menu.innerHTML = items.map((it, i) => {
+      if (it.sep) return '<div class="menu-sep" role="separator"></div>';
+      const itemKey = it.key;
+      return `<button type="button" role="menuitem" data-menu-index="${i}"${it.cls ? ` class="${it.cls}"` : ''}>${I18n.t(itemKey)}</button>`;
+    }).join('');
+    document.body.appendChild(menu);
+    const r = trigger?.getBoundingClientRect ? trigger.getBoundingClientRect() : { right: 0, top: 0, bottom: 0 };
+    const mw = menu.offsetWidth;
+    const mh = menu.offsetHeight;
+    let left = r.right - mw;
+    let top = r.bottom + 4;
+    if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+    menu.style.left = `${Math.max(8, Math.min(left, window.innerWidth - mw - 8))}px`;
+    menu.style.top = `${top}px`;
+    this._rowMenu = menu;
+    this._rowMenuTrigger = trigger;
+    trigger?.setAttribute?.('aria-expanded', 'true');
+    const buttons = [...menu.querySelectorAll('[role="menuitem"]')];
+    buttons.forEach((b, idx) => {
+      b.onclick = () => {
+        const it = items[Number(b.dataset.menuIndex)];
+        this.closeRowMenu();
+        it.act?.();
+      };
+      b.onkeydown = (e) => {
+        if (e.key === 'ArrowDown') { e.preventDefault(); buttons[(idx + 1) % buttons.length].focus(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); buttons[(idx - 1 + buttons.length) % buttons.length].focus(); }
+      };
+    });
+    this._rowMenuKeyHandler = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); this.closeRowMenu(true); }
+    };
+    this._rowMenuOutside = (e) => {
+      if (!menu.contains(e.target) && e.target !== trigger) this.closeRowMenu();
+    };
+    document.addEventListener('keydown', this._rowMenuKeyHandler, true);
+    setTimeout(() => document.addEventListener('click', this._rowMenuOutside, true), 0);
+    buttons[0]?.focus();
+  },
+
+  closeRowMenu(returnFocus = false) {
+    if (!this._rowMenu) return;
+    const trigger = this._rowMenuTrigger;
+    this._rowMenu.remove();
+    trigger?.setAttribute?.('aria-expanded', 'false');
+    if (this._rowMenuKeyHandler) document.removeEventListener('keydown', this._rowMenuKeyHandler, true);
+    if (this._rowMenuOutside) document.removeEventListener('click', this._rowMenuOutside, true);
+    this._rowMenu = null;
+    this._rowMenuTrigger = null;
+    this._rowMenuKeyHandler = null;
+    this._rowMenuOutside = null;
+    if (returnFocus) trigger?.focus?.();
+  },
+
+  reloginAccount(id) {
+    const a = this._accountsById?.get(id);
+    this.closeRowMenu();
+    this.closeAccountDrawer();
+    this.openAddAccountModal('login', { email: a?.email || '' });
+  },
+
+  // ─── Detail drawer ────────────────────────────────────────────────────
+  async openAccountDrawer(id) {
+    const mask = document.getElementById('acct-drawer-mask');
+    const drawer = document.getElementById('acct-drawer');
+    if (!mask || !drawer) return;
+    this._drawerAccountId = id;
+    this._drawerReturnFocus = document.activeElement;
+    const summary = this._accountsById?.get(id) || { id };
+    mask.classList.remove('hidden');
+    drawer.classList.remove('hidden');
+    const title = document.getElementById('acct-drawer-title');
+    if (title) title.textContent = summary.email || id;
+    const sub = document.getElementById('acct-drawer-sub');
+    if (sub) sub.innerHTML = `<code>${this.esc(id)}</code>`;
+    const body = document.getElementById('acct-drawer-body');
+    if (body) body.innerHTML = `<div class="text-sm text-dim">${I18n.t('status.loading')}</div>`;
+    const foot = document.getElementById('acct-drawer-foot');
+    if (foot) foot.innerHTML = '';
+    drawer.focus();
+    this._drawerKeyHandler = (e) => this._onDrawerKeydown(e);
+    document.addEventListener('keydown', this._drawerKeyHandler, true);
+    try {
+      await Promise.all([this._ensureModelsCatalog(), this.getAccountDetail(id)]);
+    } catch (e) {
+      this.toast(e.message || I18n.t('error.openFailed'), 'error');
+    }
+    if (this._drawerAccountId !== id) return;
+    this.renderAccountDrawer(id);
+  },
+
+  renderAccountDrawer(id) {
+    const detail = this._accountDetails?.get(id) || {};
+    const a = { ...(this._accountsById?.get(id) || {}), ...detail, id };
+    const state = a.state || this.accountStateOf(a);
+    const meta = this.accountStateMeta(state);
+    const title = document.getElementById('acct-drawer-title');
+    if (title) title.textContent = a.email || id;
+    const sub = document.getElementById('acct-drawer-sub');
+    if (sub) {
+      sub.innerHTML = `<code>${this.esc(a.id)}</code><span class="badge ${meta.cls}">${this.accountStateLabel(meta)}</span><code>${this.esc(a.apiKey_masked || '')}</code>`;
+    }
+    const body = document.getElementById('acct-drawer-body');
+    if (body) body.innerHTML = this.renderAccountDetail(a);
+    const foot = document.getElementById('acct-drawer-foot');
+    if (foot) {
+      foot.innerHTML = `
+        <button class="btn btn-outline btn-sm" onclick="App.probeAccount('${this.escJsAttr(a.id)}')">${I18n.t('action.probe')}</button>
+        <button class="btn btn-outline btn-sm" onclick="App.refreshCredits('${this.escJsAttr(a.id)}')">${I18n.t('accounts.row.refreshBalance')}</button>
+        <button class="btn btn-outline btn-sm" onclick="App.reloginAccount('${this.escJsAttr(a.id)}')">${I18n.t('accounts.row.relogin')}</button>
+        <span class="spacer"></span>
+        <button class="btn btn-danger btn-sm" onclick="App.deleteAccount('${this.escJsAttr(a.id)}')">${I18n.t('action.delete')}</button>`;
+    }
+  },
+
+  _onDrawerKeydown(e) {
+    const drawer = document.getElementById('acct-drawer');
+    if (!drawer || drawer.classList.contains('hidden')) return;
+    if (e.key === 'Escape') { e.preventDefault(); this.closeAccountDrawer(); return; }
+    if (e.key !== 'Tab') return;
+    const focusables = [...drawer.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+      .filter((el) => !el.disabled && el.offsetParent !== null);
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  },
+
+  closeAccountDrawer() {
+    const drawer = document.getElementById('acct-drawer');
+    const mask = document.getElementById('acct-drawer-mask');
+    if (drawer) drawer.classList.add('hidden');
+    if (mask) mask.classList.add('hidden');
+    if (this._drawerKeyHandler) document.removeEventListener('keydown', this._drawerKeyHandler, true);
+    this._drawerKeyHandler = null;
+    this._drawerAccountId = null;
+    this._drawerReturnFocus?.focus?.();
+    this._drawerReturnFocus = null;
+  },
+
+  // ─── Add-account modal (登录 / 粘贴 / 批量导入 / 本机扫描) ────────────
+  openAddAccountModal(tab = 'login', { email = '' } = {}) {
+    const overlay = document.getElementById('add-account-overlay');
+    if (!overlay) return;
+    this._addModalReturnFocus = document.activeElement;
+    overlay.classList.remove('hidden');
+    this.switchAddTab(tab);
+    const emailInput = document.getElementById('wl-email');
+    if (emailInput && email) {
+      emailInput.value = email;
+      const probe = document.getElementById('wl-probe-status');
+      if (probe) probe.textContent = I18n.t('accounts.add.reloginHint');
+    }
+    this.loadWindsurfLogin();
+    this.checkLocalImportAvailability();
+    this._addModalKeyHandler = (e) => {
+      if (e.key === 'Escape' && !document.getElementById('add-account-overlay')?.classList.contains('hidden')) {
+        e.preventDefault();
+        this.closeAddAccountModal();
+      }
+    };
+    document.addEventListener('keydown', this._addModalKeyHandler, true);
+    setTimeout(() => {
+      const panel = document.getElementById(`add-panel-${this._addTab || 'login'}`);
+      const target = panel?.querySelector('input:not([type=hidden]), textarea, button');
+      target?.focus?.();
+    }, 60);
+  },
+
+  closeAddAccountModal() {
+    const overlay = document.getElementById('add-account-overlay');
+    if (!overlay) return;
+    overlay.classList.add('hidden');
+    if (this._addModalKeyHandler) document.removeEventListener('keydown', this._addModalKeyHandler, true);
+    this._addModalKeyHandler = null;
+    this._addModalReturnFocus?.focus?.();
+    this._addModalReturnFocus = null;
+  },
+
+  switchAddTab(tab) {
+    const valid = ['login', 'paste', 'import', 'local'];
+    const next = valid.includes(tab) ? tab : 'login';
+    this._addTab = next;
+    for (const t of valid) {
+      const btn = document.getElementById(`add-tab-${t}`);
+      const panel = document.getElementById(`add-panel-${t}`);
+      if (btn) {
+        btn.classList.toggle('active', t === next);
+        btn.setAttribute('aria-selected', t === next ? 'true' : 'false');
+        btn.tabIndex = t === next ? 0 : -1;
+      }
+      if (panel) panel.classList.toggle('active', t === next);
+    }
+    if (next === 'local') this.checkLocalImportAvailability();
+  },
+
   _modelsCatalog: null,
 
   async _ensureModelsCatalog() {
@@ -7140,22 +7758,6 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     return this._modelsCatalog;
   },
 
-  async toggleAccountDetail(id) {
-    if (!this._expandedAccounts) this._expandedAccounts = new Set();
-    if (this._expandedAccounts.has(id)) {
-      this._expandedAccounts.delete(id);
-    } else {
-      this._expandedAccounts.add(id);
-      try {
-        await Promise.all([this._ensureModelsCatalog(), this.getAccountDetail(id)]);
-      } catch (e) {
-        this.toast(e.message || I18n.t('error.openFailed'), 'error');
-      }
-      this.loadAccounts();
-      return;
-    }
-    this.loadAccounts();
-  },
 
   // v3.0.3 — per-account on-demand spend policy card. When the included weekly
   // quota is dry, does this account keep serving off its prepaid $ balance? A
@@ -7395,6 +7997,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   async refreshCredits(id) {
     try {
       const r = await this.api('POST', `/accounts/${id}/refresh-credits`, {});
+      this._batchResults ||= new Map();
+      this._batchResults.set(id, { ok: !!r.ok, error: r.ok ? undefined : r.error });
       if (r.ok) {
         this._accountDetails?.delete(id);
         this.toast(I18n.t('toast.credits.refreshed'));
@@ -7406,32 +8010,47 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   },
 
   async refreshAllCredits() {
-    this.toast(I18n.t('toast.credits.refreshing'), 'info');
+    const total = Number(this.accountsTotal || 0);
+    this.setOpStatus(I18n.t('accounts.op.refreshing', { total }));
     try {
       const r = await this.api('POST', '/accounts/refresh-credits', {});
       if (r.success) {
-        const okCount = (r.results || []).filter(x => x.ok).length;
-        const failCount = (r.results || []).length - okCount;
+        const results = r.results || [];
+        const okCount = results.filter(x => x.ok).length;
+        const failCount = results.length - okCount;
+        this._batchResults = new Map(results.map((x) => [x.id, { ok: !!x.ok, error: x.error }]));
         this._accountDetails?.clear();
+        this.setOpStatus(I18n.t('accounts.op.done', { ok: okCount, fail: failCount }), failCount ? 'error' : 'success');
+        this.renderBatchFailures();
         this.toast(I18n.t('toast.credits.allRefreshed', { ok: okCount, fail: failCount }));
         this.loadAccounts();
       } else {
+        this.setOpStatus(this.translateError(r.error, 'toast.credits.refreshFailed'), 'error');
         this.toast(this.translateError(r.error, 'toast.credits.refreshFailed'), 'error');
       }
-    } catch (e) { this.toast(I18n.t('toast.credits.refreshFailed') + ': ' + e.message, 'error'); }
+    } catch (e) {
+      this.setOpStatus((I18n.t('toast.credits.refreshFailed') + ': ' + e.message), 'error');
+      this.toast(I18n.t('toast.credits.refreshFailed') + ': ' + e.message, 'error');
+    }
   },
 
   async probeAll() {
-    this.toast(I18n.t('toast.probe.allDoing'), 'info');
+    const total = Number(this.accountsTotal || 0);
+    this.setOpStatus(I18n.t('accounts.op.probing', { done: 0, total }));
     try {
       const r = await this.api('POST', '/accounts/probe-all', {});
       if (r.success) {
-        const tierLabel = { pro: 'Pro', free: 'Free', expired: I18n.t('tier.expiredLabel'), unknown: I18n.t('tier.unknown') };
-        const summary = (r.results || []).map(x => `${x.email}: ${tierLabel[x.tier] || x.tier || x.error}`).join('; ');
+        const results = r.results || [];
+        const okCount = results.filter(x => !x.error).length;
+        const failCount = results.length - okCount;
+        this._batchResults = new Map(results.map((x) => [x.id, { ok: !x.error, error: x.error }]));
         this._accountDetails?.clear();
-        this.toast(I18n.t('toast.probeAllComplete', { summary }));
+        this.setOpStatus(I18n.t('accounts.op.done', { ok: okCount, fail: failCount }), failCount ? 'error' : 'success');
+        this.renderBatchFailures();
+        this.toast(I18n.t('toast.probeAllComplete', { summary: I18n.t('accounts.op.done', { ok: okCount, fail: failCount }) }));
         this.loadAccounts();
       } else {
+        this.setOpStatus(this.translateError(r.error, 'error.probeFailed'), 'error');
         this.toast(this.translateError(r.error, 'error.probeFailed'), 'error');
       }
     } catch (e) { this.toast(I18n.t('error.probeFailed') + ': ' + e.message, 'error'); }
@@ -7441,6 +8060,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this.toast(I18n.t('toast.probe.doing'), 'info');
     try {
       const r = await this.api('POST', `/accounts/${id}/probe`, {});
+      this._batchResults ||= new Map();
+      this._batchResults.set(id, { ok: !!r.success, error: r.success ? undefined : r.error });
       if (r.success) {
         const tierLabel = { pro: 'Pro', free: 'Free', expired: I18n.t('tier.expiredLabel'), unknown: I18n.t('tier.unknown') };
         this._accountDetails?.delete(id);
@@ -7633,7 +8254,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     if (!key) return this.toast(I18n.t('toast.enterKeyOrToken'), 'error');
     const body = type === 'api_key' ? { api_key: key, label, proxy } : { token: key, label, proxy };
     const r = await this.api('POST', '/accounts', body);
-    if (r.success) { this.toast(I18n.t('account.addSuccess')); document.getElementById('acc-key').value = ''; document.getElementById('acc-label').value = ''; document.getElementById('acc-proxy').value = ''; this.accountsPage = 1; this._accountDetails?.clear(); this.loadAccounts(); }
+    if (r.success) { this.toast(I18n.t('account.addSuccess')); document.getElementById('acc-key').value = ''; document.getElementById('acc-label').value = ''; document.getElementById('acc-proxy').value = ''; this.accountsPage = 1; this._accountDetails?.clear(); this.closeAddAccountModal(); this.loadAccounts(); }
     else this.toast(this.translateError(r.error, 'toast.addFailed'), 'error');
   },
 
@@ -7808,6 +8429,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   toggleAccountSelect(id, checked) {
     this._selectedAccounts ||= new Set();
     if (checked) this._selectedAccounts.add(id); else this._selectedAccounts.delete(id);
+    const row = document.querySelector(`#accounts-table tr[data-id="${CSS.escape(String(id))}"]`);
+    if (row) row.classList.toggle('acct-selected', !!checked);
+    this._syncSelectAllState();
     this._updateBatchBar();
   },
   toggleSelectAllAccounts(checked) {
@@ -7816,9 +8440,35 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       cb.checked = checked;
       if (checked) this._selectedAccounts.add(cb.dataset.id); else this._selectedAccounts.delete(cb.dataset.id);
     });
+    this._syncSelectAllState();
     this._updateBatchBar();
   },
-
+  selectAllOnPage() { this.toggleSelectAllAccounts(true); },
+  async selectAllMatching() {
+    const params = new URLSearchParams();
+    if (this.accountsFlagged) params.set('filter', 'flagged');
+    if (this.accountsTier) params.set('tier', this.accountsTier);
+    if (this.accountsQuery) params.set('q', this.accountsQuery);
+    if (this.accountsStatus) params.set('status', this.accountsStatus);
+    const r = await this.api('GET', `/accounts/ids?${params.toString()}`);
+    if (!Array.isArray(r?.ids)) return;
+    if (r.ids.length > 1000) {
+      this.toast(I18n.t('accounts.batch.tooMany', { max: 1000 }), 'error');
+      return;
+    }
+    this._selectedAccounts = new Set(r.ids);
+    document.querySelectorAll('#accounts-table .acct-select').forEach((cb) => { cb.checked = this._selectedAccounts.has(cb.dataset.id); });
+    this._syncSelectAllState();
+    this._updateBatchBar();
+  },
+  _syncSelectAllState() {
+    const boxes = [...document.querySelectorAll('#accounts-table .acct-select')];
+    const all = document.getElementById('accounts-select-all');
+    if (!all) return;
+    const n = boxes.filter((cb) => this._selectedAccounts?.has(cb.dataset.id)).length;
+    all.checked = boxes.length > 0 && n === boxes.length;
+    all.indeterminate = n > 0 && n < boxes.length;
+  },
   // Expand/collapse a model-stats detail row (latency percentiles + share +
   // credit). The trigger row carries data-detail=<id> and aria-expanded; the
   // detail row is a sibling <tr hidden> toggled here.
@@ -7836,20 +8486,60 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   },
   clearAccountSelection() {
     this._selectedAccounts?.clear();
-    document.querySelectorAll('#accounts-table .acct-select, #accounts-select-all').forEach((cb) => { cb.checked = false; });
+    this._batchResults?.clear();
+    document.querySelectorAll('#accounts-table .acct-select, #accounts-select-all').forEach((cb) => { cb.checked = false; cb.indeterminate = false; });
+    this.setBatchProgress('');
+    this.renderBatchFailures();
     this._updateBatchBar();
   },
   _updateBatchBar() {
     const n = this._selectedAccounts?.size || 0;
+    const total = Number(this.accountsTotal || 0);
     const bar = document.getElementById('accounts-batch-bar');
-    const cnt = document.getElementById('accounts-batch-count');
     if (!bar) return;
     bar.style.display = n > 0 ? 'flex' : 'none';
+    if (!n) return;
+    const cnt = document.getElementById('accounts-batch-count');
     if (cnt) cnt.textContent = I18n.t('batchOps.selected', { count: n });
+    const scope = document.getElementById('accounts-batch-scope');
+    if (scope) {
+      const pageCount = document.querySelectorAll('#accounts-table .acct-select').length;
+      scope.innerHTML = `<button type="button" onclick="App.selectAllOnPage()">${I18n.t('accounts.batch.selectPage', { count: pageCount })}</button> · <button type="button" onclick="App.selectAllMatching()">${I18n.t('accounts.batch.selectAll', { total })}</button>`;
+    }
+  },
+  setBatchProgress(text, tone = '') {
+    const el = document.getElementById('accounts-batch-progress');
+    if (!el) return;
+    el.textContent = text || '';
+    el.style.color = tone === 'error' ? 'var(--error)' : tone === 'success' ? 'var(--success)' : 'var(--text-muted)';
+  },
+  setOpStatus(text, tone = '') {
+    const el = document.getElementById('accounts-op-status');
+    if (!el) return;
+    el.textContent = text || '';
+    el.style.color = tone === 'error' ? 'var(--error)' : tone === 'success' ? 'var(--success)' : 'var(--text-muted)';
+  },
+  renderBatchFailures() {
+    const link = document.getElementById('accounts-batch-fail');
+    const pop = document.getElementById('accounts-batch-fail-pop');
+    if (!link || !pop) return;
+    const failed = [...(this._batchResults || [])]
+      .filter(([, v]) => !v.ok)
+      .map(([id, v]) => ({ id, error: v.error }));
+    link.hidden = failed.length === 0;
+    pop.hidden = true;
+    pop.innerHTML = failed.length
+      ? `<div style="font-weight:600;margin-bottom:4px">${I18n.t('accounts.batch.failedTitle', { count: failed.length })}</div><ul>${failed.map((f) => `<li><code>${this.esc(f.id)}</code> — ${this.esc(f.error || '')}</li>`).join('')}</ul>`
+      : '';
+  },
+  toggleBatchFailures() {
+    const pop = document.getElementById('accounts-batch-fail-pop');
+    if (pop) pop.hidden = !pop.hidden;
   },
   async batchAccountOp(op) {
     const ids = [...(this._selectedAccounts || [])];
     if (!ids.length) return;
+    if (op === 'export') return this.exportSelectedAccounts(ids);
     if (op === 'delete') {
       const ok = await this.confirm(
         I18n.t('batchOps.confirmDeleteTitle', { count: ids.length }),
@@ -7857,23 +8547,29 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         { danger: true, okText: I18n.t('action.delete') });
       if (!ok) return;
     }
-    this.toast(I18n.t('batchOps.running', { count: ids.length }), 'info');
-    let ok = 0, fail = 0;
-    // Serial to avoid hammering the pool + brute-force lockout on parallel writes.
-    for (const id of ids) {
-      try {
-        if (op === 'enable') await this.api('PATCH', `/accounts/${id}`, { status: 'active' });
-        else if (op === 'disable') await this.api('PATCH', `/accounts/${id}`, { status: 'disabled' });
-        else if (op === 'refresh') await this.api('POST', `/accounts/${id}/refresh-credits`, {});
-        else if (op === 'probe') await this.api('POST', `/accounts/${id}/probe`, {});
-        else if (op === 'delete') await this.api('DELETE', `/accounts/${id}`);
-        ok++;
-      } catch { fail++; }
-      this._accountDetails?.delete(id);
+    this._batchResults = new Map();
+    this.setBatchProgress(I18n.t('batchOps.running', { count: ids.length }));
+    try {
+      const r = await this.api('POST', '/accounts/batch', { ids, op });
+      if (r?.success === false) {
+        this.setBatchProgress(this.translateError(r.error, 'error.unknown'), 'error');
+        return;
+      }
+      const results = r.results || [];
+      for (const item of results) this._batchResults.set(item.id, { ok: !!item.ok, error: item.error });
+      const okCount = Number(r.okCount ?? results.filter((x) => x.ok).length);
+      const failCount = Number(r.failCount ?? results.length - okCount);
+      this.setBatchProgress(I18n.t('accounts.op.done', { ok: okCount, fail: failCount }), failCount ? 'error' : 'success');
+      this._accountDetails?.clear();
+      this.renderBatchFailures();
+      // Keep only the failures selected so a retry is one click.
+      this._selectedAccounts = new Set((r.failed || []).map((f) => f.id));
+      await this.loadAccounts();
+      this._syncSelectAllState();
+      this._updateBatchBar();
+    } catch (e) {
+      this.setBatchProgress(e.message || I18n.t('error.unknown'), 'error');
     }
-    this.clearAccountSelection();
-    this.toast(I18n.t('batchOps.done', { ok, fail }), fail ? 'error' : 'success');
-    this.loadAccounts();
   },
 
   async resetErrors(id) { await this.api('PATCH', `/accounts/${id}`, { resetErrors: true }); this._accountDetails?.delete(id); this.loadAccounts(); this.toast(I18n.t('account.resetErrors')); },
@@ -7882,7 +8578,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     if (!ok) return;
     await this.api('DELETE', `/accounts/${id}`);
     this._accountDetails?.delete(id);
-    this._expandedAccounts?.delete(id);
+    this._selectedAccounts?.delete(id);
+    this._batchResults?.delete(id);
+    if (this._drawerAccountId === id) this.closeAccountDrawer();
     this.loadAccounts();
     this.toast(I18n.t('account.deleteSuccess'));
   },
@@ -9847,55 +10545,6 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     location.reload();
   },
 
-  // ─── Ban Detection ───────────────────────────
-  async loadBans() {
-    const d = await this.api('GET', this.accountsListUrl({
-      page: this.bansPage,
-      pageSize: this.bansPageSize,
-      filter: 'flagged',
-    }));
-    if (d?.success === false) return;
-    this.renderTablePagination('ban', d, 'bansPage', 'bansPageSize');
-    const accounts = d.accounts || [];
-    const stats = d.stats || {};
-    const errored = accounts.filter(a => a.status === 'error' || a.errorCount > 0 || a.rateLimited);
-    const total = stats.total ?? d.total ?? accounts.length;
-    document.getElementById('ban-cards').innerHTML = `
-      <div class="card ${errored.length > 0 ? 'error' : 'success'}">
-        <div class="card-header"><div class="card-title">${I18n.t('card.abnormalAccounts.title')}</div></div>
-        <div class="card-value">${stats.flagged ?? errored.length}</div>
-        <div class="card-sub">${I18n.t('card.abnormalAccounts.subtitle', { count: total })}</div>
-      </div>
-      <div class="card warn">
-        <div class="card-header"><div class="card-title">${I18n.t('card.disabled.title')}</div></div>
-        <div class="card-value">${stats.error ?? accounts.filter(a => a.status === 'error').length}</div>
-        <div class="card-sub">${I18n.t('card.disabled.subtitle')}</div>
-      </div>
-      <div class="card info">
-        <div class="card-header"><div class="card-title">${I18n.t('card.rateLimit.title')}</div></div>
-        <div class="card-value">${stats.rateLimited ?? accounts.filter(a => a.rateLimited).length}</div>
-        <div class="card-sub">${I18n.t('card.rateLimit.subtitle')}</div>
-      </div>
-    `;
-    const tbody = document.querySelector('#ban-table tbody');
-    tbody.innerHTML = accounts.map(a => {
-      const flagged = a.status === 'error' || a.errorCount > 0;
-      return `<tr style="${flagged ? 'background:rgba(239,68,68,.03)' : ''}">
-        <td>${this.esc(a.email)} <code class="text-xs">${this.esc(a.id)}</code></td>
-        <td><span class="badge ${this.esc(a.status)}">${this.esc(a.status)}</span></td>
-        <td style="color:${a.errorCount > 0 ? 'var(--error)' : 'inherit'}">${a.errorCount}</td>
-        <td class="text-sm">${a.lastUsed ? new Date(a.lastUsed).toLocaleString() : '-'}</td>
-        <td class="nowrap">
-          <div class="btn-group">
-            ${a.status === 'error' ? `<button class="btn btn-success btn-xs" onclick="App.toggleAccount('${this.escJsAttr(a.id)}','active');setTimeout(()=>App.loadBans(),500)">${I18n.t('action.enable')}</button>` : ''}
-            ${a.errorCount > 0 ? `<button class="btn btn-outline btn-xs" onclick="App.resetErrors('${this.escJsAttr(a.id)}');setTimeout(()=>App.loadBans(),500)">${I18n.t('action.reset')}</button>` : ''}
-          </div>
-        </td>
-      </tr>`;
-    }).join('') || `<tr class="empty-row"><td colspan="5">${I18n.t('table.empty.banList')}</td></tr>`;
-
-    this.poll('bans', () => this.loadBans(), 30000);
-  },
 
   // ─── Helpers ─────────────────────────────────
   fmtDuration(secs) {
