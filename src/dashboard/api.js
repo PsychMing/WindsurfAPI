@@ -58,6 +58,7 @@ import { peekBillingFacts } from './devin-read.js';
 import { readQuotaBurnDown } from './quota-burn-down.js';
 import { readBillingHealth } from './billing-health.js';
 import { readModelReconciliation } from './model-reconcile.js';
+import { buildAccountCards, preflightCapacity } from './devin-cards.js';
 import { listRequests, requestRingStats } from './request-ring.js';
 import { windsurfLogin, refreshFirebaseToken, reRegisterWithCodeium, probeLoginMethod, emailLoginStart, emailLoginComplete, checkEmailLocked } from './windsurf-login.js';
 import { getModelAccessConfig, setModelAccessMode, setModelAccessList, addModelToList, removeModelFromList, setDefaultModel } from './model-access.js';
@@ -2958,6 +2959,31 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     } catch (err) {
       return json(res, 500, { error: err.message });
     }
+  }
+
+  // ─── DevinMap cards (account drawer) ──────────────────
+  // GET /accounts/:id/devin-cards — the three account-local cards (ACU ledger,
+  // model entitlement, key rotation). No network: every field is read from the
+  // stored account record plus the in-process credit ledger, so opening the
+  // drawer never costs an upstream call. Auth is inherited from the gate above.
+  const devinCards = subpath.match(/^\/accounts\/([^/]+)\/devin-cards$/);
+  if (devinCards && method === 'GET') {
+    const payload = buildAccountCards(devinCards[1]);
+    return json(res, payload.ok ? 200 : (payload.httpStatus || 404), payload);
+  }
+
+  // POST /accounts/:id/capacity-preflight — on-demand selector capacity check
+  // before a run. One upstream CheckUserMessageRateLimit call, memoized 60 s per
+  // account+selector (DevinMap §6.4: never on page load). The local half is
+  // always computed, so an upstream failure still explains the pool-side state.
+  const capacityPreflight = subpath.match(/^\/accounts\/([^/]+)\/capacity-preflight$/);
+  if (capacityPreflight && method === 'POST') {
+    const result = await preflightCapacity({
+      id: capacityPreflight[1],
+      model: typeof body?.model === 'string' ? body.model : '',
+      force: body?.force === true,
+    });
+    return json(res, result.ok ? 200 : (result.httpStatus || 400), result);
   }
 
   const revealKey = subpath.match(/^\/account\/([^/]+)\/reveal-key$/);
