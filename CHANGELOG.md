@@ -61,6 +61,16 @@ FIFO 队列；预内容 Cascade 失败不再追加成功 `[DONE]`；SSE framer �
 是独立项目：LF 集成树 `go test ./...` 为 **18 ok + 1 no-test / 0 fail**，二进制已构建并固定哈希；
 其 live 结果不在本版范围，不作为本版证据。
 
+**2026-10-22 发布集成（`release/3.9.41`，六条分支合入）**：分片工具参数在 chat/Messages/Responses/
+Gemini 四出口按 1/128/4096 字节逐字节重组（补覆盖，8 条突变全捕获）；Messages 并行工具调用参数交错
+不再丢片；终态后错误不再被吞；SSE 多行 `data` 固定；Gemini `oneOf`/属性级 `allOf`/数字 `enum` 保真度
+characterization；Cascade 历史改按 UTF-8 计数、步骤读取改为有界重叠（工具活跃停顿上限保留）；
+“Panel state lost” 终态不再按传输错误轮换账号；流式失败类写入请求环；Windows LS 放行 `APPDATA`。
+Live：付费 devin-team 账号 3 个 selector 可达；#272 assistant 轮图片被上游忽略；#236 GLM-5.2 工具调用
+正常；#239 付费回合 wire 无计费标签；#250 3 回合未复现、维持 inconclusive；workspace trust #4 验证。
+Windows release **5,507 pass / 0 fail / 82 skip（452 文件）**、gate **PASS**；Linux release **5,588 pass /
+0 fail / 1 skip（452 文件）**；wire **270/270**；mutation **170 条：167 caught + 3 declared survivor**。未打 tag、未 push。
+
 ### [v3.9.40](docs/releases/RELEASE_NOTES_3.9.40.md) · 2026-10-07
 
 畸形输入不再打成 500 或变成上游文本:带 per-user scope 的 `content:[null]`、`system:[null]` 和

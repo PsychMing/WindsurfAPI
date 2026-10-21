@@ -1,6 +1,8 @@
 # v3.9.41
 
 > **2026-10-21 维护增量**：代码候选 `f2b938d` 在本文原有 2026-10-19 证据之上补了工具历史、终态与 SSE 修复；旧数字保留为当日快照，当前门禁数字见文末「2026-10-21 维护增量」。版本号与发布状态未改。
+>
+> **2026-10-22 发布集成**：六条修复/测试分支已合入 `release/3.9.41`；用户可感知项、live 证据与门禁数字见文末「2026-10-22 发布集成」。版本号与发布状态未改，未打 tag、未 push。
 
 本版是 v3.9.40 之后的一次大补丁：**90+ 个提交，57 个 feat/fix**。没有协议兼容性破坏，没有新增协议路由，默认 wire 字节保持不变（`a51a0f1` 对 `v3.9.40` 的 270/270 比较全部相同）。内容集中在五块：工具名/ID/历史的跨方言卫生、SSE 提交门与错误状态、Dashboard 的只读观测面、Devin Connect 的目录/传输/重试修复，以及账号、日志、统计与缓存的可运维性。
 
@@ -90,6 +92,48 @@ v3.9.40 只在 Messages 侧修了 64 字符 wire 上限；这一版把同一类�
 - **平台门**：Windows `npm run gate`（含 `test:release`）**5,415 pass / 0 fail / 82 skip**（442 文件）；Linux release **5,497 pass / 0 fail / 0 skip**（442 文件）；wire **270/270** 对 `v3.9.40`。
 - **Linux 首次聚合 gate**：**exit 2**，原因是 detached clone 缺少 `origin/master`；这不是零退出。补跑缺失层 `spec-baseline-check` 得到 **85 specs / 0 drift / 0 untrustworthy**（base `6fd35b3`）。受影响 mutation 规格共 **11** 个预期：**10 caught + 1 个已声明 survivor**（`s4-r4` 5/5；`terminal-event-guard` 5 caught + 1 declared）。
 - **相关项目（独立）**：Any2API 候选 `a4b3406` 的 LF 集成树 `go test ./...` 为 **18 ok + 1 no-test / 0 fail**；二进制已构建并固定哈希。其 live 结果不在本版范围，不作为本版证据。
+
+## 2026-10-22 发布集成（`release/3.9.41`，六条分支合入）
+
+> 本节记录 2026-10-21 分头完成、2026-10-22 合入的六条修复/测试分支。上面的 2026-10-19 与 2026-10-21 段落保留为当日快照；本节数字只对应本集成树（`929a070`，发布说明提交另计）。版本号与发布状态未改，未打 tag、未 push。
+
+### 用户可感知
+
+- **分片工具参数（四个出口）**：上游把 `function.arguments` 拆成多个增量时，chat/completions、Messages、Responses、Gemini 四个出口在 1、128、4096 字节边界（含工具名最后一片才到、参数夹多字节字符）逐字节重组，不截断、不丢片；文本模拟的 `<tool_call>` 拆分同样不泄漏标记。`test/tool-args-split-assembly.test.js` 在四个出口、三个边界上做字节级断言。组装行为在 `e3e39d9` 上已正确，本次补的是此前缺失的覆盖：A1 组的 3 条针对性突变全部被捕获（总计 8 条，见 `evidence/a1a2-mutcheck.log`）。
+- **并行工具调用交错（Messages）**：两个 `tool_use` 的参数增量交错到达时，Messages 不再为第二个调用重开块而丢掉第一个调用的后续片段；所有参数在 finish 前无损组装，每个块都有 `content_block_stop`（`src/handlers/messages.js`、`test/tool-calls-interleaved.test.js`）。代价是除首个调用外，其余调用在 finish 时才输出参数——这是 Anthropic 单开块流模型下唯一的无损表示。文本/thinking 与工具块的交错仍沿用既有的“记录并丢弃”限制，不在本版范围。
+- **终态后的错误不再被吞**：成功终态（finish / `message_stop` / `response.completed` / `finishReason`）之后到达的错误帧按到达顺序转发，Messages/Responses/Gemini 不再补发第二个成功终态；SSE 提交门在已提交 200 后逐字节转发错误帧，不改写响应。该行为在 `e3e39d9` 上已正确，`test/late-error-after-terminal.test.js` 现在把它钉死（A2 组的 5 条突变全部被捕获，同一批 8 条中的其余 5 条）。
+- **SSE 多行 `data` 固定**：LF/CR/CRLF 三种终止符、逐字符投递、空 `data:` 行和混合终止符下，framer 与提交门都按 `\n` 连接多行 `data`；多行 JSON 错误对象仍能在提交前被识别为错误，pretty-print 的 role 帧仍被扣住到首个内容帧（`test/sse-multiline-data.test.js`）。framer/提交门行为在 `e3e39d9` 上已正确，本次是固定证据。
+- **Gemini schema 保真度**：`oneOf`、属性级 `allOf`、数字 `enum` 在 wire 上精确保留（不选分支、不压平、不字符串化）；根级 `allOf` 仍按上游限制被剥离，prompt 模拟层的有损行为也被记录（`test/gemini-schema-fidelity.test.js`，characterization，`e3e39d9` 上即绿）。
+- **Cascade 历史按 UTF-8 计数**：历史预算改用 `Buffer.byteLength(..., 'utf8')`，与 proto 编码一致；此前按 UTF-16 计数，CJK 历史会把约 1.8 MB 当成 600 KB 送上 wire（`src/client.js`）。
+- **Cascade 轮询有界**：步骤读取窗口改为 `max(pollFloor, stepOffset - 8)` 的有界重叠，`stepOffset` 只前进不后退；部分步骤的增长仍会被重读，但轨迹不再从 0 反复整取（`src/client.js`）。
+- **工具活跃停顿上限保留**：`pendingToolCalls` 以“调用名+参数”为键跨窗口记录 ACTIVE 工具调用，工具步骤离开重叠窗口后 `hasActiveStep` 仍为真，文本停顿上限不会误杀工具轮（`test/client-budget-offset-transient.test.js`）。
+- **“Panel state lost” 不再当传输错误**：重试循环合成的 `Panel state lost N times after re-warm — likely an LS-level issue with very large payloads` 是确定性的终态失败，不再按可重试传输错误轮换账号；LS 自己返回的 `panel state not found` / Initialize 失败仍是传输错误（`src/client.js`、`test/client-panel-retry.test.js`）。
+- **请求环记录流式失败类**：提交门保留首个失败，四条流式路由（chat/responses/messages/gemini）在 `onDone` 用与普通错误体相同的 class 更新环行；中途失败不再显示为 `ok`（`src/server.js`、`src/sse-commit.js`、`test/o10-ring-class.test.js`）。
+- **Windows LS 拿到 APPDATA**：`LS_ENV_ALLOWLIST` 在 `win32` 上额外放行 `APPDATA`，修掉 LS 启动即报 `failed to determine user config directory: %AppData% is not defined`；`LOCALAPPDATA`、`USERPROFILE`、`SystemRoot` 与凭据仍被过滤（`src/langserver.js`、`test/langserver-redact.test.js`）。
+
+### 文档
+
+- README 中英双语新增「项目定位与使用边界 / Project Scope and Usage Boundaries」：BYO-account、不提供/出售/出租账号、独立项目声明，并保留原有正文。
+- `docs/ENV-SWITCHES.md` 按 `e3e39d9` 重测：三前缀开关 **160** 个，`.env.example` + README 覆盖 **78** 个，本文覆盖其余 **82** 个。
+
+### Live 证据（一个付费 devin-team 账号，隔离部署）
+
+- **账号与付费面**：桌面会话 token 被 `server.codeium.com` 接受；`plan: pro`、`isPaid: true`、catalog 240 个模型且无免费默认；三个 provider 各一个 selector（`claude-opus-4-8-medium`、`gpt-5-5-medium`、`gemini-3-8-flash-medium`）全部返回内容，harness 判定 `PAID entitlement CONFIRMED`；11/12 请求上限，4 次付费探测，0 个 402/429。
+- **#272 assistant-role 图片**：图片只挂在 assistant 轮时被客户端空 assistant 过滤丢弃（wire 里没有 base64）；把同一图片强行放到带文本的 assistant 轮（C/C2，HTTP 200）后模型仍说没有图片，同一形状的 user 轮控制组（D）正确回答 `Checkerboard`——上游在语义上忽略 assistant 轮图片，放宽过滤只会把字节送给上游丢弃。issue 维持 open，缺的是显式说明/日志而不是放行。
+- **#236 GLM-5.2 工具调用**：`glm-5-2-none` 加强制 prompt，一次 200，`finish_reason=tool_calls`，单个 delta、参数 `{"city":"Paris"}`、无旁白（form B）；报告人要的 `ToolRoute[...]` 行在 DEVIN_CONNECT 路径上根本不会打印（只在 Cascade 分支），这是独立的可观测性缺口。
+- **#239 计费标签**：一次真实付费回合（`glm-5-3-low`，200，`PONG`）的 wire 上没有任何 credit/ACU/overage 字段（`#14/#22/#26/#27` 不存在），`balance` 为 `null`，账本前后无可观测变化；结论是“wire 无证据”，不是“没有扣费”。
+- **#250 reasoning 泄漏**：3 个 live 回合未复现标记泄漏；唯一的 reasoning→content 复制是 reasoning-only 回合触发 `finish=length` 时的既有 promotion 回退（`contentChars == reasoningChars`），不是上游标记泄漏。3 回合不足以证明不存在，issue 维持 inconclusive。
+- **workspace trust**：部署的 3.10.67 LS 上，`InitializeCascadePanelState` 只写 field 3 被 `untrusted workspace` 拒绝，只写 field 4 则回合成功并返回 `TRUSTED-OK`——**#4 是读取字段**，field 3 在该构建上被保留且不读；`UpdateWorkspaceTrust` field 2 写同一槽位。
+
+### 工程与门禁
+
+- 合入六条分支（全部基于 `e3e39d9`）：`docs/positioning-and-drift`、`fix/a1-a2-protocol`、`fix/client-budget-offset-transient`、`test/o10-ring-class`、`test/sse-multiline-schema`、`fix/ls-env-appdata`；合并后 `git status --porcelain` 为空。
+- Windows `npm run test:release`：**5,507 pass / 0 fail / 82 skip（452 文件，5,589 tests）**，exit 0。
+- Windows `npm run gate`（`GATE_INERT_SKIP_PATHS` 显式接受 4 个平台门）：**PASS exit=0**——`spec-static-check`、`spec-baseline-check`、`secret-scan`、`test:release`（5,507 pass / 0 fail / 82 skip，452 文件，4 inert / 4 declared）、`git diff --check`、`git diff --cached --check` 全绿；增量门不执行 mutation（按设计），Linux 侧补跑。
+- Linux/HMC `npm run test:release`（全新 clone，无 Windows 平台 skip）：**5,588 pass / 0 fail / 1 skip（452 文件，5,589 tests）**，exit 0；计入 skip 计数的唯一文件是 `test/wire-byte-identity.test.js`（未提供 `WIRE_BASE_*` 时的自身跳过，该文件随后按下面的 wire 命令单独跑满）；另有 `test/devin-connect-relogin-live.test.js` 以 suite 级跳过（0 tests），不计入 skipped 计数。
+- mutation（HMC，引用本次改动文件的 14 个规格）：**170 条突变，167 caught + 3 条已声明 survivor，0 mismatch**；14/14 规格 exit 0、baseline 与规格声明一致、每次还原后树干净（`client-invariants` 8、`client-history-coverage` 4、`terminal-event-guard` 6 均在内）。
+- wire（HMC，`25322dd` / `v3.9.40` worktree 为基线）：**270/270 比较相同，0 skip，exit 0**；provenance `tested_head=929a070`、`base_head=25322dd`、`tag_ref_verified=true`。
+- `secret-scan` 与 `git diff --check`：**exit 0 / exit 0**（独立重跑与 gate 内各一次）。
 
 ## 升级注意
 
