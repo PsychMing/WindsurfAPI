@@ -5848,7 +5848,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         if (isOpenAIClient && data && data.error && typeof data.error.type === 'string') {
           data.error.type = normalizeOpenAIErrorType(data.error.type);
         }
-        if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`);
+        // A client disconnect aborts abortController; nothing may be written
+        // to that socket afterwards. Node does not throw on a post-close
+        // write (writableEnded stays false), so the guard has to be here —
+        // otherwise the finish frame / [DONE] are silently emitted into the
+        // void and a later reader can mistake them for a completed turn.
+        if (!res.writableEnded && !abortController.signal.aborted) res.write(`data: ${JSON.stringify(data)}\n\n`);
       };
       unregisterSse = registerSseController({
         abort(reason) {
@@ -5904,7 +5909,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             send({ id, object: 'chat.completion.chunk', created, model,
               choices: [], usage: cachedUsage(messages, replayedText) });
           }
-          if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+          if (!res.writableEnded && !abortController.signal.aborted) { res.write('data: [DONE]\n\n'); res.end(); }
         } finally {
           unregisterSse();
           stopHeartbeat();
@@ -6457,6 +6462,17 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             } else {
               await client.rawGetChatMessage(messages, modelEnum, modelUid, { onChunk, signal: abortController.signal });
             }
+            // A client disconnect can land after the client's last internal
+            // abort check but before the turn is committed (the metadata RPC
+            // is a window, and so is any await in the provider). Nothing below
+            // may run for a socket that is gone: the tail flush would write
+            // into a dead peer, and the success block would pool/bill/cache a
+            // partial answer. `cascadeChat` itself throws AbortError when the
+            // abort is observed during polling; this covers the return race.
+            if (abortController.signal.aborted) {
+              log.info(`Chat[${reqId}]: stream aborted (client gone) — discarding turn`);
+              return;
+            }
             // Flush order matters:
             //   1. NativeFunctionCallStreamParser tail → may produce provider
             //      native tool_calls withheld from content deltas
@@ -6707,6 +6723,15 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             bridgeDiag.totalToolCalls = collectedToolCalls.length;
             bridgeDiag.noToolCalls = bridgeDiag.requestedTools && collectedToolCalls.length === 0 && completedNativeReadUrlResults.length === 0;
             logBridgeResultDiagnostics(reqId, bridgeDiag);
+            // The socket can die between the post-call check and this commit
+            // point: a tail-flush write above runs 'close' synchronously. An
+            // aborted turn must never enter the reuse pool, move account
+            // stats, or emit a success terminal, so re-check before the first
+            // irreversible side effect.
+            if (abortController.signal.aborted) {
+              log.info(`Chat[${reqId}]: stream aborted before commit — discarding turn`);
+              return;
+            }
             // Pool check-in on success (cascade only)
             if (reuseEnabled && cascadeResult?.cascadeId && (accText || collectedToolCalls.length)) {
               const turnComplete = appendAssistantTurn(messages, accText, collectedToolCalls);
@@ -6810,6 +6835,14 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             if (deps.context?.__messagesStopCarrier === true && stopMatched && finalReason === 'stop') finishChoice._windsurf_stop_sequence = stopMatched;
             send({ id, object: 'chat.completion.chunk', created, model,
               choices: [finishChoice] });
+            // If the terminal frame's own write is what discovered the close
+            // (or the client left between the commit guard and here), stop
+            // before billing and the cache write. The frame itself is already
+            // gated by `send`.
+            if (abortController.signal.aborted) {
+              log.info(`Chat[${reqId}]: stream aborted before billing — discarding turn`);
+              return;
+            }
             {
               // Always build + record for internal billing; O1: only forward the
               // usage-only frame to the client when they opted in via
@@ -6830,10 +6863,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               //  - retry: this block sits inside the `for (let attempt...)` loop, but the
               //    success path returns immediately below, so a retried request records
               //    exactly once — the earlier attempts never reach here.
-              //  - abort: a client that disconnects mid-stream throws before this point, so
-              //    a cancelled turn is not billed. That matches the rest of the codebase
-              //    deliberately treating an abort as "nothing happened" (connect's finalizer
-              //    exempts aborts from every penalty).
+              //  - abort: a client disconnect aborts the request signal, and the
+              //    guard above returns before this block (and before the cache
+              //    write), so a cancelled turn is never billed or cached. That
+              //    matches the rest of the codebase deliberately treating an
+              //    abort as "nothing happened" (connect's finalizer exempts
+              //    aborts from every penalty).
               //  - cache replay: a cache hit never enters this path at all.
               // `acct` is the account this attempt checked out; currentApiKeyForId resolves
               // the CURRENT key for it, because a re-login mid-request rotates the key and
@@ -6846,8 +6881,8 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                   choices: [], usage });
               }
             }
-            if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
-            if (ckey && !collectedToolCalls.length && cacheShareable && (accText || accThinking)) {
+            if (!res.writableEnded && !abortController.signal.aborted) { res.write('data: [DONE]\n\n'); res.end(); }
+            if (!abortController.signal.aborted && ckey && !collectedToolCalls.length && cacheShareable && (accText || accThinking)) {
               // SEED-C3b: when a stop truncated the answer, cache the VISIBLE text
               // plus the cause so the replay reproduces both; otherwise the cached
               // text stays exactly what it was (accText = full generated text).
@@ -6855,6 +6890,17 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             }
             return;
           } catch (err) {
+            // A client disconnect is not a turn failure. cascadeChat raises
+            // AbortError when its signal fired mid-poll; rawGetChatMessage
+            // rejects with the same shape from grpcStream. Stop here — no
+            // retry, no account penalty, no request stats, no error frame,
+            // no terminal [DONE]. The partial cascade stays checked out (and
+            // therefore un-reusable) rather than being restored into the pool
+            // as if it were a complete turn.
+            if (abortController.signal.aborted || err?.name === 'AbortError' || err?.code === 'ABORT_ERR') {
+              log.info(`Chat[${reqId}]: stream aborted (client gone) — not retrying`);
+              return;
+            }
             lastErr = err;
             reuseEntry = null; // don't try to reuse on retry
             // v2.0.25 HIGH-2: client.js marks the error when it tried to
@@ -7164,7 +7210,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           // clients and relays treat a failed request as an empty success. The
           // DEVIN_CONNECT path already guards the same sentinel with
           // terminalOk || contentEmitted (see the stream-exit block above).
-          if (emittedClientPayload && !res.writableEnded) res.write('data: [DONE]\n\n');
+          if (emittedClientPayload && !res.writableEnded && !abortController.signal.aborted) res.write('data: [DONE]\n\n');
         });
         failureStage('end', () => {
           if (!res.writableEnded) res.end();
