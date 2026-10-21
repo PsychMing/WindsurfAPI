@@ -326,7 +326,7 @@ export function createDeferredSseResponse(realRes, {
     },
     on(event, listener) { realRes.on(event, listener); return this; },
     once(event, listener) { realRes.once(event, listener); return this; },
-    removeListener(event, listener) { realRes.removeListener(event, listener); return this; },
+    removeListener(event, listener) { realRes.removeListener?.(event, listener); return this; },
     emit(event, ...args) { return realRes.emit?.(event, ...args); },
     dispose() { disposed = true; ended = true; clearTimer(); },
     destroy(error) { disposed = true; ended = true; clearTimer(); return realRes.destroy?.(error); },

@@ -626,17 +626,21 @@ export function normalizeOpenAIErrorBody(body, status) {
  * `/v1/chat/completions` client sees is byte-identical to before.
  */
 export function finishPartialStreamAfterError({ id, created, model, send, res, internalRoute = false }) {
-  if (typeof send === 'function') {
-    send({
+  // C2: the frame is handed back to the caller so a sequential (awaiting)
+  // caller can wait for the socket. A synchronous caller keeps today's shape:
+  // its `send` returns undefined, so the returned value is undefined too.
+  const written = typeof send === 'function'
+    ? send({
       id,
       object: 'chat.completion.chunk',
       created,
       model,
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
       ...(internalRoute ? { __synthetic_finish: true } : {}),
-    });
-  }
+    })
+    : undefined;
   if (res && !res.writableEnded) res.write('data: [DONE]\n\n');
+  return written;
 }
 
 /**
@@ -5841,22 +5845,114 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       // O10: 仅直连 OpenAI 客户端(route==='chat')归一化 error.type;
       // messages/gemini/responses 路由须保留内部词供下游 translator remap。
       const isOpenAIClient = (fpOpts?.route || 'chat') === 'chat';
-      const send = (data) => {
+
+      // ── C2: writer backpressure ─────────────────────────────────────────
+      // `res.write` returning false is an ordinary slow-reader signal: Node has
+      // ACCEPTED the frame, the socket buffer is full, and the producer must not
+      // hand it more until 'drain'. This path ignored the verdict, so a stalled
+      // client bought unbounded Cascade polling (and frames) with no pressure at
+      // all. Contract, deliberately small:
+      //   * at most ONE outstanding drain wait per stream — no payload queue;
+      //   * the false-returning frame was already accepted: never resent;
+      //   * the wait is raced against response close/error and the request abort
+      //     signal, settles exactly once, and detaches its own listeners;
+      //   * closed/aborted is re-checked before every write and after every wait,
+      //     so a client that vanished while we waited receives no further bytes.
+      //
+      // Armed only for the Cascade producer: it is the only consumer that can
+      // await (src/client.js awaits onChunk). The legacy rawGetChatMessage
+      // channel consumes onChunk synchronously from a gRPC data callback and
+      // cannot hold its producer, so arming it there would let onEnd overtake an
+      // unfinished emission. Legacy backpressure stays exactly as it is — C2
+      // closes the direct Cascade SSE path only.
+      const backpressureArmed = useCascade;
+      let pendingDrain = null;
+      const writerGone = () => res.writableEnded || abortController.signal.aborted;
+      const beginDrain = () => {
+        if (pendingDrain) return pendingDrain;
+        if (writerGone()) return null;
+        let settle = () => {};
+        const operation = new Promise((resolve) => { settle = resolve; });
+        let settled = false;
+        const finishDrain = () => {
+          if (settled) return;
+          settled = true;
+          if (pendingDrain === operation) pendingDrain = null;
+          // Some embedders hand this handler a minimal writable; only real
+          // streams carry the EventEmitter alias.
+          res.removeListener?.('drain', finishDrain);
+          res.removeListener?.('close', finishDrain);
+          res.removeListener?.('error', finishDrain);
+          abortController.signal.removeEventListener('abort', finishDrain);
+          settle();
+        };
+        pendingDrain = operation;
+        res.on('drain', finishDrain);
+        res.on('close', finishDrain);
+        res.on('error', finishDrain);
+        abortController.signal.addEventListener('abort', finishDrain, { once: true });
+        // The client may already be gone by the time we start waiting.
+        if (writerGone()) finishDrain();
+        return operation;
+      };
+      const drainAbortedError = () => {
+        const err = new Error('stream aborted while waiting for the client to drain');
+        err.name = 'AbortError';
+        err.code = 'CLIENT_ABORTED';
+        err.isClientAbort = true;
+        return err;
+      };
+      // Awaits the outstanding drain, if any. Throws once the writer is gone so
+      // the awaiting producer stops instead of feeding a closed socket.
+      const awaitWriter = async () => {
+        while (pendingDrain) await pendingDrain;
+        if (abortController.signal.aborted) throw drainAbortedError();
+      };
+      // Teardown variant: same wait, but never throws — a failure stage must
+      // reach its remaining cleanup even when the client already vanished.
+      const settleWriter = async () => {
+        while (pendingDrain) await pendingDrain;
+      };
+      // A throwing write is left to propagate: the existing failure stages own
+      // its diagnosis, and re-classifying it here would change how a broken
+      // socket is reported. Closed/aborted is a separate, pre-checked state.
+      const writeRaw = (text) => {
+        if (writerGone()) return true;
+        const ok = res.write(text) !== false;
+        // Only the armed path owns a drain waiter; the legacy channel keeps its
+        // exact previous behaviour (no listener, no heartbeat suppression).
+        if (ok === false && backpressureArmed) beginDrain();
+        return ok;
+      };
+      // Writes one SSE frame. Sequential callers await it; the write happens
+      // only after any outstanding drain, and only once. Returns undefined on
+      // the unarmed (legacy) path so that consumer stays fully synchronous.
+      const writeFrame = (text) => {
+        if (!backpressureArmed) {
+          writeRaw(text);
+          return undefined;
+        }
+        return awaitWriter().then(() => { writeRaw(text); });
+      };
+
+      const formatFrame = (data) => {
         // O9/O12: 给每个 chat.completion.chunk 注入合成 system_fingerprint 与
         // service_tier:'default'; error 帧不动。幂等 —— 已带值则不覆盖。
         applyChatCompletionCompatFields(data, fp);
         if (isOpenAIClient && data && data.error && typeof data.error.type === 'string') {
           data.error.type = normalizeOpenAIErrorType(data.error.type);
         }
-        if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`);
+        return `data: ${JSON.stringify(data)}\n\n`;
       };
+      const send = (data) => writeFrame(formatFrame(data));
       unregisterSse = registerSseController({
         abort(reason) {
-          send(chatStreamError(reason || 'server shutting down', 'server_error', 'server_shutdown'));
-          if (!res.writableEnded) {
-            res.write('data: [DONE]\n\n');
-            res.end();
-          }
+          // Best effort only, and deliberately SYNCHRONOUS: a shutdown notice
+          // must not block behind a stalled writer, and the abort below is what
+          // wakes that writer. Writing after the abort would be dropped.
+          writeRaw(formatFrame(chatStreamError(reason || 'server shutting down', 'server_error', 'server_shutdown')));
+          writeRaw('data: [DONE]\n\n');
+          if (!res.writableEnded) res.end();
           abortController.abort(reason);
         },
       });
@@ -5865,10 +5961,17 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       // period (LS warmup, Cascade "thinking", queue wait). `:` prefix is a
       // comment line per the SSE spec — clients ignore it, intermediaries see
       // bytes flowing, idle timers get reset.
+      // C2: a tick is skipped while a drain is outstanding — the heartbeat may
+      // never add bytes or a waiter behind a pressured writer.
       const heartbeat = setInterval(() => {
-        if (!res.writableEnded) res.write(': ping\n\n');
+        if (!res.writableEnded && !pendingDrain) res.write(': ping\n\n');
       }, HEARTBEAT_MS);
-      const stopHeartbeat = () => clearInterval(heartbeat);
+      const stopHeartbeat = () => {
+        clearInterval(heartbeat);
+        // Drop the listener with the timer: it closes over `res`, and a
+        // finished stream must not leave per-response listeners behind.
+        res.removeListener?.('close', stopHeartbeat);
+      };
       res.on('close', stopHeartbeat);
 
       // ── Cache hit: replay stored response as a fake stream ──
@@ -5885,26 +5988,35 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         const cachedStop = replayed.hit ? replayed.stop : (cached.stop || null);
         const replayedText = replayed.hit ? replayed.text : (cached.text || '');
         try {
-          send({ id, object: 'chat.completion.chunk', created, model,
+          // C2: the replay is a producer like any other — every frame goes
+          // through the same one-outstanding-write gate, and the terminal DONE
+          // cannot overtake a frame the socket has not accepted yet.
+          await send({ id, object: 'chat.completion.chunk', created, model,
             choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
           if (cached.thinking) {
-            send({ id, object: 'chat.completion.chunk', created, model,
+            await send({ id, object: 'chat.completion.chunk', created, model,
               choices: [{ index: 0, delta: { reasoning_content: cached.thinking }, finish_reason: null }] });
           }
           if (replayedText) {
-            send({ id, object: 'chat.completion.chunk', created, model,
+            await send({ id, object: 'chat.completion.chunk', created, model,
               choices: [{ index: 0, delta: { content: replayedText }, finish_reason: null }] });
           }
           const replayChoice = { index: 0, delta: {}, finish_reason: 'stop' };
           if (deps.context?.__messagesStopCarrier === true && cachedStop) replayChoice._windsurf_stop_sequence = cachedStop;
-          send({ id, object: 'chat.completion.chunk', created, model,
+          await send({ id, object: 'chat.completion.chunk', created, model,
             choices: [replayChoice] });
           // O1: only the include_usage opt-in gets the trailing usage frame.
           if (deps.includeUsage) {
-            send({ id, object: 'chat.completion.chunk', created, model,
+            await send({ id, object: 'chat.completion.chunk', created, model,
               choices: [], usage: cachedUsage(messages, replayedText) });
           }
-          if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+          await awaitWriter();
+          writeRaw('data: [DONE]\n\n');
+          if (!res.writableEnded) res.end();
+        } catch (err) {
+          // A client that vanished while the replay was waiting gets no further
+          // bytes and no error frame — teardown owns the response.
+          if (!err?.isClientAbort) throw err;
         } finally {
           unregisterSse();
           stopHeartbeat();
@@ -5950,26 +6062,28 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       // plus the gate's released tail). Used as the cached text only when a stop
       // truncated the answer, so a replay reproduces the fenced view.
       let visibleText = '';
-      const emitVisibleContent = (out) => {
+      // C2: every content sink awaits the frame it hands to the writer, so a
+      // pressured socket holds the caller instead of accumulating frames.
+      const emitVisibleContent = async (out) => {
         if (!out) return;
         visibleText += out;
         emittedClientPayload = true;
-        send({ id, object: 'chat.completion.chunk', created, model,
+        await send({ id, object: 'chat.completion.chunk', created, model,
           choices: [{ index: 0, delta: { content: out }, finish_reason: null }] });
       };
-      const emitGatedContent = (clean) => {
+      const emitGatedContent = async (clean) => {
         if (!clean) return;
         if (!contentGate.active) return emitVisibleContent(clean);
         const { emit, hit } = contentGate.push(clean);
         if (hit) stopMatched = contentGate.matched;
-        emitVisibleContent(emit);
+        return emitVisibleContent(emit);
       };
       // Release the withheld tail once the turn is over — after every prose
       // fallback/promotion, before the terminal frames. No-op after a hit.
-      const flushContentGate = () => {
+      const flushContentGate = async () => {
         if (!contentGate.active || stopMatched) return;
         const tail = contentGate.flush();
-        if (tail) emitVisibleContent(tail);
+        if (tail) await emitVisibleContent(tail);
       };
 
       // Cascade conversation pool (stream path). Opus 4.7 tool-emulated
@@ -6068,7 +6182,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         ? new ThinkTextClassifier()
         : null;
 
-      const emitContent = (clean) => {
+      const emitContent = async (clean) => {
         if (!clean) return;
         // #250 — reroute a LEADING think-tagged span out of content into
         // reasoning BEFORE the dedup, so the dedup's prefix tracking sees the
@@ -6090,7 +6204,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // does, and let the stream-end flush decide. Cascade+emulateTools is
             // the README's Claude Code config, i.e. the live case for #250.
             if (emulateTools) accThinking += routed.thinking;
-            else emitThinking(routed.thinking);
+            else await emitThinking(routed.thinking);
           }
           if (!routed.text) return;
           clean = routed.text;
@@ -6107,13 +6221,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         if (reasoningDedup) {
           const { emit, hold } = reasoningDedup.feed(clean);
           if (hold || !emit) return;
-          emitGatedContent(emit);
-          return;
+          return emitGatedContent(emit);
         }
         // dedup off — pass through the stop gate untouched
-        emitGatedContent(clean);
+        return emitGatedContent(clean);
       };
-      const emitExternalContent = (raw) => {
+      const emitExternalContent = async (raw) => {
         const clean = sanitizeText(raw);
         if (!clean) return;
         // Completed WebFetch data is caller-requested external content. It is
@@ -6121,22 +6234,22 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         // transforms, think classification, reasoning dedup, and JSON shaping.
         usedNativeReadUrlFallback = true;
         accText += clean;
-        emitGatedContent(clean);
+        return emitGatedContent(clean);
       };
-      const emitThinking = (clean, { accumulate = true } = {}) => {
+      const emitThinking = async (clean, { accumulate = true } = {}) => {
         if (!clean) return;
         if (accumulate) {
           accThinking += clean;
           reasoningDedup?.noteReasoning(clean);
         }
         emittedClientPayload = true;
-        send({ id, object: 'chat.completion.chunk', created, model,
+        await send({ id, object: 'chat.completion.chunk', created, model,
           choices: [{ index: 0, delta: { reasoning_content: clean }, finish_reason: null }] });
       };
 
-      const emitToolCallDelta = (tc, idx) => {
+      const emitToolCallDelta = async (tc, idx) => {
         emittedClientPayload = true;
-        send({ id, object: 'chat.completion.chunk', created, model,
+        await send({ id, object: 'chat.completion.chunk', created, model,
           choices: [{ index: 0, delta: {
             tool_calls: [{
               index: idx,
@@ -6147,7 +6260,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           }, finish_reason: null }] });
       };
 
-      const emitNativeFallbackCalls = (rawCalls) => {
+      const emitNativeFallbackCalls = async (rawCalls) => {
         const filtered = filterToolCallsByAllowlist(rawCalls || [], declaredTools);
         for (const rawTc of filtered) {
           const tc = sanitizeToolCall(repairToolCallArguments(rawTc, messages));
@@ -6156,15 +6269,24 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           bridgeDiag.emulatedToolCalls++;
           bridgeDiag.emulatedNames.push(tc.name);
           recordNativeBridgeEmittedToolCall(tc.name, { source: 'provider_xml' });
-          emitToolCallDelta(tc, idx);
+          await emitToolCallDelta(tc, idx);
         }
         return filtered.length;
       };
 
-      const onChunk = (chunk) => {
+      // The producer is held at the chunk boundary: every frame this chunk
+      // produced must be accepted by the socket before the next chunk starts.
+      const holdChunkBoundary = async () => {
+        if (backpressureArmed) await awaitWriter();
+      };
+      // C2: the per-chunk emission. Sequential — each frame is awaited, so the
+      // producer's `await onChunk` (src/client.js) is what holds the Cascade
+      // poll loop and its next trajectory RPC while the socket is pressured.
+      // Returns a promise; the legacy channel ignores it (and is never armed).
+      const emitChunk = async (chunk) => {
         if (!rolePrinted) {
           rolePrinted = true;
-          send({ id, object: 'chat.completion.chunk', created, model,
+          await send({ id, object: 'chat.completion.chunk', created, model,
             choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
         }
         hadSuccess = true;
@@ -6183,6 +6305,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               && !completedNativeReadUrlResults.some(existing => (existing.id || '') === (raw.id || ''))) {
             completedNativeReadUrlResults.push(raw);
           }
+          await holdChunkBoundary();
           return;
         }
 
@@ -6213,13 +6336,14 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               const idx = collectedToolCalls.length;
               collectedToolCalls.push(tc);
               recordNativeBridgeEmittedToolCall(tc.name, { source: 'cascade' });
-              emitToolCallDelta(tc, idx);
+              await emitToolCallDelta(tc, idx);
             }
           } else {
             bridgeDiag.unmappedToolCalls++;
             bridgeDiag.unmappedKinds.push(raw.name);
             recordNativeBridgeUnmappedCascadeToolCall(raw.name);
           }
+          await holdChunkBoundary();
           return;
         }
 
@@ -6232,7 +6356,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           if (nativeFunctionParser) {
             const nativeParsed = nativeFunctionParser.feed(safeText);
             safeText = nativeParsed.text;
-            const emitted = emitNativeFallbackCalls(nativeParsed.toolCalls);
+            const emitted = await emitNativeFallbackCalls(nativeParsed.toolCalls);
             if (emitted) {
               log.info(`Chat[stream]: native bridge parsed ${emitted} provider-native function_call(s) from stream`);
             }
@@ -6243,7 +6367,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             if (Array.isArray(parsed.items) && parsed.items.length) {
               for (const item of parsed.items) {
                 if (item.type === 'text') {
-                  emitContent(pathStreamText.feed(item.text));
+                  await emitContent(pathStreamText.feed(item.text));
                   continue;
                 }
                 if (emulateTools) {
@@ -6257,7 +6381,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                   collectedToolCalls.push(tc);
                   bridgeDiag.emulatedToolCalls++;
                   bridgeDiag.emulatedNames.push(tc.name);
-                  emitToolCallDelta(tc, idx);
+                  await emitToolCallDelta(tc, idx);
                 }
               }
               safeText = '';
@@ -6276,11 +6400,11 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 collectedToolCalls.push(tc);
                 bridgeDiag.emulatedToolCalls++;
                 bridgeDiag.emulatedNames.push(tc.name);
-                emitToolCallDelta(tc, idx);
+                await emitToolCallDelta(tc, idx);
               }
             }
           }
-          if (safeText) emitContent(pathStreamText.feed(safeText));
+          if (safeText) await emitContent(pathStreamText.feed(safeText));
         }
         if (chunk.thinking) {
           const cleanThinking = pathStreamThinking.feed(chunk.thinking);
@@ -6293,9 +6417,22 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // "Content block not found" on that block-order pattern).
             if (cleanThinking) accThinking += cleanThinking;
           } else {
-            emitThinking(cleanThinking);
+            await emitThinking(cleanThinking);
           }
         }
+        await holdChunkBoundary();
+      };
+
+      // C2: serialize emissions. The Cascade producer awaits each call, so the
+      // chain is length one there; a legacy data callback that ignores the
+      // return value cannot interleave two half-finished emissions.
+      let pendingEmission = null;
+      const onChunk = (chunk) => {
+        const run = pendingEmission
+          ? pendingEmission.then(() => emitChunk(chunk))
+          : emitChunk(chunk);
+        pendingEmission = run;
+        return run;
       };
 
       try {
@@ -6455,8 +6592,20 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 additionalSteps: nativeOpts?.additionalSteps || null,
               });
             } else {
-              await client.rawGetChatMessage(messages, modelEnum, modelUid, { onChunk, signal: abortController.signal });
+              await client.rawGetChatMessage(messages, modelEnum, modelUid, {
+                // The legacy channel consumes onChunk synchronously and drops the
+                // return value. Mark the promise handled so a write failure is
+                // reported by the handler's own await below instead of escaping
+                // as an unhandled rejection.
+                onChunk: (chunk) => { const p = onChunk(chunk); p?.catch?.(() => {}); return p; },
+                signal: abortController.signal,
+              });
             }
+            // C2: the Cascade producer awaited every emission, so this is
+            // normally already settled. The legacy channel cannot await its
+            // data callback, so the tail flush must not overtake an emission
+            // still waiting on the writer.
+            if (pendingEmission) await pendingEmission;
             // Flush order matters:
             //   1. NativeFunctionCallStreamParser tail → may produce provider
             //      native tool_calls withheld from content deltas
@@ -6468,15 +6617,15 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             //   4. PathSanitizeStream tail (thinking)
             if (nativeFunctionParser) {
               const nativeTail = nativeFunctionParser.flush();
-              const emitted = emitNativeFallbackCalls(nativeTail.toolCalls);
+              const emitted = await emitNativeFallbackCalls(nativeTail.toolCalls);
               if (emitted) {
                 log.info(`Chat[stream]: native bridge parsed ${emitted} provider-native function_call(s) from stream tail`);
               }
-              if (nativeTail.text) emitContent(pathStreamText.feed(nativeTail.text));
+              if (nativeTail.text) await emitContent(pathStreamText.feed(nativeTail.text));
             }
             if (toolParser) {
               const tail = toolParser.flush();
-              if (tail.text) emitContent(pathStreamText.feed(tail.text));
+              if (tail.text) await emitContent(pathStreamText.feed(tail.text));
               // M2 allowlist on the tail flush as well — stream end can
               // still emit tail tool_calls and they need the same filter.
               const filteredTail = emulateTools
@@ -6488,7 +6637,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 collectedToolCalls.push(tc);
                 bridgeDiag.emulatedToolCalls++;
                 bridgeDiag.emulatedNames.push(tc.name);
-                emitToolCallDelta(tc, idx);
+                await emitToolCallDelta(tc, idx);
               }
               // Diagnostic: same as nonStreamResponse but for the SSE path —
               // surface why no tool_calls came out when emulation was active.
@@ -6537,7 +6686,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                       collectedToolCalls.push(tc);
                       bridgeDiag.emulatedToolCalls++;
                       bridgeDiag.emulatedNames.push(tc.name);
-                      emitToolCallDelta(tc, idx);
+                      await emitToolCallDelta(tc, idx);
                     }
                     if (filtered.length) {
                       log.info(`Chat[stream]: NLU recovery — promoted ${filtered.length} narrative tool_call(s) mid-stream (markers=${markers.join(',') || 'none'})`);
@@ -6568,7 +6717,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             const completedTurnHasToolCalls = collectedToolCalls.length > 0
               || (nativeBridgeOn && hasCallerVisibleCascadeTailToolCall(cascadeResult?.toolCalls, nativeOpts, declaredTools))
               || lateThinkingHasToolCalls;
-            emitContent(pathStreamText.flush({ hasToolCalls: completedTurnHasToolCalls }));
+            await emitContent(pathStreamText.flush({ hasToolCalls: completedTurnHasToolCalls }));
             // #250 — flush the think classifier BEFORE the thinking flush below:
             // an unterminated/undecided tail is delivered as text (visible beats
             // dropped), and doing it here lets the ACCUMULATE=true pathStreamThinking
@@ -6576,7 +6725,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // mandatory on this path — a forgotten flush drops an unterminated span.
             if (thinkClassifier) {
               const tail = thinkClassifier.flush();
-              if (tail) emitContent(tail);
+              if (tail) await emitContent(tail);
             }
             // v2.0.146 fix: scan accThinking for <tool_call> blocks when
             // the text-only toolParser produced nothing. Opus 4.8 xhigh
@@ -6615,11 +6764,11 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                       collectedToolCalls.push(tc);
                       bridgeDiag.emulatedToolCalls++;
                       bridgeDiag.emulatedNames.push(tc.name);
-                      emitToolCallDelta(tc, idx);
+                      await emitToolCallDelta(tc, idx);
                     }
                   } else {
                     accThinking = '';
-                    emitThinking(bufferedThinking);
+                    await emitThinking(bufferedThinking);
                   }
                 } else {
                   // A tool_call was already emitted from text/native parsing;
@@ -6627,7 +6776,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                   accThinking = bufferedThinking;
                 }
               } else {
-                emitThinking(thinkingTail);
+                await emitThinking(thinkingTail);
               }
             }
 
@@ -6689,7 +6838,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 const idx = collectedToolCalls.length;
                 collectedToolCalls.push(tc);
                 recordNativeBridgeEmittedToolCall(tc.name, { source: 'cascade' });
-                emitToolCallDelta(tc, idx);
+                await emitToolCallDelta(tc, idx);
               }
               if (filteredNative.length === 0 && completedNativeReadUrlResults.length === 0 && cascadeResult.toolCalls.some(tc => tc.cascade_native)) {
                 log.info(`Chat[stream]: nativeBridge=true received cascade tool calls but none mapped to caller tools (kinds=${cascadeResult.toolCalls.filter(tc => tc.cascade_native).map(tc => tc.name).join(',')})`);
@@ -6701,7 +6850,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               // ordering. A completed WebFetch document is not model metadata;
               // apply the same established path redaction directly instead of
               // feeding a closed gate.
-              if (fallbackText) emitExternalContent(fallbackText);
+              if (fallbackText) await emitExternalContent(fallbackText);
             }
             if (nativeBridgeOn && collectedToolCalls.length === 0 && completedNativeReadUrlResults.length === 0) recordNativeBridgeNoToolCallResponse();
             bridgeDiag.totalToolCalls = collectedToolCalls.length;
@@ -6735,7 +6884,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             updateCapability(currentApiKey, modelKey, true, 'success');
             recordRequest(model, true, Date.now() - startTime, currentApiKey);
             if (!rolePrinted) {
-              send({ id, object: 'chat.completion.chunk', created, model,
+              await send({ id, object: 'chat.completion.chunk', created, model,
                 choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
             }
             // T4 root dedup verdict: flush held content unless it is a
@@ -6744,7 +6893,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // below (fallback, narrative scan, cascade history).
             const settled = reasoningDedup?.settle() ?? { emit: '', suppressed: false };
             if (settled.emit) {
-              emitGatedContent(settled.emit);
+              await emitGatedContent(settled.emit);
             }
             // For response_format=json_* we buffered all content — flush one
             // clean JSON payload now. extractJsonPayload strips fences and
@@ -6755,7 +6904,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             if (wantJson && accText && !usedNativeReadUrlFallback && !(accThinking && accText === accThinking)) {
               const cleaned = stabilizeJsonPayload(accText, messages);
               if (cleaned) {
-                emitGatedContent(cleaned);
+                await emitGatedContent(cleaned);
                 accText = cleaned;
               }
             }
@@ -6774,7 +6923,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             });
             if (thinkingPromotedToText) {
               log.info(`Chat[${reqId}]: thinking-only stream from non-reasoning model ${modelKey}; promoting ${accThinking.length}c thinking → content`);
-              emitGatedContent(accThinking);
+              await emitGatedContent(accThinking);
               accText = accThinking;
               accThinking = '';
             }
@@ -6796,7 +6945,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // Release the last withheld prose tail now that every fallback and
             // promotion has run; it must precede the terminal frames so no
             // content can arrive after them. No-op when a stop already fired.
-            flushContentGate();
+            await flushContentGate();
             // OpenAI spec: the finish_reason chunk carries NO usage, then a
             // separate terminal chunk has empty choices[] + usage
             // (stream_options.include_usage convention). Emitting usage on
@@ -6808,7 +6957,10 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // instead of guessing from a suffix that no longer exists. A tool
             // finish never carries it.
             if (deps.context?.__messagesStopCarrier === true && stopMatched && finalReason === 'stop') finishChoice._windsurf_stop_sequence = stopMatched;
-            send({ id, object: 'chat.completion.chunk', created, model,
+            // C2: the terminal frames are part of the same sequential emission —
+            // no content may be written behind a frame the socket has not taken.
+            await awaitWriter();
+            await send({ id, object: 'chat.completion.chunk', created, model,
               choices: [finishChoice] });
             {
               // Always build + record for internal billing; O1: only forward the
@@ -6842,15 +6994,23 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 if (acct) recordAccountSpend(currentApiKeyForId(acct.id, acct.apiKey), usage);
               } catch {}
               if (deps.includeUsage) {
-                send({ id, object: 'chat.completion.chunk', created, model,
+                await awaitWriter();
+                await send({ id, object: 'chat.completion.chunk', created, model,
                   choices: [], usage });
               }
             }
-            if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
-            if (ckey && !collectedToolCalls.length && cacheShareable && (accText || accThinking)) {
+            // C2: the DONE sentinel is the last byte of the stream; it waits for
+            // the socket like every other frame.
+            await awaitWriter();
+            writeRaw('data: [DONE]\n\n');
+            if (!res.writableEnded) res.end();
+            if (ckey && !collectedToolCalls.length && cacheShareable && (accText || accThinking)
+                && !abortController.signal.aborted) {
               // SEED-C3b: when a stop truncated the answer, cache the VISIBLE text
               // plus the cause so the replay reproduces both; otherwise the cached
               // text stays exactly what it was (accText = full generated text).
+              // C2: a stream whose client vanished is not a successful turn and
+              // must not seed the response cache.
               cacheSet(ckey, { text: stopMatched ? visibleText : accText, thinking: accThinking, stop: stopMatched });
             }
             return;
@@ -6982,9 +7142,20 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         }
 
         // All attempts failed
-        function failureStage(stage, action) {
+        // C2: a producer that did not await its callback (the legacy channel,
+        // or a fake) may still have an emission in flight. Settle it before the
+        // failure tails read/mutate the same parser state; its own rejection is
+        // the attempt's failure and is already accounted for.
+        if (pendingEmission) {
+          try { await pendingEmission; } catch { /* the failure path owns the outcome */ }
+        }
+        // C2: async so a stage can await the socket — the tails and the
+        // synthetic finish frame are part of the same sequential emission. The
+        // catch boundary is unchanged: a stage that throws still cannot take
+        // the termination path down with it.
+        async function failureStage(stage, action) {
           try {
-            return action();
+            return await action();
           } catch (error) {
             // Never emit arbitrary error text: it may carry headers or tokens.
             // Stage + error class + digest is enough to correlate the failure.
@@ -7006,16 +7177,16 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             return undefined;
           }
         }
-        failureStage('upstream-log', () => {
+        await failureStage('upstream-log', () => {
           // Maintainer note: the pre-existing #77 guard pins this exact fallback shape, and a
           // digest-only line turns a null lastErr into a constant that an operator cannot act
           // on. Redacting upstream text is SEC-6's job, on the message itself.
           log.error('Stream error after retries:', lastErr?.message || String(lastErr || 'account queue timed out without an error object'));
         });
-        failureStage('request-stats', () => {
+        await failureStage('request-stats', () => {
           recordRequest(model, false, Date.now() - startTime, currentApiKey);
         });
-        const failure = failureStage('classify', () => {
+        const failure = await failureStage('classify', () => {
           const temporaryUnavailable = isAllTemporarilyUnavailable(modelKey);
           const rl = isAllRateLimited(modelKey);
           const allInternal = streamInternalCount > 0 && tried.length > 0 && streamInternalCount >= tried.length;
@@ -7040,10 +7211,10 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           poolExhausted: false, deadlineExceeded: false, errMsg: 'Stream failed',
         };
         const { temporaryUnavailable, allInternal, poolExhausted, deadlineExceeded, errMsg } = failure;
-        failureStage('classification-log', () => {
+        await failureStage('classification-log', () => {
           if (allInternal) log.error('Chat stream: all attempts hit an upstream transient error');
         });
-        failureStage('pool-restore', () => {
+        await failureStage('pool-restore', () => {
           if (!hadSuccess && !reuseEntryDead && checkedOutReuseEntry && fpBefore) {
             poolCheckin(fpBefore, checkedOutReuseEntry, callerKey, ttlHintFromCachePolicy(cachePolicy));
             log.info(`Chat[${reqId}]: restored checked-out cascade after failed stream`);
@@ -7052,7 +7223,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           }
 
         });
-        failureStage('egress-tail', () => {
+        await failureStage('egress-tail', async () => {
           // #185 failure tail: a candidate object may still be wholly buffered
           // because no terminal chunk arrived to prove it was the exact metadata
           // envelope. On an incomplete stream we must fail open and release those
@@ -7062,10 +7233,10 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             hasToolCalls: collectedToolCalls.length > 0,
             incomplete: true,
           });
-          if (egressTail) emitContent(egressTail);
+          if (egressTail) { await settleWriter(); if (!writerGone()) await emitContent(egressTail); }
 
         });
-        failureStage('think-tail', () => {
+        await failureStage('think-tail', async () => {
           // #250 failure path: release whatever the think classifier still holds
           // so an undecided/unterminated span is delivered as text rather than
           // dropped (visible beats dropped — same policy as the success tail).
@@ -7079,11 +7250,11 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           // the "partial delivered" branch is chosen correctly.
           if (thinkClassifier) {
             const rerouteTail = thinkClassifier.flush();
-            if (rerouteTail) emitContent(rerouteTail);
+            if (rerouteTail) { await settleWriter(); if (!writerGone()) await emitContent(rerouteTail); }
           }
 
         });
-        failureStage('thinking-buffer', () => {
+        await failureStage('thinking-buffer', async () => {
           // #250 failure path, part 2 (adversarial review 2026-08-10): a CLOSED
           // think span that was already rerouted did NOT sit in the classifier —
           // it sat in accThinking (emulateTools buffers there to keep the Anthropic
@@ -7103,35 +7274,39 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             if (thinkingAsText) {
               if (accText) accText += '\n';
               accText += bufferedThinking;
-              emitContent(bufferedThinking);
+              await settleWriter();
+              if (!writerGone()) await emitContent(bufferedThinking);
             } else {
               // accThinking was non-empty so nothing was streamed yet — emitting
               // here is not a duplicate. accumulate:false because accThinking is
               // already reset and this would otherwise re-buffer + re-noteReasoning.
-              emitThinking(bufferedThinking, { accumulate: false });
+              await settleWriter();
+              if (!writerGone()) await emitThinking(bufferedThinking, { accumulate: false });
             }
           }
 
         });
         if (emittedClientPayload) {
-          failureStage('dedup-tail', () => {
+          await failureStage('dedup-tail', async () => {
             const heldTail = reasoningDedup?.release() ?? '';
-            if (heldTail) emitGatedContent(heldTail);
+            if (heldTail) { await settleWriter(); if (!writerGone()) await emitGatedContent(heldTail); }
           });
         }
-        failureStage('content-gate-tail', () => flushContentGate());
+        await failureStage('content-gate-tail', async () => { await settleWriter(); if (!writerGone()) await flushContentGate(); });
         if (emittedClientPayload) {
           // Keep the existing synthetic-finish contract on internal routes.
           // Suppress its local DONE write; the independent stage below owns it.
-          failureStage('finish-frame', () => {
-            finishPartialStreamAfterError({ id, created, model, send, res: null,
+          await failureStage('finish-frame', async () => {
+            await settleWriter();
+            if (writerGone()) return undefined;
+            return finishPartialStreamAfterError({ id, created, model, send, res: null,
               internalRoute: !isOpenAIClient });
           });
-          failureStage('partial-log', () => {
+          await failureStage('partial-log', () => {
             log.warn(`Stream: partial response delivered then failed (${safeKeyRef(errMsg, 'error')})`);
           });
         } else {
-          failureStage('error-frame', () => {
+          await failureStage('error-frame', async () => {
             const errType = allInternal
               ? 'upstream_transient_error'
               : deadlineExceeded
@@ -7155,18 +7330,21 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 ? temporaryUnavailable.retryAfterMs
                 : (Number.isFinite(lastErr?.retry_after_ms) ? lastErr.retry_after_ms : null))
               : null;
-            send(chatStreamError(errMsg, errType, errCode, retryAfterMs ? { retry_after_ms: retryAfterMs } : null));
+            await settleWriter();
+            if (writerGone()) return;
+            await send(chatStreamError(errMsg, errType, errCode, retryAfterMs ? { retry_after_ms: retryAfterMs } : null));
           });
         }
-        failureStage('done', () => {
+        await failureStage('done', async () => {
           // A pre-content failure has no completed turn to close. [DONE] is the
           // OpenAI "clean finish" marker; writing it after the error frame lets
           // clients and relays treat a failed request as an empty success. The
           // DEVIN_CONNECT path already guards the same sentinel with
           // terminalOk || contentEmitted (see the stream-exit block above).
-          if (emittedClientPayload && !res.writableEnded) res.write('data: [DONE]\n\n');
+          await settleWriter();
+          if (emittedClientPayload) writeRaw('data: [DONE]\n\n');
         });
-        failureStage('end', () => {
+        await failureStage('end', () => {
           if (!res.writableEnded) res.end();
         });
       } finally {
