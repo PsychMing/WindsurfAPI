@@ -2459,17 +2459,18 @@ tbody tr:hover td { background: var(--surface-2); }
     <div class="section">
       <div class="section-header">
         <div>
-          <div class="section-title" data-i18n="section.emailLogin.title">邮箱密码登录</div>
-          <div class="section-desc" data-i18n="section.emailLogin.desc">仅限邮箱+密码注册的账号 第三方登录请用上面的按钮；支持单个登录或按“邮箱 密码”格式批量导入</div>
+          <div class="section-title" data-i18n="section.emailLogin.title">邮箱登录</div>
+          <div class="section-desc" data-i18n="section.emailLogin.desc">先检测账号登录方式：有密码的账号用密码登录，OAuth/邮箱验证码账号用验证码登录</div>
         </div>
       </div>
       <div class="section-body">
         <div class="field-row">
           <div class="field">
             <label class="field-label" data-i18n="field.email.label">邮箱</label>
-            <input id="wl-email" class="input" data-i18n-placeholder="field.email.placeholder" placeholder="your-email@example.com" autocomplete="off">
+            <input id="wl-email" class="input" data-i18n-placeholder="field.email.placeholder" placeholder="your-email@example.com" autocomplete="off" onblur="App.windsurfProbeFromInput()">
+            <div class="field-hint" id="wl-probe-status"></div>
           </div>
-          <div class="field">
+          <div class="field" id="wl-password-field">
             <label class="field-label" data-i18n="field.password.label">密码</label>
             <input id="wl-password" class="input" type="password" data-i18n-placeholder="field.password.placeholder" placeholder="••••••••" autocomplete="off" onkeydown="if(event.key==='Enter')App.windsurfLogin()">
           </div>
@@ -2484,6 +2485,35 @@ tbody tr:hover td { background: var(--surface-2); }
             <span class="box"></span>
             <span data-i18n="field.autoAdd">登录成功自动加入账号池</span>
           </label>
+        </div>
+        <!-- Email-code path: shown when the probe reports has_password:false.
+             The code is requested explicitly by the operator, never auto-sent. -->
+        <div id="wl-email-code-field" class="hidden" style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">
+          <div class="field-row">
+            <div class="field">
+              <label class="field-label" data-i18n="field.otpCode.label">验证码 / OTP Code</label>
+              <input id="wl-email-code" class="input" inputmode="numeric" autocomplete="one-time-code" maxlength="10" data-i18n-placeholder="field.otpCode.placeholder" placeholder="123456" onkeydown="if(event.key==='Enter')App.windsurfCompleteEmailCode()">
+              <div class="field-hint" data-i18n="field.otpCode.hint">从邮箱获取 6 位验证码</div>
+            </div>
+            <div class="field" style="align-self:flex-end">
+              <button class="btn btn-outline" onclick="App.windsurfSendEmailCode()" id="wl-send-code-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                <span data-i18n="action.sendCode">发送验证码</span>
+              </button>
+            </div>
+          </div>
+          <div class="field-row-actions">
+            <button class="btn btn-primary" onclick="App.windsurfCompleteEmailCode()" id="wl-code-login-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+              <span data-i18n="action.verifyAndLogin">验证并登录</span>
+            </button>
+          </div>
+          <div id="wl-code-status" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
+        </div>
+        <!-- OAuth-only path: has_password:false and no email connection. -->
+        <div id="wl-oauth-hint" class="hidden" style="margin-top:14px;padding:12px;background:var(--surface-2);border-radius:var(--radius);border-left:3px solid var(--accent)">
+          <div class="text-sm" data-i18n="emailLogin.oauthOnlyHint">该账号没有密码，也不支持邮箱验证码。请用上面的 Google / GitHub 按钮登录，或粘贴 show-auth-token 页面的 Token。</div>
+          <button class="btn btn-outline" style="margin-top:8px" onclick="App.showOAuthTokenStep()" data-i18n="emailLogin.useToken">改用 Token 登录</button>
         </div>
         <label class="checkbox" style="margin-top:10px" data-i18n-title="field.storeCredentialHint" title="加密保存密码用于自动续期">
           <input type="checkbox" id="wl-store-cred">
@@ -6399,10 +6429,201 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     }
   },
 
+  // Map a dashboard error envelope to a localized message. Keeps the
+  // `error.<CODE>` convention the rest of this panel uses.
+  loginErrorMessage(r) {
+    const code = r && r.error;
+    if (!code) return I18n.t('error.unknown');
+    const key = `error.${code}`;
+    const translated = I18n.t(key);
+    return translated !== key ? translated : String(code);
+  },
+
+  // Login-method probe. The account may have no password at all (OAuth or
+  // email-code only), in which case a password attempt is a guaranteed,
+  // misleading upstream 401 — so the form asks first.
+  async windsurfProbe(email, { force = false } = {}) {
+    const probeStatus = document.getElementById('wl-probe-status');
+    if (!email) {
+      if (probeStatus) probeStatus.textContent = '';
+      return null;
+    }
+    if (!force && this._wlProbe && this._wlProbeEmail === email) return this._wlProbe;
+    if (probeStatus) probeStatus.textContent = I18n.t('emailLogin.probing');
+    const r = await this.api('POST', '/windsurf-login/probe', { email, proxy: this.getWindsurfLoginProxy() });
+    if (!r || r.ok !== true) {
+      this._wlProbe = null;
+      this._wlProbeEmail = email;
+      if (probeStatus) probeStatus.textContent = '';
+      return null;
+    }
+    this._wlProbe = r;
+    this._wlProbeEmail = email;
+    this.applyWindsurfLoginMethod(r);
+    return r;
+  },
+
+  async windsurfProbeFromInput() {
+    const email = document.getElementById('wl-email').value.trim();
+    // Only probe what looks like a complete address: a half-typed email would
+    // burn an upstream probe (and a toast on failure) for nothing.
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return;
+    await this.windsurfProbe(email);
+  },
+
+  // Show only the controls the probed method can actually use.
+  applyWindsurfLoginMethod(probe) {
+    const status = document.getElementById('wl-probe-status');
+    const passwordField = document.getElementById('wl-password-field');
+    const passwordBtn = document.getElementById('wl-btn');
+    const codeField = document.getElementById('wl-email-code-field');
+    const oauthHint = document.getElementById('wl-oauth-hint');
+    const storeCred = document.getElementById('wl-store-cred');
+    const noPassword = probe.hasPassword === false;
+    const emailCode = probe.emailCode === true;
+
+    passwordField?.classList.toggle('hidden', noPassword);
+    passwordBtn?.classList.toggle('hidden', noPassword);
+    codeField?.classList.toggle('hidden', !(noPassword && emailCode));
+    oauthHint?.classList.toggle('hidden', !(noPassword && !emailCode));
+    if (storeCred) storeCred.closest('label')?.classList.toggle('hidden', noPassword);
+
+    if (status) {
+      if (probe.userExists === false) status.textContent = I18n.t('emailLogin.methodNotFound');
+      else if (noPassword) status.textContent = I18n.t(emailCode ? 'emailLogin.methodEmailCode' : 'emailLogin.methodOAuth');
+      else if (probe.hasPassword === true) status.textContent = I18n.t('emailLogin.methodPassword');
+      else status.textContent = I18n.t('emailLogin.methodUnknown');
+    }
+    if (noPassword && emailCode) {
+      // The password we just hid must not linger in memory or get submitted.
+      const pw = document.getElementById('wl-password');
+      if (pw) pw.value = '';
+    }
+  },
+
+  showOAuthTokenStep() {
+    const step = document.getElementById('oauth-token-step');
+    if (!step) return;
+    step.classList.remove('hidden');
+    document.getElementById('oauth-token-input')?.focus();
+    step.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  },
+
+  startEmailCodeCooldown(btn) {
+    const status = document.getElementById('wl-code-status');
+    if (this._wlCooldownTimer) clearInterval(this._wlCooldownTimer);
+    let left = 30;
+    if (btn) btn.disabled = true;
+    this._wlCooldownTimer = setInterval(() => {
+      left -= 1;
+      if (left <= 0) {
+        clearInterval(this._wlCooldownTimer);
+        this._wlCooldownTimer = null;
+        if (btn) btn.disabled = false;
+        if (status) status.textContent = I18n.t('emailLogin.codeSent');
+        return;
+      }
+      if (status) status.textContent = I18n.t('emailLogin.resendIn', { seconds: left });
+    }, 1000);
+  },
+
+  async windsurfSendEmailCode() {
+    const email = document.getElementById('wl-email').value.trim();
+    if (!email) return this.toast(I18n.t('toast.enterEmailPassword'), 'error');
+    const btn = document.getElementById('wl-send-code-btn');
+    const status = document.getElementById('wl-code-status');
+    if (btn) btn.disabled = true;
+    if (status) status.textContent = I18n.t('emailLogin.sendingCode');
+    try {
+      const r = await this.api('POST', '/windsurf-login/email/start', { email, proxy: this.getWindsurfLoginProxy() });
+      if (r && r.sent && r.flowId) {
+        this._wlFlow = { flowId: r.flowId, email };
+        if (status) status.textContent = I18n.t('emailLogin.codeSent');
+        this.toast(I18n.t('emailLogin.codeSent'), 'success');
+        document.getElementById('wl-email-code')?.focus();
+        this.startEmailCodeCooldown(btn);
+      } else {
+        this._wlFlow = null;
+        const msg = this.loginErrorMessage(r);
+        if (status) status.textContent = msg;
+        this.toast(msg, 'error');
+        if (btn) btn.disabled = false;
+      }
+    } catch (err) {
+      this._wlFlow = null;
+      if (btn) btn.disabled = false;
+      if (status) status.textContent = err.message;
+      this.toast(err.message, 'error');
+    }
+  },
+
+  async windsurfCompleteEmailCode() {
+    const codeEl = document.getElementById('wl-email-code');
+    const code = codeEl ? codeEl.value.trim() : '';
+    const flow = this._wlFlow;
+    if (!flow) return this.toast(I18n.t('emailLogin.requestCodeFirst'), 'error');
+    if (!code) return this.toast(I18n.t('emailLogin.enterCode'), 'error');
+
+    const autoAdd = document.getElementById('wl-auto-add').checked;
+    const btn = document.getElementById('wl-code-login-btn');
+    const status = document.getElementById('wl-code-status');
+    if (btn) btn.disabled = true;
+    const entry = { time: new Date().toISOString(), email: flow.email, proxy: this.getWindsurfProxyLabel(this.getWindsurfLoginProxy()), status: 'pending' };
+
+    try {
+      const r = await this.api('POST', '/windsurf-login/email/complete', {
+        flowId: flow.flowId, code, autoAdd, proxy: this.getWindsurfLoginProxy(),
+      });
+      if (r && r.success) {
+        this._wlFlow = null;
+        if (codeEl) codeEl.value = '';
+        entry.status = 'success';
+        entry.apiKey = r.apiKey_masked || (r.apiKey ? r.apiKey.slice(0, 16) + '...' : '');
+        if (status) status.textContent = '';
+        this.renderSingleWindsurfLoginResult(r, autoAdd);
+        this.toast(autoAdd ? I18n.t('toast.loginSuccessAdded') : I18n.t('toast.loginSuccess'), 'success');
+        this.loadAccounts();
+      } else {
+        entry.status = 'error: ' + ((r && r.error) || 'unknown');
+        this.renderSingleWindsurfLoginResult(r, autoAdd);
+        const msg = this.loginErrorMessage(r);
+        if (status) status.textContent = msg;
+        this.toast(msg, 'error');
+        // A dead flow cannot be retried; force a fresh code request.
+        if (r && /ERR_EMAIL_FLOW_(EXPIRED|USED|NOT_FOUND|IN_USE)/.test(r.error || '')) this._wlFlow = null;
+      }
+    } catch (err) {
+      entry.status = 'error: ' + err.message;
+      if (status) status.textContent = err.message;
+      this.toast(err.message, 'error');
+    }
+
+    this.pushLoginHistory(entry);
+    if (btn) btn.disabled = false;
+  },
+
   async windsurfLogin() {
     const email = document.getElementById('wl-email').value.trim();
     const password = document.getElementById('wl-password').value.trim();
-    if (!email || !password) return this.toast(I18n.t('toast.enterEmailPassword'), 'error');
+    if (!email) return this.toast(I18n.t('toast.enterEmailPassword'), 'error');
+
+    // Probe FIRST: an account with no password must never be sent down the
+    // password path (upstream answers 401 and the operator sees "wrong
+    // password" for an account that has none).
+    const probe = await this.windsurfProbe(email);
+    if (probe && probe.hasPassword === false) {
+      if (probe.emailCode) {
+        this.applyWindsurfLoginMethod(probe);
+        // Clicking 登录 on an email-code account is the operator asking for a
+        // code — send one if none is outstanding, otherwise verify what they typed.
+        if (!this._wlFlow) return this.windsurfSendEmailCode();
+        return this.windsurfCompleteEmailCode();
+      }
+      this.showOAuthTokenStep();
+      return this.toast(I18n.t('emailLogin.oauthOnlyHint'), 'info');
+    }
+
+    if (!password) return this.toast(I18n.t('toast.enterEmailPassword'), 'error');
 
     const proxy = this.getWindsurfLoginProxy();
     const autoAdd = document.getElementById('wl-auto-add').checked;
@@ -6425,13 +6646,17 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       } else {
         entry.status = 'error: ' + (r.error || 'unknown');
         this.renderSingleWindsurfLoginResult(r, autoAdd);
-        const errKey = r.error ? `error.${r.error}` : null;
-        this.toast((errKey && I18n.t(errKey) !== errKey) ? I18n.t(errKey) : (r.error || I18n.t('toast.loginFailed')), 'error');
+        this.toast(this.loginErrorMessage(r), 'error');
+        // The backend says this account has no password after all (probe raced
+        // an account change): switch the form instead of letting the operator
+        // retype a password that cannot work.
+        if (r.error === 'ERR_NO_PASSWORD_OAUTH_ACCOUNT') {
+          await this.windsurfProbe(email, { force: true });
+        }
       }
     } catch (err) {
       entry.status = 'error: ' + err.message;
-      const errKey = err.message ? `error.${err.message}` : null;
-      this.toast((errKey && I18n.t(errKey) !== errKey) ? I18n.t(errKey) : err.message, 'error');
+      this.toast(this.loginErrorMessage({ error: err.message }), 'error');
     }
 
     this.pushLoginHistory(entry);

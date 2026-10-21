@@ -117,7 +117,8 @@
     "switchLang": "切换语言",
     "prev": "上一页",
     "next": "下一页",
-    "rollbackUpdate": "回滚到上个版本"
+    "rollbackUpdate": "回滚到上个版本",
+    "verifyAndLogin": "验证并登录"
   },
   "batchOps": {
     "selected": "已选 {{count}} 个",
@@ -263,8 +264,8 @@
       "desc": "点按钮打开 Windsurf 官方登录页 用 Google/GitHub 登录后 复制返回的 Token 即可添加账号"
     },
     "emailLogin": {
-      "title": "邮箱密码登录",
-      "desc": "仅限邮箱+密码注册的账号 第三方登录请用上面的按钮；支持单个登录或按「邮箱 密码」格式批量导入"
+      "title": "邮箱登录",
+      "desc": "先检测账号登录方式：有密码的账号用密码登录，OAuth/邮箱验证码账号用验证码登录"
     },
     "loginProxy": {
       "title": "登录代理（可选）",
@@ -578,7 +579,8 @@
     },
     "otpCode": {
       "label": "验证码 / OTP Code",
-      "hint": "从邮箱获取 6 位验证码"
+      "hint": "从邮箱获取 6 位验证码",
+      "placeholder": "123456"
     },
     "lastName": {
       "label": "姓氏 / Last Name（可选）",
@@ -1394,7 +1396,21 @@
     "ERR_LOCAL_IMPORT_FAILED": "扫描本地 Windsurf 凭证失败",
     "ERR_INTERMEDIATE_CALLBACK": "这是中间回调页，它的登录 code 无法在这里兑换。请等浏览器跳转到 show-auth-token 页面后，粘贴那上面显示的 token。",
     "ERR_OAUTH_UPSTREAM": "登录提供方返回了错误，请重新登录。",
-    "rollbackFailed": "回滚失败"
+    "rollbackFailed": "回滚失败",
+    "ERR_NO_PASSWORD_OAUTH_ACCOUNT": "该账号没有密码（仅支持 OAuth 或邮箱验证码）。请使用邮箱验证码、Google/GitHub，或粘贴 Auth Token。",
+    "ERR_EMAIL_LOCKED": "该邮箱因连续登录失败被临时锁定。请等待解锁，或在设置中调整阈值。",
+    "ERR_EMAIL_REQUIRED": "请填写邮箱",
+    "ERR_EMAIL_CODE_COOLDOWN": "验证码刚刚发送，请稍后再试。",
+    "ERR_EMAIL_CODE_INVALID": "请输入邮箱收到的数字验证码。",
+    "ERR_EMAIL_CODE_REJECTED": "验证码不正确，请核对后重试。",
+    "ERR_EMAIL_START_FAILED": "Windsurf 拒绝发送验证码，请稍后再试。",
+    "ERR_EMAIL_START_NO_TOKEN": "Windsurf 未返回验证令牌，请稍后再试。",
+    "ERR_EMAIL_FLOW_NOT_FOUND": "该验证流程已不存在，请重新发送验证码。",
+    "ERR_EMAIL_FLOW_EXPIRED": "验证码已过期，请重新发送。",
+    "ERR_EMAIL_FLOW_USED": "该验证码已被使用，请重新发送。",
+    "ERR_EMAIL_FLOW_IN_USE": "该验证码正在校验中。",
+    "ERR_EMAIL_FLOW_CODE_REQUIRED": "缺少验证流程或验证码",
+    "ERR_LOGIN_PROBE_FAILED": "无法检测登录方式，请重试。"
   },
   "footer": {
     "version": "版本",
@@ -1608,5 +1624,20 @@
       "newAccountBaseline": "新账号 LRU 基线",
       "retroHint": "调低阈值在下一次错误时生效。errorCount 持久累加，已接近上限的账号在你调低后可能立刻被熔断。"
     }
+  },
+  "emailLogin": {
+    "probing": "正在检测该账号的登录方式…",
+    "methodPassword": "该账号有密码，请使用密码登录。",
+    "methodEmailCode": "该账号没有密码。请发送验证码并在下方输入。",
+    "methodOAuth": "该账号没有密码，也不支持邮箱验证码。请使用 Google/GitHub 或粘贴 Token。",
+    "methodUnknown": "无法确定登录方式，已保留密码登录表单。",
+    "oauthOnlyHint": "该账号没有密码，也不支持邮箱验证码。请用上面的 Google / GitHub 按钮登录，或粘贴 show-auth-token 页面的 Token。",
+    "useToken": "改用 Token 登录",
+    "sendingCode": "正在发送验证码…",
+    "codeSent": "验证码已发送，请查收邮箱（10 分钟内有效）。",
+    "resendIn": "验证码已发送，{{seconds}} 秒后可重新发送。",
+    "requestCodeFirst": "请先发送验证码。",
+    "enterCode": "请输入邮箱收到的验证码。",
+    "methodNotFound": "该邮箱没有对应的 Windsurf 账号，请检查地址。"
   }
 }

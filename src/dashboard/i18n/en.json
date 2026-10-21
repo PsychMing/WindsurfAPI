@@ -117,7 +117,8 @@
     "switchLang": "Switch language",
     "prev": "Prev",
     "next": "Next",
-    "rollbackUpdate": "Roll back to previous version"
+    "rollbackUpdate": "Roll back to previous version",
+    "verifyAndLogin": "Verify & Log In"
   },
   "batchOps": {
     "selected": "{{count}} selected",
@@ -263,8 +264,8 @@
       "desc": "Click a button to open Windsurf's official sign-in page, log in with Google/GitHub, then paste the returned token to add the account"
     },
     "emailLogin": {
-      "title": "Email & Password Login",
-      "desc": "For accounts registered with email+password only. Third-party login please use buttons above. Supports single login or batch import in \"[proxy] email password\" format."
+      "title": "Email Login",
+      "desc": "The account type is probed first: accounts with a password use the password form, OAuth / email-code accounts use the verification code."
     },
     "loginProxy": {
       "title": "Login Proxy (Optional)",
@@ -578,7 +579,8 @@
     },
     "otpCode": {
       "label": "OTP Code",
-      "hint": "Get the 6-digit code from your email"
+      "hint": "Get the 6-digit code from your email",
+      "placeholder": "123456"
     },
     "lastName": {
       "label": "Last Name (optional)",
@@ -1394,7 +1396,21 @@
     "ERR_LOCAL_IMPORT_FAILED": "Failed to scan local Windsurf credentials",
     "ERR_INTERMEDIATE_CALLBACK": "This is an intermediate callback page — its login code can't be exchanged here. Wait until the browser lands on the show-auth-token page, then paste the token shown there.",
     "ERR_OAUTH_UPSTREAM": "The login provider returned an error. Please retry the sign-in.",
-    "rollbackFailed": "Rollback failed"
+    "rollbackFailed": "Rollback failed",
+    "ERR_NO_PASSWORD_OAUTH_ACCOUNT": "This account has no password (OAuth or email-code only). Use the email code, Google/GitHub, or a pasted Auth Token.",
+    "ERR_EMAIL_LOCKED": "This email is temporarily locked after repeated failed logins. Wait for the lock to expire, or raise the threshold in Settings.",
+    "ERR_EMAIL_REQUIRED": "Email is required",
+    "ERR_EMAIL_CODE_COOLDOWN": "A verification code was just sent. Wait a moment before requesting another.",
+    "ERR_EMAIL_CODE_INVALID": "Enter the numeric verification code from the email.",
+    "ERR_EMAIL_CODE_REJECTED": "The verification code was rejected. Check the digits and try again.",
+    "ERR_EMAIL_START_FAILED": "Windsurf refused to send the verification code. Try again later.",
+    "ERR_EMAIL_START_NO_TOKEN": "Windsurf did not return a verification token. Try again later.",
+    "ERR_EMAIL_FLOW_NOT_FOUND": "This verification flow no longer exists. Request a new code.",
+    "ERR_EMAIL_FLOW_EXPIRED": "The verification code expired. Request a new one.",
+    "ERR_EMAIL_FLOW_USED": "This verification code was already used. Request a new one.",
+    "ERR_EMAIL_FLOW_IN_USE": "This verification code is already being checked.",
+    "ERR_EMAIL_FLOW_CODE_REQUIRED": "A verification flow and code are required",
+    "ERR_LOGIN_PROBE_FAILED": "Could not check the login method. Try again."
   },
   "footer": {
     "version": "Version",
@@ -1608,5 +1624,20 @@
       "newAccountBaseline": "New-account LRU baseline",
       "retroHint": "Lowering a threshold takes effect on the next error. errorCount accumulates persistently, so an account already near the limit may trip immediately after you lower it."
     }
+  },
+  "emailLogin": {
+    "probing": "Checking how this account signs in…",
+    "methodPassword": "This account has a password — use the password form.",
+    "methodEmailCode": "This account has no password. Request an email code and enter it below.",
+    "methodOAuth": "This account has no password and no email-code login. Use Google/GitHub or a pasted token.",
+    "methodUnknown": "Could not determine the login method; the password form is shown.",
+    "oauthOnlyHint": "This account has no password and does not accept email codes. Use the Google / GitHub buttons above, or paste the token from the show-auth-token page.",
+    "useToken": "Use a token instead",
+    "sendingCode": "Sending the verification code…",
+    "codeSent": "Code sent — check the inbox (valid for 10 minutes).",
+    "resendIn": "Code sent. You can resend in {{seconds}}s.",
+    "requestCodeFirst": "Request a verification code first.",
+    "enterCode": "Enter the verification code from the email.",
+    "methodNotFound": "No Windsurf account uses this email. Check the address."
   }
 }
