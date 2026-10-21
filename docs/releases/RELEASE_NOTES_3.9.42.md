@@ -26,7 +26,7 @@
 - **半开客户端有上限**：`WINDSURFAPI_MAX_DRAIN_MS`（默认 **120000 ms**，八个心跳周期）到期后尽力写一帧 `server_error` / `DRAIN_TIMEOUT`，settle 等待并 abort 请求，`drainTimedOut` 阻止后续任何新等待/新定时器；定时器 `unref()` 且每次 settle 都清掉。没有这个上限时，停止读取但保持 TCP 的客户端会把回合与账号租约钉到连接结束。
 - **生产者 await**：`src/client.js` 的五个 `onChunk?.()` 改为 `await onChunk?.()`。同步消费者返回 `undefined`，await 是 no-op；rejection 作为真实的回调失败向上传播，不会被误判成解析错误。
 
-回归：`test/stream-backpressure-drain.test.js`（10 条，含真实 `cascadeChat` 对脚本化 loopback LS 的生产者测试）。在 `769d6ee` 上 9 fail / 0 pass（第二个帧就被拒的 writable 仍收到 4 次写、期望 2；role 帧自身被拒时 4 !== 1），修复后 10 pass；去掉上限的半成品 4 s 超时，加上限 47.8 ms 通过并归还账号（`_inflight` 1 → 0）。
+回归：`test/stream-backpressure-drain.test.js`。在 `769d6ee` 上 9 条测试全部失败（第二个帧就被拒的 writable 仍收到 4 次写、期望 2；role 帧自身被拒时 4 !== 1）；修复后 9 条全绿，P2 跟进再加第 10 条（半开客户端），10 pass / 0 fail。去掉上限的半成品在该测试上 4 s 超时，加上限 47.8 ms 通过并归还账号（`_inflight` 1 → 0）。
 
 **边界（明确不声称）**：`backpressureArmed = useCascade`。legacy `rawGetChatMessage` 从 gRPC `onData` 回调同步消费 `onChunk`，无法挂起生产者，armed 会让 `onEnd` 越过未完成的发射，所以那条路径的背压**没有**修；Messages/Gemini/Responses/Connect 路由的 `res` 是恒返回 `true` 的捕获适配器，门不会触发。本版关闭的是直连 Cascade SSE 这条路径。没有真实慢读 socket（内核缓冲区写满）的测量，也没有 RSS 上限测量。
 
