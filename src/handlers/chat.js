@@ -17,6 +17,7 @@ import { extractIntentFromNarrative, detectToolIntentInNarrative, maskNonActiona
 import { isModelAllowed } from '../dashboard/model-access.js';
 import { cacheKey as computeCacheKey, cacheGet, cacheSet, isCacheEnabled } from '../cache.js';
 import { isExperimentalEnabled, getBreakerTunable, strictUsageTotal } from '../runtime-config.js';
+import { budgetExceededError, isBudgetExceededError } from '../request-budget.js';
 import { neutralizeClientIdentity, neutralizeMessageContent } from './identity-neutralize.js';
 import { normalizeStop, applyStop, StopSequenceGate } from '../stop-sequences.js';
 import { normalizeToolCallArgs, recordArgRepair } from './cline-compat.js';
@@ -203,10 +204,70 @@ function hasCallerVisibleCascadeTailToolCall(rawCalls, nativeOpts, declaredTools
 // healthy. With backoff capped at 5s the Nth attempt sees a cooler
 // upstream and has a meaningful chance of succeeding.
 //   retry 0 → 500ms, 1 → 1s, 2 → 2s, 3 → 4s, ≥4 → 5s
-async function internalErrorBackoff(retryIdx) {
-  const ms = Math.min(500 * Math.pow(2, retryIdx), 5000);
+//
+// The request budget clamps the wait: a backoff that outlives the deadline is
+// pure lost time, and a retry after it would be refused anyway. Returns the
+// milliseconds actually waited so the caller's log line stays truthful.
+async function internalErrorBackoff(retryIdx, budget = null) {
+  let ms = Math.min(500 * Math.pow(2, retryIdx), 5000);
+  if (budget) {
+    const remaining = budget.remainingMs();
+    if (remaining <= 0) return 0;
+    ms = Math.min(ms, remaining);
+  }
   await new Promise(r => setTimeout(r, ms));
   return ms;
+}
+
+// ── Exhausted-pool admission fast-fail ──────────────────────────────────────
+// A fully rate-limited/unavailable pool cannot free an account by waiting: the
+// soonest cooldown is minutes out, while the queue wait is 30 s per attempt.
+// Measured P0 (2026-10-22): a pool known-exhausted at t=0 still cost 30,338 ms
+// on the Cascade route, while the connect route's equivalent preflight answered
+// the same state in 22 ms. Degraded serve is the one exception — it deliberately
+// serves the least-bad throttled account, so a pool it can serve is not
+// "exhausted" for admission purposes.
+function poolExhaustedFailure(modelKey) {
+  const temporary = isAllTemporarilyUnavailable(modelKey);
+  const rateLimited = isAllRateLimited(modelKey);
+  if (!temporary.allUnavailable && !rateLimited.allLimited) return null;
+  const degradable = getBreakerTunable('degradedServe') && rateLimited.allLimited && !temporary.allUnavailable;
+  if (degradable) return null;
+  const retryAfterMs = (temporary.allUnavailable ? temporary.retryAfterMs : rateLimited.retryAfterMs) || 60_000;
+  return {
+    retryAfterMs,
+    reason: temporary.allUnavailable
+      ? `所有可用账号暂时不可用，请 ${Math.ceil(retryAfterMs / 1000)} 秒后重试`
+      : `所有可用账号均已达速率限制，请 ${Math.ceil(retryAfterMs / 1000)} 秒后重试`,
+  };
+}
+
+// The hint a queue timeout advertises when the pool was merely busy: an
+// in-flight slot frees on the queue's own retry cadence, not on a cooldown.
+function queueTimeoutRetryAfterMs(temporaryUnavailable, rateLimited) {
+  if (temporaryUnavailable.allUnavailable && temporaryUnavailable.retryAfterMs > 0) return temporaryUnavailable.retryAfterMs;
+  if (rateLimited.allLimited && rateLimited.retryAfterMs > 0) return rateLimited.retryAfterMs;
+  return QUEUE_RETRY_MS;
+}
+
+// Clamp every admission/attempt wait to the route's remaining budget. A layer
+// may only shorten its own bound; the request deadline is the outer bound.
+function budgetWaitMs(budget, capMs) {
+  return budget ? budget.waitMs(capMs) : capMs;
+}
+
+// Consume one upstream turn before issuing work. Returns the error to surface
+// when the budget is spent (callers break with it), or null when a turn was
+// granted. Keeping the error construction here means every layer reports the
+// same 504-class failure instead of inventing a per-layer one.
+function takeUpstreamTurn(budget, label) {
+  if (!budget) return null;
+  if (budget.takeTurn()) return null;
+  return budgetExceededError(
+    budget.expired()
+      ? `request budget exhausted before ${label} (${budget.describe()})`
+      : `request upstream-turn cap reached before ${label} (${budget.describe()})`,
+  );
 }
 
 const UPSTREAM_DEADLINE_RE = /context deadline exceeded|context cancellation while reading body|client\.timeout/i;
@@ -2253,13 +2314,13 @@ export function __resetConnectDeps() {
 // (e.g. a fable) off a free account, which the upstream rejects as
 // permission_denied. modelKey stays null — connect selectors are a different
 // namespace from the Cascade catalog and must not hit the catalog model-allow filter.
-async function acquireConnectAccount(signal, callerKey, selector = null) {
+async function acquireConnectAccount(signal, callerKey, selector = null, budget = null) {
   // Empty pool (single-token deploy: only WINDSURF_API_KEY/DEVIN_CONNECT_TOKEN
   // in env) → there is nothing to wait for. Return null immediately for the
   // env-token fallback instead of blocking QUEUE_MAX_WAIT_MS on every request.
   if (getAccountCount().total === 0) return null;
   const tried = [];
-  const acct = await waitForAccount(tried, signal, QUEUE_MAX_WAIT_MS, null, callerKey, selector);
+  const acct = await waitForAccount(tried, signal, budgetWaitMs(budget, QUEUE_MAX_WAIT_MS), null, callerKey, selector);
   return acct; // may be null → env-token fallback
 }
 
@@ -2276,12 +2337,16 @@ async function acquireConnectAccount(signal, callerKey, selector = null) {
 // just stall the request for QUEUE_MAX_WAIT_MS before failing. We take whatever
 // untried account is selectable after a bounded failover pause, or give up.
 // This helper is never called for the initial, successful acquisition.
-async function acquireConnectFailover(triedKeys, signal, callerKey, selector = null) {
+async function acquireConnectFailover(triedKeys, signal, callerKey, selector = null, budget = null) {
   if (signal?.aborted) return null;
   // Match Cascade's 500ms first backoff, but keep a fixed per-hop budget.
   // Wait before acquisition so an idle timer never holds an account reservation.
+  // The request budget can only shorten the wait; a hop that would start after
+  // the deadline is refused instead.
+  const waitMs = budget ? budget.waitMs(500) : 500;
+  if (waitMs <= 0) return null;
   await new Promise(resolve => {
-    const timer = setTimeout(finish, 500);
+    const timer = setTimeout(finish, waitMs);
     function finish() {
       clearTimeout(timer);
       signal?.removeEventListener('abort', finish);
@@ -2804,6 +2869,10 @@ export function mergeReasoningEffortIntoModel(reqModel, body) {
 export function shouldAutoFallback(body, context, result) {
   if (body?.stream) return false;
   if (context?.__fallbackAttempt) return false;
+  // A fallback is a second full pass through the handler. When the route's
+  // budget is already spent (or has no turn left) that pass could only fail
+  // with a budget error, hiding the real 429 that prompted the fallback.
+  if (context?.budget && !context.budget.canStartAttempt()) return false;
   // v2.0.85 default ON → v2.0.86 default OFF (regression #129) →
   // v2.0.87 default ON again now that the cascade pool indexes the
   // fallback cascade under BOTH the original and the fallback model
@@ -3552,7 +3621,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
         };
       }
     }
-    const ccAcct = __sHit ? null : await acquireConnectAccount(context.signal, callerKey, selector);
+    const ccAcct = __sHit ? null : await acquireConnectAccount(context.signal, callerKey, selector, context.budget || null);
     const connectParams = { messages: connectMessages, model: selector };
     // Session continuity (opt-in, DEVIN_CONNECT_SESSION_REUSE, default OFF). Derive
     // a stable protobuf session_id (#16) from the conversation's completed request/
@@ -3684,6 +3753,10 @@ async function _handleChatCompletionsInner(body, context = {}) {
     // O1: honor stream_options.include_usage on the connect path too — the
     // trailing usage frame is emitted only when the caller opted in.
     const connectMeta = { id: ccId, created: ccCreated, displayModel: connectDisplayModel, emulateTools, includeUsage: body.stream_options?.include_usage === true, stop: body.stop ?? null, clineCompat: clineCompatActive, reqId, account: ccAcct ? safeAccountRef(ccAcct) : null,
+      // Route-owned request budget: the adapter consumes one upstream turn per
+      // internal attempt (empty/rescue/outer retry) and clamps its backoffs to
+      // the remaining deadline. See src/request-budget.js.
+      budget: context.budget || null,
       // SEED-C3a: only the internal Anthropic Messages route needs the adapter's
       // exact matched stop sequence (it echoes it as the public `stop_sequence`).
       // Explicit opt-in from the route — a direct OpenAI client keeps the
@@ -3958,6 +4031,17 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 if (acct) releaseAccountById(acct.id);
                 break;
               }
+              // A spent budget must stop the failover chain before it acquires
+              // and burns another account. The adapter consumes turns per
+              // upstream attempt; this covers a hop that would start with none
+              // left (or after the deadline passed during the last attempt).
+              if (context.budget && !context.budget.canStartAttempt()) {
+                const stop = budgetExceededError(`request budget exhausted before DEVIN_CONNECT stream failover hop ${hops + 1} (${context.budget.describe()})`);
+                log.warn(`Chat[${reqId}]: ${stop.message}`);
+                if (acct) releaseAccountById(acct.id);
+                send(chatStreamError(stop.message, 'upstream_deadline_exceeded', 'DEADLINE_EXCEEDED'));
+                break;
+              }
               if (acct) triedKeys.push(acct.apiKey);
               const r = await attemptStream(acct);
               if (r.kind === 'ok') {
@@ -4018,7 +4102,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 // !emitted, since replaying after bytes are on the wire would
                 // duplicate content. The offending account is already cooled.
                 if (isAccountFailoverError(r.err.code) && !emitted && hops < maxHops) {
-                  const next = await acquireConnectFailover(triedKeys, abortController.signal, callerKey, selector);
+                  const next = await acquireConnectFailover(triedKeys, abortController.signal, callerKey, selector, context.budget || null);
                   if (next) {
                     log.info(`Chat[${reqId}]: DEVIN_CONNECT ${r.err.code} on account → stream failover hop ${hops + 1} to next pooled account`);
                     bumpConnect('quota_failover_hops');
@@ -4041,7 +4125,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
               if (acct) reportDeadToken(acct.apiKey);
               bumpConnect('dead_tokens');
               if (hops >= maxHops || emitted) { bumpConnect('failover_exhausted'); send(chatStreamError('all DEVIN_CONNECT accounts exhausted (dead session tokens)', 'upstream_error', 'UNAUTHORIZED')); break; }
-              const next = await acquireConnectFailover(triedKeys, abortController.signal, callerKey, selector);
+              const next = await acquireConnectFailover(triedKeys, abortController.signal, callerKey, selector, context.budget || null);
               if (!next) { bumpConnect('failover_exhausted'); send(chatStreamError('all DEVIN_CONNECT accounts exhausted (dead session tokens)', 'upstream_error', 'UNAUTHORIZED')); break; }
               log.info(`Chat[${reqId}]: DEVIN_CONNECT failover hop ${hops + 1} → next pooled account`);
               bumpConnect('failover_hops');
@@ -4166,6 +4250,13 @@ async function _handleChatCompletionsInner(body, context = {}) {
         log.info(`Chat[${reqId}]: DEVIN_CONNECT non-stream aborted (client gone) — not failing over`);
         return { status: 499, body: { error: { message: 'Client closed request', type: 'client_disconnect', code: 'client_disconnect' } } };
       }
+      if (context.budget && !context.budget.canStartAttempt()) {
+        const stop = budgetExceededError(`request budget exhausted before DEVIN_CONNECT non-stream failover hop ${hops + 1} (${context.budget.describe()})`);
+        log.warn(`Chat[${reqId}]: ${stop.message}`);
+        if (acct) releaseAccountById(acct.id);
+        const { status, type } = connectErrorToHttp('DEADLINE_EXCEEDED');
+        return { status, body: { error: { message: stop.message, type, code: 'DEADLINE_EXCEEDED' } } };
+      }
       if (acct) triedKeys.push(acct.apiKey);
       const r = await attempt(acct);
       if (r.kind === 'ok') {
@@ -4218,7 +4309,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
         // a 402/429 while healthy accounts sit idle. Non-stream is always replay-safe
         // (nothing reached the client yet). Exhausted pool → fall through to surface.
         if (isAccountFailoverError(r.err.code) && hops < maxHops) {
-          const next = await acquireConnectFailover(triedKeys, context.signal, callerKey, selector);
+          const next = await acquireConnectFailover(triedKeys, context.signal, callerKey, selector, context.budget || null);
           if (next) {
             log.info(`Chat[${reqId}]: DEVIN_CONNECT ${r.err.code} on account → failover hop ${hops + 1} to next pooled account`);
             bumpConnect('quota_failover_hops');
@@ -4242,7 +4333,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
         bumpConnect('failover_exhausted');
         return { status, body: { error: { message: 'all DEVIN_CONNECT accounts exhausted (dead session tokens)', type, code: 'UNAUTHORIZED' } } };
       }
-      const next = await acquireConnectFailover(triedKeys, context.signal, callerKey, selector);
+      const next = await acquireConnectFailover(triedKeys, context.signal, callerKey, selector, context.budget || null);
       if (!next) {
         const { status, type } = connectErrorToHttp('UNAUTHORIZED');
         log.error(`Chat[${reqId}]: DEVIN_CONNECT no more pooled accounts for failover`);
@@ -4846,13 +4937,26 @@ async function _handleChatCompletionsInner(body, context = {}) {
       }
     }
     if (!acct) {
+      // Exhausted pool at t=0: no amount of queueing can free an account whose
+      // soonest cooldown is minutes out. Answer immediately with the same 429
+      // the connect route's preflight produces instead of stalling for 30 s.
+      const exhausted = poolExhaustedFailure(routingModelKey);
+      if (exhausted) {
+        log.info(`Chat[${reqId}]: non-stream pool exhausted at admission (retry_after=${exhausted.retryAfterMs}ms) → fast-fail`);
+        return {
+          status: 429,
+          headers: { 'Retry-After': String(clientRetryAfterSeconds(exhausted.retryAfterMs)) },
+          body: { error: { message: `${displayModel} 账号队列耗尽: ${exhausted.reason}`, type: 'rate_limit_exceeded', retry_after_ms: exhausted.retryAfterMs } },
+        };
+      }
       // GAP-2: thread the request signal into the queue wait so a disconnected
       // caller bails instead of queueing for (and then pinning) an account it
       // will never use. No-signal callers keep the previous null — the
       // resolve-null contract is unchanged (abort ⇒ null, like a queue timeout).
+      const waitMs = budgetWaitMs(context.budget, QUEUE_MAX_WAIT_MS);
       acct = context.signal
-        ? await waitForAccountFn(tried, context.signal, QUEUE_MAX_WAIT_MS, routingModelKey, callerKey)
-        : await waitForAccountFn(tried, null, QUEUE_MAX_WAIT_MS, routingModelKey, callerKey);
+        ? await waitForAccountFn(tried, context.signal, waitMs, routingModelKey, callerKey)
+        : await waitForAccountFn(tried, null, waitMs, routingModelKey, callerKey);
       if (!acct) {
         // Same diagnostic-error fix as the stream path — surface real reason
         // for the queue timeout (rate limit / no entitlement / upstream stall)
@@ -4865,10 +4969,14 @@ async function _handleChatCompletionsInner(body, context = {}) {
             ? `所有可用账号暂时不可用，请 ${Math.ceil(tempUnavail.retryAfterMs / 1000)} 秒后重试`
             : rateLimited.allLimited
             ? `所有可用账号均已达速率限制，请 ${Math.ceil(rateLimited.retryAfterMs / 1000)} 秒后重试`
-            : `${Math.ceil(QUEUE_MAX_WAIT_MS / 1000)} 秒内没有账号变为可用 — 账号可能被速率限制或对当前模型无权限`;
+            : `${Math.ceil(waitMs / 1000)} 秒内没有账号变为可用 — 账号可能被速率限制或对当前模型无权限`;
+          const retryAfterMs = queueTimeoutRetryAfterMs(tempUnavail, rateLimited);
           lastErr = {
             status: (tempUnavail.allUnavailable || rateLimited.allLimited) ? 429 : 503,
-            body: { error: { message: `${displayModel} 账号队列超时: ${reason}`, type: (tempUnavail.allUnavailable || rateLimited.allLimited) ? 'rate_limit_exceeded' : 'pool_exhausted' } },
+            // A busy (not limited) pool also frees on the queue cadence, so the
+            // 503 arm carries the same hint as the 429 arm.
+            headers: { 'Retry-After': String(clientRetryAfterSeconds(retryAfterMs)) },
+            body: { error: { message: `${displayModel} 账号队列超时: ${reason}`, type: (tempUnavail.allUnavailable || rateLimited.allLimited) ? 'rate_limit_exceeded' : 'pool_exhausted', retry_after_ms: retryAfterMs } },
           };
           // v2.0.84 (#118 0a00) — pool-wide rate limit on a high-effort
           // variant (`-max` / `-xhigh`)? Suggest the same-base lower-
@@ -4979,6 +5087,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
       // GAP-2: thread the request signal so a client disconnect can stop the
       // in-flight cascade/legacy calls instead of burning LS + account quota.
       context.signal,
+      // Route-owned deadline/turn budget: clamps admission waits and the
+      // per-attempt upstream spend; see src/request-budget.js.
+      context.budget || null,
     );
     if (context.signal?.aborted || result?.body?.error?.code === 'client_disconnect') {
       log.info(`Chat[${reqId}]: non-stream aborted (client gone) — not failing over or restoring reuse`);
@@ -5067,7 +5178,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
         break;
       }
       internalCount++;
-      const backoffMs = await internalErrorBackoff(internalCount - 1);
+      const backoffMs = await internalErrorBackoff(internalCount - 1, context.budget || null);
       log.warn(`Chat[${reqId}]: ${safeAccountRef(acct)} upstream transient error, waited ${backoffMs}ms before next account`);
       continue;
     }
@@ -5088,6 +5199,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
       if (acct) releaseAccountById(acct.id);
     }
   }
+  // A budget/deadline stop outranks the transient-account diagnosis: the chain
+  // did not fail because every account was broken, it stopped because the
+  // request ran out of time/turns. Returning the last result keeps its 504 and
+  // its honest message instead of rewriting it as upstream_transient_error.
+  if (lastErr?.body?.error?.type === 'upstream_deadline_exceeded') return lastErr;
   // 所有账号都遇到 Cascade transient 时，账号轮换已经无法修复；返回明确错误，避免误报成限流或模型不可用。
   if (internalCount > 0 && tried.length > 0 && internalCount >= tried.length) {
     if (!reuseEntryDead && checkedOutReuseEntry && fpBefore) {
@@ -5141,7 +5257,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
   return lastErr || { status: 503, body: { error: { message: 'No active accounts available', type: 'pool_exhausted' } } };
 }
 
-async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, provider, emulateTools, toolPreamble, wantJson = false, cachePolicy = null, wantThinking = false, tools = [], route = 'chat', nativeOpts = null, reqId = 'non-stream', aliasCkey = null, clineCompatActive = false, allowCascadeMetadataUnwrap = true, stopSequences = [], stopCarrier = false, signal = null) {
+async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, provider, emulateTools, toolPreamble, wantJson = false, cachePolicy = null, wantThinking = false, tools = [], route = 'chat', nativeOpts = null, reqId = 'non-stream', aliasCkey = null, clineCompatActive = false, allowCascadeMetadataUnwrap = true, stopSequences = [], stopCarrier = false, signal = null, budget = null) {
   const startTime = Date.now();
   const nativeBridgeOn = !!nativeOpts?.enabled;
   try {
@@ -5173,8 +5289,14 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     let serverUsage = null;
 
     if (useCascade) {
+      const turnErr = takeUpstreamTurn(budget, 'cascade non-stream attempt');
+      if (turnErr) {
+        return { status: 504, body: { error: { message: turnErr.message, type: 'upstream_deadline_exceeded', code: 'windsurf_provider_deadline' } } };
+      }
       const chunks = await client.cascadeChat(cascadeMessages, modelEnum, modelUid, {
         reuseEntry: poolCtx?.reuseEntry || null,
+        // Clamp the internal poll window to what the request has left.
+        ...(budget ? { maxWaitMs: budget.remainingMs() } : {}),
         toolPreamble: nativeBridgeOn ? '' : toolPreamble,
         nativeEnvironment: nativeBridgeOn ? (nativeOpts?.environment || '') : '',
         displayModel: model,
@@ -5402,8 +5524,13 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
                     `\n\n你刚才描述了想用 \`${intendedTool}\` 工具但没按协议格式 emit。请直接重新 emit 协议块，不要 narrate。给具体的 argument 字面值（如 ls / /etc/hostname / "echo hi"），不要写"命令" / "文件" 这种占位词。` },
                 ];
                 log.info(`Chat[non-stream]: NLU retry — first pass narrate-only, retrying with correction (tool=${intendedTool} markers=${markers.join(',') || 'none'})`);
-                const retryChunks = await client.cascadeChat(correctionMessages, modelEnum, modelUid, {
+                // The correction is a second upstream turn; skip it (keeping the
+                // narrative answer) when the request budget cannot pay for it.
+                const retryTurnErr = takeUpstreamTurn(budget, 'non-stream correction retry');
+                if (retryTurnErr) log.info(`Chat[non-stream]: NLU retry skipped — ${retryTurnErr.message}`);
+                const retryChunks = retryTurnErr ? [] : await client.cascadeChat(correctionMessages, modelEnum, modelUid, {
                   reuseEntry: null,
+                  ...(budget ? { maxWaitMs: budget.remainingMs() } : {}),
                   toolPreamble: nativeBridgeOn ? '' : toolPreamble,
                   nativeEnvironment: nativeBridgeOn ? (nativeOpts?.environment || '') : '',
                   displayModel: model,
@@ -5481,6 +5608,10 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
       // above is the ONLY surface that surfaces these — and it sanitises
       // each tool call's args via reverse mapping before emitting.
     } else {
+      const turnErr = takeUpstreamTurn(budget, 'legacy non-stream attempt');
+      if (turnErr) {
+        return { status: 504, body: { error: { message: turnErr.message, type: 'upstream_deadline_exceeded', code: 'windsurf_provider_deadline' } } };
+      }
       const chunks = await client.rawGetChatMessage(messages, modelEnum, modelUid, { signal });
       for (const c of chunks) {
         if (c.text) allText += c.text;
@@ -5831,6 +5962,9 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
   const ensureLsFn = deps.ensureLs || ensureLs;
   const getLsForFn = deps.getLsFor || getLsFor;
   const ClientClass = deps.WindsurfClient || WindsurfClient;
+  // Route-owned request budget (src/request-budget.js). Null for direct
+  // callers that predate it (tests, embedders); every use below is guarded.
+  const budget = deps.budget || deps.context?.budget || null;
   // Cache policy threads through deps because streamResponse is a top-level
   // helper, not a closure. Without this, lines that compute TTL hints or
   // attribute usage to ephemeral_5m_input_tokens / ephemeral_1h_input_tokens
@@ -6027,31 +6161,43 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       });
 
       // SSE heartbeat: keep the TCP/HTTP connection alive through any silent
-      // period (LS warmup, Cascade "thinking", queue wait). `:` prefix is a
-      // comment line per the SSE spec — clients ignore it, intermediaries see
-      // bytes flowing, idle timers get reset.
+      // period (LS warmup, Cascade "thinking"). `:` prefix is a comment line per
+      // the SSE spec — clients ignore it, intermediaries see bytes flowing,
+      // idle timers get reset.
+      //
+      // Started lazily, AFTER admission. The heartbeat is also the first write
+      // the deferred commit gate sees, and the gate arms its silence timer on
+      // the first write; ticking during a queue wait would therefore commit
+      // `200 text/event-stream` before the pool's answer (429/503) is known —
+      // the measured P0. A cache replay starts it directly (no admission).
       // C2: a tick is skipped while a drain is outstanding — the heartbeat may
       // never add bytes or a waiter behind a pressured writer.
-      const heartbeat = setInterval(() => {
-        if (res.writableEnded || pendingDrain) return;
-        // A heartbeat that reports backpressure is the same signal as any other
-        // frame: arm the single drain wait so the producer cannot keep feeding
-        // a socket the client has stopped reading.
-        if (res.write(': ping\n\n') === false && backpressureArmed) beginDrain();
-      }, HEARTBEAT_MS);
+      let heartbeat = null;
       const stopHeartbeat = () => {
-        clearInterval(heartbeat);
+        if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
         // Drop the listener with the timer: it closes over `res`, and a
         // finished stream must not leave per-response listeners behind.
         res.removeListener?.('close', stopHeartbeat);
       };
-      res.on('close', stopHeartbeat);
+      const startHeartbeat = () => {
+        if (heartbeat || res.writableEnded) return;
+        heartbeat = setInterval(() => {
+          if (res.writableEnded || pendingDrain) return;
+          // A heartbeat that reports backpressure is the same signal as any other
+          // frame: arm the single drain wait so the producer cannot keep feeding
+          // a socket the client has stopped reading.
+          if (res.write(': ping\n\n') === false && backpressureArmed) beginDrain();
+        }, HEARTBEAT_MS);
+        heartbeat.unref?.();
+        res.on('close', stopHeartbeat);
+      };
 
       // ── Cache hit: replay stored response as a fake stream ──
       // SEC-W2: skip cross-request cache reads for an untrusted (guessed) scope.
       const cached = cacheShareable ? cacheGet(ckey) : null;
       if (cached) {
         log.info(`Chat: cache HIT model=${model} flow=stream`);
+        startHeartbeat();
         recordRequest(model, true, 0, null);
         // SEED-C3b: the replay obeys the caller's `stop` like a fresh turn does.
         // This build caches the visible text + the cause; an entry from an older
@@ -6562,7 +6708,21 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             }
           }
           if (!acct) {
-            acct = await waitForAccountFn(tried, abortController.signal, QUEUE_MAX_WAIT_MS, modelKey, callerKey);
+            // Exhausted pool at t=0: waiting cannot produce an account, and a
+            // 30 s stall would hide the 429 behind a committed stream. Fail the
+            // admission now; the deferred gate is still uncommitted, so the
+            // error frame below rewrites the HTTP status and Retry-After.
+            const exhausted = poolExhaustedFailure(modelKey);
+            if (exhausted) {
+              log.info(`Chat[${reqId}]: stream pool exhausted at admission (retry_after=${exhausted.retryAfterMs}ms) → fast-fail`);
+              lastErr = Object.assign(new Error(`${model} 账号队列耗尽: ${exhausted.reason}`), {
+                type: 'rate_limit_exceeded',
+                retry_after_ms: exhausted.retryAfterMs,
+                status: 429,
+              });
+              break;
+            }
+            acct = await waitForAccountFn(tried, abortController.signal, budgetWaitMs(budget, QUEUE_MAX_WAIT_MS), modelKey, callerKey);
             if (!acct) {
               // Without an explicit lastErr here, the final retry-failed log
               // ends up printing an empty message and the SSE error event
@@ -6577,10 +6737,16 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                   ? `所有可用账号暂时不可用，请 ${Math.ceil(tempUnavail.retryAfterMs / 1000)} 秒后重试`
                   : rateLimited.allLimited
                   ? `所有可用账号均已达速率限制，请 ${Math.ceil(rateLimited.retryAfterMs / 1000)} 秒后重试`
-                  : `${Math.ceil(QUEUE_MAX_WAIT_MS / 1000)} 秒内没有账号变为可用 — 账号可能被速率限制或对当前模型无权限`;
+                  : `${Math.ceil(budgetWaitMs(budget, QUEUE_MAX_WAIT_MS) / 1000)} 秒内没有账号变为可用 — 账号可能被速率限制或对当前模型无权限`;
                 lastErr = Object.assign(
                   new Error(`${model} 账号队列超时: ${reason}`),
-                  { type: (tempUnavail.allUnavailable || rateLimited.allLimited) ? 'rate_limit_exceeded' : 'pool_exhausted' }
+                  {
+                    type: (tempUnavail.allUnavailable || rateLimited.allLimited) ? 'rate_limit_exceeded' : 'pool_exhausted',
+                    // The gate can still rewrite the status pre-content; carry a
+                    // hint for both the 429 and the 503 arm so the client gets a
+                    // Retry-After instead of guessing.
+                    retry_after_ms: queueTimeoutRetryAfterMs(tempUnavail, rateLimited),
+                  }
                 );
                 // v2.0.84 (#118) — same fallback hint logic as the
                 // non-stream path. Attach after lastErr is set so
@@ -6596,6 +6762,10 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               break;
             }
           }
+          // Admission is over: the request can no longer fail with a pool
+          // status, so it is safe for the commit gate to start its silence
+          // timer on the first heartbeat.
+          startHeartbeat();
           tried.push(acct.apiKey);
           currentApiKey = acct.apiKey;
 
@@ -6651,12 +6821,19 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             return n + (typeof c === 'string' ? c.length : Array.isArray(c) ? c.reduce((k, p) => k + (typeof p?.text === 'string' ? p.text.length : 0), 0) : 0);
           }, 0);
           log.info(`Chat: model=${model} flow=${useCascade ? 'cascade' : 'legacy'} stream=true attempt=${attempt + 1} ${safeAccountRef(acct)} ls=${ls.port} turns=${(messages||[]).length} chars=${_msgCharsStream}${reuseEntry ? ' reuse=1' : ''}`);
+          // One upstream turn per attempt. The hard cap is per REQUEST, shared
+          // with the connect wrapper's internal retries; a spent budget stops
+          // the account loop here instead of multiplying it.
+          const turnErr = takeUpstreamTurn(budget, 'cascade stream attempt');
+          if (turnErr) { lastErr = turnErr; break; }
           const client = new ClientClass(acct.apiKey, ls.port, ls.csrfToken);
           let cascadeResult = null;
           try {
             if (useCascade) {
               cascadeResult = await client.cascadeChat(cascadeMessages, modelEnum, modelUid, {
                 onChunk, signal: abortController.signal, reuseEntry,
+                // Clamp the internal poll window to what the request has left.
+                ...(budget ? { maxWaitMs: budget.remainingMs() } : {}),
                 toolPreamble: nativeBridgeOn ? '' : toolPreamble,
                 nativeEnvironment: nativeBridgeOn ? (nativeOpts?.environment || '') : '',
                 displayModel: model,
@@ -7238,7 +7415,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               const tag = isRateLimit ? 'rate_limit' : isTransient ? 'upstream_transient' : 'model_error';
               if (isTransient) {
                 streamInternalCount++;
-                const backoffMs = await internalErrorBackoff(streamInternalCount - 1);
+                const backoffMs = await internalErrorBackoff(streamInternalCount - 1, budget);
                 log.warn(`Chat[${reqId}] stream: ${safeAccountRef(acct)} upstream transient error (${isTransport ? 'cascade_transport' : 'internal_error'}), waited ${backoffMs}ms before next account`);
               } else {
                 log.warn(`Account ${safeAccountRef(acct)} failed (${tag}) on ${model}, trying next`);
@@ -7305,26 +7482,33 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           const rl = isAllRateLimited(modelKey);
           const allInternal = streamInternalCount > 0 && tried.length > 0 && streamInternalCount >= tried.length;
           const poolExhausted = isLsPoolExhausted(lastErr);
-          const deadlineExceeded = isUpstreamDeadlineExceeded(lastErr) || lastErr?.type === 'upstream_deadline_exceeded';
+          const poolTimedOut = lastErr?.type === 'pool_exhausted';
+          const deadlineExceeded = isUpstreamDeadlineExceeded(lastErr) || lastErr?.type === 'upstream_deadline_exceeded' || isBudgetExceededError(lastErr);
           // Prefer upstream_transient over an account-limit diagnosis for transport failures.
           const lastIsTransport = isCascadeTransportError(lastErr);
-          const errMsg = allInternal
+          // A deadline/budget stop outranks the transient-account diagnosis: the
+          // chain stopped because the request ran out of time/turns, not because
+          // every account was broken. A budget message is already specific, so
+          // do not replace it with the ~240s provider-deadline text.
+          const errMsg = deadlineExceeded
+            ? (isBudgetExceededError(lastErr) ? sanitizeText(lastErr?.message || 'request budget exhausted') : upstreamDeadlineExceededMessage(model))
+            : allInternal
             ? upstreamTransientErrorMessage(model, tried.length, lastIsTransport ? 'cascade_transport' : 'internal_error')
-            : deadlineExceeded
-            ? upstreamDeadlineExceededMessage(model)
             : poolExhausted
             ? sanitizeText(lastErr?.message || 'language server pool exhausted')
+            : poolTimedOut
+            ? sanitizeText(lastErr?.message || 'account pool timed out')
             : temporaryUnavailable.allUnavailable
             ? `${model} 所有账号暂时不可用，请 ${Math.ceil(temporaryUnavailable.retryAfterMs / 1000)} 秒后重试`
             : rl.allLimited
             ? `${model} 所有账号均已达速率限制，请 ${Math.ceil(rl.retryAfterMs / 1000)} 秒后重试`
             : sanitizeText(lastErr?.message || 'no accounts');
-          return { temporaryUnavailable, allInternal, poolExhausted, deadlineExceeded, errMsg };
+          return { temporaryUnavailable, allInternal, poolExhausted, poolTimedOut, deadlineExceeded, errMsg };
         }) || {
           temporaryUnavailable: { allUnavailable: false }, allInternal: false,
-          poolExhausted: false, deadlineExceeded: false, errMsg: 'Stream failed',
+          poolExhausted: false, poolTimedOut: false, deadlineExceeded: false, errMsg: 'Stream failed',
         };
-        const { temporaryUnavailable, allInternal, poolExhausted, deadlineExceeded, errMsg } = failure;
+        const { temporaryUnavailable, allInternal, poolExhausted, poolTimedOut, deadlineExceeded, errMsg } = failure;
         await failureStage('classification-log', () => {
           if (allInternal) log.error('Chat stream: all attempts hit an upstream transient error');
         });
@@ -7421,29 +7605,33 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           });
         } else {
           await failureStage('error-frame', async () => {
-            const errType = allInternal
-              ? 'upstream_transient_error'
-              : deadlineExceeded
-                ? 'upstream_deadline_exceeded'
-              : poolExhausted
-                ? 'ls_pool_exhausted'
-              : (temporaryUnavailable.allUnavailable || lastErr?.type === 'rate_limit_exceeded')
-                ? 'rate_limit_exceeded'
-                : 'upstream_error';
+            const errType = deadlineExceeded
+              ? 'upstream_deadline_exceeded'
+              : allInternal
+                ? 'upstream_transient_error'
+                : poolExhausted
+                  ? 'ls_pool_exhausted'
+                  : poolTimedOut
+                    ? 'capacity_error'
+                    : (temporaryUnavailable.allUnavailable || lastErr?.type === 'rate_limit_exceeded')
+                      ? 'rate_limit_exceeded'
+                      : 'upstream_error';
             const errCode = deadlineExceeded
               ? 'windsurf_provider_deadline'
               : (temporaryUnavailable.allUnavailable || lastErr?.type === 'rate_limit_exceeded')
                 ? 'RATE_LIMITED'
-                : poolExhausted
+                : (poolExhausted || poolTimedOut)
                   ? 'CAPACITY'
                   : allInternal
                     ? 'UPSTREAM_INTERNAL'
                     : null;
-            const retryAfterMs = errCode === 'RATE_LIMITED'
-              ? (Number.isFinite(temporaryUnavailable.retryAfterMs) && temporaryUnavailable.retryAfterMs > 0
-                ? temporaryUnavailable.retryAfterMs
-                : (Number.isFinite(lastErr?.retry_after_ms) ? lastErr.retry_after_ms : null))
-              : null;
+            // Carry the hint for EVERY class that has one, not only 429: a
+            // pre-content 503 (CAPACITY / budget) also benefits from telling the
+            // client when to retry, and the commit gate turns it into a real
+            // `Retry-After` header.
+            const retryAfterMs = Number.isFinite(temporaryUnavailable.retryAfterMs) && temporaryUnavailable.retryAfterMs > 0
+              ? temporaryUnavailable.retryAfterMs
+              : (Number.isFinite(lastErr?.retry_after_ms) ? lastErr.retry_after_ms : null);
             await settleWriter();
             if (writerGone()) return;
             await send(chatStreamError(errMsg, errType, errCode, retryAfterMs ? { retry_after_ms: retryAfterMs } : null));

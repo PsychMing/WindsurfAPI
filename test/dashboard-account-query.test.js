@@ -15,11 +15,13 @@ import {
   addAccountByKey,
   configureBindHost,
   getAccountInternal,
+  publicBanReason,
   removeAccount,
   resolveAccountState,
+  setAccountStatus,
   _resetLockoutForTests,
 } from '../src/auth.js';
-import { handleDashboardApi } from '../src/dashboard/api.js';
+import { handleDashboardApi, probeOutcomeEntry, summarizeProbeResults } from '../src/dashboard/api.js';
 import { _resetRuntimeConfigForTests } from '../src/runtime-config.js';
 
 const originalDashboardPassword = config.dashboardPassword;
@@ -189,9 +191,12 @@ describe('GET /accounts query params', () => {
 });
 
 describe('resolveAccountState precedence', () => {
-  it('resolves disabled > error > quota > rate > capacity > near-limit > watch > active', () => {
+  it('resolves disabled > banned > error > quota > rate > capacity > near-limit > watch > active', () => {
     const now = 1_000_000;
     assert.equal(resolveAccountState({ status: 'disabled', errorCount: 9 }, now), 'disabled');
+    assert.equal(resolveAccountState({ status: 'banned', errorCount: 9 }, now), 'banned',
+      'banned must outrank error/cooldowns: the credential itself was rejected');
+    assert.equal(resolveAccountState({ status: 'banned', quotaResetAt: now + 1, rateLimitedUntil: now + 1 }, now), 'banned');
     assert.equal(resolveAccountState({ status: 'error', quotaResetAt: now + 1 }, now), 'error');
     assert.equal(resolveAccountState({ status: 'active', quotaResetAt: now + 1, rateLimitedUntil: now + 1 }, now), 'quota_cooled');
     assert.equal(resolveAccountState({ status: 'active', rateLimitedUntil: now + 1 }, now), 'rate_limited');
@@ -201,6 +206,85 @@ describe('resolveAccountState precedence', () => {
     assert.equal(resolveAccountState({ status: 'active' }, now), 'active');
     assert.equal(resolveAccountState({ status: 'active', quotaResetAt: now - 1, rateLimitedUntil: now - 1 }, now), 'active',
       'expired cooldowns do not keep an account in a warning state');
+  });
+});
+
+describe('banned accounts are visible as banned', () => {
+  it('exposes state, bannedAt and a sanitized reason, and matches status=banned and filter=flagged', async () => {
+    enableOpenLocal();
+    const now = Date.now();
+    const banned = addTestAccount('banned@example.invalid', {
+      status: 'banned',
+      bannedAt: now - 60_000,
+      bannedReason: 'Your account has been suspended. Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789 key sk-live-abcdefghijklmnop',
+      errorCount: 2,
+    });
+    const healthy = addTestAccount('healthy@example.invalid');
+
+    const byState = await get('/accounts?view=summary&status=banned');
+    assert.equal(byState.status, 200);
+    assert.deepEqual(byState.body.accounts.map((a) => a.id), [banned.id]);
+    const row = byState.body.accounts[0];
+    assert.equal(row.state, 'banned');
+    assert.equal(row.bannedAt, now - 60_000);
+    assert.match(row.bannedReason, /suspended/);
+    assert.doesNotMatch(row.bannedReason, /abcdefghijklmnopqrstuvwxyz|sk-live/,
+      'the ban reason must never carry a credential-shaped token');
+
+    const flagged = await get('/accounts?view=summary&filter=flagged');
+    assert.deepEqual(flagged.body.accounts.map((a) => a.id), [banned.id],
+      '仅异常 must include banned accounts');
+    assert.ok(flagged.body.stats.flagged >= 1);
+    assert.ok(flagged.body.stats.disabled >= 1, 'banned counts toward 停用');
+    assert.equal(flagged.body.stats.banned, 1);
+    assert.ok(!flagged.body.accounts.some((a) => a.id === healthy.id),
+      'a healthy account must not be pulled in by 仅异常');
+  });
+
+  it('clears the ban metadata when an operator explicitly re-enables the account', () => {
+    enableOpenLocal();
+    const account = addTestAccount('banned-reset', {
+      status: 'banned',
+      bannedAt: Date.now(),
+      bannedReason: 'account banned',
+      _banSignalAt: Date.now(),
+      _banSignalCount: 2,
+      _banSignalLastMessage: 'account banned',
+    });
+    assert.equal(setAccountStatus(account.id, 'active'), true);
+    const stored = getAccountInternal(account.id);
+    assert.equal(stored.status, 'active');
+    assert.equal(stored.bannedAt, 0);
+    assert.equal(stored.bannedReason, '');
+    assert.equal(stored._banSignalCount, 0);
+    assert.equal(resolveAccountState(stored), 'active');
+  });
+
+  it('caps and redacts the public ban reason', () => {
+    assert.equal(publicBanReason(null), '');
+    assert.equal(publicBanReason('  account   banned  '), 'account banned');
+    assert.match(publicBanReason(`x ${'a'.repeat(60)} y`), /\[redacted\]/);
+    assert.ok(publicBanReason('z'.repeat(400)).length <= 240);
+  });
+});
+
+describe('probe outcome accounting', () => {
+  it('never counts a skipped probe as success', () => {
+    assert.deepEqual(probeOutcomeEntry('a', { skipped: true, reason: 'ls_not_running' }), {
+      id: 'a', ok: false, skipped: true, reason: 'ls_not_running', tier: 'unknown',
+    });
+    assert.deepEqual(probeOutcomeEntry('b', { tier: 'pro' }), { id: 'b', ok: true, tier: 'pro' });
+    assert.deepEqual(probeOutcomeEntry('c', null), { id: 'c', ok: false, error: 'ERR_ACCOUNT_NOT_FOUND' });
+  });
+
+  it('splits attempted/succeeded/failed/skipped and excludes skips from the attempted total', () => {
+    const results = [
+      { id: 'ok', ok: true },
+      { id: 'fail', ok: false, error: 'boom' },
+      { id: 'skip', ok: false, skipped: true, reason: 'ls_not_running' },
+    ];
+    assert.deepEqual(summarizeProbeResults(results), { attempted: 2, okCount: 1, failCount: 1, skippedCount: 1 });
+    assert.deepEqual(summarizeProbeResults([]), { attempted: 0, okCount: 0, failCount: 0, skippedCount: 0 });
   });
 });
 
@@ -264,10 +348,33 @@ describe('fleet probe/refresh routes', () => {
     assert.equal(probe.status, 200);
     assert.equal(probe.body.success, true);
     assert.deepEqual(probe.body.results, []);
+    assert.deepEqual(
+      {
+        total: probe.body.total,
+        attempted: probe.body.attempted,
+        okCount: probe.body.okCount,
+        failCount: probe.body.failCount,
+        skippedCount: probe.body.skippedCount,
+      },
+      { total: 0, attempted: 0, okCount: 0, failCount: 0, skippedCount: 0 },
+      'an empty sweep reports zeroes, not a missing summary',
+    );
 
     const refresh = await post('/accounts/refresh-credits', {});
     assert.equal(refresh.status, 200);
     assert.equal(refresh.body.success, true);
     assert.deepEqual(refresh.body.results, []);
+  });
+
+  it('batch probe reports a missing account as failed, not skipped or succeeded', async () => {
+    enableOpenLocal();
+    const r = await post('/accounts/batch', { ids: ['missing-probe-id'], op: 'probe' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.okCount, 0);
+    assert.equal(r.body.failCount, 1);
+    assert.equal(r.body.skippedCount, 0);
+    assert.equal(r.body.attempted, 1);
+    assert.deepEqual(r.body.failed, [{ id: 'missing-probe-id', ok: false, error: 'ERR_ACCOUNT_NOT_FOUND' }]);
+    assert.deepEqual(r.body.skipped, []);
   });
 });

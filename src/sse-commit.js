@@ -318,12 +318,25 @@ export function createDeferredSseResponse(realRes, {
     if (pendingFrames > maxFrames || pendingBytes > maxBytes) commit();
   };
 
-  if (bootstrapMs > 0) {
+  // The bootstrap timer is armed by the FIRST write, not at construction.
+  //
+  // Measured P0 (2026-10-22): the gate used to start this timer when the
+  // wrapper was created — before the handler acquired an account. The Cascade
+  // stream handler can wait up to QUEUE_MAX_WAIT_MS (30 s) for admission and
+  // only then discover the pool is exhausted; a construction-time 5 s timer
+  // committed `200 text/event-stream` first, so the 429 and its Retry-After
+  // could only arrive as an in-band error frame. Arming on the first write
+  // keeps the response uncommitted for the whole admission window: a
+  // pre-content error frame is then the first write and rewrites the status.
+  // Once the handler is admitted it starts heartbeating, and this timer is the
+  // escape hatch that still commits a live SSE response when upstream is silent.
+  const armBootstrap = () => {
+    if (bootstrapMs <= 0 || timer || committed || ended) return;
     timer = setTimeout(() => {
       if (!committed && !ended) commit();
     }, bootstrapMs);
     timer.unref?.();
-  }
+  };
 
   return {
     get writableEnded() { return ended; },
@@ -369,6 +382,9 @@ export function createDeferredSseResponse(realRes, {
         if (typeof cb === 'function') process.nextTick(cb);
         return ok;
       }
+      // First write of an uncommitted response: start the silence escape hatch
+      // now. A write that commits immediately clears it in commit().
+      armBootstrap();
       pending.push(buf);
       pendingBytes += buf.length;
       inspectPending();

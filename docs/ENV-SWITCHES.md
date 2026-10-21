@@ -219,6 +219,8 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | `CASCADE_IDLE_GRACE_MS` | `8000` | 空闲宽限（`client.js`）。 |
 | `CASCADE_COLD_STALL_BASE_MS` | `30000` | 冷启动停顿基数（`client.js`）。 |
 | `WINDSURFAPI_MAX_DRAIN_MS` | `120000`（2 分钟） | SSE 写端背压的最长等待（`handlers/chat.js`）。`res.write` 返回 `false` 后生产者被挂起等 `drain`；半开客户端（不再读、TCP 还开着）永远不发 `drain`，超过这个值就尽力写一帧 `DRAIN_TIMEOUT` 错误、中止该流并归还账号租约。要求正整数，否则回落 120000。 |
+| `WINDSURFAPI_REQUEST_BUDGET_MS` | `600000`（10 分钟） | 单请求绝对截止时间（`request-budget.js`，由 `server.js` 的路由在进入 handler 前创建为 `context.budget`）。账号队列等待、Cascade 轮询窗口（`maxWaitMs`）、connect 流 `deadlineMs` 与各层退避都只能缩短到剩余时间；到期后不再发起新的上游轮次，返回 504。每请求上游轮次硬上限 6（`DEFAULT_UPSTREAM_TURN_CAP`，暂不开放环境变量）。要求正数，否则回落 600000。 |
+| `WINDSURFAPI_REQUEST_BUDGET_STREAM_MS` | `300000`（5 分钟） | 流式请求在上一行基础上额外允许的时间，两者相加即流式预算（默认 15 分钟）。要求非负数；`0` = 与基础预算相同，非法值回落 300000。 |
 
 ## 一个必须保持关闭的（不是调优项）
 

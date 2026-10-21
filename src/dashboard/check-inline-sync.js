@@ -38,7 +38,7 @@ const stateChain = [
   `rateLimited`, `'rate_limited'`, `capacityThrottled`, `'capacity'`, `'active'`,
 ];
 // Transition rule tokens.
-const transitionTokens = [`'recovered'`, `'success'`, `'disabled' || to === 'quota'`, `'error'`, `'warn'`];
+const transitionTokens = [`'recovered'`, `'success'`, `'disabled' || to === 'quota'`, `to === 'banned'`, `'error'`, `'warn'`];
 // Behaviour constants / tokens.
 const behaviourTokens = [`primed`, `lastState`, `lastEmitAt`, `backoffMs`, `collapseAt`, `type: 'summary'`];
 
@@ -54,7 +54,7 @@ function order(src, toks) {
   const idxs = toks.map(t => src.indexOf(t));
   return idxs.every((v, i) => i === 0 || v >= idxs[i - 1]);
 }
-const orderToks = [`if (a.status === 'disabled'`, `if (a.status === 'error'`, `if (a.quotaCooled)`, `if (a.rateLimited)`, `if (a.capacityThrottled)`];
+const orderToks = [`if (a.status === 'disabled'`, `if (a.status === 'banned'`, `if (a.status === 'error'`, `if (a.quotaCooled)`, `if (a.rateLimited)`, `if (a.capacityThrottled)`];
 // module uses these exact forms; inline mirror uses the same. Verify order in each.
 const modOrderOk = order(moduleSrc, orderToks);
 const htmlOrderOk = order(htmlSrc, orderToks);

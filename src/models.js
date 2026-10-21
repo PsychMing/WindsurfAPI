@@ -884,6 +884,27 @@ const _cloudCatalogQuarantineRoundsByAccount = new Map();
 // from removeAccount) or on a full reset. Keeping it is the safe direction: a stale
 // marker only makes the empty-response guard STRICTER.
 const _cloudCatalogEverFilteredAccounts = new Set();
+// Per-account cost tier + promotion, keyed by selector (lowercased modelUid).
+//
+// GetCascadeModelConfigs sends `modelCostTier` ("MODEL_COST_TIER_FREE" | LOW |
+// MEDIUM | HIGH) and `promoStatus` ({ isActive, endDate, label? }) on every row.
+// That pair is the upstream's OWN answer to "does this model debit quota right
+// now", and it is the only source that can see a plan-scoped promotion: the
+// credit rate table carries LIST price (swe-2-medium is 6, not 0) and the static
+// table has no tier field at all. Measured on a live Pro account (2026-10-22):
+// exactly three configs are MODEL_COST_TIER_FREE — swe-2-medium/high/max — with
+// an active promo ending 2026-11-01T06:59:59Z, while the account's rate table has
+// zero zero-rate entries.
+//
+// Deliberately NOT written onto MODELS[key].caps: promos are account/plan scoped
+// and MODELS is the shared catalog for the whole pool. A global row would leak one
+// account's promotion to every other account (and outlive its end date). Same
+// reason _cloudCatalogUidsByAccount is per account.
+//
+// Only an ACCEPTED, non-empty snapshot replaces an account's map, mirroring the
+// UID filter's fail-conservative rule: a response that omits the fields must not
+// relabel a known promotion as unknown.
+const _cloudCostTiersByAccount = new Map();
 // Model keys that came from a live catalog snapshot rather than the static table.
 //
 // applyCloudModels adds keys for UIDs the static table doesn't know, and nothing ever
@@ -926,6 +947,102 @@ function cloudCatalogAccountKey(accountId) {
 }
 
 /**
+ * Cost tier + promotion off one upstream ClientModelConfig.
+ *
+ * Shape measured live (2026-10-22):
+ *   modelCostTier: "MODEL_COST_TIER_FREE"
+ *   promoStatus:   { isActive: true, endDate: "2026-11-01T06:59:59.999999999Z" }
+ * and, for a discounted-but-paid row:
+ *   modelCostTier: "MODEL_COST_TIER_HIGH"
+ *   promoStatus:   { isActive: true, endDate: "2027-01-01T07:59:59.999999999Z", label: "83% off" }
+ *
+ * Returns null when the row carries neither field: "the upstream did not say" must
+ * stay distinguishable from "it said FREE".
+ */
+function cloudCostInfo(m) {
+  if (!m || typeof m !== 'object') return null;
+  const costTier = typeof m.modelCostTier === 'string' && m.modelCostTier.trim()
+    ? m.modelCostTier.trim()
+    : null;
+  const promo = m.promoStatus && typeof m.promoStatus === 'object' ? m.promoStatus : null;
+  const endRaw = typeof promo?.endDate === 'string' ? promo.endDate : null;
+  // The wire uses 9 fractional digits; V8's parser accepts them (verified:
+  // 2026-11-01T06:59:59.999999999Z → 1793516399999). A garbage date must not
+  // become a bogus expiry — keep null and let isCostTierFreeNow ignore it.
+  const endMs = endRaw ? Date.parse(endRaw) : NaN;
+  const info = {
+    costTier,
+    promoActive: typeof promo?.isActive === 'boolean' ? promo.isActive : undefined,
+    promoEndsAt: Number.isFinite(endMs) ? new Date(endMs).toISOString() : null,
+    promoEndsAtMs: Number.isFinite(endMs) ? endMs : null,
+    promoLabel: typeof promo?.label === 'string' && promo.label.trim() ? promo.label.trim() : null,
+  };
+  if (!info.costTier && !info.promoEndsAt && info.promoActive === undefined) return null;
+  return Object.freeze(info);
+}
+
+/**
+ * Does this cost-tier row debit quota right now?
+ *
+ * FREE is the upstream's own "no charge" statement, so a FREE row with no promo
+ * metadata counts. An explicitly INACTIVE promo, or an end date in the past, means
+ * the promotion is over — the row is then treated as billable even if the tier
+ * field still says FREE, because the conservative direction is the one that does
+ * not spend someone's quota.
+ */
+export function isCostTierFreeNow(info, now = Date.now()) {
+  if (!info || info.costTier !== 'MODEL_COST_TIER_FREE') return false;
+  if (info.promoActive === false) return false;
+  if (info.promoEndsAtMs != null && info.promoEndsAtMs <= now) return false;
+  return true;
+}
+
+/** True once any account has contributed cost-tier rows. */
+export function hasCloudCostTierData() {
+  for (const map of _cloudCostTiersByAccount.values()) {
+    if (map.size) return true;
+  }
+  return false;
+}
+
+/**
+ * Cost-tier info for one selector, pooled across accounts.
+ *
+ * Pool-wide on purpose, like the rate-table free set: "free now" answers "can this
+ * deployment run it without debiting SOME account's quota", and a promo active for
+ * one plan is enough. When accounts disagree, a currently-free row wins over an
+ * expired one so a stale account cannot mask a live promotion.
+ */
+export function getCloudCostTierInfo(selector) {
+  const key = typeof selector === 'string' ? selector.trim().toLowerCase() : '';
+  if (!key) return null;
+  let found = null;
+  for (const map of _cloudCostTiersByAccount.values()) {
+    const info = map.get(key);
+    if (!info) continue;
+    if (!found) { found = info; continue; }
+    if (!isCostTierFreeNow(found) && isCostTierFreeNow(info)) found = info;
+  }
+  return found;
+}
+
+/**
+ * Selectors at least one account reports as free right now (promo-aware), or null
+ * when no account has contributed cost-tier data. Null and an empty Set answer
+ * different questions — "no data" must not read as "nothing is free".
+ */
+export function getCloudCostTierFreeSelectors(now = Date.now()) {
+  if (!hasCloudCostTierData()) return null;
+  const free = new Set();
+  for (const map of _cloudCostTiersByAccount.values()) {
+    for (const [selector, info] of map) {
+      if (isCostTierFreeNow(info, now)) free.add(selector);
+    }
+  }
+  return free;
+}
+
+/**
  * Set the accounts that currently contribute to pool-wide model listings.
  *
  * A listing fails open until every active account has a usable catalog. This
@@ -943,6 +1060,7 @@ export function setActiveCloudCatalogAccounts(accountIds) {
     _cloudCatalogUidsByAccount.delete(accountId);
     _pendingCloudCatalogUidsByAccount.delete(accountId);
     _cloudCatalogQuarantineRoundsByAccount.delete(accountId);
+    _cloudCostTiersByAccount.delete(accountId);
   }
   _activeCloudCatalogAccounts.clear();
   for (const accountId of nextActiveAccounts) _activeCloudCatalogAccounts.add(accountId);
@@ -961,6 +1079,7 @@ export function removeCloudModelCatalog(accountId) {
   _cloudCatalogUidsByAccount.delete(accountKey);
   _pendingCloudCatalogUidsByAccount.delete(accountKey);
   _cloudCatalogQuarantineRoundsByAccount.delete(accountKey);
+  _cloudCostTiersByAccount.delete(accountKey);
 }
 
 /** Drop every trace of an account, including that it ever had a catalog. */
@@ -981,6 +1100,7 @@ export function clearCloudModelCatalogs() {
   _pendingCloudCatalogUidsByAccount.clear();
   _cloudCatalogQuarantineRoundsByAccount.clear();
   _cloudCatalogEverFilteredAccounts.clear();
+  _cloudCostTiersByAccount.clear();
   _activeCloudCatalogAccounts.clear();
 }
 
@@ -1126,6 +1246,20 @@ function applyCloudModels(configs, { accountId = null } = {}) {
     _cloudCatalogUidsByAccount.set(catalogAccountKey, nextCloudCatalogUids);
   } else {
     _cloudCatalogUidsByAccount.delete(catalogAccountKey);
+  }
+
+  // Same account-scoped replace as the UID set, with the same "never blank on a
+  // silent response" rule. `applyCloudModels` only runs for ACCEPTED snapshots, so
+  // reaching here means the upstream actually answered for this account.
+  const nextCostTiers = new Map();
+  for (const m of safeConfigs) {
+    const uid = normalizeCloudCatalogUid(m?.modelUid);
+    if (!uid) continue;
+    const info = cloudCostInfo(m);
+    if (info) nextCostTiers.set(uid, info);
+  }
+  if (nextCostTiers.size > 0) {
+    _cloudCostTiersByAccount.set(catalogAccountKey, nextCostTiers);
   }
 
   let added = 0;

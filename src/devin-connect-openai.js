@@ -27,6 +27,7 @@ import { systemFingerprint } from './system-fingerprint.js';
 import { applyStop, StopSequenceGate } from './stop-sequences.js';
 import { normalizeToolCallArgs, recordArgRepair } from './handlers/cline-compat.js';
 import { ThinkTextClassifier } from './response-classifier.js';
+import { budgetExceededError } from './request-budget.js';
 
 // Gate for the leading think-tag reroute (Item 1, loop break). The classifier
 // lives HERE, in the connect layer, so the DEVIN_CONNECT_ prefix is accurate:
@@ -136,6 +137,11 @@ function isEmptyCompletion(finishEv, sawContent) {
 // defect). If a caller ever genuinely needs to opt out, add the option back THEN, with a test
 // that passes `false` — that test is what makes it a knob rather than decoration.
 async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opts = {}) {
+  // Route-owned request budget. Each internal attempt is one upstream turn; the
+  // cap is per REQUEST, shared with the handler's account failover, so the
+  // empty/rescue retries can no longer multiply into the measured 45/90-turn
+  // products. Backoffs are clamped to the remaining deadline.
+  const budget = opts?.budget || null;
   // Weak models (fable) return DETERMINISTIC empties on complex multi-turn / large
   // system — paid E2E (2026-07-08, 27/27) proved retry never heals them, it only
   // triples the upstream load and burns the account into a 3h rate limit. So for
@@ -241,7 +247,30 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
     // family uses `◁think▷…◁/think▷` — extending the classifier to that dialect
     // is left for a future PR.)
     const thinkClassifier = thinkTextRerouteEnabled() ? new ThinkTextClassifier() : null;
-    for await (const ev of streamChatImpl(attemptParams)) {
+    // One turn per upstream call, consumed immediately before it. The cap is
+    // hard: when it is reached the generator throws a 504-class error instead
+    // of starting another turn.
+    if (budget && !budget.takeTurn()) {
+      throw budgetExceededError(
+        budget.expired()
+          ? `request budget exhausted before DEVIN_CONNECT attempt (${budget.describe()})`
+          : `request upstream-turn cap reached before DEVIN_CONNECT attempt (${budget.describe()})`,
+      );
+    }
+    const callParams = budget
+      ? {
+        ...attemptParams,
+        // devin-connect.js treats deadlineMs as the total wall clock for THIS
+        // stream. Give it what the request has left, never more.
+        deadlineMs: Math.min(
+          Number.isFinite(attemptParams?.deadlineMs) && attemptParams.deadlineMs > 0
+            ? attemptParams.deadlineMs
+            : Infinity,
+          budget.remainingMs(),
+        ),
+      }
+      : attemptParams;
+    for await (const ev of streamChatImpl(callParams)) {
       if ((ev.type === 'content' || ev.type === 'reasoning') && leakTraceEnabled(env)) {
         log.info('LEAK_TRACE stream-event', {
           channel: ev.type,
@@ -305,7 +334,9 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
       rescueAttempt++;
       log.warn(`DEVIN_CONNECT: thinking-only completion (reasoning-only, finish=${finishEv?.reason ?? 'null'}) — rescue retry ${rescueAttempt}/${rescueMax} (nudge appended)`);
       const backoff = retryOnEmptyBaseMs(env) * rescueAttempt;
-      if (backoff) await new Promise((r) => setTimeout(r, backoff));
+      if (backoff && !(await budgetedSleep(backoff, budget))) {
+        throw budgetExceededError(`request budget exhausted during DEVIN_CONNECT rescue backoff (${budget.describe()})`);
+      }
       // Rebuild from the ORIGINAL request every rescue: `params` is never mutated (each
       // rescue constructs a fresh attemptParams below), so it always holds the client's
       // messages. Building from attemptParams instead accumulated — previous rescues'
@@ -348,7 +379,9 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
       // what it did before when `attempt` happened to equal that count. Keying it to the
       // shared counter instead would make an unrelated rescue lengthen the next empty wait.
       const backoff = retryOnEmptyBaseMs(env) * emptyAttempt;
-      if (backoff) await new Promise((r) => setTimeout(r, backoff));
+      if (backoff && !(await budgetedSleep(backoff, budget))) {
+        throw budgetExceededError(`request budget exhausted during DEVIN_CONNECT empty-retry backoff (${budget.describe()})`);
+      }
       continue;
     }
     if (weak && finishEv && isEmptyCompletion(finishEv, sawContent)) {
@@ -357,6 +390,21 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
     if (finishEv) yield finishEv;
     return;
   }
+}
+
+// Sleep that can never outlive the request budget. Returns false when the
+// budget has no time left, so the caller stops instead of starting an attempt
+// that the route deadline would kill mid-flight.
+async function budgetedSleep(ms, budget) {
+  if (!ms) return true;
+  if (!budget) {
+    await new Promise((r) => setTimeout(r, ms));
+    return true;
+  }
+  const left = budget.remainingMs();
+  if (left <= 0) return false;
+  await new Promise((r) => setTimeout(r, Math.min(ms, left)));
+  return budget.remainingMs() > 0;
 }
 
 const OBJECT_COMPLETION = 'chat.completion';
@@ -385,7 +433,7 @@ function nowSeconds() {
  * @returns {Promise<{status:number, body:object, stop:string|null}>}
  */
 export async function toChatCompletion(params, opts = {}) {
-  const { id = newId(), created = nowSeconds(), displayModel, maxRetries = 2, retryBaseMs = 400, emulateTools = false, stop = null, clineCompat = false, stopCarrier = false } = opts;
+  const { id = newId(), created = nowSeconds(), displayModel, maxRetries = 2, retryBaseMs = 400, emulateTools = false, stop = null, clineCompat = false, stopCarrier = false, budget = null } = opts;
   const model = displayModel || params.model;
 
   // Non-stream path buffers the whole answer, so a transient failure (network
@@ -424,9 +472,13 @@ export async function toChatCompletion(params, opts = {}) {
       break;
     } catch (err) {
       if (!isRetryable(err) || attempt >= maxRetries) throw err;
+      // The inner generator already consumes a turn per upstream call; when
+      // the route budget has no turn/time left, re-issuing here would only be
+      // refused. Surface the real upstream error instead of a synthetic one.
+      if (budget && !budget.canStartAttempt()) throw err;
       const backoff = retryBaseMs * 2 ** attempt;
       log.warn(`DEVIN_CONNECT: retryable error (${err.code || err.message}); retry ${attempt + 1}/${maxRetries} in ${backoff}ms`);
-      await new Promise((r) => setTimeout(r, backoff));
+      if (!(await budgetedSleep(backoff, budget))) throw err;
     }
   }
 

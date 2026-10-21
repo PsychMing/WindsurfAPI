@@ -31,6 +31,7 @@ import { handleGemini, parseGeminiPath, geminiError } from './handlers/gemini.js
 import { handleResponses, handleGetResponse, handleDeleteResponse } from './handlers/responses.js';
 import { handleModels } from './handlers/models.js';
 import { createDeferredSseResponse } from './sse-commit.js';
+import { createRequestBudget } from './request-budget.js';
 import { resolveClineCompat, stripClineNamespace } from './handlers/cline-compat.js';
 import { resolveCcCompat, stripCcNamespace } from './handlers/cc-compat.js';
 import { isExperimentalEnabled, getBackendSwitch } from './runtime-config.js';
@@ -710,10 +711,15 @@ async function route(req, res) {
     // fresh pooled accounts to a dead socket. Guard on !writableEnded so the
     // normal end-of-response 'close' is a no-op.
     const abortController = bindClientAbort(res);
+    // One absolute deadline + upstream-turn budget per request, owned by the
+    // route. Layers (queue admission, cascade poll, connect retries) receive
+    // the remaining time and may only shorten their own bounds.
+    const budget = createRequestBudget({ stream: body.stream === true });
     const result = await handleChatCompletions(body, {
       callerKey,
       nativeBridgeCallerKey: nativeBridgeCallerKeyForRequest(req, token, body, callerKey),
       signal: abortController.signal,
+      budget,
       clineCompat,
       ccCompat,
     });
@@ -788,10 +794,12 @@ async function route(req, res) {
     const token = extractToken(req);
     const callerKey = callerKeyFromRequest(req, token, body);
     const abortController = bindClientAbort(res);
+    const budget = createRequestBudget({ stream: false });
     const result = await handleCompletions(body, {
       callerKey,
       nativeBridgeCallerKey: nativeBridgeCallerKeyForRequest(req, token, body, callerKey),
       signal: abortController.signal,
+      budget,
       clineCompat,
       ccCompat,
     });
@@ -850,12 +858,14 @@ async function route(req, res) {
     const token = extractToken(req);
     const callerKey = callerKeyFromRequest(req, token, body);
     const abortController = bindClientAbort(res);
+    const budget = createRequestBudget({ stream: body.stream === true });
     const result = await handleResponses(body, {
       context: {
         callerKey,
         nativeBridgeCallerKey: nativeBridgeCallerKeyForRequest(req, token, body, callerKey),
         ccCompat,
         signal: abortController.signal,
+        budget,
       },
     });
     const processingMs = Date.now() - reqStartedAt;
@@ -1058,12 +1068,14 @@ async function route(req, res) {
     const reqStartedAt = Date.now();
     const requestId = 'req_' + randomUUID();
     const abortController = bindClientAbort(res);
+    const budget = createRequestBudget({ stream: body.stream === true });
     const result = await handleMessages(body, {
       callerKey,
       nativeBridgeCallerKey: nativeBridgeCallerKeyForRequest(req, token, body, callerKey),
       anthropicVersion,
       ccCompat,
       signal: abortController.signal,
+      budget,
     });
     const processingMs = Date.now() - reqStartedAt;
     const ringRow = recordRequest({
@@ -1149,10 +1161,12 @@ async function route(req, res) {
     const reqStartedAt = Date.now();
     const geminiHeaders = { 'request-id': 'req_' + randomUUID() };
     const abortController = bindClientAbort(res);
+    const budget = createRequestBudget({ stream: wantStream });
     const result = await handleGemini(parsed.model, body, {
       callerKey,
       nativeBridgeCallerKey: nativeBridgeCallerKeyForRequest(req, token, body, callerKey),
       signal: abortController.signal,
+      budget,
     }, { stream: wantStream, alt });
     const processingMs = Date.now() - reqStartedAt;
     const ringRow = recordRequest({

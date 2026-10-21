@@ -173,6 +173,7 @@ function appStub(apiResult, extra = {}) {
     _animateNumber: () => {},
     enhanceControls: () => {},
     accountsListUrl: () => '/accounts',
+    _dropStaleSelection: () => false,
     renderTablePagination: () => {},
     downloadAccountsJson: () => {},
     poll: () => {},
