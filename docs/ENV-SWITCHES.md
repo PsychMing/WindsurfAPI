@@ -211,6 +211,7 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | `CASCADE_MAX_WAIT_MS` | `600000` | Cascade 单次等待上限（`client.js`）。曾只出现在 2.0.74 的 release notes 里；`9031b9b` 起 README 两语的 FAQ 也点名了它（`README.md:642` / `README.en.md:542`，cold stall 的封顶值）—— 本文不再是它唯一的落点。 |
 | `CASCADE_IDLE_GRACE_MS` | `8000` | 空闲宽限（`client.js`）。 |
 | `CASCADE_COLD_STALL_BASE_MS` | `30000` | 冷启动停顿基数（`client.js`）。 |
+| `WINDSURFAPI_MAX_DRAIN_MS` | `120000`（2 分钟） | SSE 写端背压的最长等待（`handlers/chat.js`）。`res.write` 返回 `false` 后生产者被挂起等 `drain`；半开客户端（不再读、TCP 还开着）永远不发 `drain`，超过这个值就尽力写一帧 `DRAIN_TIMEOUT` 错误、中止该流并归还账号租约。要求正整数，否则回落 120000。 |
 
 ## 一个必须保持关闭的（不是调优项）
 

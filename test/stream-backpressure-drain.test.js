@@ -148,6 +148,7 @@ beforeEach(() => {
   savedEnv.maxWait = process.env.CASCADE_MAX_WAIT_MS;
   savedEnv.warmStall = process.env.CASCADE_WARM_STALL_MS;
   savedEnv.coldStall = process.env.CASCADE_COLD_STALL_BASE_MS;
+  savedEnv.maxDrain = process.env.WINDSURFAPI_MAX_DRAIN_MS;
   process.env.CASCADE_POLL_INTERVAL_MS = '10';
   process.env.CASCADE_IDLE_GRACE_MS = '1';
   process.env.CASCADE_MAX_WAIT_MS = '3000';
@@ -165,6 +166,7 @@ afterEach(() => {
     CASCADE_MAX_WAIT_MS: savedEnv.maxWait,
     CASCADE_WARM_STALL_MS: savedEnv.warmStall,
     CASCADE_COLD_STALL_BASE_MS: savedEnv.coldStall,
+    WINDSURFAPI_MAX_DRAIN_MS: savedEnv.maxDrain,
   })) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -352,6 +354,42 @@ describe('SEED-C2: the Cascade stream honours writer backpressure', () => {
     res.emit('drain');
     await done;
     assert.equal(framesOf(res).at(-1), '[DONE]', 'the stream still terminates cleanly');
+  });
+
+  it('aborts a half-open client at the max drain wait and returns the account', async () => {
+    // A client that stops reading but keeps TCP open never emits 'drain'. The
+    // bounded wait is what stops that from pinning the poll loop and the
+    // account checkout for the life of the connection.
+    const acct = seed('c2-half-open');
+    process.env.WINDSURFAPI_MAX_DRAIN_MS = '40';
+    const ctx = cascadeContextFor();
+    const result = await handleChatCompletions(
+      { model: MODEL, messages: [{ role: 'user', content: 'hi' }], stream: true },
+      ctx,
+    );
+    const res = controlledRes({ falseAt: 2 });   // never drains
+    const done = result.handler(res);
+    await settle();
+
+    assert.equal(res.writes.length, 2, 'held at the refused frame');
+    assert.equal(ctx.progress.chunksProduced, 1);
+    assert.equal(ctx.progress.completed, 0);
+    assert.equal(getAccountInternal(acct.id)._inflight, 1, 'the account is checked out while the turn is pinned');
+
+    // No drain is ever emitted: the bounded wait has to end the turn.
+    await done;
+
+    assert.equal(ctx.progress.upstreamCalls, 1, 'no retry after a pinned stream');
+    assert.equal(ctx.progress.chunksProduced, 1, 'the producer is not driven past the refused frame');
+    assert.equal(ctx.progress.completed, 0, 'the turn never completes upstream');
+    const payloads = framesOf(res);
+    assert.ok(
+      payloads.some((p) => p !== '[DONE]' && JSON.parse(p).error?.code === 'DRAIN_TIMEOUT'),
+      'a terminal error is written while the socket still accepts bytes',
+    );
+    assert.ok(!payloads.includes('[DONE]'), 'no clean finish for a timed-out turn');
+    assert.equal(res.listenerCount('drain'), 0, 'the drain listener is detached on timeout');
+    assert.equal(getAccountInternal(acct.id)._inflight, 0, 'the account lease is returned');
   });
 
   it('a client close while waiting settles the stream without more bytes, retries or cache writes', async () => {

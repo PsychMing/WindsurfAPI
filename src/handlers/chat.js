@@ -83,6 +83,13 @@ import {
 } from '../native-bridge-stats.js';
 
 const HEARTBEAT_MS = 15_000;
+// C2: a slow reader gets a bounded wait, not an unbounded one. A half-open
+// client (stops reading, keeps TCP open) never emits 'drain', so without a
+// ceiling the Cascade poll loop and the account checkout would be pinned for
+// the life of the connection. Two minutes is eight heartbeat periods: long
+// enough for a genuinely slow but live reader, short enough that a dead one
+// cannot hold a lease indefinitely. Override with WINDSURFAPI_MAX_DRAIN_MS.
+const MAX_DRAIN_WAIT_DEFAULT_MS = 120_000;
 const QUEUE_RETRY_MS = 1_000;
 const QUEUE_MAX_WAIT_MS = 30_000;
 const IP_RATE_LIMIT_BURST_FLOOR_MS = 30_000;
@@ -5867,16 +5874,25 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       // closes the direct Cascade SSE path only.
       const backpressureArmed = useCascade;
       let pendingDrain = null;
+      // Set once a drain has timed out: the stream is over, so no later write
+      // may start a fresh wait (and a fresh timer) behind it.
+      let drainTimedOut = false;
+      const parsedMaxDrain = parseInt(process.env.WINDSURFAPI_MAX_DRAIN_MS || '', 10);
+      const maxDrainWaitMs = Number.isFinite(parsedMaxDrain) && parsedMaxDrain > 0
+        ? parsedMaxDrain
+        : MAX_DRAIN_WAIT_DEFAULT_MS;
       const writerGone = () => res.writableEnded || abortController.signal.aborted;
       const beginDrain = () => {
         if (pendingDrain) return pendingDrain;
-        if (writerGone()) return null;
+        if (drainTimedOut || writerGone()) return null;
         let settle = () => {};
         const operation = new Promise((resolve) => { settle = resolve; });
         let settled = false;
+        let timer = null;
         const finishDrain = () => {
           if (settled) return;
           settled = true;
+          if (timer) { clearTimeout(timer); timer = null; }
           if (pendingDrain === operation) pendingDrain = null;
           // Some embedders hand this handler a minimal writable; only real
           // streams carry the EventEmitter alias.
@@ -5886,7 +5902,25 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           abortController.signal.removeEventListener('abort', finishDrain);
           settle();
         };
+        // Half-open client: no 'drain' ever arrives. Bound the wait, release
+        // the producer, and let the normal teardown return the account.
+        const onDrainTimeout = () => {
+          if (settled) return;
+          drainTimedOut = true;
+          log.warn(`Chat[${reqId}]: no drain for ${maxDrainWaitMs}ms — client stopped reading, aborting the stream`);
+          // Best effort: the client is not reading, but a relay may be.
+          writeRaw(formatFrame(chatStreamError(
+            'client stopped reading; the stream was aborted after the drain timeout',
+            'server_error',
+            'DRAIN_TIMEOUT',
+          )));
+          finishDrain();
+          abortController.abort(new Error('drain timeout'));
+        };
         pendingDrain = operation;
+        timer = setTimeout(onDrainTimeout, maxDrainWaitMs);
+        // Never keep the process alive for a wait that belongs to one request.
+        timer.unref?.();
         res.on('drain', finishDrain);
         res.on('close', finishDrain);
         res.on('error', finishDrain);
@@ -5964,7 +5998,11 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       // C2: a tick is skipped while a drain is outstanding — the heartbeat may
       // never add bytes or a waiter behind a pressured writer.
       const heartbeat = setInterval(() => {
-        if (!res.writableEnded && !pendingDrain) res.write(': ping\n\n');
+        if (res.writableEnded || pendingDrain) return;
+        // A heartbeat that reports backpressure is the same signal as any other
+        // frame: arm the single drain wait so the producer cannot keep feeding
+        // a socket the client has stopped reading.
+        if (res.write(': ping\n\n') === false && backpressureArmed) beginDrain();
       }, HEARTBEAT_MS);
       const stopHeartbeat = () => {
         clearInterval(heartbeat);
