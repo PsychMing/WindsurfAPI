@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **193** 份,v2.0.6 → v3.9.42 |
+| 发布说明 | **194** 份,v2.0.6 → v3.9.43 |
 | git tag | 202 个（截至 2026-10-15） |
-| 当前 | **v3.9.42**(2026-10-22, 待发布) |
+| 当前 | **v3.9.43**(2026-10-22) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -42,7 +42,14 @@ flowchart LR
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
 
-### [v3.9.42](docs/releases/RELEASE_NOTES_3.9.42.md) · 2026-10-22（待发布）
+### [v3.9.43](docs/releases/RELEASE_NOTES_3.9.43.md) · 2026-10-22
+
+v3.9.42 之后的两条补丁：ACP 的 `tool_call`/`tool_call_update` 不再被丢弃，工具类 `stopReason`
+投影成 `tool_calls` + `finish_reason:"tool_calls"`，无法映射时返回 502 而不是静默 `stop`；
+Dashboard `.main{min-width:0}`，账号页/概览页在 1440/390 下不再横向溢出，表格只在自身容器内滚动。
+无协议破坏、无新路由、无默认开关变化。
+
+### [v3.9.42](docs/releases/RELEASE_NOTES_3.9.42.md) · 2026-10-22（已发布）
 
 v3.9.41 之后的加固补丁（8 条分支）：客户端断开后不再缓存/计费/复用半截答案（流式跳过完成尾，
 非流式返回 499）；Cascade SSE 增加写端背压门与 `WINDSURFAPI_MAX_DRAIN_MS` 上限，慢读客户端不再
@@ -52,7 +59,7 @@ v3.9.41 之后的加固补丁（8 条分支）：客户端断开后不再缓存/
 扫描与 typed ping 提交门；Node 20/22 的 Connect 绝对 deadline 不再被 unref；补 4 条流式两轮工具
 循环测试。无协议破坏、无新路由、默认 wire 由门禁对 `v3.9.41` 基线比较。
 
-### [v3.9.41](docs/releases/RELEASE_NOTES_3.9.41.md) · 2026-10-19（待发布）
+### [v3.9.41](docs/releases/RELEASE_NOTES_3.9.41.md) · 2026-10-19（已发布）
 
 v3.9.40 之后的一次大补丁（90+ 个提交，57 feat/fix）：工具名/ID/历史跨三方言收敛，Messages 的 split
 tool name 不再以首片开块；SSE 提交门在写 200 前裁决预内容错误，混合帧/CRLF/超长帧有共用 framer；
