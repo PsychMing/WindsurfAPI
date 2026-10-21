@@ -14,8 +14,10 @@
 
 ## 工程与门禁
 
-- 合入 `feat/devin-cards` `39e7fef`（基于 `b3dea2c`，与 3.9.46 的 balance 修复无冲突）。
-- Windows/Linux/gate/mutation/wire：见发布提交与 CI。
+- 合入 `feat/devin-cards` `39e7fef`（基于 `b3dea2c`，与 3.9.46 的 balance 修复无冲突）；合并后修了一处测试切片依赖（ledger helper 移入 refresh 块）。
+- Windows `npm run test:release`：**5,691 pass / 0 fail / 82 skip（467 文件，5,773 tests）**，exit 0。
+- Windows `GATE_INERT_SKIP_PATHS="..." npm run gate`：**PASS exit=0** —— 全部子门绿（`spec-baseline-check` 在修复后通过）。
+- Linux/mutation/wire：见发布提交与 CI。
 
 ## 尚未验证
 
