@@ -1475,6 +1475,18 @@
     "freeBadge": "免费",
     "paidBadge": "计费",
     "costUnknownHint": "费用未知：还没有账号上报过上游费率表，所以既不能确认免费、也不能确认计费。在某个账号上刷新额度即可填上这张表。",
+    "dailyExhaustedBadge": "额度 · 日额度耗尽",
+    "weeklyDroughtBadge": "额度 · 周额度紧张",
+    "notInCatalogBadge": "不在目录",
+    "notInCatalogHint": "该账号的实时目录里没有这个 selector，上游会直接拒绝。静态兜底只适用于尚未拉到目录的冷启动。",
+    "dailyExhaustedHint": "日额度已耗尽：重置前上游会拒绝所有计费模型，免费模型仍可调用。",
+    "weeklyDroughtHint": "周额度进入枯水模式：为保住剩余额度，已屏蔽付费模型。",
+    "promoEndsHint": "促销截止 {{date}}",
+    "freeReason": {
+      "cost_tier_free": "上游成本档位标记免费",
+      "rate_zero": "上游费率表为 0",
+      "fallback_whitelist": "静态兜底（尚无实时定价）"
+    },
     "mode": {
       "all": "全部允许",
       "allowlist": "白名单",

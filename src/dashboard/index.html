@@ -9066,19 +9066,35 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           // reachable===false means this deployment cannot serve it now. Undefined on an
           // older API response — treated as reachable so a version skew greys out nothing.
           const unreachable = m.reachable === false;
-          // #235: does it cost quota? Tri-state — true free, false paid, null unknown (no
-          // rate table yet, or the name resolves to nothing here). Unknown deliberately
-          // shows NO badge: a "free" badge on unknown is what burned the reporter's weekly
-          // allowance, and a "paid" badge on unknown would be a guess dressed as a fact.
-          const free = m.currentlyFree;
+          // Price and quota state are DIFFERENT facts now (see /dashboard/api/models).
+          // `freeNow` is tri-state (true/false/null=no data); `quotaState` says why the
+          // upstream would refuse. The single old `currentlyFree` boolean collapsed
+          // them, so the phantom swe-1-6-slow rendered FREE while 502ing with quota
+          // exhausted, and every actually-free swe-2 row rendered QUOTA.
+          const free = m.freeNow;
+          const state = m.quotaState;
+          const reason = m.freeReason ? I18n.t(`model.freeReason.${m.freeReason}`) : '';
+          const promo = free === true && m.promoEndsAt
+            ? I18n.t('model.promoEndsHint', { date: String(m.promoEndsAt).slice(0, 10) })
+            : '';
           const badge = free === true ? `<span class="chip-badge free">${I18n.t('model.freeBadge')}</span>`
+            : state === 'blocked_daily' ? `<span class="chip-badge paid">${I18n.t('model.dailyExhaustedBadge')}</span>`
+            : state === 'blocked_weekly' ? `<span class="chip-badge paid">${I18n.t('model.weeklyDroughtBadge')}</span>`
+            : state === 'not_in_catalog' ? `<span class="chip-badge paid">${I18n.t('model.notInCatalogBadge')}</span>`
             : free === false ? `<span class="chip-badge paid">${I18n.t('model.paidBadge')}</span>`
             : '';
           const title = unreachable
             ? I18n.t('model.unreachableHint')
-            : free === null
-              ? I18n.t('model.costUnknownHint')
-              : (m.connectSelector ? `selector: ${m.connectSelector}` : '');
+            : state === 'not_in_catalog'
+              ? I18n.t('model.notInCatalogHint')
+              : state === 'blocked_daily'
+                ? I18n.t('model.dailyExhaustedHint')
+                : state === 'blocked_weekly'
+                  ? I18n.t('model.weeklyDroughtHint')
+                  : free === null
+                    ? I18n.t('model.costUnknownHint')
+                    : [m.connectSelector ? `selector: ${m.connectSelector}` : '', reason, promo]
+                      .filter(Boolean).join(' · ');
           return `<span class="model-chip ${inList ? 'selected' : ''}${unreachable ? ' unreachable' : ''}"${title ? ` title="${this.esc(title)}"` : ''} onclick="App.toggleModelInList('${this.escJsAttr(m.id)}')">${this.esc(m.name)}${badge}</span>`;
         }).join('')}</div>
       </div>

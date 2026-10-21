@@ -85,12 +85,12 @@ const REVIEWED_NOT_SINKS = [
   { line: 8894, field: 'id', expr: 'id', why: 'B url-or-selector: querySelector(`.model-row[data-detail="${id}"]`) selector, not markup' },
   { line: 8990, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id> fetch path (reset errors)' },
   { line: 8994, field: 'id', expr: 'id', why: 'B url-or-selector: /accounts/<id> fetch path (single delete)' },
-  { line: 9210, field: 'id', expr: 'id', why: 'B url-or-selector: /proxy/accounts/<id> fetch path' },
-  { line: 10617, field: 'id', expr: 'id', why: 'C numeric-or-http: `num()` id argument is a hardcoded literal at every call site' },
-  { line: 10618, field: 'id', expr: 'id', why: 'C numeric-or-http: same hardcoded literal' },
-  { line: 10779, field: 'id', expr: 'id', why: 'C numeric-or-http: same hardcoded literal' },
-  { line: 10780, field: 'id', expr: 'id', why: 'C numeric-or-http: same hardcoded literal' },
-  { line: 11041, field: 'status', expr: 'res.status', why: 'C numeric-or-http: Response.status in an Error message; Response.status is always a Number' },
+  { line: 9226, field: 'id', expr: 'id', why: 'B url-or-selector: /proxy/accounts/<id> fetch path' },
+  { line: 10633, field: 'id', expr: 'id', why: 'C numeric-or-http: `num()` id argument is a hardcoded literal at every call site' },
+  { line: 10634, field: 'id', expr: 'id', why: 'C numeric-or-http: same hardcoded literal' },
+  { line: 10795, field: 'id', expr: 'id', why: 'C numeric-or-http: same hardcoded literal' },
+  { line: 10796, field: 'id', expr: 'id', why: 'C numeric-or-http: same hardcoded literal' },
+  { line: 11057, field: 'status', expr: 'res.status', why: 'C numeric-or-http: Response.status in an Error message; Response.status is always a Number' },
 ];
 
 function dashboardSource() {

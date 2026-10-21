@@ -2227,7 +2227,32 @@ export function classifyUpstreamError(text, code = null, status = null) {
   // tier-wall pattern so "insufficient credit" never reads as a free-tier
   // /upgrade prompt. "entitlement" stays a tier wall (you lack the plan, not
   // the balance), matching the /upgrade semantics.
-  if (/insufficient.*(credit|quota|balance|funds)|out of (credit|quota)|quota.*exceeded|credit.*exhausted/i.test(lc)) {
+  //
+  // `(quota|credit|usage|balance|allowance).*exhausted` is load-bearing and was
+  // measured missing. The live body for a Pro account whose daily bucket is dry is
+  //
+  //   "Your daily usage quota has been exhausted. Visit
+  //    https://app.devin.ai/settings/usage ... (trace ID: …)"
+  //
+  // carried on gRPC code `failed_precondition`. The old pattern only knew
+  // `quota.*exceeded`, so that body matched NOTHING here, fell through to the
+  // verbatim passthrough below, and came back as `failed_precondition`. That code
+  // is (a) rendered as HTTP 502 `upstream_error` by connectErrorToHttp, (b) NOT in
+  // isAccountFailoverError, so a dry account never failed over to a funded peer,
+  // and (c) in TRANSPORT_FAULT_CODES, so every quota-dry call incremented the
+  // internal-error breaker (2 hits → 120 s quarantine). One missing word turned a
+  // routine per-account dry-well into a client-visible 502 plus a benched account.
+  //
+  // Also covers the on-demand shapes ("Your on-demand usage has been exhausted",
+  // "on-demand balance exhausted") and the balance/allowance variants, all of
+  // which are the same account state. Ordered after CAPACITY and CONTENT_BLOCKED
+  // so those keep their narrower meanings.
+  if (code === 'insufficient_quota'
+      || /insufficient.*(credit|quota|balance|funds)/i.test(lc)
+      || /out of (credit|quota|balance|funds)/i.test(lc)
+      || /(credit|quota|balance|allowance|usage)[\s\w-]{0,40}?(exceeded|exhausted|depleted|used up)/i.test(lc)
+      || /on.?demand[^.]{0,60}(exhausted|exceeded|depleted|out of|insufficient)/i.test(lc)
+      || /run(?:ning)? out of (credit|quota|balance|funds|usage)/i.test(lc)) {
     return { code: 'QUOTA_EXHAUSTED', message: body || 'DEVIN_CONNECT: account out of credit/quota' };
   }
   if (/\/upgrade|upgrade to access|insufficient.*entitlement|requires? .*(paid|pro|team|enterprise)/i.test(lc)) {

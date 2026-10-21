@@ -8,9 +8,12 @@
  * 2026-06-30). This maps the OpenAI-style model names a client sends onto the
  * verified upstream selectors.
  *
- * Free-tier accounts only resolve `swe-1-6-slow`; every other selector returns
- * "/upgrade to access this model". That's an account-tier wall, not a protocol
- * gap — the mapping is complete and ready for a paid entitlement.
+ * Free-tier (unpaid) accounts are entitled only to `swe-1-6-slow`; every other
+ * selector returns "/upgrade to access this model". That's an account-tier wall,
+ * not a protocol gap. Which selectors are FREE to CALL is a different question
+ * and is derived from the live catalog — a paid plan's promo can make e.g.
+ * swe-2-medium/high/max free without moving them into the unpaid entitlement set
+ * (see auth.js getConnectSelectorPricing and models.js cost-tier decoding).
  */
 
 import { createHash } from 'node:crypto';
@@ -199,18 +202,29 @@ const CATALOG_SELECTORS = new Set(
   ).models.map((m) => m.selector),
 );
 
-// The only selector a free-tier account can actually run. Used as the safe
-// default when DEVIN_CONNECT is enabled but the requested model isn't mapped.
-// Catalog-independent unpaid fallback. Live GetCliModelConfigs may omit it
-// (#258: reporter's catalog had no swe-1-6-slow). Do NOT retarget this to
+// The safe default when DEVIN_CONNECT is enabled but the requested model isn't
+// mapped. Catalog-independent unpaid fallback. Live GetCliModelConfigs may omit
+// it (#258: reporter's catalog had no swe-1-6-slow). Do NOT retarget this to
 // swe-1-7 / glm-5-2 — those are drought-safe on Pro, not unpaid entitlement.
 // STRICT_MODEL=1 already 400s unmapped names instead of silent-degrading here.
+//
+// Live evidence 2026-10-22 (Pro account): `swe-1-6-slow` is absent from the
+// 240-selector Connect catalog AND from the account's 374 availableModels, and
+// the upstream answers it with "Your daily usage quota has been exhausted".
+// It is therefore a DEGRADE TARGET for unmapped names, not a claim that it is
+// callable — a caller that can pick a model should prefer the live free set.
 export const FREE_TIER_SELECTOR = 'swe-1-6-slow';
-// Canonical selectors a free-tier account can actually run. Per this module's
-// docstring, free resolves ONLY swe-1-6-slow; every other selector returns
-// "/upgrade" upstream. Keep in sync with free-tier live probes. Used by the
-// connect-namespace entitlement filter so a paid selector (e.g. a fable) is not
-// routed to a free account, which the upstream would reject as permission_denied.
+// Canonical selectors an UNPAID account is entitled to. This is ENTITLEMENT, not
+// pricing: it is what the connect-namespace filter uses so a paid selector (e.g.
+// a fable) is not routed to a free account, which the upstream rejects as
+// permission_denied.
+//
+// Pricing moved out of this set (2026-10-22). "Free now" is derived from the
+// account's live `modelCostTier`/`promoStatus` (models.js), then a zero rate in
+// its paired credit table, and only falls back to this set when NEITHER live
+// source has data anywhere — see auth.js getConnectSelectorPricing. Treating this
+// set as the free list is what made the dashboard call `swe-1-6-slow` FREE while
+// it 502'd, and mark the three actually-free swe-2 selectors as QUOTA.
 export const FREE_REACHABLE_SELECTORS = new Set(['swe-1-6-slow']);
 
 // Paid-plan selectors that do not consume the weekly quota bucket (#258,
