@@ -106,9 +106,9 @@ describe('the finish event calls normalizeConnectUsage (call-site guard)', () =>
 
 describe('the finish event resolves truncation from usage (call-site guard)', () => {
   it('reports "length" when completion_tokens hits the cap the caller requested', async () => {
-    // Nothing in the enum says "truncated" — only 2 and 4 are pinned by live
-    // captures. The cap-equality check is the signal, and it has to be wired into
-    // the event, not just unit-tested.
+    // The enum's clean-stop values (2/4) say nothing about truncation; the
+    // cap-equality check is the second line of defense, and it has to be wired
+    // into the event, not just unit-tested.
     const finish = await finishEventFrom([
       Buffer.concat([
         writeStringField(3, 'truncated here'),
@@ -131,8 +131,10 @@ describe('the finish event resolves truncation from usage (call-site guard)', ()
       'the paid-tier shape that used to report every complete answer as truncated');
   });
 
-  it('does NOT report "length" for the un-calibrated enum 3 on its own', async () => {
-    // 3 was a name-order guess. Reaching 'length' now requires the usage signal.
+  it('reports "length" for the descriptor-pinned MAX_TOKENS enum (3) on its own', async () => {
+    // 3 = MAX_TOKENS in the descriptor set, so the enum alone is now a
+    // truncation signal; the call site must surface the mapped reason rather
+    // than the raw enum or a default 'stop'.
     const finish = await finishEventFrom([
       Buffer.concat([
         writeStringField(3, 'complete answer'),
@@ -140,7 +142,7 @@ describe('the finish event resolves truncation from usage (call-site guard)', ()
         metaFrame({ prompt: 100, completion: 20 }),
       ]),
     ], { completion: { maxTokens: 4096 } });
-    assert.equal(finish.reason, 'stop');
+    assert.equal(finish.reason, 'length');
   });
 
   it('honours a calibrated DEVIN_CONNECT_STOP_REASON_MAP at the call site', async () => {

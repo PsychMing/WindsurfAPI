@@ -21,7 +21,8 @@
  *
  * Endpoint : POST https://server.codeium.com/exa.api_server_pb.ApiServerService/GetChatMessage
  * Transport: Connect-RPC, application/connect+proto, single request envelope,
- *            multi-frame streaming response (text deltas in response field #9).
+ *            multi-frame streaming response (answer text in response field #3;
+ *            #9 is the separate reasoning/thinking stream).
  *
  * Zero npm deps. Nothing dials the network at import time.
  */
@@ -1080,8 +1081,14 @@ export function buildToolChoice(toolChoice, env = process.env) {
   if (!isToolChoicePassthroughEnabled(env)) return null;
   const norm = normalizeToolChoice(toolChoice);
   if (!norm) return null;
-  const parts = [writeStringField(1, norm.optionName)];
-  if (norm.toolName) parts.push(writeStringField(2, norm.toolName));
+  // ChatToolChoice is `oneof choice { option_name = 1; tool_name = 2; }`
+  // (exa.chat_pb). Emitting BOTH members is a schema violation — a conformant
+  // decoder keeps only the last one, so a forced tool name and the "function"
+  // option overwrote each other. Write exactly one: the name when the caller
+  // forced a tool, otherwise the option keyword.
+  const parts = norm.toolName
+    ? [writeStringField(2, norm.toolName)]
+    : [writeStringField(1, norm.optionName)];
   return Buffer.concat(parts);
 }
 
@@ -1389,16 +1396,20 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
   // trail's whole purpose is letting the next turn see the prior reasoning as-is.
   if (!collapseSystem && continuityTrail) systemPrompt += continuityTrail;
 
-  // ModelConfig #15. RE-CALIBRATED FROM THE FULL CAPTURE SET (not just req022):
-  // decoding all 9 GetChatMessage requests of one live session (9501aa2c) shows
-  //   #15.1 = a STABLE per-session config UUID (same across every turn),
+  // #15 CortexTrajectoryReference — descriptor: exa.cortex_pb
+  //   { trajectory_id=1, step_index=2, trajectory_type=3, step_type=4 }.
+  // RE-CALIBRATED FROM THE FULL CAPTURE SET (not just req022): decoding all 9
+  // GetChatMessage requests of one live session (9501aa2c) shows
+  //   #15.1 = a STABLE per-session trajectory UUID (same across every turn),
   //   #15.2 = a MONOTONIC per-session turn counter (req009→022: 1,2,3,4,5,6,7,8),
-  //   #15.3 = 4 (constant).
+  //   #15.3 = 4 (trajectory_type = CORTEX_TRAJECTORY_TYPE_CASCADE).
+  // The CLI also sends #15.4 step_type = USER_INPUT (14); we omit it (the sibling
+  // Go implementation sends it — see the Q7 field map).
   // Stateless default (fresh uuid, turn 1) matches turn-1 capture req009. Since
-  // PR #226 the gateway CAN hold a stable session (#16); when it does and the
+  // PR #226 the gateway CAN hold a stable session; when it does and the
   // DEVIN_CONNECT_MODEL_CONFIG_STABLE gate is on, chat.js passes the session's
   // {id, turn} via sessionModelConfig so #15 matches devin.exe's shape too.
-  const modelConfigBuf = Buffer.concat([
+  const trajectoryRefBuf = Buffer.concat([
     writeStringField(1, sessionModelConfig?.id || randomUUID()),
     writeVarintField(2, sessionModelConfig?.turn || 1),
     writeVarintField(3, 4),
@@ -1426,7 +1437,10 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
     ...(toolChoiceBuf ? [writeMessageField(toolChoiceTags.choice, toolChoiceBuf)] : []),
     // #13 system_prompt_cache_options — opt-in, see buildSystemPromptCacheOptions.
     ...(cacheOptionsBuf ? [writeMessageField(13, cacheOptionsBuf)] : []),
-    writeMessageField(15, modelConfigBuf),
+    writeMessageField(15, trajectoryRefBuf),
+    // #16 = cascade_id (descriptor). The value is the cascade the CLI was
+    // launched with, NOT a session id; the newer web schema adds `session_id`
+    // at #28, which we do not emit.
     writeStringField(16, sessionId || randomUUID()),
     writeVarintField(20, 1),
     writeStringField(21, model),
@@ -1469,28 +1483,29 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
 
 const FIELD = Object.freeze({ CONTENT: 3, FINISH: 5, META: 7, REASONING: 9 });
 // The top-level #5 finish signal maps to the OpenAI finish_reason vocabulary in
-// mapFinishReason() below (live-anchored 2→'stop', the rest calibratable).
+// mapFinishReason() below (descriptor-backed; 2 and 4 additionally live-anchored).
 
 // Billing passthrough (GROUNDWORK, opt-in via DEVIN_CONNECT_BILLING_TAGS).
 //
-// The static recon (P2-apiserver-methods-fields.md §2.4) verifies that the
-// response carries `credit_cost`, `committed_credit_cost`, `committed_acu_cost`
-// and `committed_overage_cost_cents` — but only as a FIELD DECLARATION ORDER,
-// not wire tag numbers (prost allows gaps; declaration order ≠ tag). These
-// fields could NOT be calibrated against a free account: a free tier isn't
+// The binary descriptor set (exa.api_server_pb.GetChatMessageResponse /
+// exa.codeium_common_pb) pins the paid scalars: credit_cost=14,
+// committed_credit_cost=18, committed_acu_cost=22 (double),
+// committed_quota_cost_basis_points=26 and committed_overage_cost_cents=27.
+// They could NOT be calibrated against a free account: a free tier isn't
 // billed, the values are 0, and protobuf does not encode zero-valued scalars —
-// so the fields are physically ABSENT from every free-account capture we have.
-// This is the same shape as the vision image-tag (also un-calibratable on free).
+// so the fields are physically ABSENT from every free-account capture we have,
+// and the paid frames seen so far carry no values either.
 //
-// So billing decode is configuration-driven, default-OFF: until an operator
-// runs the calibration on a PAID token and pins the real tags, nothing is
-// parsed and usage carries no billing keys (zero regression). The env var maps
-// logical billing keys to the integer tag observed in the metadata sub-message:
+// So billing decode is configuration-driven, default-OFF: nothing is parsed
+// until an operator points the map at the tags they want (the descriptor
+// coordinates above are the verified starting point), and usage carries no
+// billing keys (zero regression). The env var maps logical billing keys to the
+// integer tag observed in the metadata sub-message:
 //
 //   DEVIN_CONNECT_BILLING_TAGS="credit_cost=6,committed_credit_cost=7,committed_acu_cost=8"
 //
-// All tags are read from the #7 metadata sub-message as varints. A future paid
-// calibration run (scripts/devin-connect-paid-verify.mjs style) discovers them.
+// All tags are read from the #7 metadata sub-message; readNumericProtoField
+// handles the varint / fixed64 / fixed32 encodings.
 //
 // CONFIRMED 2026-07-23 (paid teams account, live A/B — issue #220): the cache-read
 // counter is tag 5. Two requests sharing a long system prefix: round-1 (miss) meta
@@ -1501,8 +1516,8 @@ const FIELD = Object.freeze({ CONTENT: 3, FINISH: 5, META: 7, REASONING: 9 });
 // surfaces prompt_tokens_details.cached_tokens. This also settles #220: caching is
 // billed correctly (hit cost measured at 17.8% of miss); the gap was purely that
 // the dashboard couldn't SEE the cache split, not that credits were over-spent.
-// credit_cost / committed_* remain declaration-order-only and still need their own
-// paid calibration run.
+// credit_cost / committed_* now have descriptor-verified coordinates
+// (14/18/22/26/27) but no observed values yet, so they stay out of the default map.
 // CONFIRMED 2026-07-25 (same paid account): the cache-WRITE counter is tag 4.
 // Claude-family selectors split prompt input the way Anthropic's own API does —
 // fresh input in tag 2, cache-creation in tag 4 — so a cache-writing turn reported
@@ -1584,35 +1599,29 @@ function parseBillingTagMap(env = process.env) {
 
 // Native tool-call DECODE (GROUNDWORK, opt-in via DEVIN_CONNECT_TOOL_CALL_TAGS).
 //
-// The response carries `delta_tool_calls` (repeated ChatToolCall). Per the
-// reverse-engineering (NW1: docs-internal/workflow-results/native-tool-wire/NATIVE-WIRE-FIELDS.md
-// §1.2/§2, sourced from the devin.exe prost declaration string at
-// strings-ascii.txt:249887) the ChatToolCall struct is, with [verified] FIELD NAMES:
+// The response carries `delta_tool_calls` (repeated ChatToolCall). The
+// descriptor (exa.codeium_common_pb.ChatToolCall) defines, with tags:
 //   ChatToolCall {
-//     is_custom_tool_call  bool   (custom tool vs a built-in harness tool)
-//     invalid_json_str     string (raw args the model emitted when they were NOT valid JSON)
-//     arguments_json       string (the valid JSON args — OpenAI function.arguments)
-//     id                   string (OpenAI tool_calls[].id)
-//     invalid_json_err     string (parse-error description for invalid_json_str)
+//     id                   string (1) — OpenAI tool_calls[].id
+//     name                 string (2) — OpenAI function.name
+//     arguments_json       string (3) — the valid JSON args (OpenAI function.arguments)
+//     invalid_json_str     string (4) — raw args the model emitted when NOT valid JSON
+//     invalid_json_err     string (5) — parse-error description for invalid_json_str
+//     is_custom_tool_call  bool   (6) — custom tool vs a built-in harness tool
 //   }
 //
-// ★ CRITICAL [verified]: the RESPONSE-side ChatToolCall has NO `name` field. The
-// REQUEST-side ToolCall does, but the response item does not (NW1 §2 "最关键的实现锚点").
-// A native decode therefore yields id + arguments but NOT the function name. We
-// resolve name from, in priority order: (1) a pinned `name` tag IF a paid frame
-// ever proves the release carries one in an unnamed subfield — CANDIDATE only,
-// UNVERIFIED, NW1 §2 candidate #3; (2) caller-supplied reverse-lookup against the
-// request-side tools (decodeFrame opts.toolNames), unambiguous when exactly one
-// tool was offered. If neither resolves, name is left undefined and the OpenAI
-// builder defaults it to 'unknown' (devin-connect-openai.js:127) — shape intact.
+// ★ The response ChatToolCall DOES carry the function name: `name = 2`, and the
+// live CLI captures populate it (id + name on the first fragment, arguments_json
+// on later frames). The earlier "the response item has no name" reading was
+// wrong. decodeFrame still falls back to a caller-supplied reverse-lookup
+// (opts.toolNames) when a frame omits it, unambiguous when exactly one tool was
+// offered. If neither resolves, name is left undefined and the OpenAI builder
+// defaults it to 'unknown' (devin-connect-openai.js:127) — shape intact.
 //
-// As with billing/vision the FIELD NAMES are [verified] but every wire TAG is
-// [unknown / UNVERIFIED]: a free capture never emits tool calls (the free models
-// we can reach don't tool-call over this path), so the sub-message is physically
-// absent and un-calibratable here. The tags are NOT guessed in code — they stay
-// unset, and decode stays OFF, until a real PAID proto dump pins them. Default
-// OFF → tool calls keep coming from prompt emulation (parseToolCallsFromText),
-// which works everywhere and remains the only production path.
+// Every tag below is descriptor-verified and was independently pinned from
+// static disasm of devin.exe (2026-07-04). Default OFF → tool calls keep coming
+// from prompt emulation (parseToolCallsFromText), which works everywhere and
+// remains the only production path.
 //
 // Tags PINNED from static disasm of devin.exe (2026-07-04, verified-from-binary):
 //   DEVIN_CONNECT_TOOL_CALL_TAGS="outer=6,id=1,name=2,arguments_json=3,invalid_json_str=4,invalid_json_err=5,is_custom_tool_call=6"
@@ -1647,12 +1656,12 @@ export function parseToolCallTagMap(env = process.env, { useDefault = false } = 
   return map.outer ? map : null;
 }
 
-// Thinking-signature DECODE config (GROUNDWORK, opt-in). The response declares
-// `delta_signature` (string, the encrypted-thinking payload increment),
-// `delta_signature_type` (enum) and `thinking_id` (string) at the top level —
-// names [verified] from recon, wire tags [unknown] (free tier never emits them).
-// Default OFF: until a paid/thinking capture pins the tags, nothing is decoded
-// and streamChat yields exactly as today (zero regression).
+// Thinking-signature DECODE config (GROUNDWORK, opt-in). The descriptor pins the
+// top-level fields: delta_signature = 10 (string, the encrypted-thinking payload
+// increment), delta_signature_type = 21 (enum), thinking_id = 16 (string), and
+// thinking_redacted = 11 (bool, not decoded). Free-tier captures never emit them.
+// Default OFF: nothing is decoded until an operator opts in, and streamChat
+// yields exactly as today (zero regression).
 //
 //   DEVIN_CONNECT_SIGNATURE_TAG=N           (the delta_signature tag; mandatory)
 //   DEVIN_CONNECT_SIGNATURE_TYPE_TAG=N       (delta_signature_type; optional)
@@ -2306,61 +2315,65 @@ export function isRetryable(err) {
 
 /** Map the upstream finish enum to the OpenAI finish_reason vocabulary.
  *
- * The upstream `StopReason` enum's variant NAMES are known from the binary
- * (recon strings dump 208551): `end_turn, max_tokens, max_turn_requests,
- * refusal, cancelled` — Anthropic-style. But the integer→name mapping is only
- * partially calibrated: a normal free-tier completion was observed live as the
- * top-level #5 finish field == 2, which we anchor to OpenAI 'stop'. The enum's
- * zero value is almost certainly UNSPECIFIED (prost convention), so the named
- * variants start at 1; we can't pin each integer without a live capture of a
- * truncated / refused / tool-stopped turn.
+ * `StopReason` is no longer inferred from variant names: the binary descriptor
+ * set (exa.codeium_common_pb.StopReason, 0–13, Q7 audit) pins every integer,
+ * and the independent Go decoder in devin-2api agrees on the non-trivial rows
+ * (INCOMPLETE / MAX_TOKENS / PARTIAL → length, FUNCTION_CALL → tool_use,
+ * ERROR → error).
  *
- * So the map is: the live-anchored 2→'stop' is fixed, a best-effort default for
- * the remaining values follows the Anthropic→OpenAI convention, and an operator
- * can override the whole table from a real capture via DEVIN_CONNECT_STOP_REASON_MAP
- * (e.g. "1=stop,2=stop,3=length,5=content_filter"). Unknown values fall back to
- * 'stop' so a completed stream is NEVER surfaced as an error.
+ *   0 UNSPECIFIED               → stop
+ *   1 INCOMPLETE                → length
+ *   2 STOP_PATTERN              → stop   (live-anchored free-tier stop)
+ *   3 MAX_TOKENS                → length
+ *   4 MIN_LOG_PROB              → stop   (live-anchored paid stop)
+ *   5 MAX_NEWLINES              → length
+ *   6 EXIT_SCOPE                → stop
+ *   7 NONFINITE_LOGIT_OR_PROB   → stop
+ *   8 FIRST_NON_WHITESPACE_LINE → stop
+ *   9 PARTIAL                   → length
+ *  10 FUNCTION_CALL             → tool_calls
+ *  11 CONTENT_FILTER            → content_filter
+ *  12 NON_INSERTION             → stop
+ *  13 ERROR                     → error
+ *
+ * 2 and 4 keep their live anchors: a free-tier completion returned 2, and a
+ * paid teams capture (2026-07-27) returned 4 on complete answers — neither
+ * contradicts the descriptor (a min-logprob cutoff is still a finished turn).
+ * 13 has no OpenAI vocabulary entry; 'error' matches the existing special-agent
+ * stream-failure convention, and resolveFinishReason never upgrades it.
+ *
+ * An operator can override any integer from a real capture via
+ * DEVIN_CONNECT_STOP_REASON_MAP (e.g. "3=stop,13=stop"). Values outside 0–13
+ * fall back to 'stop' so a completed stream is never surfaced as an error, and
+ * are logged once per distinct value.
  */
 const STOP_REASON_DEFAULT = Object.freeze({
-  // 0 = UNSPECIFIED (prost convention) → treat as a clean stop.
-  0: 'stop',
-  // 2 = LIVE-ANCHORED normal completion (free-tier observed). Do not change.
-  2: 'stop',
-  // Best-effort for the named variants (un-pinned integers): end_turn→stop,
-  // max_tokens→length, max_turn_requests→length, refusal→content_filter,
-  // cancelled→stop. These are guesses keyed off the variant NAME order and are
-  // overridable; they only matter once a paid/edge capture pins the integers.
-  1: 'stop',        // end_turn
-  // 3 WAS 'length' on the strength of the variant NAME order alone. That guess is
-  // now retired, for the same reason the 4→'length' guess had to be: an integer
-  // guessed wrong makes every COMPLETE response read as truncated, and on
-  // /v1/responses a 'length' closes the turn as `response.incomplete`, which is a
-  // whole-turn hard failure for Codex-style clients. 4 proved the guess wrong once
-  // already (paid capture, §8.7). Truncation is not something to infer from an
-  // uncalibrated enum: real truncation is corroborated by completion_tokens
-  // reaching the requested cap, which resolveFinishReason checks from the usage
-  // block, so nothing is lost by defaulting to a clean stop here.
-  3: 'stop',        // was max_tokens→'length' (name-order guess, retired)
-  // 4 = LIVE-ANCHORED normal completion on a PAID (teams) account, calibrated
-  // 2026-07-27 — §8.7 had been waiting for exactly this capture. Three probes on
-  // claude-sonnet-4.6 with max_tokens 300 / 8 / 40 all returned 4, and the
-  // max_tokens=300 one answered "HI" (2 chars — unambiguously complete), so 4 is
-  // the paid tier's clean stop, not a turn-limit. It was guessed as
-  // max_turn_requests→'length' from the variant NAME order, which made EVERY
-  // complete paid response read as truncated: finish_reason='length' on
-  // /v1/chat/completions and status='incomplete' on /v1/responses. Clients that
-  // auto-continue on a length finish would loop on complete answers.
-  // Override with DEVIN_CONNECT_STOP_REASON_MAP if a future capture disagrees.
-  4: 'stop',        // normal completion (paid); was max_turn_requests guess
-  // 5 WAS 'content_filter' from the same name-order guess, and it is the most
-  // damaging one to get wrong: content_filter also closes /v1/responses as
-  // `response.incomplete`, AND the messages route maps it to Anthropic
-  // `stop_reason:'refusal'` — so a normal completion would be reported to the
-  // client as the model refusing. A real refusal is visible in the answer text;
-  // a fabricated one is not recoverable by the client.
-  5: 'stop',        // was refusal→'content_filter' (name-order guess, retired)
-  6: 'stop',        // cancelled
+  0: 'stop',            // STOP_REASON_UNSPECIFIED
+  1: 'length',          // INCOMPLETE
+  2: 'stop',            // STOP_PATTERN (live-anchored clean stop)
+  3: 'length',          // MAX_TOKENS
+  4: 'stop',            // MIN_LOG_PROB (live-anchored paid clean stop)
+  5: 'length',          // MAX_NEWLINES
+  6: 'stop',            // EXIT_SCOPE
+  7: 'stop',            // NONFINITE_LOGIT_OR_PROB
+  8: 'stop',            // FIRST_NON_WHITESPACE_LINE
+  9: 'length',          // PARTIAL
+  10: 'tool_calls',     // FUNCTION_CALL
+  11: 'content_filter', // CONTENT_FILTER
+  12: 'stop',           // NON_INSERTION
+  13: 'error',          // ERROR
 });
+
+// Unknown enum values are logged once each: a single mis-mapped turn should be
+// visible in the log, but a server that repeats an out-of-range value must not
+// turn one bug into a log flood. Capped so a hostile stream cannot grow the set.
+const MAX_UNKNOWN_STOP_REASON_LOGS = 16;
+const _unknownStopReasonsLogged = new Set();
+function noteUnknownStopReason(n) {
+  if (_unknownStopReasonsLogged.has(n) || _unknownStopReasonsLogged.size >= MAX_UNKNOWN_STOP_REASON_LOGS) return;
+  _unknownStopReasonsLogged.add(n);
+  log.warn(`devin-connect: unknown StopReason ${String(n)}; reporting finish_reason 'stop'`);
+}
 
 let _stopReasonMapCache = null;
 let _stopReasonMapSrc = null;
@@ -2444,18 +2457,21 @@ export function mapFinishReason(finish, env = process.env) {
   const n = typeof finish === 'bigint' ? Number(finish) : finish;
   const map = stopReasonMap(env);
   // Unknown values → 'stop': a completed stream must never read as an error.
-  return map[n] || 'stop';
+  // hasOwn keeps a non-numeric finish from resolving through Object.prototype.
+  if (Object.hasOwn(map, n)) return map[n];
+  noteUnknownStopReason(n);
+  return 'stop';
 }
 
 /**
  * Resolve the OpenAI finish_reason for a completed connect turn.
  *
- * The enum alone cannot tell us about truncation: only 2 and 4 are pinned by live
- * captures, and every name-order guess for the rest has been wrong so far (4 was
- * 'length' and made every complete paid response read as truncated). So the enum
- * now defaults to 'stop' and truncation is detected from a signal that does not
- * depend on the un-calibrated integers: `completion_tokens` reaching the output cap
- * the caller asked for. That is the same test an OpenAI client would apply itself.
+ * The descriptor now pins the enum (see STOP_REASON_DEFAULT), so MAX_TOKENS (3)
+ * reports 'length' without inference. The usage check stays as a second line of
+ * defense for the values the descriptor calls a clean stop (2/4): a turn that
+ * consumed the caller's whole output budget is still truncated, and that signal
+ * does not depend on the enum at all — it is the same test an OpenAI client
+ * would apply itself.
  *
  * The check is deliberately conservative — equality with the cap, not >=, and only
  * when the caller set an explicit cap:
@@ -2483,8 +2499,9 @@ export function resolveFinishReason(finish, usage, maxTokens, env = process.env)
   const { overrides } = stopReasonMapAndOverrides(env);
   const key = typeof finish === 'bigint' ? Number(finish) : finish;
   if (finish != null && overrides.has(key)) return mapped;
-  // Only a clean stop can be upgraded to 'length'. tool_calls / content_filter are
-  // stronger signals about what the turn actually did and must not be overwritten.
+  // Only a clean stop can be upgraded to 'length'. tool_calls / content_filter /
+  // error are stronger signals about what the turn actually did and must not be
+  // overwritten.
   if (mapped !== 'stop') return mapped;
   const cap = Number(maxTokens);
   const completion = Number(usage?.completion_tokens);

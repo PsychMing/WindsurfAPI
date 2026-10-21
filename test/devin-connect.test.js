@@ -924,16 +924,14 @@ describe('mapFinishReason', () => {
   it('returns null when no finish signal was seen', () => {
     assert.equal(mapFinishReason(null), null);
   });
-  it('maps the un-calibrated 3 and 5 to "stop", NOT to length/content_filter', () => {
-    // Both were name-order guesses (max_tokens→'length', refusal→'content_filter').
-    // 4 proved that method wrong once already, and the cost of a wrong guess is
-    // asymmetric: on /v1/responses either value closes the turn as
-    // `response.incomplete` (a whole-turn hard failure for Codex-style clients),
-    // and content_filter additionally surfaces on /v1/messages as
-    // stop_reason:'refusal' — reporting a normal answer as the model refusing.
-    // Truncation is inferred from usage instead (see resolveFinishReason).
-    assert.equal(mapFinishReason(3), 'stop');
-    assert.equal(mapFinishReason(5), 'stop');
+  it('maps the descriptor-pinned 3 and 5 to "length"', () => {
+    // These were name-order guesses when the only evidence was the variant
+    // NAMES. The binary descriptor set now pins the integers themselves:
+    // 3 = MAX_TOKENS, 5 = MAX_NEWLINES — both are limit cuts, i.e. 'length'.
+    // (4 stays 'stop': the paid 2026-07-27 capture is a stronger authority for
+    // that value than the MIN_LOG_PROB name.)
+    assert.equal(mapFinishReason(3), 'length');
+    assert.equal(mapFinishReason(5), 'length');
   });
 
   it('maps 4 to "stop" — paid capture overturned the name-order guess', () => {
@@ -965,7 +963,7 @@ describe('mapFinishReason', () => {
     assert.equal(mapFinishReason(3, { DEVIN_CONNECT_STOP_REASON_MAP: '3=length' }), 'length');
     // garbage in the override is ignored, defaults survive
     const env2 = { DEVIN_CONNECT_STOP_REASON_MAP: '3=bogus,xx=length' };
-    assert.equal(mapFinishReason(3, env2), 'stop');      // bad value ignored → default
+    assert.equal(mapFinishReason(3, env2), 'length');    // bad value ignored → descriptor default
   });
 });
 
