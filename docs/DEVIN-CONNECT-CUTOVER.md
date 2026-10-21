@@ -43,8 +43,29 @@ API_KEY=sk-REDACTED        # existing downstream proxy key — unchanged
 # accounts.json already holds the free session token(s) — nothing else required
 ```
 
-That is the whole minimum. The pool supplies tokens; free-tier accounts resolve
-only `swe-1-6-slow`.
+That is the whole minimum. The pool supplies tokens. Which connect selectors are
+FREE is **derived from the live catalog, not from a fixed name**:
+
+1. `modelCostTier` + `promoStatus` on the account's `GetCascadeModelConfigs` rows
+   (per account, promo-aware). Measured on a Pro account 2026-10-22: exactly
+   `swe-2-medium` / `swe-2-high` / `swe-2-max`, `MODEL_COST_TIER_FREE`, promo
+   active until **2026-11-01T06:59:59Z**.
+2. A `rate === 0` entry in the account's paired credit rate table (rolling
+   promotions that are not encoded as a cost tier).
+3. `FREE_REACHABLE_SELECTORS` (`swe-1-6-slow`) — a documented **fallback only**
+   for a deployment with no live cost-tier data and no rate table (cold start).
+   It is also unpaid-tier ENTITLEMENT, so a free account is still admitted to it
+   when the live catalog has not been fetched. Do not treat it as "the free
+   list": on the measured Pro deployment it is absent from the 240-selector live
+   catalog and the upstream answers it with `failed_precondition` /
+   "Your daily usage quota has been exhausted".
+
+`GET /dashboard/api/models` exposes the derivation per row: `costTier`,
+`promoEndsAt`, `freeNow` (tri-state), `freeReason`
+(`cost_tier_free` | `rate_zero` | `fallback_whitelist`) and `quotaState`
+(`free` | `blocked_daily` | `blocked_weekly` | `not_in_catalog` | `unknown`).
+A selector absent from a non-empty live catalog is reported as
+`not_in_catalog` rather than reachable+free.
 
 A model name the catalog does not know is **rejected with `400 model_not_found`**,
 not degraded. This sentence used to say the opposite ("any other model name
@@ -152,8 +173,9 @@ free-tier behavior; a sustained spike means the upstream is genuinely saturated
 ## 7. What's NOT covered (known limits)
 
 - **Paid models** (claude-*/gpt-*/gemini-*) need a paid entitlement on a pooled
-  account — unverified, blocked on a paid token. Free deploy serves
-  `swe-1-6-slow` only. See §8 for the one-command verification.
+  account — unverified, blocked on a paid token. A free deployment's serveable
+  set is the live catalog's cost-tier-FREE rows, with `swe-1-6-slow` as the
+  cold-start fallback (see §1). See §8 for the one-command verification.
 - **Vision/images**: native `ChatMessagePrompt.images #10` is verified by the
   extracted Devin schema and a successful SWE-1.7 image request. It is enabled
   by default; set `DEVIN_CONNECT_IMAGE_TAG=0` only for an emergency rollback.

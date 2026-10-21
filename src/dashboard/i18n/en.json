@@ -1487,6 +1487,18 @@
     "freeBadge": "FREE",
     "paidBadge": "QUOTA",
     "costUnknownHint": "Cost unknown: no account has reported an upstream rate table yet, so this is neither confirmed free nor confirmed billable. Refresh credits on an account to populate it.",
+    "dailyExhaustedBadge": "QUOTA · daily exhausted",
+    "weeklyDroughtBadge": "QUOTA · drought",
+    "notInCatalogBadge": "NOT IN CATALOG",
+    "notInCatalogHint": "This account's live catalog does not contain this selector, so the upstream rejects it. The static free floor only applies to a cold start with no catalog.",
+    "dailyExhaustedHint": "Daily quota exhausted: the upstream rejects paid selectors until it resets. Free selectors still run.",
+    "weeklyDroughtHint": "Weekly quota is in drought mode: premium selectors are blocked to protect the remaining allowance.",
+    "promoEndsHint": "promo ends {{date}}",
+    "freeReason": {
+      "cost_tier_free": "free by upstream cost tier",
+      "rate_zero": "free by upstream rate table",
+      "fallback_whitelist": "free by static fallback (no live pricing yet)"
+    },
     "mode": {
       "all": "Allow All",
       "allowlist": "Allowlist",

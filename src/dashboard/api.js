@@ -27,7 +27,7 @@ import {
   getAccountInternal, isLocalBindHost, maskApiKey, safeEqualString,
   checkLockout, failedAuthAttempt, successfulAuthAttempt,
   getDroughtSummary, getPoolHealthWindow, getRateLimitHistory,
-  getCurrentlyFreeConnectSelectors, isConnectSelectorCurrentlyFree,
+  getConnectSelectorPricing, isConnectSelectorBlockedByDrought,
 } from '../auth.js';
 import { restartLsForProxy } from '../langserver.js';
 import { getLsStatus, stopLanguageServerAndWait, startLanguageServer, isLanguageServerRunning, getLsAdmissionStatus } from '../langserver.js';
@@ -2452,13 +2452,42 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   // would not: the reporter needs to SEE the paid ones, greyed, not have them vanish.
   if (subpath === '/models' && method === 'GET') {
     const isReachable = buildConnectReachability();
-    // Pool-wide, so resolved once rather than per row: null means no active account has a
-    // usable rate table, which is what lets `currentlyFree` below distinguish "costs quota"
-    // from "we do not know yet".
-    const freeSet = getCurrentlyFreeConnectSelectors();
-    const connectCurrentlyFree = (selector) => (!selector ? null
-      : isConnectSelectorCurrentlyFree(selector) ? true
-      : (freeSet === null ? null : false));
+    // Pool-wide quota state, computed once per request from the same inputs the
+    // drought banner uses. `dailyDry` is what turns a bare "QUOTA" chip into
+    // "daily quota exhausted" — the state a Pro account actually sat in while the
+    // panel called its only working models paid and a phantom selector free.
+    const drought = getDroughtSummary();
+    const dailyDry = typeof drought.lowestDailyPercent === 'number' && drought.lowestDailyPercent <= 0;
+    // One resolver for every row producer below, so a synthesized row and a MODELS
+    // row can never disagree about price or catalog membership.
+    //
+    // quotaState answers a DIFFERENT question from freeNow and that split is the
+    // fix: freeNow is "would this debit quota", quotaState is "would the upstream
+    // accept it right now". The old single `currentlyFree` boolean collapsed them,
+    // which is why a model the catalog omits (swe-1-6-slow) could read as FREE.
+    const pricingFields = (selector) => {
+      const pricing = getConnectSelectorPricing(selector);
+      let quotaState = null;
+      if (!selector) quotaState = null; // not a Connect-namespace row
+      else if (pricing.inLiveCatalog === false) quotaState = 'not_in_catalog';
+      else if (pricing.freeNow === true) quotaState = 'free';
+      else if (dailyDry) quotaState = 'blocked_daily';
+      else if (isConnectSelectorBlockedByDrought(selector)) quotaState = 'blocked_weekly';
+      else quotaState = 'unknown';
+      return {
+        // Upstream cost tier ("MODEL_COST_TIER_FREE" | LOW | MEDIUM | HIGH), null
+        // when the account's Cascade catalog has not reported it.
+        costTier: pricing.costTier,
+        // ISO end of the active promotion, when the upstream sent one.
+        promoEndsAt: pricing.promoEndsAt,
+        // Tri-state price: true free, false billable, null no data. Never a guess.
+        freeNow: pricing.freeNow,
+        // Why freeNow is true: cost_tier_free | rate_zero | fallback_whitelist.
+        freeReason: pricing.freeReason,
+        // free | blocked_daily | blocked_weekly | not_in_catalog | unknown | null.
+        quotaState,
+      };
+    };
     const models = filterModelKeysByCloudCatalog().map((id) => {
       const info = MODELS[id];
       const { reachable, selector } = isReachable(id);
@@ -2472,22 +2501,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         // transport. Surfaced for diagnosis: "unreachable" and "does not resolve at all"
         // look identical in the UI otherwise.
         connectSelector: selector,
-        // Does the upstream currently charge nothing for it (#235)? TRI-STATE:
-        //   true  — rate table says rate === 0, or it is a FREE_REACHABLE selector
-        //   false — it costs quota
-        //   null  — unknown: either the name resolves to nothing here, or NO account has a
-        //           usable rate table yet
-        //
-        // The unknown state is carried rather than flattened, and that is the whole point of
-        // this field. The reporter had a PRO account, set GLM-5-2 believing it was free on
-        // that plan, and burned the entire weekly allowance. Reporting "unknown" as `false`
-        // (paid) would be safe-ish, but reporting it as `true` would repeat their loss —
-        // and `isConnectSelectorCurrentlyFree` returns a plain `false` in BOTH the "costs
-        // money" and the "no data" cases, so calling it alone cannot make that distinction.
-        // Hence the explicit freeSet null-check: auth.js:304 returns null for "no table
-        // anywhere" precisely so callers do not have to guess, and flattening it here would
-        // throw away the one thing that function went out of its way to preserve.
-        currentlyFree: connectCurrentlyFree(selector),
+        ...pricingFields(selector),
       };
     });
     // Selectors that ARE serveable but have no MODELS row (`swe-1-6-slow` is in neither the
@@ -2526,23 +2540,30 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
           credit: null,
           reachable,
           connectSelector: selector,
-          currentlyFree: connectCurrentlyFree(selector),
+          ...pricingFields(selector),
         });
       }
 
       for (const selector of FREE_REACHABLE_SELECTORS) {
         if (seen.has(selector)) continue;
         seen.add(selector);
+        // Reachability is resolved, not asserted. The static floor is unpaid-tier
+        // ENTITLEMENT; whether this account's live catalog actually contains the
+        // selector is a separate fact, and `swe-1-6-slow` fails it on the measured
+        // Pro deployment (absent from the 240-selector catalog, 502 quota on call).
+        // The row stays visible — an operator must be able to see and remove an
+        // allow-list entry — but it is annotated as not-in-catalog instead of
+        // being advertised as reachable+free, which is how the panel ended up
+        // pointing clients at the one selector that could not run.
+        const { reachable } = isReachable(selector);
         models.push({
           id: selector,
           name: selector,
           provider: 'windsurf',
           credit: null,
-          reachable: true,
+          reachable,
           connectSelector: selector,
-          // Unconditionally true, and not routed through the predicate: membership in
-          // FREE_REACHABLE_SELECTORS is the definition of free-to-any-account here.
-          currentlyFree: true,
+          ...pricingFields(selector),
         });
       }
     }

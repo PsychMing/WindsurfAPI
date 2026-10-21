@@ -30,6 +30,10 @@ import {
   removeCloudModelCatalog,
   forgetCloudModelCatalog,
   setActiveCloudCatalogAccounts,
+  getCloudCostTierInfo,
+  getCloudCostTierFreeSelectors,
+  hasCloudCostTierData,
+  isCostTierFreeNow,
 } from './models.js';
 import {
   FREE_REACHABLE_SELECTORS,
@@ -294,12 +298,13 @@ export function isModelBlockedByDrought(modelKey) {
  * predicate blocks the only model that still runs during a drought and admits one
  * that cannot run at all.
  *
- * No empty-set fail-open branch here on purpose. FREE_REACHABLE_SELECTORS is a
- * module-level frozen literal with no .add/.delete/.clear anywhere in the repo,
- * so `size === 0` is unreachable — a guard for it would be dead code, and a test
- * covering that guard would be a fake test. If this ever becomes dynamic (the
- * rateTable wiring in #235 is the likely path), add the fail-open THEN, together
- * with a test that can actually reach it.
+ * No empty-set fail-open branch here on purpose. The free set is now derived
+ * (live cost tier → rate table → static fallback) rather than a frozen literal, but
+ * every path still returns a Set or the documented fallback — never null — and
+ * `isConnectSelectorCurrentlyFree` maps "no data" to false. So an empty set means
+ * "the live catalogs say nothing here is free", which must BLOCK premium selectors,
+ * not fail open. If a future source can return null to this gate, add the fail-open
+ * THEN, together with a test that can actually reach it.
  */
 export function isConnectSelectorBlockedByDrought(selector) {
   if (!selector) return false;
@@ -336,24 +341,128 @@ export function getCurrentlyFreeConnectSelectors() {
 }
 
 /**
+ * Is this selector present in the accounts' live Connect catalogs?
+ *
+ * Tri-state on purpose: true (some account's live catalog has it), false (at least
+ * one account has a live catalog and NONE has it), null (no live catalog anywhere —
+ * cold start / failed sync, so absence proves nothing).
+ *
+ * This is what keeps the static FREE_REACHABLE floor honest. `swe-1-6-slow` was
+ * advertised as reachable+free on a Pro deployment whose live catalog (240
+ * selectors) and availableModels (374) both omit it; the selector 502s with "daily
+ * usage quota has been exhausted". A static list cannot see that, a live catalog can.
+ */
+function connectSelectorCatalogMembership(selector) {
+  if (!selector) return null;
+  let sawRows = false;
+  for (const rows of _connectCatalogRowsByAccount.values()) {
+    if (!Array.isArray(rows) || rows.length === 0) continue;
+    sawRows = true;
+    const hit = rows.some((row) => (
+      (typeof row === 'string' ? row : row?.selector)?.trim() === selector
+    ));
+    if (hit) return true;
+  }
+  return sawRows ? false : null;
+}
+
+/**
+ * Pricing + catalog state for one connect selector.
+ *
+ * Sources, in order of authority:
+ *   1. `modelCostTier` + `promoStatus` from the account's GetCascadeModelConfigs
+ *      response (models.js keeps it per account). This is the ONLY source that can
+ *      express a plan-scoped promotion: the live Pro account's rate table prices
+ *      swe-2-medium at 6 credits, yet the catalog marks it MODEL_COST_TIER_FREE
+ *      with a promo ending 2026-11-01, and six live calls left daily quota at 0.
+ *   2. A zero entry in the account's paired rate table (rolling promotion, #235).
+ *   3. FREE_REACHABLE_SELECTORS — the documented static FALLBACK, used only when
+ *      NEITHER live source has data anywhere for this deployment. It is deliberately NOT a
+ *      union any more: a live catalog/rate table that omits a selector is evidence
+ *      the static list is stale, and claiming "free" there is what told operators
+ *      to pick the one selector that 502s.
+ *
+ * `freeNow` is tri-state: true, false (live data says it bills), null (no data).
+ */
+export function getConnectSelectorPricing(selector) {
+  const inLiveCatalog = connectSelectorCatalogMembership(selector);
+  const blank = {
+    freeNow: null,
+    freeReason: null,
+    costTier: null,
+    promoEndsAt: null,
+    promoLabel: null,
+    inLiveCatalog,
+  };
+  if (!selector) return blank;
+
+  const hasLiveCostData = hasCloudCostTierData();
+  const costInfo = hasLiveCostData ? getCloudCostTierInfo(selector) : null;
+  const costFree = costInfo ? isCostTierFreeNow(costInfo) : false;
+  const rateFree = getCurrentlyFreeConnectSelectors();
+  const rateZero = rateFree ? rateFree.has(selector) : false;
+
+  let freeNow = null;
+  let freeReason = null;
+  if (costFree) {
+    freeNow = true;
+    freeReason = 'cost_tier_free';
+  } else if (rateZero) {
+    freeNow = true;
+    freeReason = 'rate_zero';
+  } else if (hasLiveCostData || rateFree) {
+    // Live pricing data exists for this deployment and does not name this
+    // selector free. Deliberately GLOBAL, not per-selector: once a live catalog is
+    // in hand, its silence about a selector is evidence the static list is stale —
+    // that is exactly how `swe-1-6-slow` (absent from the 240-selector catalog,
+    // 502 quota on call) kept a FREE badge on a deployment that had live data.
+    freeNow = false;
+  } else if (FREE_REACHABLE_SELECTORS.has(selector)) {
+    freeNow = true;
+    freeReason = 'fallback_whitelist';
+  }
+
+  return {
+    freeNow,
+    freeReason,
+    costTier: costInfo?.costTier || null,
+    promoEndsAt: costInfo?.promoEndsAt || null,
+    promoLabel: costInfo?.promoLabel || null,
+    inLiveCatalog,
+  };
+}
+
+/**
  * Is this connect selector free to call right now?
  *
- * Prefers the upstream rate table (authoritative, follows rolling promotions) and
- * falls back to the hand-maintained whitelist when no account has one.
- *
- * The fallback is a UNION, not a replacement: a selector the static whitelist calls
- * free stays free even if the rate table omits it. The rate table is keyed by
- * catalog selector, and `swe-1-6-slow` appears in no catalog snapshot at all — so
- * intersecting instead of unioning would drop the one selector every account can
- * reach and black out a drought-mode pool.
+ * Thin projection of getConnectSelectorPricing so every caller (drought gate,
+ * devin cards, dashboard) agrees with the row the operator sees. No data → false:
+ * absent billing evidence must never widen the free list.
  */
 export function isConnectSelectorCurrentlyFree(selector) {
   if (!selector) return false;
-  if (FREE_REACHABLE_SELECTORS.has(selector)) return true;
-  const currentlyFree = getCurrentlyFreeConnectSelectors();
-  // No table anywhere → conservative whitelist only. Never widen on absent data.
-  if (!currentlyFree) return false;
-  return currentlyFree.has(selector);
+  return getConnectSelectorPricing(selector).freeNow === true;
+}
+
+/**
+ * The connect selectors this deployment can run without debiting quota.
+ *
+ * Cost-tier FREE rows first (the live catalog's own answer, promo-aware), then
+ * rate-table zeros. Falls back to FREE_REACHABLE_SELECTORS only when NEITHER live
+ * source exists anywhere — the cold-start / no-catalog case the static floor is for.
+ */
+export function getConnectFreeSelectors() {
+  const costFree = getCloudCostTierFreeSelectors();
+  const rateFree = getCurrentlyFreeConnectSelectors();
+  if (costFree === null && rateFree === null) return [...FREE_REACHABLE_SELECTORS];
+  const out = new Set();
+  for (const selector of costFree || []) {
+    if (isConnectSelectorCurrentlyFree(selector)) out.add(selector);
+  }
+  for (const selector of rateFree || []) {
+    if (isConnectSelectorCurrentlyFree(selector)) out.add(selector);
+  }
+  return [...out];
 }
 
 export function getDroughtSummary({ env = process.env } = {}) {
@@ -386,8 +495,13 @@ export function getDroughtSummary({ env = process.env } = {}) {
   // Dashboard and /health call this with no argument and get process.env. The
   // arity difference is why the two used to disagree.
   const connectBackend = getBackendSwitch('devinConnect', env);
+  // Same computed set the model panel shows (live cost tier → rate table →
+  // documented static fallback). This used to be `[...FREE_REACHABLE_SELECTORS]`,
+  // which on a Pro deployment reported the phantom `swe-1-6-slow` as the free list
+  // while the three actually-free swe-2 selectors were invisible — and the drought
+  // gate then blocked those three.
   const freeTierModels = connectBackend
-    ? [...FREE_REACHABLE_SELECTORS]
+    ? getConnectFreeSelectors()
     : getTierModels('free');
   // The drought decision's OWN inputs. Deliberately reported separately from
   // knownAccounts above: the two counts answer different questions and used to
@@ -643,6 +757,10 @@ function _serializeAccounts() {
     // persisted: it's a transient streak-window field (reset on relogin/success).
     erroredAt: a.erroredAt || 0,
     tier: a.tier, tierManual: !!a.tierManual,
+    // Plan-derived tier floor (refreshCredits planName). Persisted so a restart
+    // cannot re-open the canary demotion window before the next credit refresh;
+    // absent for accounts that never reported a plan name.
+    ...(a.planTier ? { planTier: a.planTier } : {}),
     capabilities: a.capabilities, lastProbed: a.lastProbed,
     credits: a.credits || null,
     blockedModels: a.blockedModels || [],
@@ -839,6 +957,9 @@ function _deserializeAccount(a, now = Date.now()) {
       : [],
     keyRotatedAt: Number.isFinite(a.keyRotatedAt) ? a.keyRotatedAt : 0,
     tier: a.tier || 'unknown',
+    // Plan-derived tier floor; null for older accounts.json and for a plan the
+    // upstream never named. Never defaulted to 'free' — unknown ≠ free.
+    planTier: typeof a.planTier === 'string' ? a.planTier : null,
     capabilities: a.capabilities || {},
     lastProbed: a.lastProbed || 0,
     credits: a.credits || null,
@@ -1717,7 +1838,22 @@ export function isConnectSelectorAllowedForAccount(account, selector) {
   if (!selector) return true;                       // no selector → no filter (back-compat)
   const blocked = account.blockedModels || [];
   if (blocked.includes(selector)) return false;     // operator blocklist (best-effort)
-  if (FREE_REACHABLE_SELECTORS.has(selector)) return true; // free-reachable → any account
+  if (FREE_REACHABLE_SELECTORS.has(selector)) {
+    // Unpaid-tier ENTITLEMENT floor — but existence still comes from the account's
+    // own live catalog. `swe-1-6-slow` is admitted here for any account, and on a
+    // measured Pro deployment it is in neither the 240-selector live catalog nor the
+    // 374 availableModels, and 502s with "daily usage quota has been exhausted".
+    // Returning true unconditionally made discovery synthesize it as
+    // reachable+free, i.e. the one selector the dashboard called free was the one
+    // that could not run. Empty/absent rows keep the old permissive answer: that is
+    // the cold-start case the static floor exists for.
+    const rows = _connectCatalogRowsByAccount.get(account.id);
+    if (!Array.isArray(rows) || rows.length === 0) return true;
+    return rows.some((row) => {
+      const candidate = typeof row === 'string' ? row : row?.selector;
+      return typeof candidate === 'string' && candidate.trim() === selector;
+    });
+  }
   const bucket = tierBucket(account.tier);
   // Paid selector: require a paid bucket. 'unknown' (unprobed new account) is
   // allowed — it self-heals to 'free' after a probe, then gets blocked here on
@@ -4110,6 +4246,28 @@ export function recordCreditSnapshot(account, credits = null) {
 }
 
 
+/**
+ * Tier implied by the billing plan name from refreshCredits' GetUserStatus call.
+ *
+ * 'pro' for the paid plans and trials (Windsurf returns "INDIVIDUAL" / "TRIAL" /
+ * "PREMIUM" for paid-tier trials too — issue #8: motto1's 14-day Pro trial was
+ * misclassified as free because the check only knew the literal "Pro"), 'free' only
+ * for an explicit free plan, and null when the upstream named nothing usable.
+ *
+ * Null is deliberate and load-bearing: an unnamed plan is NOT evidence of a free
+ * plan, and treating it as one is what let the canary fallback demote a paid account.
+ *
+ * Declared BEFORE refreshCredits on purpose: the ban-signal source contract slices
+ * that function up to the next top-level export, and an export placed between it and
+ * _refreshCreditsImpl would hide the catch block from the guard.
+ */
+export function tierFromPlanName(planName) {
+  const pn = String(planName || '');
+  if (/pro|teams|enterprise|trial|individual|premium|paid/i.test(pn)) return 'pro';
+  if (/free/i.test(pn)) return 'free';
+  return null;
+}
+
 export async function refreshCredits(id) {
   const existing = _creditInFlight.get(id);
   if (existing) return existing;
@@ -4208,9 +4366,18 @@ async function _refreshCreditsImpl(account) {
       // Don't clobber an operator-set tier (tierManual). isModelAllowedForAccount
       // trusts account.tier when tierManual is set, so overwriting it here would
       // silently defeat the manual escape hatch (#8).
-      if (/pro|teams|enterprise|trial|individual|premium|paid/i.test(pn)) {
+      //
+      // Record the plan-derived tier as a FLOOR as well as the current tier:
+      // inferTier (the canary fallback) must never demote below it. Measured, one
+      // gemini-2.5-flash canary success flipped a Pro account to 'free', after
+      // which isConnectSelectorAllowedForAccount blocked every swe-2 selector —
+      // the only ones the account could actually run. A null plan name (upstream
+      // stayed silent) leaves the previous floor in place: unknown ≠ free.
+      const planTier = tierFromPlanName(pn);
+      if (planTier) account.planTier = planTier;
+      if (planTier === 'pro') {
         if (account.tier !== 'pro') account.tier = 'pro';
-      } else if (/free/i.test(pn)) {
+      } else if (planTier === 'free') {
         if (account.tier === 'unknown') account.tier = 'free';
       }
     }
@@ -4296,7 +4463,7 @@ export function updateCapability(apiKey, modelKey, ok, reason = '') {
   // would otherwise demote a Pro/Trial account back to 'free' as soon as
   // a non-premium model (e.g. gemini-2.5-flash, gpt-4o-mini) succeeds.
   if (!account.tierManual && !account.userStatusLastFetched) {
-    account.tier = inferTier(account.capabilities);
+    account.tier = inferTier(account.capabilities, { floorTier: account.planTier });
   }
   saveAccounts();
 }
@@ -4304,13 +4471,29 @@ export function updateCapability(apiKey, modelKey, ok, reason = '') {
 /**
  * Infer subscription tier from which canary models work. Fallback only —
  * probeAccount prefers GetUserStatus which returns the authoritative tier.
+ *
+ * Two conservative rules, both from live evidence:
+ *
+ *  1. NEVER demote below the billing plan. `refreshCredits` learns the plan from
+ *     GetUserStatus's planName ("Pro" → tier 'pro') but does not set
+ *     userStatusLastFetched, so this fallback used to run on every capability
+ *     update. Measured: a Pro account whose only working selector was
+ *     `swe-2-medium` flipped to 'free' the moment a `gemini-2.5-flash` canary
+ *     succeeded — and `isConnectSelectorAllowedForAccount` then blocked every
+ *     swe-2 selector, i.e. the canary removed the account's only working route.
+ *     A plan name is positive evidence; a non-premium model succeeding is not
+ *     evidence of a downgrade.
+ *  2. Unknown is not free. All canaries failing is NOT expiry: on a daily-dry
+ *     account every paid canary fails with QUOTA_EXHAUSTED while the account is
+ *     perfectly healthy. The old `every(ok === false) → 'expired'` arm benched
+ *     exactly that account. Expiry is only ever set from the authoritative
+ *     GetUserStatus tierName.
  */
-function inferTier(caps) {
-  const works = (m) => caps[m]?.ok === true;
+function inferTier(caps, { floorTier = null } = {}) {
+  const works = (m) => caps?.[m]?.ok === true;
   if (works('claude-opus-4.6') || works('claude-sonnet-4.6')) return 'pro';
+  if (floorTier === 'pro') return 'pro'; // positive plan evidence outranks a canary
   if (works('gemini-2.5-flash') || works('gpt-4o-mini')) return 'free';
-  const checked = Object.keys(caps);
-  if (checked.length > 0 && checked.every(m => caps[m].ok === false)) return 'expired';
   return 'unknown';
 }
 

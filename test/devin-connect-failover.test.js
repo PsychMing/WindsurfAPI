@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   addAccountByKey, removeAccount, getAccountList, getApiKey, releaseAccount,
-  markRateLimited, getAccountAvailability,
+  markRateLimited, getAccountAvailability, getAccountInternal,
   __setReloginDeps, __resetReloginState,
 } from '../src/auth.js';
+import { classifyUpstreamError } from '../src/devin-connect.js';
 import {
   handleChatCompletions, __setConnectDeps, __resetConnectDeps,
 } from '../src/handlers/chat.js';
@@ -641,6 +642,40 @@ describe('DEVIN_CONNECT quota vs tier wall (P1 #33)', () => {
     const avail = getAccountAvailability(a.apiKey, 'swe-1-6-slow');
     assert.equal(avail.reason, 'quota_exhausted', 'dry account is cooled on the quota dimension');
     assert.ok(avail.retryAfterMs > 0, 'cooldown carries a retry hint');
+  });
+
+  it('the LIVE quota-exhausted body reaches the dry-well path, not the internal-error breaker', async () => {
+    // The whole point of the classifier fix, exercised end to end: take the exact
+    // upstream body through the REAL classifier (what devin-connect.js does when it
+    // sees a non-200), throw the classified shape at the handler, and assert the
+    // account is cooled on the quota dimension rather than charged an internal error.
+    //
+    // Before the fix the classified code was `failed_precondition`, which is in
+    // TRANSPORT_FAULT_CODES → reportInternalError, and the request surfaced 502.
+    const a = seed('quota-live');
+    process.env.DEVIN_CONNECT_FAILOVER_MAX = '0';
+    const live = 'Your daily usage quota has been exhausted. Visit '
+      + 'https://app.devin.ai/settings/usage to review your plan and usage. (trace ID: 6f1c9a2e)';
+    __setConnectDeps({
+      toChatCompletion: async () => {
+        const classified = classifyUpstreamError(live, 'failed_precondition', 400);
+        throw Object.assign(new Error(live), classified);
+      },
+    });
+
+    const result = await handleChatCompletions(
+      { model: 'swe-2-medium', stream: false, messages: [{ role: 'user', content: 'hi' }] },
+      { callerKey: '' },
+    );
+
+    assert.equal(result.status, 402);
+    assert.equal(result.body.error.type, 'insufficient_quota');
+    const internal = getAccountInternal(a.id);
+    assert.equal(internal.internalErrorStreak || 0, 0,
+      'a quota-dry account is healthy; charging the internal-error breaker quarantines it '
+      + 'after 2 hits and takes the only working account offline');
+    assert.ok(internal.quotaResetAt > Date.now(), 'cooled on the self-healing quota dimension');
+    assert.equal(getAccountAvailability(a.apiKey, 'swe-2-medium').reason, 'quota_exhausted');
   });
 
   it('MODEL_BLOCKED (tier wall) returns 402 but does NOT cool the account down', async () => {

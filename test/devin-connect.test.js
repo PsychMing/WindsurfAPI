@@ -1049,6 +1049,34 @@ describe('classifyUpstreamError', () => {
     assert.equal(classifyUpstreamError('Your account quota has been exceeded').code, 'QUOTA_EXHAUSTED');
     assert.equal(classifyUpstreamError('credit exhausted for this billing cycle').code, 'QUOTA_EXHAUSTED');
   });
+  it('maps the LIVE "daily usage quota has been exhausted" body to QUOTA_EXHAUSTED', () => {
+    // Exact live shape (2026-10-22, Pro account, daily bucket dry), carried on gRPC
+    // code `failed_precondition`. Before `exhausted` was in the arm this matched
+    // NOTHING, fell through to the verbatim passthrough, and became
+    // `failed_precondition` — rendered as HTTP 502 `upstream_error`, absent from
+    // isAccountFailoverError (no cross-account failover), and present in
+    // TRANSPORT_FAULT_CODES (charged the internal-error breaker).
+    const live = 'Your daily usage quota has been exhausted. Visit '
+      + 'https://app.devin.ai/settings/usage to review your plan and usage. (trace ID: 6f1c9a2e)';
+    const r = classifyUpstreamError(live, 'failed_precondition', 400);
+    assert.equal(r.code, 'QUOTA_EXHAUSTED');
+    assert.equal(r.message, live, 'the raw body is preserved for the client/log');
+
+    // Same account state, different upstream wording.
+    assert.equal(classifyUpstreamError('Your weekly usage quota has been exhausted.').code, 'QUOTA_EXHAUSTED');
+    assert.equal(classifyUpstreamError('Your on-demand usage has been exhausted').code, 'QUOTA_EXHAUSTED');
+    assert.equal(classifyUpstreamError('on-demand balance exhausted').code, 'QUOTA_EXHAUSTED');
+    assert.equal(classifyUpstreamError('You are running out of credits').code, 'QUOTA_EXHAUSTED');
+    assert.equal(classifyUpstreamError('quota depleted', 'insufficient_quota').code, 'QUOTA_EXHAUSTED');
+  });
+  it('keeps capacity / tier-wall / rate-limit bodies out of the quota arm', () => {
+    // Widening the quota regex must not swallow the narrower classes that were
+    // already ordered ahead of it.
+    assert.equal(classifyUpstreamError('We are facing high demand for this model. Please try again later.').code, 'CAPACITY');
+    assert.equal(classifyUpstreamError('Please /upgrade to access this model').code, 'MODEL_BLOCKED');
+    assert.equal(classifyUpstreamError('Reached message rate limit for this model. Resets in: 3h0m0s').code, 'RATE_LIMITED');
+    assert.equal(classifyUpstreamError('blocked by our content policy').code, 'CONTENT_BLOCKED');
+  });
   it('still maps a paid-entitlement /upgrade wall to MODEL_BLOCKED (no penalty)', () => {
     assert.equal(classifyUpstreamError('insufficient entitlement for this model').code, 'MODEL_BLOCKED');
     assert.equal(classifyUpstreamError('this model requires a paid plan').code, 'MODEL_BLOCKED');
