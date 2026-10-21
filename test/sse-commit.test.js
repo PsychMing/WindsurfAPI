@@ -314,3 +314,110 @@ describe('createDeferredSseResponse line endings', () => {
     assert.equal(real.statusCode, 429);
   });
 });
+
+describe('createDeferredSseResponse framing edges', () => {
+  it('strips a leading UTF-8 BOM so a pre-content error keeps its real status', () => {
+    const body = Buffer.from('\uFEFF' + frame({ error: { message: 'busy', code: 'RATE_LIMITED', retry_after_ms: 2500 } }));
+    for (let cut = 0; cut <= body.length; cut += 1) {
+      const real = fakeRes();
+      const res = createDeferredSseResponse(real, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      res.write(body.subarray(0, cut));
+      res.write(body.subarray(cut));
+      res.end();
+      assert.equal(real.statusCode, 429, `cut ${cut} status`);
+      assert.equal(real.headers['content-type'], 'application/json; charset=utf-8', `cut ${cut} type`);
+      assert.equal(real.headers['retry-after'], '30', `cut ${cut} retry-after`);
+      assert.equal(JSON.parse(real.body).error.code, 'RATE_LIMITED', `cut ${cut} body`);
+    }
+  });
+
+  it('keeps frame offsets aligned when a BOM precedes a held bootstrap frame', () => {
+    const stream = Buffer.from('\uFEFF' + ': prime\n\n' + frame({ error: { message: 'busy', code: 'RATE_LIMITED' } }));
+    for (let cut = 0; cut <= stream.length; cut += 1) {
+      const real = fakeRes();
+      const res = createDeferredSseResponse(real, { status: 200 });
+      res.write(stream.subarray(0, cut));
+      if (cut < stream.length) assert.equal(real.statusCode, null, `cut ${cut} must hold the bootstrap`);
+      res.write(stream.subarray(cut));
+      res.end();
+      assert.equal(real.statusCode, 429, `cut ${cut} status`);
+    }
+  });
+
+  it('keeps the leading BOM on the wire when the stream commits as SSE', () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const prime = '\uFEFF' + frame({ choices: [{ delta: { role: 'assistant' } }] });
+    const content = frame({ choices: [{ delta: { content: 'hi' } }] });
+    res.write(prime);
+    assert.equal(real.statusCode, null, 'the BOM must not hide the role prime');
+    res.write(content);
+    res.end();
+    assert.equal(real.statusCode, 200);
+    assert.equal(real.body, prime + content, 'committed bytes stay byte-identical');
+  });
+
+  it('records the failure when content and error share one post-commit write', () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const content = frame({ choices: [{ delta: { content: 'partial' } }] });
+    const more = frame({ choices: [{ delta: { content: 'more' } }] });
+    const error = frame({ error: { message: 'died', code: 'UPSTREAM_ERROR' } });
+    res.write(content);
+    assert.equal(real.statusCode, 200);
+    res.write(more + error);
+    res.end();
+    assert.equal(real.statusCode, 200, 'a post-commit error must not rewrite the status');
+    assert.equal(res.failure?.code, 'UPSTREAM_ERROR', 'the error frame in a multi-frame write is seen');
+    assert.equal(real.body, content + more + error);
+  });
+
+  it('records a post-commit error frame split across writes at every cut', () => {
+    const error = frame({ error: { message: 'died', code: 'UPSTREAM_ERROR' } });
+    for (let cut = 0; cut <= error.length; cut += 1) {
+      const real = fakeRes();
+      const res = createDeferredSseResponse(real, { status: 200 });
+      res.write(frame({ choices: [{ delta: { content: 'partial' } }] }));
+      res.write(error.slice(0, cut));
+      if (cut < error.length) assert.equal(res.failure, null, `cut ${cut} must not invent a failure`);
+      res.write(error.slice(cut));
+      res.end();
+      assert.equal(res.failure?.code, 'UPSTREAM_ERROR', `cut ${cut}`);
+      assert.equal(real.statusCode, 200, `cut ${cut} status`);
+    }
+  });
+
+  it('holds a typed ping frame as bootstrap instead of committing', () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const ping = 'event: ping\ndata: {"type":"ping"}\n\n';
+    const content = frame({ choices: [{ delta: { content: 'hi' } }] });
+    res.write(ping);
+    assert.equal(real.statusCode, null, 'a ping frame must not commit the gate');
+    res.write(content);
+    res.end();
+    assert.equal(real.statusCode, 200);
+    assert.equal(real.body, ping + content);
+  });
+
+  it('holds bare ping and keepalive events as bootstrap', () => {
+    for (const keepalive of ['event: ping\n\n', 'event: keepalive\ndata: {}\n\n', 'event: keep-alive\r\n\r\n']) {
+      const real = fakeRes();
+      const res = createDeferredSseResponse(real, { status: 200 });
+      res.write(keepalive);
+      assert.equal(real.statusCode, null, JSON.stringify(keepalive));
+      res.write(frame({ error: { message: 'busy', code: 'RATE_LIMITED' } }));
+      res.end();
+      assert.equal(real.statusCode, 429, `${JSON.stringify(keepalive)} must not swallow the error status`);
+    }
+  });
+
+  it('still maps an error carried by a ping event to its status', () => {
+    const real = fakeRes();
+    const res = createDeferredSseResponse(real, { status: 200 });
+    res.write('event: ping\ndata: {"error":{"message":"busy","code":"RATE_LIMITED"}}\n\n');
+    res.end();
+    assert.equal(real.statusCode, 429);
+    assert.equal(JSON.parse(real.body).error.code, 'RATE_LIMITED');
+  });
+});

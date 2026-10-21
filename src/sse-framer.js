@@ -75,6 +75,9 @@ export class SseFramer {
     this.onComment = onComment;
     this.onOverflow = onOverflow;
     this.decoder = new StringDecoder('utf8');
+    // A UTF-8 BOM is transport decoration for the first field, not payload;
+    // it is dropped once, before the first line is classified.
+    this.atStart = true;
     this.parts = [];
     this.partialBytes = 0;
     this.lineHead = '';
@@ -115,6 +118,11 @@ export class SseFramer {
   }
 
   #feed(text) {
+    if (this.atStart) {
+      this.atStart = false;
+      if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+      if (!text) return;
+    }
     let i = 0;
     const n = text.length;
     if (this.pendingCr) {

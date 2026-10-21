@@ -30,6 +30,32 @@ function isCommentFrame(frame) {
   return sawComment;
 }
 
+const KEEPALIVE_EVENT = /^(?:ping|keep-?alive)$/i;
+
+// SSE event names that carry no payload. Holding one cannot delay content, and
+// it keeps a pre-content error behind a ping from being flattened into a
+// committed 200. The last `event` value in the frame wins, as in the framer.
+function isKeepaliveFrame(frame) {
+  let event = null;
+  for (const line of frame.split(/\r\n|\n|\r/)) {
+    const parsed = parseSseLine(line);
+    if (parsed?.field === 'event') event = parsed.value;
+  }
+  return event !== null && KEEPALIVE_EVENT.test(event.trim());
+}
+
+// True when the text ends on a frame terminator, so no partial frame is left
+// to carry. A lone trailing CRLF is not a terminator, so it takes the slow
+// path; only a false "no" costs a scan, never a missed frame.
+function endsAtFrameEnd(buf) {
+  const n = buf.length;
+  if (n < 2) return false;
+  const last = buf[n - 1];
+  const prev = buf[n - 2];
+  if ((last !== 10 && last !== 13) || (prev !== 10 && prev !== 13)) return false;
+  return !(prev === 13 && last === 10);
+}
+
 function dataPayload(frame) {
   const data = [];
   for (const line of frame.split(/\r\n|\n|\r/)) {
@@ -49,6 +75,7 @@ function parseFrameJson(frame) {
 
 function isBootstrapFrame(frame, protocol, isBootstrap = null) {
   if (isCommentFrame(frame)) return true;
+  if (isKeepaliveFrame(frame)) return true;
   const obj = parseFrameJson(frame);
   if (!obj) return false;
   if (typeof isBootstrap === 'function') return !!isBootstrap(obj);
@@ -164,6 +191,10 @@ export function createDeferredSseResponse(realRes, {
   // parses frames until it commits; from then on an error frame cannot change
   // the status any more, but it still has to reach the ring.
   let failure = null;
+  // Post-commit failure scan: one write may carry several frames (content and
+  // error), and one frame may span writes, so the scan walks frames and carries
+  // the incomplete tail instead of parsing the whole write as a frame.
+  let scanCarry = Buffer.alloc(0);
 
   const clearTimer = () => {
     if (timer) {
@@ -225,8 +256,40 @@ export function createDeferredSseResponse(realRes, {
     }
   };
 
+  const scanFailure = (buf) => {
+    if (failure) return;
+    // A JSON error key cannot occur in a write without this byte sequence, so
+    // skip the frame walk unless the write (or a carried frame) can hold one.
+    // A write that stops mid-frame is always walked: its `"error"` may still be
+    // in the next write, and the incomplete tail has to be carried.
+    if (scanCarry.length === 0 && buf.indexOf('"error"') === -1 && endsAtFrameEnd(buf)) return;
+    const text = scanCarry.length === 0
+      ? buf.toString('utf8')
+      : Buffer.concat([scanCarry, buf]).toString('utf8');
+    let offset = 0;
+    for (;;) {
+      const found = findFrameEnd(text, offset);
+      if (!found) break;
+      const error = errorFromFrame(text.slice(offset, found.frameEnd), parseError);
+      if (error) {
+        failure = error;
+        scanCarry = Buffer.alloc(0);
+        return;
+      }
+      offset = found.next;
+    }
+    const rest = offset < text.length ? Buffer.from(text.slice(offset), 'utf8') : Buffer.alloc(0);
+    scanCarry = rest.length <= maxBytes ? rest : Buffer.alloc(0);
+  };
+
   const inspectPending = () => {
-    const text = Buffer.concat(pending).toString('utf8');
+    let text = Buffer.concat(pending).toString('utf8');
+    // The wire may start with a UTF-8 BOM. It stays in `pending`, so the client
+    // still receives it, but it must not hide the first frame from the gate.
+    // Before the gate commits, `pending` always starts at the stream start, so
+    // the BOM is always at index 0; stripping it every pass keeps
+    // `inspectedChars` in one coordinate space across writes.
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
     let offset = inspectedChars;
     let framesSeen = 0;
     for (;;) {
@@ -241,6 +304,9 @@ export function createDeferredSseResponse(realRes, {
       }
       if (!isBootstrapFrame(frame, protocol, isBootstrap)) {
         commit();
+        // Committing does not end the stream: an error frame after the
+        // committing frame in this same write still has to reach the ring.
+        if (!failure && !ended) scanFailure(Buffer.from(text.slice(found.next), 'utf8'));
         return;
       }
       offset = found.next;
@@ -295,14 +361,10 @@ export function createDeferredSseResponse(realRes, {
       if (committed) {
         // O10: a failure that lands after the commit gate is already on the
         // wire with HTTP 200, so it cannot rewrite the status — but the request
-        // ring must still record its class. Scan for the `"error"` key first:
-        // JSON-escaped content cannot produce that exact byte sequence (inner
-        // quotes carry a backslash), and a false positive is rejected by
-        // `parseError` below because the frame is parsed as a whole.
-        if (!failure && buf.indexOf('"error"') !== -1) {
-          const error = errorFromFrame(buf.toString('utf8'), parseError);
-          if (error) failure = error;
-        }
+        // ring must still record its class. Walk the frames in this write (and
+        // any frame carried over from the previous one) rather than parsing the
+        // whole write as a single frame.
+        scanFailure(buf);
         const ok = realRes.write(buf);
         if (typeof cb === 'function') process.nextTick(cb);
         return ok;

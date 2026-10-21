@@ -412,6 +412,43 @@ describe('SseFramer', () => {
   });
 });
 
+describe('SseFramer leading BOM', () => {
+  it('strips a leading UTF-8 BOM so the first frame is not dropped', () => {
+    const bytes = Buffer.from('\uFEFF' + 'data: {"a":1}\n\n');
+    const expected = [{ event: null, data: '{"a":1}' }];
+    assert.deepEqual(splitRun(bytes, 0).frames, expected, 'whole buffer');
+    for (let cut = 0; cut <= bytes.length; cut += 1) {
+      const got = splitRun(bytes, cut);
+      assert.equal(got.failed, false, `cut ${cut} must not fail`);
+      assert.deepEqual(got.frames, expected, `cut ${cut} frames`);
+    }
+  });
+
+  it('strips the BOM before classifying the first field, not before the frame cap', () => {
+    // The BOM is wire decoration, not payload: a frame exactly at the cap is
+    // still accepted when the stream starts with a BOM.
+    const bytes = Buffer.from('\uFEFF' + 'data: 1234567890\n\n');
+    for (let cut = 0; cut <= bytes.length; cut += 1) {
+      const got = splitRun(bytes, cut, { maxFrameBytes: 10 });
+      assert.equal(got.failed, false, `cut ${cut} must not fail`);
+      assert.deepEqual(got.frames, [{ event: null, data: '1234567890' }], `cut ${cut}`);
+    }
+  });
+
+  it('does not strip a BOM that arrives after the stream started', () => {
+    const { framer, frames } = collect();
+    framer.push('data: a\n\n');
+    framer.push('\uFEFFdata: b\n\n');
+    assert.deepEqual(frames, [{ event: null, data: 'a' }]);
+  });
+
+  it('dispatches a typed ping event as a ping frame', () => {
+    const { framer, frames } = collect();
+    framer.push('event: ping\ndata: {"type":"ping"}\n\n');
+    assert.deepEqual(frames, [{ event: 'ping', data: '{"type":"ping"}' }]);
+  });
+});
+
 describe('sse-commit + CRLF', () => {
   it('turns a CRLF error frame into a JSON 429', () => {
     const real = {
