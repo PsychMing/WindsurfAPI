@@ -244,10 +244,10 @@ code {
 /* ─── Main Layout ─────────────────────────────── */
 .main {
   margin-left: 232px;
-  flex: 1;
+  flex: 1; min-width: 0;
   padding: 28px 36px 40px;
   min-height: 100vh;
-  /* max-width: 1400px; — auto-width for long email rows, prevent action columns from squeezing */
+  /* min-width:0 lets this flex column shrink; .table-wrap owns horizontal scroll (accounts was 1628px @1440). */
 }
 .page-header {
   display: flex;
