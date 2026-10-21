@@ -413,11 +413,18 @@ function maskEmail(email) {
 //   - ERR_OAUTH_UPSTREAM:<error>[:<desc>]: the provider redirected back an
 //     ?error= (e.g. access_denied) — surface the real reason.
 // Exported for unit testing (also used by the /oauth/callback endpoint).
+//
+// ANY absolute URL scheme is accepted, not just http(s): the Windsurf desktop
+// app's sign-in callback is `windsurf://codeium.windsurf?access_token=…` (F4).
+// Testing only ^https?:// returned that whole 88-char URL as the "token", which
+// then failed RegisterUser upstream.
+const ABSOLUTE_URL_RE = /^[a-z][a-z0-9+.\-]*:\/\//i;
+
 export function extractOAuthToken(input) {
   const raw = String(input || '').trim();
   if (!raw) return '';
   const pick = (params) => params.get('access_token') || params.get('token') || params.get('auth_token') || '';
-  if (/^https?:\/\//i.test(raw)) {
+  if (ABSOLUTE_URL_RE.test(raw)) {
     try {
       const u = new URL(raw);
       const fromQuery = pick(u.searchParams);
@@ -1564,16 +1571,18 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       // token shapes run RegisterUser (addAccountByToken). Route by classified
       // kind so a pasted session token doesn't fail against the Firebase-only
       // RegisterUser path.
-      const addByKind = (tok, label) => addAccountByPastedSecret(tok, label);
       for (const raw of (parsed.tokens || [])) {
         const kind = classifyToken(raw);
-        if (kind === 'unknown' && !/^https?:\/\//i.test(String(raw))) {
-          results.skipped.push({ kind, reason: 'unclassified' });
-          continue;
-        }
+        // auth1_ is a PostAuth intermediate, not a pool key.
         if (kind === 'auth1') { results.skipped.push({ kind, reason: 'auth1_not_a_pool_key' }); continue; }
+        // F3: everything else is a candidate. A show-auth-token /
+        // OneTimeAuthToken value is a 47-char opaque string that classifyToken
+        // cannot name; the old `kind === 'unknown'` skip dropped it silently,
+        // so the documented "paste the token" import added nothing. The adder
+        // routes a session token to the pool key and everything else through
+        // RegisterUser, and reports a rejection per token instead of hiding it.
         try {
-          const acc = await addByKind(raw, '');
+          const acc = await addAccountByPastedSecret(raw, '');
           results.added.push({ id: acc.id, email: acc.email, kind });
         } catch (e) { results.failed.push({ kind, error: e.message }); }
       }
@@ -2625,9 +2634,15 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       const loginProxy = body?.proxy?.host ? body.proxy : getProxyConfig().global;
       return json(res, 200, await emailLoginStart(email, loginProxy), NO_STORE);
     } catch (err) {
+      // Stable code + machine-readable detail (F8). A transport failure used to
+      // escape as a raw English message with no code; the UI then printed the
+      // upstream text verbatim and the operator could not tell whether the mail
+      // had been sent.
       return json(res, err.statusCode || 400, {
         error: err.code || err.message,
+        ...(err.detail ? { detail: err.detail } : {}),
         ...(err.retryAfterMs ? { retryAfterMs: err.retryAfterMs } : {}),
+        ...(err.retryable ? { retryable: true } : {}),
       }, NO_STORE);
     }
   }
@@ -2650,6 +2665,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         ...(err.detail ? { detail: err.detail } : {}),
         ...(err.retryAfterMs ? { retryAfterMs: err.retryAfterMs } : {}),
         ...(err.attemptsRemaining != null ? { attemptsRemaining: err.attemptsRemaining } : {}),
+        ...(err.retryable ? { retryable: true } : {}),
         isAuthFail: !!err.isAuthFail,
       });
     }
