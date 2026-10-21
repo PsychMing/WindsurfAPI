@@ -871,6 +871,7 @@ describe('WindsurfClient cascade panel retry', () => {
         stream.on('data', chunk => chunks.push(chunk));
         stream.on('end', () => {
           const method = String(headers[':path'] || '').split('/').pop();
+          const payload = requestPayload(Buffer.concat(chunks), headers);
           if (method === 'StartCascade') {
             stream.respond({ ':status': 200, 'content-type': headers['content-type'] || 'application/grpc' });
             stream.end(responseBody(startCascadeResponse('webfetch-completed-cascade'), headers));
@@ -882,8 +883,11 @@ describe('WindsurfClient cascade panel retry', () => {
             return;
           }
           if (method === 'GetCascadeTrajectorySteps') {
+            // Return the two steps once; the client advances step_offset, so a
+            // second batch must be empty or the planner text is replayed.
+            const stepOffset = readStepOffset(payload);
             stream.respond({ ':status': 200, 'content-type': headers['content-type'] || 'application/grpc' });
-            stream.end(responseBody(Buffer.concat([
+            stream.end(responseBody(stepOffset ? Buffer.alloc(0) : Buffer.concat([
               readUrlContentDoneWithEchoStepResponse(),
               trajectoryStepsResponse('Natural answer using Example Domain.'),
             ]), headers));

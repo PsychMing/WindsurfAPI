@@ -32,9 +32,14 @@ async function exercise({ recovered, system = '', size = 170, intact = false, tu
           stream.respond({ ':status': 200, 'content-type': headers['content-type'] }); stream.end(frame); return;
         }
       }
-      if (method === 'GetCascadeTrajectorySteps') body = writeMessageField(1, Buffer.concat([
-        writeVarintField(1, 15), writeVarintField(4, 3), writeMessageField(20, writeStringField(1, 'answer')),
-      ]));
+      if (method === 'GetCascadeTrajectorySteps') {
+        const stepOffset = getField(parseFields(payload), 2, 0);
+        if (!stepOffset) {
+          body = writeMessageField(1, Buffer.concat([
+            writeVarintField(1, 15), writeVarintField(4, 3), writeMessageField(20, writeStringField(1, 'answer')),
+          ]));
+        }
+      }
       if (method === 'GetCascadeTrajectory') body = writeVarintField(2, 1);
       stream.respond({ ':status': 200, 'content-type': headers['content-type'] || 'application/connect+proto' });
       stream.end(Buffer.concat([wrapEnvelope(body, { compress: false }), endOfStreamEnvelope()]));
