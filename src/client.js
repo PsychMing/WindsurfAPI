@@ -55,7 +55,17 @@ function acquireLsUseOrThrow(port) {
 export function isCascadeTransportError(err) {
   const msg = String(err?.message || err || '');
   const code = String(err?.code || '');
-  return /pending stream has been canceled|ECONNRESET|ERR_HTTP2|session closed|stream closed|panel state/i.test(msg)
+  // The Send retry loop synthesizes "Panel state lost N times after re-warm —
+  // likely an LS-level issue with very large payloads (...)" after
+  // MAX_PANEL_RETRIES. That failure is deterministic for the payload: another
+  // warmup, and another account, hit the same wall — rotating it as a
+  // transport stall burns the whole pool. Genuine panel-state transport errors
+  // come from the LS itself ("panel state not found", InitializeCascadePanelState
+  // failures) and keep matching below.
+  const terminalPanelLoss = /panel state lost .*after re-warm|very large payloads/i.test(msg);
+  const panelStateTransport = !terminalPanelLoss && /panel state/i.test(msg);
+  return /pending stream has been canceled|ECONNRESET|ERR_HTTP2|session closed|stream closed/i.test(msg)
+    || panelStateTransport
     // GAP-3: the local LS's own gRPC timeouts are a transient stall — without
     // this branch one hiccup surfaced as a hard failure instead of rotating
     // to the next account like every other transport blip.
@@ -257,6 +267,36 @@ function cascadeHistoryBudget(modelUid) {
     return positiveIntEnv('CASCADE_1M_HISTORY_BYTES', 900_000);
   }
   return normal;
+}
+
+/**
+ * Build the history suffix that fits `budgetBytes` on the wire.
+ *
+ * The budget is a WIRE budget: proto.js writes strings as UTF-8, so a CJK
+ * turn costs three bytes per UTF-16 code unit. Counting `line.length` let a
+ * history that "fit" 600 KB reach the wire at ~1.8 MB (3x). `openingText` is
+ * the system prompt prepended to the same prompt, counted with the same
+ * encoder for the same reason.
+ */
+function buildCascadeHistoryLines(convo, budgetBytes, openingText = '') {
+  const lines = [];
+  let historyBytes = Buffer.byteLength(String(openingText ?? ''), 'utf8');
+  let firstIncluded = 0;
+  for (let i = convo.length - 2; i >= 0; i--) {
+    const m = convo[i];
+    const tag = m.role === 'user' ? 'human' : 'assistant';
+    const line = `<${tag}>\n${escapeHistoryTag(contentToString(m.content), tag)}\n</${tag}>`;
+    const lineBytes = Buffer.byteLength(line, 'utf8');
+    if (historyBytes + lineBytes > budgetBytes && lines.length > 0) {
+      log.info(`Cascade: trimmed history at turn ${i}/${convo.length} (${Math.round(historyBytes/1024)}KB kept, ${convo.length - 2 - i} turns dropped)`);
+      firstIncluded = i + 1;
+      break;
+    }
+    lines.unshift(line);
+    historyBytes += lineBytes;
+    firstIncluded = i;
+  }
+  return { lines, firstIncluded };
 }
 
 const CASCADE_TIMEOUTS = {
@@ -787,25 +827,7 @@ export class WindsurfClient {
       // truncated the same history without updating historyCoverage, so a request that
       // started as a resume reported full coverage while the wire carried a truncated
       // history. The prompt text is unchanged; only the bookkeeping is now common.
-      const buildHistoryLines = (budgetBytes, openingBytes) => {
-        const lines = [];
-        let historyBytes = openingBytes;
-        let firstIncluded = 0;
-        for (let i = convo.length - 2; i >= 0; i--) {
-          const m = convo[i];
-          const tag = m.role === 'user' ? 'human' : 'assistant';
-          const line = `<${tag}>\n${escapeHistoryTag(contentToString(m.content), tag)}\n</${tag}>`;
-          if (historyBytes + line.length > budgetBytes && lines.length > 0) {
-            log.info(`Cascade: trimmed history at turn ${i}/${convo.length} (${Math.round(historyBytes/1024)}KB kept, ${convo.length - 2 - i} turns dropped)`);
-            firstIncluded = i + 1;
-            break;
-          }
-          lines.unshift(line);
-          historyBytes += line.length;
-          firstIncluded = i;
-        }
-        return { lines, firstIncluded };
-      };
+      // Budget is UTF-8 bytes (what the wire encoder writes), not UTF-16 units.
       if (isResume || convo.length <= 1) {
         const last = convo[convo.length - 1];
         const extracted = await extractImages(last?.content ?? '');
@@ -814,7 +836,7 @@ export class WindsurfClient {
         if (!isResume && sysText) text = sysText + '\n\n' + text;
       } else {
         const maxHistoryBytes = cascadeHistoryBudget(modelUid);
-        const { lines, firstIncluded } = buildHistoryLines(maxHistoryBytes, sysText ? sysText.length : 0);
+        const { lines, firstIncluded } = buildCascadeHistoryLines(convo, maxHistoryBytes, sysText);
         historyCoverage = {
           droppedTurnCount: firstIncluded,
           firstIncludedTurnIndex: firstIncluded,
@@ -860,7 +882,7 @@ export class WindsurfClient {
         // number. Fresh includes system-prompt overhead while this historical rebuild
         // path starts at zero; preserve those existing budgets and report each
         // actual suffix rather than promising identical counts for every input.
-        const { lines, firstIncluded } = buildHistoryLines(cascadeHistoryBudget(modelUid), 0);
+        const { lines, firstIncluded } = buildCascadeHistoryLines(convo, cascadeHistoryBudget(modelUid));
         historyCoverage = {
           droppedTurnCount: firstIncluded,
           firstIncludedTurnIndex: firstIncluded,
@@ -966,13 +988,17 @@ export class WindsurfClient {
       // alone) for stall detection fixes the false-positive warm stalls where
       // Cascade is legitimately mid-thinking but `responseText` hasn't moved.
       let lastGrowthAt = Date.now();
-      let lastStepCount = 0;
       const { maxWaitMs: maxWait, pollIntervalMs: pollInterval, idleGraceMs: IDLE_GRACE_MS, warmStallMs: NO_GROWTH_STALL_MS, stallRetryMinText: STALL_RETRY_MIN_TEXT } = CASCADE_TIMEOUTS;
       const startTime = Date.now();
       let endReason = 'unknown';
       const nativeBridgePollAfterTool = nativeMode && process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_POLL_AFTER_TOOL === '1';
       let nativeBridgePollAfterToolLogged = false;
       let approvalError = null;
+      // Start of the last batch that actually returned steps. The final IDLE
+      // sweep re-reads from here so it can apply modifiedText polish to the
+      // newest steps without re-fetching the whole trajectory (and without
+      // replaying pre-turn steps on a resumed cascade).
+      let lastBatchStart = stepOffset;
 
       while (Date.now() - startTime < maxWait) {
         if (aborted()) { endReason = 'aborted'; break; }
@@ -980,12 +1006,20 @@ export class WindsurfClient {
         if (aborted()) { endReason = 'aborted'; break; }
         pollCount++;
 
-        // Get steps
+        // Get steps. `stepOffset` is the absolute index of the next unread
+        // step; the LS returns the trajectory suffix from there. Advance by
+        // the batch size so the next poll (and the resume entry we return)
+        // never re-reads steps this turn already consumed. Per-step cursors
+        // below are keyed by ABSOLUTE index (`batchStart + i`), otherwise
+        // every poll would treat the batch as steps 0..N and re-emit it.
+        const batchStart = stepOffset;
         const stepsProto = buildGetTrajectoryStepsRequest(cascadeId, stepOffset);
         const stepsResp = await grpcUnary(
           this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto)
         );
         const steps = parseTrajectorySteps(stepsResp);
+        stepOffset += steps.length;
+        if (steps.length > 0) lastBatchStart = batchStart;
         const hasNativeProposalInBatch = nativeMode && !nativeBridgePollAfterTool
           && steps.some(step => Array.isArray(step?.toolCalls)
             && step.toolCalls.some(tc => tc?.cascade_native && !isCompletedReadUrlNativeResult(tc)));
@@ -1012,11 +1046,11 @@ export class WindsurfClient {
               log.warn('WebFetch auto-approve skipped: missing trajectory_id');
               continue;
             }
-            const approvalKey = `${cascadeTrajectoryId}:${stepOffset + i}:${url}:${origin}`;
+            const approvalKey = `${cascadeTrajectoryId}:${batchStart + i}:${url}:${origin}`;
             if (approvedReadUrlInteractions.has(approvalKey)) continue;
             const req = buildHandleReadUrlContentInteractionRequest(cascadeId, {
               trajectoryId: cascadeTrajectoryId,
-              stepIndex: stepOffset + i,
+              stepIndex: batchStart + i,
               action: 1, // READ_URL_CONTENT_ACTION_ALLOW_ONCE
               url,
               origin,
@@ -1036,13 +1070,13 @@ export class WindsurfClient {
               lastGrowthAt = Date.now();
               log.warn('WebFetch auto-approved read_url_content', {
                 cascadeIdHash: shortHash(cascadeId),
-                stepIndex: stepOffset + i,
+                stepIndex: batchStart + i,
                 originHash: origin ? shortHash(origin) : null,
               });
             } catch (e) {
               approvalError = {
                 cascadeIdHash: shortHash(cascadeId),
-                stepIndex: stepOffset + i,
+                stepIndex: batchStart + i,
                 message: String(e?.message || e),
               };
               log.warn('WebFetch auto-approve RPC failed', approvalError);
@@ -1096,19 +1130,20 @@ export class WindsurfClient {
         // Any trajectory change counts as forward progress. A new step, a new
         // tool call proposal, or thinking growth all reset the stall timer so
         // Cascade's slow silent planning phases don't get cut off mid-think.
-        if (steps.length > lastStepCount) {
-          lastStepCount = steps.length;
+        // `stepOffset` only moves forward, so a non-empty batch is always new.
+        if (steps.length > 0) {
           lastGrowthAt = Date.now();
         }
 
         for (let i = 0; i < steps.length; i++) {
           const step = steps[i];
+          const stepIndex = batchStart + i;
 
           // Per-step token usage. Overwrite on every poll so the map always
           // holds the latest reported numbers (they grow monotonically as
           // the generator emits more output). We sum across steps at the
           // end to compute the response's total usage.
-          if (step.usage) usageByStep.set(i, step.usage);
+          if (step.usage) usageByStep.set(stepIndex, step.usage);
 
           // Collect tool calls — dedupe by id so the same step seen across
           // polls only emits once. A tool call with an existing `result`
@@ -1166,10 +1201,10 @@ export class WindsurfClient {
           // preambles (`/tmp/...` style "let me analyze" stubs).
           const liveThink = step.thinking || '';
           if (liveThink) {
-            const prevThink = thinkingByStep.get(i) || 0;
+            const prevThink = thinkingByStep.get(stepIndex) || 0;
             if (liveThink.length > prevThink) {
               const thinkDelta = liveThink.slice(prevThink);
-              thinkingByStep.set(i, liveThink.length);
+              thinkingByStep.set(stepIndex, liveThink.length);
               totalThinking += thinkDelta.length;
               lastGrowthAt = Date.now();
               const tchunk = { text: '', thinking: thinkDelta, isError: false };
@@ -1190,10 +1225,10 @@ export class WindsurfClient {
           // version when one exists.
           const liveText = step.responseText || step.text || '';
           if (!liveText) continue;
-          const prev = yieldedByStep.get(i) || 0;
+          const prev = yieldedByStep.get(stepIndex) || 0;
           if (liveText.length > prev) {
             const delta = liveText.slice(prev);
-            yieldedByStep.set(i, liveText.length);
+            yieldedByStep.set(stepIndex, liveText.length);
             totalYielded += delta.length;
             lastGrowthAt = Date.now();
             sawText = true;
@@ -1276,22 +1311,29 @@ export class WindsurfClient {
           const growthSettled = (Date.now() - lastGrowthAt) > pollInterval * 2;
           const canBreak = sawText ? (idleCount >= 2 && growthSettled) : idleCount >= 4;
           if (canBreak) {
-            // Final sweep
+            // Final sweep. Re-read the last batch that returned steps so the
+            // newest steps still get the modifiedText polish pass. Using the
+            // turn's start offset here would re-fetch the whole trajectory
+            // once per turn (and replay pre-turn steps on a resume); using
+            // the advanced `stepOffset` would miss steps the next poll had
+            // not fetched yet.
             const finalResp = await grpcUnary(
-              this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto)
+              this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`,
+              grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, lastBatchStart))
             );
             const finalSteps = parseTrajectorySteps(finalResp);
-            lastStepCount = finalSteps.length;
+            stepOffset = Math.max(stepOffset, lastBatchStart + finalSteps.length);
             for (let i = 0; i < finalSteps.length; i++) {
               const step = finalSteps[i];
+              const stepIndex = lastBatchStart + i;
               const responseText = step.responseText || '';
               const modifiedText = step.modifiedText || '';
-              const prev = yieldedByStep.get(i) || 0;
+              const prev = yieldedByStep.get(stepIndex) || 0;
 
               // Normal top-up: responseText grew past what we streamed.
               if (responseText.length > prev) {
                 const delta = responseText.slice(prev);
-                yieldedByStep.set(i, responseText.length);
+                yieldedByStep.set(stepIndex, responseText.length);
                 totalYielded += delta.length;
                 chunks.push({ text: delta, thinking: '', isError: false });
                 onChunk?.({ text: delta, thinking: '', isError: false });
@@ -1302,10 +1344,10 @@ export class WindsurfClient {
               // (common when LS polishes), emitting the tail would splice
               // wrong content onto the stream, so we skip it and keep the
               // raw responseText we already showed.
-              const cursor = yieldedByStep.get(i) || 0;
+              const cursor = yieldedByStep.get(stepIndex) || 0;
               if (modifiedText.length > cursor && modifiedText.startsWith(responseText)) {
                 const delta = modifiedText.slice(cursor);
-                yieldedByStep.set(i, modifiedText.length);
+                yieldedByStep.set(stepIndex, modifiedText.length);
                 totalYielded += delta.length;
                 chunks.push({ text: delta, thinking: '', isError: false });
                 onChunk?.({ text: delta, thinking: '', isError: false });
@@ -1329,7 +1371,7 @@ export class WindsurfClient {
         polls: pollCount,
         textLen: totalYielded,
         thinkingLen: totalThinking,
-        stepCount: stepOffset + Math.max(yieldedByStep.size, thinkingByStep.size, lastStepCount),
+        stepCount: stepOffset,
         toolCalls: seenToolCallIds.size,
         sawActive,
         sawText,
@@ -1405,7 +1447,7 @@ export class WindsurfClient {
       // that iterate over it keep working.
       chunks.cascadeId = cascadeId;
       chunks.sessionId = sessionId;
-      chunks.stepOffset = stepOffset + Math.max(yieldedByStep.size, thinkingByStep.size, lastStepCount);
+      chunks.stepOffset = stepOffset;
       chunks.generatorOffset = serverUsage?.entryCount != null
         ? generatorOffset + serverUsage.entryCount
         : null;

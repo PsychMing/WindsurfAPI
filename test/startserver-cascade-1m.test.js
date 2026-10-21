@@ -84,9 +84,14 @@ server.on('stream', (stream, headers) => {
       sends.push({ payload, text, headers: { ...headers } });
     }
     if (method === 'GetCascadeTrajectorySteps') {
-      body = writeMessageField(1, Buffer.concat([
-        writeVarintField(1, 15), writeVarintField(4, 3), writeMessageField(20, writeStringField(1, 'answer')),
-      ]));
+      // The client advances step_offset; return the trajectory only for the
+      // first batch so a re-request cannot duplicate the planner step.
+      const stepOffset = getField(parseFields(payload), 2, 0);
+      if (!stepOffset) {
+        body = writeMessageField(1, Buffer.concat([
+          writeVarintField(1, 15), writeVarintField(4, 3), writeMessageField(20, writeStringField(1, 'answer')),
+        ]));
+      }
     }
     if (method === 'GetCascadeTrajectory') body = writeVarintField(2, 1);
     stream.respond({ ':status': 200, 'content-type': headers['content-type'] || 'application/connect+proto' });
