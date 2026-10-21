@@ -641,6 +641,16 @@ export async function checkMessageRateLimit(apiKey, proxy = null) {
     }
   }
   // On failure, assume capacity so we don't block requests.
+  //
+  // `error` distinguishes a real "yes" from "we could not ask": the dashboard's
+  // capacity preflight must show `unknown` for this path, not a green light.
+  // Callers that only read `hasCapacity` are unaffected.
   log.warn(`CheckRateLimit failed: ${lastErr?.message}`);
-  return { hasCapacity: true, messagesRemaining: -1, maxMessages: -1, retryAfterMs: null };
+  return {
+    hasCapacity: true,
+    messagesRemaining: -1,
+    maxMessages: -1,
+    retryAfterMs: null,
+    error: 'upstream_unreachable',
+  };
 }

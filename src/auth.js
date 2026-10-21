@@ -48,6 +48,10 @@ import { join } from 'path';
 // See `src/config.js` (sharedDataDir vs dataDir) and issue #67.
 const ACCOUNTS_FILE = join(config.sharedDataDir || config.dataDir, 'accounts.json');
 
+// Bounded credit-snapshot ring, per account (DevinMap card 1). Declared here so
+// the serializer can reference it regardless of module-evaluation order.
+const CREDIT_LEDGER_CAP = 24;
+
 // ─── Account pool ──────────────────────────────────────────
 
 const accounts = [];
@@ -664,6 +668,14 @@ function _serializeAccounts() {
     _breakerStreak: a._breakerStreak || 0,
     // K8: persist the lifetime spend accumulator (monotonic across restarts).
     _totalSpend: a._totalSpend || { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0, acuCost: 0 },
+    // DevinMap card 1: observed credit snapshots (bounded). Written only when a
+    // refresh actually recorded one, so a default accounts.json keeps its shape.
+    ...(Array.isArray(a._creditHistory) && a._creditHistory.length
+      ? { _creditHistory: a._creditHistory.slice(-CREDIT_LEDGER_CAP) }
+      : {}),
+    // DevinMap card 3: when the upstream session key last changed. Absent for
+    // accounts that were never rotated, so the default file is unchanged.
+    ...(a.keyRotatedAt ? { keyRotatedAt: a.keyRotatedAt } : {}),
     // C5: persisted rolling-hour health window (pruned at save time so the
     // file never carries stale/out-of-window events across restarts).
     _health: Array.isArray(a._health) ? pruneHealthWindow(a, Date.now()) : [],
@@ -807,6 +819,14 @@ function _deserializeAccount(a, now = Date.now()) {
     refreshToken: a.refreshToken || '', expiresAt: 0, refreshTimer: null,
     addedAt: a.addedAt || now,
     erroredAt,
+    // DevinMap cards: restore the bounded credit ledger and the last key
+    // rotation. Both are best-effort; a malformed row is dropped, never fatal.
+    _creditHistory: Array.isArray(a._creditHistory)
+      ? a._creditHistory
+        .filter((row) => row && typeof row === 'object' && typeof row.ts === 'number')
+        .slice(-CREDIT_LEDGER_CAP)
+      : [],
+    keyRotatedAt: Number.isFinite(a.keyRotatedAt) ? a.keyRotatedAt : 0,
     tier: a.tier || 'unknown',
     capabilities: a.capabilities || {},
     lastProbed: a.lastProbed || 0,
@@ -1581,8 +1601,10 @@ export async function addAccountByEmail(email, password) {
   const account = existingByEmail || addAccountByKey(result.apiKey, label);
   if (existingByEmail) {
     const apiKeyChanged = account.apiKey !== result.apiKey;
+    const previousKey = account.apiKey;
     account.apiKey = result.apiKey;
     if (apiKeyChanged) {
+      markKeyRotation(account, previousKey);
       invalidateModelCatalogForAccount(account.id);
       bumpUserJwtEpoch();
     }
@@ -1814,17 +1836,31 @@ function bumpUserJwtEpoch() {
 export function setAccountTokens(id, { apiKey, refreshToken, idToken } = {}) {
   const account = accounts.find(a => a.id === id);
   if (!account) return false;
+  const previousKey = account.apiKey;
   const apiKeyChanged = apiKey != null && account.apiKey !== apiKey;
   if (apiKey != null) account.apiKey = apiKey;
   if (refreshToken != null) account.refreshToken = refreshToken;
   if (idToken != null) account.idToken = idToken;
   if (apiKeyChanged) {
+    markKeyRotation(account, previousKey);
     invalidateModelCatalogForAccount(account.id);
     bumpUserJwtEpoch();
     trySyncModelCatalog();
   }
   saveAccounts();
   return true;
+}
+
+/**
+ * Stamp the key-rotation clock. Called at every site that replaces an account's
+ * upstream session key (re-login, Firebase refresh, paste-over). The dashboard's
+ * key card reads `keyRotatedAt` to answer "when did this credential last change"
+ * — a question the upstream never answers, since session keys carry no expiry.
+ */
+function markKeyRotation(account, previousKey) {
+  if (!account || typeof account !== 'object') return;
+  if (!previousKey || previousKey === account.apiKey) return;
+  account.keyRotatedAt = Date.now();
 }
 
 // Per-account re-login throttle: a dead session_id will reject EVERY in-flight
@@ -2009,8 +2045,10 @@ export async function reLoginAccount(id, { force = false, signal } = {}) {
       const result = await windsurfLogin(account.email, password, proxy);
       if (!result?.apiKey) throw new Error('login returned no apiKey');
       const apiKeyChanged = account.apiKey !== result.apiKey;
+      const previousKey = account.apiKey;
       account.apiKey = result.apiKey;
       if (apiKeyChanged) {
+        markKeyRotation(account, previousKey);
         invalidateModelCatalogForAccount(account.id);
         bumpUserJwtEpoch();
       }
@@ -3699,6 +3737,9 @@ function publicAccount(a, now, { view = 'full' } = {}) {
     errorCount: a.errorCount,
     lastUsed: a.lastUsed ? new Date(a.lastUsed).toISOString() : null,
     addedAt: new Date(a.addedAt).toISOString(),
+    // Last time the upstream session key changed (re-login / Firebase refresh).
+    // 0 = never rotated since the account was added.
+    keyRotatedAt: a.keyRotatedAt || 0,
     keyPrefix: a.apiKey.slice(0, 8) + '...',
     apiKey_masked: maskApiKey(a.apiKey),
     tier: a.tier || 'unknown',
@@ -3937,6 +3978,77 @@ export async function searchWebForAccount(id, { query, limit, domain } = {}) {
 }
 
 /**
+ * Bounded credit-snapshot ledger, per account.
+ *
+ * The chat wire carries no per-turn billing tag (#239), so the only honest
+ * "recent debit" the proxy can show is the delta between two credit refreshes:
+ * prepaid balance, prompt/flex credits, and the daily/weekly remaining
+ * percentages. Entries are written by `refreshCredits` (manual + the 15-minute
+ * loop) and persisted in accounts.json so an operator restart does not erase
+ * the last hour of history.
+ *
+ * Cap CREDIT_LEDGER_CAP per account, pruned at write time. An entry is only
+ * recorded when a value actually changed — a refresh that learned nothing new
+ * must not push a zero-delta row that later reads as "no spend".
+ */
+
+function creditSnapshotOf(credits) {
+  const c = credits && typeof credits === 'object' ? credits : {};
+  const pick = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const prompt = c.prompt && typeof c.prompt === 'object' ? c.prompt : {};
+  const flex = c.flex && typeof c.flex === 'object' ? c.flex : {};
+  return {
+    ts: Date.now(),
+    balance: pick(c.balance),
+    overageBalance: pick(c.overageBalance),
+    promptRemaining: pick(prompt.remaining),
+    promptUsed: pick(prompt.used),
+    flexRemaining: pick(flex.remaining),
+    flexUsed: pick(flex.used),
+    dailyPercent: pick(c.dailyPercent),
+    weeklyPercent: pick(c.weeklyPercent),
+  };
+}
+
+const CREDIT_SNAPSHOT_FIELDS = [
+  'balance', 'overageBalance', 'promptRemaining', 'promptUsed',
+  'flexRemaining', 'flexUsed', 'dailyPercent', 'weeklyPercent',
+];
+
+function sameCreditSnapshot(a, b) {
+  if (!a || !b) return false;
+  return CREDIT_SNAPSHOT_FIELDS.every((field) => a[field] === b[field]);
+}
+
+/** Record one observed credit snapshot. Never throws, never logs the snapshot. */
+export function recordCreditSnapshot(account, credits = null) {
+  if (!account || typeof account !== 'object') return null;
+  const snapshot = creditSnapshotOf(credits ?? account.credits);
+  const history = Array.isArray(account._creditHistory) ? account._creditHistory : [];
+  const last = history.length ? history[history.length - 1] : null;
+  if (sameCreditSnapshot(last, snapshot)) return last;
+  history.push(snapshot);
+  if (history.length > CREDIT_LEDGER_CAP) history.splice(0, history.length - CREDIT_LEDGER_CAP);
+  account._creditHistory = history;
+  markDirty();
+  return snapshot;
+}
+
+/** Raw credit snapshots for one account, oldest first. Empty when unknown. */
+export function getCreditLedger(id) {
+  const account = accounts.find(a => a.id === id);
+  if (!account || !Array.isArray(account._creditHistory)) return [];
+  return account._creditHistory
+    .filter((row) => row && typeof row === 'object' && typeof row.ts === 'number')
+    .slice(-CREDIT_LEDGER_CAP);
+}
+
+/** Test seam: drop every account's credit history without touching the file. */
+export function __resetCreditLedgerForTest() {
+  for (const account of accounts) delete account._creditHistory;
+}
+
+/**
  * Fetch live credit balance + plan info from server.codeium.com and stash it
  * on the account. Used by manual refresh and by the 15-minute background loop.
  * Errors are returned in-band so the dashboard can show them without throwing.
@@ -4027,6 +4139,9 @@ async function _refreshCreditsImpl(account) {
       return { ok: false, error: 'Account changed during credit refresh' };
     }
     account.credits = persist;
+    // Ledger: one row per observable change (see recordCreditSnapshot). Written
+    // before saveAccounts() below so the history and the snapshot persist together.
+    recordCreditSnapshot(account, persist);
     applyQuotaSnapshot(account, persist.weeklyPercent);
     // Tier hint: if the plan info is explicit, prefer it over capability probing.
     // Trial / individual accounts also count as pro — Windsurf returns
@@ -4760,7 +4875,9 @@ async function refreshAllFirebaseTokens({ skipBusy = false } = {}) {
       const { apiKey } = await reRegisterWithCodeium(idToken, proxy);
       if (apiKey && apiKey !== a.apiKey) {
         log.info(`Firebase refresh: ${safeAccountRef(a)} got new API key`);
+        const previousKey = a.apiKey;
         a.apiKey = apiKey;
+        markKeyRotation(a, previousKey);
         invalidateModelCatalogForAccount(a.id);
         trySyncModelCatalog();
       }
