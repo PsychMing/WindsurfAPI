@@ -84,7 +84,9 @@ HMC 实测（同一主机、同一批二进制，`evidence/NodeFix.md`）：Node
 
 ## 2026-10-22 集成验证（`release/3.9.42`，HMC）
 
-（待填：Linux `test:release`、mutation 扫描、wire 对基线的逐条数字。）
+- Linux `npm run test:release`（Node v24.21.0，457 文件）：**5,657 pass / 0 fail / 1 skip（5,658 tests）**，exit 0。
+- mutation（HMC，POSIX git）：`cascade-metadata-egress`、`cascade-think-reroute`、`responses-post-tool-text-item`、`s4-r4` 四个受影响规格全部 **exit 0**，每条突变均按预期 caught。
+- wire：`WIRE_BASE_TREE=/tmp/wapi-341`（`v3.9.41` = `4211656`），`test/wire-byte-identity.test.js` **270/270 比较一致**，`WIRE_EXIT=0`；provenance：tested `a6bcb63`、base `4211656`、expected tag `v3.9.41`。本提交只改本文档，`src/` 字节不变。
 
 ## 尚未验证
 
