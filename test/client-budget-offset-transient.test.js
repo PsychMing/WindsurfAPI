@@ -32,7 +32,8 @@ Object.assign(process.env, {
 delete process.env.DEVIN_CONNECT;
 delete process.env.DEVIN_ONLY;
 
-const { isCascadeTransportError, WindsurfClient } = await import('../src/client.js');
+const { isCascadeTransportError, WindsurfClient, __TEST_CASCADE_TIMEOUTS } =
+  await import('../src/client.js');
 const { unwrapRequest, wrapEnvelope, endOfStreamEnvelope } = await import('../src/connect.js');
 const {
   getField, parseFields, writeMessageField, writeStringField, writeVarintField,
@@ -41,16 +42,28 @@ const {
 // 3 UTF-8 bytes, 1 UTF-16 code unit.
 const CJK = '漢';
 
-function plannerStep(text) {
+function plannerStep(text, status = 3) {
   return Buffer.concat([
     writeVarintField(1, 15), // CORTEX_STEP_TYPE_PLANNER_RESPONSE
-    writeVarintField(4, 3),  // STATUS_DONE
+    writeVarintField(4, status),
     writeMessageField(20, writeStringField(1, text)),
   ]);
 }
 
+function runCommandStep(command, status = 1) {
+  return Buffer.concat([
+    writeVarintField(1, 28), // CORTEX_STEP_TYPE_RUN_COMMAND
+    writeVarintField(4, status),
+    writeMessageField(28, writeStringField(23, command)),
+  ]);
+}
+
+function rawStepsResponse(steps) {
+  return Buffer.concat(steps.map((step) => writeMessageField(1, step)));
+}
+
 function stepsResponse(texts) {
-  return Buffer.concat(texts.map((text) => writeMessageField(1, plannerStep(text))));
+  return rawStepsResponse(texts.map((text) => plannerStep(text)));
 }
 
 function readStepOffset(payload) {
@@ -170,10 +183,10 @@ describe('Cascade history budget counts UTF-8 bytes', () => {
   });
 });
 
-describe('Cascade trajectory polling advances stepOffset', () => {
-  it('does not re-request offset 0 after the first batch', async () => {
-    const offsets = [];
-    let stepPolls = 0;
+describe('Cascade trajectory polling advances stepOffset with bounded overlap', () => {
+  it('advances the poll window while re-reading at most one bounded overlap', async () => {
+    const requests = [];
+    let produced = 0;
 
     await withFakeLanguageServer((stream, headers) => {
       const chunks = [];
@@ -186,13 +199,58 @@ describe('Cascade trajectory polling advances stepOffset', () => {
         if (method === 'StartCascade') body = writeStringField(1, 'advance-cascade');
         if (method === 'GetCascadeTrajectorySteps') {
           const offset = readStepOffset(payload);
-          offsets.push(offset);
-          stepPolls++;
-          // Two new steps per batch: offsets 0 -> 2 -> 4 (end).
-          if (offset < 4) body = stepsResponse([`S${offset}`, `S${offset + 1}`]);
+          if (produced < 20) produced += 2;
+          const trajectory = Array.from({ length: produced }, (_, i) => plannerStep(`S${i}`));
+          requests.push({ offset, count: trajectory.length - offset });
+          body = rawStepsResponse(trajectory.slice(offset));
         }
         if (method === 'GetCascadeTrajectory') {
-          // ACTIVE for the first two batches, then IDLE so the loop can finish.
+          body = writeVarintField(2, produced >= 20 ? 1 : 2);
+        }
+        respond(stream, headers, body);
+      });
+    }, async (port) => {
+      const client = new WindsurfClient('test-api-key', port, 'csrf-token');
+      const chunks = await client.cascadeChat(
+        [{ role: 'user', content: 'go' }], 0, 'claude-sonnet-4-6',
+      );
+      const text = chunks.map((chunk) => chunk.text || '').join('');
+      const offsets = requests.map((request) => request.offset);
+
+      assert.equal(offsets[0], 0);
+      assert.deepEqual(offsets, [...offsets].sort((a, b) => a - b), 'the poll window never moves backwards');
+      assert.ok(offsets.at(-1) > 0, `the window never advanced past 0: ${offsets.join(',')}`);
+      // Source constant CASCADE_STEP_OVERLAP is 8; each request adds at most
+      // two new steps, so no response may exceed 10 steps.
+      const largest = Math.max(...requests.map((request) => request.count));
+      assert.ok(largest <= 10, `a poll re-read ${largest} steps instead of a bounded overlap`);
+      assert.equal(text, Array.from({ length: 20 }, (_, i) => `S${i}`).join(''),
+        'every step is emitted once, in order, despite the overlap');
+      assert.equal(chunks.stepOffset, 20, 'the resume offset is the absolute next step');
+    });
+  });
+
+  it('re-reads a partial step so growth after the first batch is not lost', async () => {
+    let stepPolls = 0;
+    let trajectory = [];
+
+    await withFakeLanguageServer((stream, headers) => {
+      const chunks = [];
+      stream.on('data', (chunk) => chunks.push(chunk));
+      stream.on('end', () => {
+        const method = String(headers[':path']).split('/').pop();
+        const payload = unwrapRequest(Buffer.concat(chunks), headers);
+        let body = Buffer.alloc(0);
+
+        if (method === 'StartCascade') body = writeStringField(1, 'growing-cascade');
+        if (method === 'GetCascadeTrajectorySteps') {
+          stepPolls++;
+          if (stepPolls === 1) trajectory = [plannerStep('A', 1)];
+          else if (stepPolls === 2) trajectory = [plannerStep('AB', 1), plannerStep('C')];
+          else trajectory = [plannerStep('AB', 1), plannerStep('CD')];
+          body = rawStepsResponse(trajectory.slice(readStepOffset(payload)));
+        }
+        if (method === 'GetCascadeTrajectory') {
           body = writeVarintField(2, stepPolls >= 2 ? 1 : 2);
         }
         respond(stream, headers, body);
@@ -204,11 +262,66 @@ describe('Cascade trajectory polling advances stepOffset', () => {
       );
       const text = chunks.map((chunk) => chunk.text || '').join('');
 
-      assert.deepEqual(offsets.slice(0, 2), [0, 2], `poll offsets were ${offsets.join(',')}`);
-      assert.ok(!offsets.slice(1).includes(0), `offset 0 was re-requested: ${offsets.join(',')}`);
-      assert.equal(text, 'S0S1S2S3', 'each trajectory step is emitted once, in order');
-      assert.equal(chunks.stepOffset, 4, 'the resume offset is the absolute next step');
+      // Step 0 arrived as "A", grew to "AB" after the offset advanced, and
+      // the IDLE sweep added the final "D" of step 1.
+      assert.equal(text, 'ABCD', `partial-step growth was lost: ${JSON.stringify(text)}`);
+      assert.equal(chunks.stepOffset, 2, 'both steps are accounted for exactly once');
     });
+  });
+
+  it('keeps the tool-active stall ceiling after the tool step leaves the poll window', async () => {
+    const savedTimeouts = { ...__TEST_CASCADE_TIMEOUTS };
+    Object.assign(__TEST_CASCADE_TIMEOUTS, {
+      maxWaitMs: 150,
+      pollIntervalMs: 10,
+      idleGraceMs: 1,
+      coldStallBaseMs: 1000,
+      warmStallMs: 50,
+      warmStallThinkingMs: 50,
+      warmStallToolActiveMs: 300,
+    });
+    const savedGrace = process.env.CASCADE_TOOL_ACTIVE_GRACE_MS;
+    process.env.CASCADE_TOOL_ACTIVE_GRACE_MS = '50';
+    try {
+      // The ACTIVE tool step is step 0; eight later steps push it out of the
+      // bounded overlap window while the tool is still running.
+      const trajectory = [
+        runCommandStep('git clone https://example.invalid/big.git'),
+        ...Array.from({ length: 9 }, (_, i) => plannerStep(`seed${i}`)),
+      ];
+
+      await withFakeLanguageServer((stream, headers) => {
+        const chunks = [];
+        stream.on('data', (chunk) => chunks.push(chunk));
+        stream.on('end', () => {
+          const method = String(headers[':path']).split('/').pop();
+          const payload = unwrapRequest(Buffer.concat(chunks), headers);
+          let body = Buffer.alloc(0);
+
+          if (method === 'StartCascade') body = writeStringField(1, 'tool-stall-cascade');
+          if (method === 'GetCascadeTrajectorySteps') {
+            body = rawStepsResponse(trajectory.slice(readStepOffset(payload)));
+          }
+          if (method === 'GetCascadeTrajectory') body = writeVarintField(2, 2); // ACTIVE
+          respond(stream, headers, body);
+        });
+      }, async (port) => {
+        const client = new WindsurfClient('test-api-key', port, 'csrf-token');
+        const started = Date.now();
+        const chunks = await client.cascadeChat(
+          [{ role: 'user', content: 'run it' }], 0, 'claude-sonnet-4-6',
+        );
+        const elapsed = Date.now() - started;
+
+        assert.ok(elapsed >= 100, `turn was stall-killed after ${elapsed}ms by the 50ms text ceiling`);
+        assert.match(chunks.map((chunk) => chunk.text || '').join(''), /seed0/);
+        assert.equal(chunks.toolCalls.length, 1, 'the active tool call is still accounted for');
+      });
+    } finally {
+      Object.assign(__TEST_CASCADE_TIMEOUTS, savedTimeouts);
+      if (savedGrace === undefined) delete process.env.CASCADE_TOOL_ACTIVE_GRACE_MS;
+      else process.env.CASCADE_TOOL_ACTIVE_GRACE_MS = savedGrace;
+    }
   });
 
   it('keeps resume semantics: starts at the stored offset and returns the absolute next step', async () => {

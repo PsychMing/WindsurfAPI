@@ -270,13 +270,15 @@ function cascadeHistoryBudget(modelUid) {
 }
 
 /**
- * Build the history suffix that fits `budgetBytes` on the wire.
+ * Build the history suffix whose lines plus `openingText` fit `budgetBytes`.
  *
- * The budget is a WIRE budget: proto.js writes strings as UTF-8, so a CJK
- * turn costs three bytes per UTF-16 code unit. Counting `line.length` let a
- * history that "fit" 600 KB reach the wire at ~1.8 MB (3x). `openingText` is
- * the system prompt prepended to the same prompt, counted with the same
- * encoder for the same reason.
+ * The budget is measured in the encoder's units: proto.js writes strings as
+ * UTF-8, so a CJK turn costs three bytes per UTF-16 code unit. Counting
+ * `line.length` let a history that "fit" 600 KB reach the wire at ~1.8 MB
+ * (3x). `openingText` is the system prompt prepended to the same prompt,
+ * counted with the same encoder. The guarantee covers the history lines and
+ * the system prompt; wrapper text added by the caller (conversation intro,
+ * latest turn, truncation note) is outside this budget.
  */
 function buildCascadeHistoryLines(convo, budgetBytes, openingText = '') {
   const lines = [];
@@ -340,6 +342,13 @@ const CASCADE_TIMEOUTS = {
   idleGraceMs:      positiveIntEnv('CASCADE_IDLE_GRACE_MS', 8_000),
   stallRetryMinText: positiveIntEnv('CASCADE_STALL_RETRY_MIN_TEXT', 300),
 };
+
+// Cascade steps are append-only while ACTIVE: a step's responseText/thinking
+// grows in place across polls. Polling strictly after the last consumed step
+// would strand that growth until the final sweep, so each poll re-reads this
+// many already-seen steps. Bounded (not the whole trajectory) and floored at
+// the turn's resume offset so pre-turn steps are never replayed.
+const CASCADE_STEP_OVERLAP = 8;
 
 export function shouldColdStall({ elapsed, coldStallMs, sawActive, sawText, totalThinking, toolCallCount }) {
   return elapsed > coldStallMs && sawActive && !sawText && (totalThinking || 0) === 0 && (toolCallCount || 0) === 0;
@@ -994,11 +1003,20 @@ export class WindsurfClient {
       const nativeBridgePollAfterTool = nativeMode && process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_POLL_AFTER_TOOL === '1';
       let nativeBridgePollAfterToolLogged = false;
       let approvalError = null;
-      // Start of the last batch that actually returned steps. The final IDLE
-      // sweep re-reads from here so it can apply modifiedText polish to the
-      // newest steps without re-fetching the whole trajectory (and without
-      // replaying pre-turn steps on a resumed cascade).
-      let lastBatchStart = stepOffset;
+      // Absolute offset this turn started polling from: the overlap window
+      // never reaches behind it, so a resumed cascade cannot replay pre-turn
+      // steps as fresh output.
+      const pollFloor = stepOffset;
+      let lastStepCount = stepOffset;
+      // Window start of the most recent poll. The final IDLE sweep re-reads
+      // the same bounded window for modifiedText polish.
+      let lastWindowStart = stepOffset;
+      // Tool calls that were ACTIVE when last seen and have not reported a
+      // result since, keyed by name+arguments. Persisted across polls because
+      // a step can fall out of the overlap window while its tool is still
+      // running, and completion can arrive either in place (status DONE) or
+      // as a later step carrying the result.
+      const pendingToolCalls = new Map();
 
       while (Date.now() - startTime < maxWait) {
         if (aborted()) { endReason = 'aborted'; break; }
@@ -1007,19 +1025,24 @@ export class WindsurfClient {
         pollCount++;
 
         // Get steps. `stepOffset` is the absolute index of the next unread
-        // step; the LS returns the trajectory suffix from there. Advance by
-        // the batch size so the next poll (and the resume entry we return)
-        // never re-reads steps this turn already consumed. Per-step cursors
-        // below are keyed by ABSOLUTE index (`batchStart + i`), otherwise
-        // every poll would treat the batch as steps 0..N and re-emit it.
-        const batchStart = stepOffset;
-        const stepsProto = buildGetTrajectoryStepsRequest(cascadeId, stepOffset);
+        // step. Poll from a bounded overlap window so a step that arrived
+        // partial keeps growing: re-reading the last CASCADE_STEP_OVERLAP
+        // steps is O(overlap + new), never O(trajectory), and never reaches
+        // behind pollFloor. Per-step cursors below are keyed by ABSOLUTE
+        // index (`windowStart + i`), so re-reads only emit real deltas.
+        const windowStart = Math.max(pollFloor, stepOffset - CASCADE_STEP_OVERLAP);
+        const stepsProto = buildGetTrajectoryStepsRequest(cascadeId, windowStart);
         const stepsResp = await grpcUnary(
           this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto)
         );
         const steps = parseTrajectorySteps(stepsResp);
-        stepOffset += steps.length;
-        if (steps.length > 0) lastBatchStart = batchStart;
+        lastWindowStart = windowStart;
+        const totalSteps = windowStart + steps.length;
+        stepOffset = Math.max(stepOffset, totalSteps);
+        if (totalSteps > lastStepCount) {
+          lastStepCount = totalSteps;
+          lastGrowthAt = Date.now();
+        }
         const hasNativeProposalInBatch = nativeMode && !nativeBridgePollAfterTool
           && steps.some(step => Array.isArray(step?.toolCalls)
             && step.toolCalls.some(tc => tc?.cascade_native && !isCompletedReadUrlNativeResult(tc)));
@@ -1046,11 +1069,11 @@ export class WindsurfClient {
               log.warn('WebFetch auto-approve skipped: missing trajectory_id');
               continue;
             }
-            const approvalKey = `${cascadeTrajectoryId}:${batchStart + i}:${url}:${origin}`;
+            const approvalKey = `${cascadeTrajectoryId}:${windowStart + i}:${url}:${origin}`;
             if (approvedReadUrlInteractions.has(approvalKey)) continue;
             const req = buildHandleReadUrlContentInteractionRequest(cascadeId, {
               trajectoryId: cascadeTrajectoryId,
-              stepIndex: batchStart + i,
+              stepIndex: windowStart + i,
               action: 1, // READ_URL_CONTENT_ACTION_ALLOW_ONCE
               url,
               origin,
@@ -1070,13 +1093,13 @@ export class WindsurfClient {
               lastGrowthAt = Date.now();
               log.warn('WebFetch auto-approved read_url_content', {
                 cascadeIdHash: shortHash(cascadeId),
-                stepIndex: batchStart + i,
+                stepIndex: windowStart + i,
                 originHash: origin ? shortHash(origin) : null,
               });
             } catch (e) {
               approvalError = {
                 cascadeIdHash: shortHash(cascadeId),
-                stepIndex: batchStart + i,
+                stepIndex: windowStart + i,
                 message: String(e?.message || e),
               };
               log.warn('WebFetch auto-approve RPC failed', approvalError);
@@ -1127,22 +1150,29 @@ export class WindsurfClient {
         // NOTE: warm stall check moved AFTER step loop (below) so
         // lastGrowthAt reflects data read in this poll, not the previous one.
 
-        // Any trajectory change counts as forward progress. A new step, a new
-        // tool call proposal, or thinking growth all reset the stall timer so
-        // Cascade's slow silent planning phases don't get cut off mid-think.
-        // `stepOffset` only moves forward, so a non-empty batch is always new.
-        if (steps.length > 0) {
-          lastGrowthAt = Date.now();
-        }
-
         for (let i = 0; i < steps.length; i++) {
           const step = steps[i];
-          const stepIndex = batchStart + i;
+          const stepIndex = windowStart + i;
 
-          // Per-step token usage. Overwrite on every poll so the map always
-          // holds the latest reported numbers (they grow monotonically as
-          // the generator emits more output). We sum across steps at the
-          // end to compute the response's total usage.
+          // Track ACTIVE tool calls across polls. A step can leave the
+          // overlap window while its tool is still executing; forgetting it
+          // would drop the warm-stall ceiling from the tool-active tier back
+          // to the text tier and kill a slow clone/shell. Clear a call only
+          // when it reports DONE or carries a non-empty result.
+          if (Array.isArray(step.toolCalls) && step.toolCalls.length) {
+            for (const tc of step.toolCalls) {
+              const signature = `${tc?.name || ''}:${tc?.argumentsJson || ''}`;
+              const completed = step.status === 3
+                || (typeof tc?.result === 'string' && tc.result.length > 0)
+                || isCompletedReadUrlNativeResult(tc);
+              if (completed) pendingToolCalls.delete(signature);
+              else if (step.status === 1) pendingToolCalls.set(signature, stepIndex);
+            }
+          }
+
+          // Per-step token usage. Re-reads overwrite with the latest reported
+          // numbers (they grow monotonically as the generator emits more
+          // output). We sum across steps at the end to compute total usage.
           if (step.usage) usageByStep.set(stepIndex, step.usage);
 
           // Collect tool calls — dedupe by id so the same step seen across
@@ -1260,7 +1290,8 @@ export class WindsurfClient {
         // shorter ceiling so a stuck cascade with a completed tool
         // doesn't burn 180s of account quota per attempt.
         const msSinceGrowth = Date.now() - lastGrowthAt;
-        const hasActiveStep = Array.isArray(steps) && steps.some((s) => s && s.status === 1);
+        const hasActiveStep = pendingToolCalls.size > 0
+          || (Array.isArray(steps) && steps.some((s) => s && s.status === 1));
         const effectiveWarmStallMs = pickWarmStallCeiling({
           totalThinking,
           toolCallCount: seenToolCallIds.size,
@@ -1311,21 +1342,20 @@ export class WindsurfClient {
           const growthSettled = (Date.now() - lastGrowthAt) > pollInterval * 2;
           const canBreak = sawText ? (idleCount >= 2 && growthSettled) : idleCount >= 4;
           if (canBreak) {
-            // Final sweep. Re-read the last batch that returned steps so the
-            // newest steps still get the modifiedText polish pass. Using the
-            // turn's start offset here would re-fetch the whole trajectory
-            // once per turn (and replay pre-turn steps on a resume); using
-            // the advanced `stepOffset` would miss steps the next poll had
-            // not fetched yet.
+            // Final sweep. Re-read the same bounded overlap window as the
+            // last poll so the newest steps still get the modifiedText polish
+            // pass. Using the advanced `stepOffset` would miss steps the next
+            // poll had not fetched yet; the window never reaches behind
+            // pollFloor, so pre-turn steps on a resume are not replayed.
             const finalResp = await grpcUnary(
               this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`,
-              grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, lastBatchStart))
+              grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, lastWindowStart))
             );
             const finalSteps = parseTrajectorySteps(finalResp);
-            stepOffset = Math.max(stepOffset, lastBatchStart + finalSteps.length);
+            stepOffset = Math.max(stepOffset, lastWindowStart + finalSteps.length);
             for (let i = 0; i < finalSteps.length; i++) {
               const step = finalSteps[i];
-              const stepIndex = lastBatchStart + i;
+              const stepIndex = lastWindowStart + i;
               const responseText = step.responseText || '';
               const modifiedText = step.modifiedText || '';
               const prev = yieldedByStep.get(stepIndex) || 0;
