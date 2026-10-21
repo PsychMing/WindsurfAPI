@@ -1392,6 +1392,28 @@ export class WindsurfClient {
       }
       if (endReason === 'unknown') endReason = 'max_wait';
 
+      // A client abort is not a completed turn. Before this check the loop
+      // fell through to the normal return below, so chat.js treated the
+      // partial chunks as a finished answer: it cached them, checked the
+      // cascade into the reuse pool, recorded spend, and wrote
+      // finish_reason:"stop" + [DONE] to a socket the client had already
+      // closed. The upstream turn cannot be cancelled (the LS exposes no
+      // cancel-cascade RPC), but the LOCAL turn must be observably
+      // incomplete. Throw the same AbortError shape the legacy
+      // RawGetChatMessage stream produces, and skip the completion-only work
+      // below (onEnd, generator-metadata RPC, chunk metadata, return).
+      // `aborted()` is checked in addition to the loop's endReason so an
+      // abort that lands after idle_done/max_wait is still surfaced.
+      if (endReason === 'aborted' || aborted()) {
+        // Mirror the normal return's reset so a reused client instance never
+        // carries this turn's recovery flag into the next call.
+        this._lastReuseInvalidated = false;
+        const err = new Error('Cascade aborted by client');
+        err.name = 'AbortError';
+        err.code = 'ABORT_ERR';
+        throw err;
+      }
+
       // Structured summary so we can diagnose short/empty completions after
       // the fact. sawActive=false + sawText=false + idle_empty = the planner
       // never actually ran on this cascade — likely an upstream starvation.
