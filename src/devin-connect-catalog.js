@@ -313,7 +313,12 @@ export function decodeUserStatusFull(raw, catalog = null) {
         // is already USD and `balanceUnit` reflects that — consumers must NOT
         // divide by 1e6 again.
         const balanceMicro = intField(billing, 16);
-        if (balanceMicro != null) {
+        // uint64 -1 is a common "unknown/unlimited" sentinel on the wire; read as
+        // an unsigned varint it becomes 1.8e19 micro-dollars and the dashboard
+        // rendered $18,446,744,073,709.43. Only a plausible on-demand balance
+        // (0 .. $1,000,000 in micro-dollars) is real; everything else is unknown.
+        if (balanceMicro != null && Number.isFinite(balanceMicro)
+            && balanceMicro >= 0 && balanceMicro <= 1e12) {
           result.balance = balanceMicro / 1e6;
           result.balanceUnit = 'usd';
           result.balanceMicro = balanceMicro; // raw micro-usd, for callers that want it
