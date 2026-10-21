@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **195** 份,v2.0.6 → v3.9.44 |
+| 发布说明 | **196** 份,v2.0.6 → v3.9.45 |
 | git tag | 202 个（截至 2026-10-15） |
-| 当前 | **v3.9.44**(2026-10-22) |
+| 当前 | **v3.9.45**(2026-10-22) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -42,7 +42,13 @@ flowchart LR
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
 
-### [v3.9.44](docs/releases/RELEASE_NOTES_3.9.44.md) · 2026-10-22
+### [v3.9.45](docs/releases/RELEASE_NOTES_3.9.45.md) · 2026-10-22
+
+账号管理重做：登录/导入/维护合并为一页，KPI 条 + 服务端筛选 + 9 列表格 + 抽屉 + 吸底批量操作，
+Key 只显示 masked，8 态徽章与 AA 对比，`/accounts/ids` 与 `/accounts/batch` 新 API，组合筛选
+`total` 修复。新增 `npm run smoke:dashboard` 17 条真实 HTTP 流程并接入 CI。无协议破坏。
+
+### [v3.9.44](docs/releases/RELEASE_NOTES_3.9.44.md) · 2026-10-22（已发布）
 
 登录修复：OAuth-only 账号不再被误判成密码错误（`has_password` 才是密码信号），并补上邮箱验证码
 登录（probe / email/start / email/complete，服务端 flowId，10 分钟 TTL/一次性/5 次尝试/30 秒冷却）；
