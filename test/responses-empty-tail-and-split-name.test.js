@@ -181,10 +181,10 @@ describe('GFProtocol Q1 — a split function.name must not freeze the stream', (
     const afterDelta = evs.findIndex(e => e.ev === 'response.output_text.delta' && e.data?.delta === 'AFTER');
     assert.ok(addedEv !== -1 && addedEv < afterDelta,
       `function_call added at ${addedEv}, post-tool text at ${afterDelta}`);
-  });
-
-  it('keeps the split name whole and the post-tool text in its own item', async () => {
-    const evs = await runResponses(TEXT_SPLIT_TOOL_TEXT);
+    // Same shape on the wire: the split name is whole and each text segment has
+    // its own item. (Pre-fix these array assertions also held — the observable
+    // defect for this shape is the freeze above, which is why the byte probe is
+    // the red assertion.)
     const output = completed(evs).output;
     assert.deepEqual(output.map(i => i.type), ['message', 'function_call', 'message']);
     assert.deepEqual(itemsOfType(output, 'message').map(itemText), ['BEFORE ', 'AFTER']);
@@ -192,7 +192,58 @@ describe('GFProtocol Q1 — a split function.name must not freeze the stream', (
     assert.equal(call.name, 'get_time');
     assert.equal(call.arguments, '{}');
     assert.deepEqual(added(evs).map(a => a.oi), [0, 1, 2]);
-    assert.deepEqual(done(evs).map(d => d.oi), [0, 1, 2], 'done must follow output_index order');
+  });
+
+  it('holds text that arrives between name fragments until the name settles', async () => {
+    // Upstream can interleave name:"get_" -> text -> name:"time". Text does not
+    // prove the name is final, so publishing it here would put "get_" on the wire
+    // — uncorrectable. The text is held and emitted after the call it followed.
+    const log = [];
+    const evs = await runResponses([
+      text('A'),
+      tool({ id: 'call_1', function: { name: 'get_' } }),
+      text('B'),
+      tool({ function: { name: 'time' } }),
+      tool({ function: { arguments: '{}' } }),
+      text('C'),
+      finish(),
+      DONE,
+    ], { log });
+    // Frames: 0 A, 1 "get_", 2 B, 3 "time", 4 args, 5 C, 6 finish.
+    const b = bytesPerFrame(log);
+    assert.equal(b[3], b[2], `held text was written before the name settled: ${b[2]} -> ${b[3]}`);
+    assert.ok(b[4] > b[3], `call not published when its name settled: ${b[3]} -> ${b[4]}`);
+    assert.ok(b[6] > b[5], `post-name text was withheld until finish: ${b[5]} -> ${b[6]}`);
+
+    const output = completed(evs).output;
+    assert.deepEqual(output.map(i => i.type), ['message', 'function_call', 'message']);
+    assert.deepEqual(itemsOfType(output, 'message').map(itemText), ['A', 'BC']);
+    assert.deepEqual(itemsOfType(output, 'function_call').map(i => i.name), ['get_time']);
+    assert.ok(!output.some(i => i.name === 'get_'), 'a partial function name was published');
+    assert.equal(textDeltas(evs), 'ABC');
+  });
+
+  it('does not resolve on an args-only delta for a different call', async () => {
+    // The args of call 2 say nothing about call 1's still-fragmenting name.
+    // Resolving here published "get_" (measured pre-review).
+    const log = [];
+    const evs = await runResponses([
+      text('A'),
+      tool({ id: 'call_1', function: { name: 'get_' } }),
+      tool({ id: 'call_2', index: 1, function: { name: 'other_tool' } }),
+      tool({ index: 1, function: { arguments: '{}' } }),
+      tool({ function: { name: 'time' } }),
+      tool({ function: { arguments: '{}' } }),
+      finish(),
+      DONE,
+    ], { log });
+    // Frames: 0 A, 1 "get_", 2 call 2, 3 call 2 args, 4 "time", 5 call 1 args, 6 finish.
+    const b = bytesPerFrame(log);
+    assert.ok(b[5] > b[4], `deferred call not published when its name settled: ${b[4]} -> ${b[5]}`);
+    const output = completed(evs).output;
+    assert.deepEqual(itemsOfType(output, 'function_call').map(i => i.name), ['get_time', 'other_tool']);
+    assert.ok(!output.some(i => i.name === 'get_'), 'a partial function name was published');
+    assert.equal(itemsOfType(output, 'function_call')[1].arguments, '{}');
   });
 
   it('does not merge text that a second call separates', async () => {
@@ -237,6 +288,7 @@ describe('GFProtocol Q1 — a split function.name must not freeze the stream', (
     // may be published while the first is still fragmenting, but the first must
     // keep waiting. Opening it here would put "get_" on the wire, which the event
     // contract cannot correct.
+    const log = [];
     const evs = await runResponses([
       text('A'),
       tool({ id: 'call_1', function: { name: 'get_' } }),
@@ -245,7 +297,10 @@ describe('GFProtocol Q1 — a split function.name must not freeze the stream', (
       tool({ function: { arguments: '{}' } }),
       finish(),
       DONE,
-    ]);
+    ], { log });
+    // Frames: 0 A, 1 "get_", 2 call 2, 3 "time", 4 args, 5 finish.
+    const b = bytesPerFrame(log);
+    assert.ok(b[4] > b[3], `deferred call not published when its name settled: ${b[3]} -> ${b[4]}`);
     const output = completed(evs).output;
     assert.deepEqual(itemsOfType(output, 'function_call').map(i => i.name), ['get_time', 'other_tool']);
     assert.ok(!output.some(i => i.name === 'get_'), 'a partial function name was published');

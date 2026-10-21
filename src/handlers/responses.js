@@ -758,8 +758,8 @@ class ResponsesStreamTranslator {
   }
 
   /**
-   * End the deferral: publish every tool item whose name is now final, then replay
-   * the buffered events in arrival order.
+   * End the deferral: publish the deferred call, then replay the buffered entries
+   * in arrival order.
    *
    * Deferral exists for exactly one reason — `output_item.added` cannot be
    * corrected, so a split `function.name` must not be published as its first
@@ -770,8 +770,12 @@ class ResponsesStreamTranslator {
    * call -> text B -> call 2 -> text C: bytes flat from the first fragment through
    * finish (1834), done oi=3 before oi=2, and B/C merged into one message item
    * because the seal that belongs between them never ran.
+   *
+   * Every caller proves the deferred call's name is final: its name completed, its
+   * arguments started, or the stream ended. Text does NOT prove it (upstream can
+   * send name -> text -> name), so text is held instead — see emitTextDelta.
    */
-  resolveDeferred(pendingFinal = false) {
+  resolveDeferred() {
     if (!this.deferred) return;
     const { entries, tool: pendingTool } = this.deferred;
     this.deferred = null;
@@ -779,24 +783,19 @@ class ResponsesStreamTranslator {
     // first. Every buffered entry arrived after the delta that started the
     // deferral, and the pre-tool message was already sealed there.
     //
-    // Only FINAL names may be published. `pendingFinal` is the caller's proof
-    // that the deferring call's name is settled (its name completed, its
-    // arguments started, text arrived, or the stream ended). A different call is
-    // published only when its own name is already known — publishing a fragment
-    // is the uncorrectable event this whole mechanism exists to avoid.
+    // A different call is published only when its own name is already known —
+    // publishing a fragment is the uncorrectable event this mechanism exists to
+    // avoid.
     for (const tc of [...this.toolCalls.values()].sort((a, b) => a.outputIndex - b.outputIndex)) {
       if (tc.item || !tc.wireName) continue;
-      const final = tc === pendingTool ? pendingFinal : this.knownToolName(tc.wireName);
-      if (final) this.openToolItem(tc);
+      if (tc === pendingTool || this.knownToolName(tc.wireName)) this.openToolItem(tc);
     }
-    for (const entry of entries) this._write(entry.event, entry.data);
-  }
-
-  flushDeferred() {
-    if (!this.deferred) return;
-    const { entries } = this.deferred;
-    this.deferred = null;
-    for (const entry of entries) this._write(entry.event, entry.data);
+    for (const entry of entries) {
+      // Held text goes through the normal path, so it accumulates into the item
+      // that follows the call and keeps its arrival position among the events.
+      if (entry.text !== undefined) this.emitTextDelta(entry.text);
+      else this._write(entry.event, entry.data);
+    }
   }
 
   knownToolName(name) {
@@ -959,10 +958,15 @@ class ResponsesStreamTranslator {
 
   emitTextDelta(text) {
     if (!text) return;
-    // Text after a tool call proves that call's name is final — no more fragments
-    // are coming. Resolve BEFORE opening the message so the call is published
-    // ahead of the text it precedes in output_index order.
-    if (this.deferred) this.resolveDeferred(true);
+    if (this.deferred) {
+      // A text delta does NOT prove the call's name is final: upstream can send
+      // name:"get_" -> text -> name:"time", and publishing "get_" is uncorrectable.
+      // Emitting the text now would also put it ahead of a call that started
+      // first. Hold it in arrival order; resolveDeferred replays it through this
+      // same method once the item is published.
+      this.deferred.entries.push({ text });
+      return;
+    }
     this.ensureTextPart();
     this.text += text;
     this.segmentText += text;
@@ -978,13 +982,15 @@ class ResponsesStreamTranslator {
    * Publish `output_item.added` for a call whose name is final. The caller
    * guarantees `tc.item` is still null.
    */
-  openToolItem(tc) {
+  openToolItem(tc, { seal = true } = {}) {
     if (tc.item) return;
     // A tool item is about to open, so any text already streamed belongs to a
     // message item that ENDED before it. Sealing here — at the point the tool
     // item is created, not in finish() — is what gives the post-tool text its own
-    // item and keeps output_index ascending in emission order.
-    this.sealMessageSegment();
+    // item and keeps output_index ascending in emission order. `finishToolCalls`
+    // opts out: it only reaches a nameless call after the stream ended, and
+    // sealing there would close a message that opened after that call.
+    if (seal) this.sealMessageSegment();
     const wireName = tc.wireName || tc.toolName || 'unknown';
     const clientName = restoreToolName(wireName, this.toolNameMap) || wireName;
     const responseTool = tc.responseTool;
@@ -1078,7 +1084,7 @@ class ResponsesStreamTranslator {
         // call settling does NOT prove the deferred call's name is final, so it
         // is published on its own (into the buffer, at its arrival position).
         if (!this.deferred) this.openToolItem(existing);
-        else if (existing === this.deferred.tool) this.resolveDeferred(true);
+        else if (existing === this.deferred.tool) this.resolveDeferred();
         else this.openToolItem(existing);
       } else if (!this.deferred && !existing.item) {
         // An unknown fragment must wait: publishing output_item.added with the
@@ -1099,7 +1105,7 @@ class ResponsesStreamTranslator {
     // Arguments never arrive before the name is complete, so an args-only delta
     // proves the accumulated name is final even when it matches no declared tool.
     // Without this, an undeclared split name would still freeze until finish().
-    if (this.deferred && !nameFragment) this.resolveDeferred(true);
+    if (this.deferred && !nameFragment && existing === this.deferred.tool) this.resolveDeferred();
     // A delta that only added a name fragment leaves the name pending: the item
     // must not be published yet. Anything it carried was buffered above.
     if (this.deferred && !existing.item) return;
@@ -1131,35 +1137,10 @@ class ResponsesStreamTranslator {
     for (const tc of sorted) {
       if (tc.done) continue;
       tc.done = true;
-      if (!tc.item) {
-        const rt = tc.responseTool;
-        tc.item = rt?.type === 'custom'
-          ? {
-              type: 'custom_tool_call',
-              call_id: clientToolId(tc.callId) || `call_${randomUUID().slice(0, 8)}`,
-              name: rt.originalName || tc.toolName || 'unknown',
-              ...(rt.namespace ? { namespace: rt.namespace } : {}),
-              input: '',
-              status: 'in_progress',
-            }
-          : rt?.type === 'web_search'
-            ? {
-                type: 'web_search_call',
-                id: clientToolId(tc.callId) || `ws_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
-                status: 'in_progress',
-                action: { type: 'search', query: '' },
-              }
-            : {
-                type: 'function_call',
-                id: genFunctionCallId(),
-                call_id: clientToolId(tc.callId) || `call_${randomUUID().slice(0, 8)}`,
-                name: tc.toolName || 'unknown',
-                ...(rt?.namespace ? { namespace: rt.namespace } : {}),
-                arguments: '',
-                status: 'in_progress',
-              };
-        this.send('response.output_item.added', { output_index: tc.outputIndex, item: tc.item });
-      }
+      // A call with no name at all reaches here (every named call is published by
+      // resolveDeferred before this). `tc.callId` was sanitized when the id
+      // arrived, so no second clientToolId pass is needed.
+      if (!tc.item) this.openToolItem(tc, { seal: false });
       const args = tc.argChunks.join('');
       if (tc.custom) {
         const parsed = safeJsonParse(args);
@@ -1273,14 +1254,13 @@ class ResponsesStreamTranslator {
     // A name that never settled (no args, no text, no second fragment) is still
     // final at end of stream. Publish it here so its `added` precedes its `done`
     // and the buffered events keep their arrival order.
-    this.resolveDeferred(true);
+    this.resolveDeferred();
     this.finishReasoning();
     this.finishToolCalls();
     // `segmentText`, not `text`: the whole-turn accumulator is non-empty after any
     // pre-tool narration, so this gate closed an EMPTY trailing message item on
     // every turn that narrated and then called a tool.
     if (this.messageStarted || this.segmentText) this.finishMessage();
-    this.flushDeferred();
     // Same truncation rule as the non-streaming path (see chatToResponse):
     // 'incomplete' is reserved for length / content_filter, everything else closes
     // as 'completed'.
