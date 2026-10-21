@@ -34,8 +34,10 @@
 
 ## 工程与门禁
 
-- 合入 4 条分支（均基于 `8a4fcc6`）：`fix/login-notfound` `a664ecd`、`fix/account-ui-safety` `6305425`、`fix/model-free-list` `7bf51f6`、`fix/precontent-status` `10e5613`。
-- Windows/Linux/gate/mutation/wire：见发布提交与 CI。
+- 合入 4 条分支（均基于 `8a4fcc6`）：`fix/login-notfound` `a664ecd`、`fix/account-ui-safety` `6305425`、`fix/model-free-list` `7bf51f6`、`fix/precontent-status` `10e5613`；合并后更新两条 mutation baseline pin（credit-cost 197、reasoning-continuity 326）。
+- Windows `npm run test:release`：**5,773 pass / 0 fail / 82 skip（473 文件，5,855 tests）**，exit 0。
+- Windows `npm run gate`：**PASS exit=0** —— 全部子门绿。
+- Linux/mutation/wire：见发布提交与 CI。
 
 ## 尚未验证
 
