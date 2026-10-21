@@ -37,7 +37,9 @@
 - 合入 4 条分支（均基于 `8a4fcc6`）：`fix/login-notfound` `a664ecd`、`fix/account-ui-safety` `6305425`、`fix/model-free-list` `7bf51f6`、`fix/precontent-status` `10e5613`；合并后更新两条 mutation baseline pin（credit-cost 197、reasoning-continuity 326）。
 - Windows `npm run test:release`：**5,773 pass / 0 fail / 82 skip（473 文件，5,855 tests）**，exit 0。
 - Windows `npm run gate`：**PASS exit=0** —— 全部子门绿。
-- Linux/mutation/wire：见发布提交与 CI。
+- Linux `npm run test:release`（HMC，Node v24.21.0，473 文件）：**5,854 pass / 0 fail / 1 skip（5,855 tests）**，exit 0。
+- mutation：`sticky-queue-on-pin`、`cascade-metadata-egress`、`dashboard-connect-parity`、`credit-cost-top-level` 四个受影响规格 exit 0。
+- wire：对 `v3.9.46`（`c720a56`，3.9.48 分支的最后一个严格祖先 release tag）**270/270 比较相同**，exit 0。
 
 ## 尚未验证
 
