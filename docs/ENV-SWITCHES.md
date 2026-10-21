@@ -258,6 +258,24 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | `WINDSURFAPI_PROTO_TRACE_READ_WRAPPER_CHILD_LIMIT` | `24` | read wrapper 展开的子字段数。 |
 | `WINDSURFAPI_PROTO_TRACE_TOOL_CONFIG_UNKNOWN_LIMIT` | `24` | tool config 里未知字段的保留数。 |
 
+## Language Server 安装（`install-ls.sh`，不是服务运行时开关）
+
+这些变量只被 `install-ls.sh` 读取；写进 `.env` 不会影响已经运行的服务，
+请在命令行前设置（例如 `WINDSURFAPI_LS_VERSION=3.10.67 bash install-ls.sh`）。
+默认路径是「上游 manifest → `ls-pins.json` 固定版本 → archive + 内层 binary
+双 sha256 校验」，任何不符都退出非 0，没有静默回退。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `WINDSURFAPI_LS_VERSION` | 空 | 固定到某个版本。必须在 `ls-pins.json` 里；否则要显式 `--allow-unpinned`。 |
+| `WINDSURFAPI_LS_CHANNEL` | `stable` | `stable` / `next`，决定默认 manifest。 |
+| `WINDSURFAPI_LS_MANIFEST_URL` | 空（按 channel 推导） | 覆盖 manifest URL；也接受本地路径（测试/离线）。 |
+| `WINDSURFAPI_LS_PINS` | 脚本同目录 `ls-pins.json` | 信任锚文件；改它等于改安装来源。 |
+| `WINDSURFAPI_LS_ALLOW_MIRROR` | `0` | `1` 才允许 3.5.17 的 mirror 回滚 pin（`--rollback` 会隐含打开）。 |
+| `WINDSURFAPI_LS_ALLOW_UNPINNED` | `0` | `1` 才允许安装 pin 里没有的版本；archive 仍按 manifest 校验，内层 hash 只记录不比对。 |
+| `WINDSURFAPI_LS_PLATFORM` | 自动检测 | 覆盖目标平台（`linux-x64` / `linux-arm64` / `darwin-arm64` / `darwin-x64`），主要用于测试。 |
+| `LS_INSTALL_PATH` | 平台默认路径 | 安装目标。 |
+
 ## 熔断 / 限流 / 配额（`runtime-config.js` 表驱动，可热改）
 
 这一组的特点是**同时能从环境变量和运行时配置改**（面板里也有），而且表里写着
