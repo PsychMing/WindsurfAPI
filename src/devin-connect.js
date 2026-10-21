@@ -2773,7 +2773,10 @@ export async function* streamChat({
     done = true;
     pump();
   }, absoluteDeadlineMs);
-  // Don't let the deadline timer keep the event loop alive on its own.
+  // The deadline timer stays OUT of the loop's ref set by default: it must never hold the
+  // process open on its own (a caller that walks away from the iterator without closing it
+  // would otherwise pin shutdown for up to absoluteDeadlineMs). The consumer wait below
+  // re-refs it for exactly the window in which it is the only thing that can make progress.
   if (typeof deadlineTimer.unref === 'function') deadlineTimer.unref();
 
   req.write(framed);
@@ -2854,7 +2857,19 @@ export async function* streamChat({
         };
         return;
       }
-      await new Promise((resolve) => { wake = resolve; });
+      // While this wait is pending, the absolute deadline is the ONLY handle that can make
+      // progress (the fake/hung upstream delivers no data, no error and no socket activity),
+      // so it must be ref'd for the duration. Node 20/22 cancel a pending await the moment the
+      // event loop drains — "Promise resolution is still pending but the event loop has
+      // already resolved" — which turned a hung upstream into a cancelled test and, in
+      // production, into a request the runtime silently gives up on. It is unref'd again as
+      // soon as the wait settles, so it still never holds the process open (Node 24 behaviour
+      // is unchanged: the timer fires at the same instant and the same code is thrown).
+      await new Promise((resolve) => {
+        wake = resolve;
+        if (typeof deadlineTimer.ref === 'function') deadlineTimer.ref();
+      });
+      if (typeof deadlineTimer.unref === 'function') deadlineTimer.unref();
     }
   } finally {
     // Clear the deadline timer on EVERY exit (success, error, or early return
