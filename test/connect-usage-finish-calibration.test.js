@@ -33,21 +33,19 @@ describe('stop reason mapping (paid calibration 2026-07-27)', () => {
     assert.equal(mapFinishReason(2, {}), 'stop', '2 is the verified free-tier clean stop');
   });
 
-  it('still reports a genuine truncation — but from usage, not from the enum', () => {
-    // 3 and 5 were name-order guesses like 4 was, so they no longer claim
-    // length/content_filter on their own: the same reasoning that retired the 4 guess
-    // applies to them, and a spurious 'incomplete' is a hard failure on
-    // /v1/responses (and a fabricated 'refusal' on /v1/messages).
-    assert.equal(mapFinishReason(3, {}), 'stop');
-    assert.equal(mapFinishReason(5, {}), 'stop');
-    // Real truncation is still reported — corroborated by completion_tokens landing
-    // on the cap the caller asked for, which does not depend on the un-pinned
-    // integers at all.
+  it('reports genuine truncation from the descriptor-pinned enum AND from usage', () => {
+    // 3 and 5 are no longer name-order guesses: the binary descriptor set pins
+    // 3 = MAX_TOKENS and 5 = MAX_NEWLINES, so the enum itself reports 'length'.
+    // (4 remains 'stop' — the paid capture outranks its MIN_LOG_PROB name.)
+    assert.equal(mapFinishReason(3, {}), 'length');
+    assert.equal(mapFinishReason(5, {}), 'length');
+    // The usage-based inference still covers an enum that only says 'stop'
+    // (e.g. 2/4) when completion_tokens lands on the caller's cap.
     assert.equal(resolveFinishReason(3, { completion_tokens: 128 }, 128, {}), 'length',
       'a turn that used its entire output budget is a genuine truncation');
     assert.equal(resolveFinishReason(2, { completion_tokens: 128 }, 128, {}), 'length');
-    // And an operator with a real capture can restore the enum mapping outright.
-    assert.equal(mapFinishReason(3, { DEVIN_CONNECT_STOP_REASON_MAP: '3=length' }), 'length');
+    // And an operator with a real capture can override the enum mapping outright.
+    assert.equal(mapFinishReason(3, { DEVIN_CONNECT_STOP_REASON_MAP: '3=stop' }), 'stop');
     assert.equal(mapFinishReason(5, { DEVIN_CONNECT_STOP_REASON_MAP: '5=content_filter' }),
       'content_filter');
   });

@@ -336,6 +336,20 @@ function normalizeUserStatus(data) {
     return Number.isFinite(n) ? n : null;
   };
 
+  // proto3 JSON encodes int64 as a DECIMAL STRING ("80000000"), so the old bare
+  // `typeof === 'number'` check silently dropped the on-demand balance whenever
+  // the server emitted the spec-compliant form. Accept both encodings and keep
+  // the protobuf path's rules: -1 (the "unlimited/absent" sentinel) and anything
+  // outside 0..1e12 micro-USD is unknown, not a balance.
+  const overageRaw = ps.overageBalanceMicros;
+  const overageMicros = typeof overageRaw === 'string'
+    ? (overageRaw.trim() === '' ? NaN : Number(overageRaw))
+    : overageRaw;
+  const overageBalance = typeof overageMicros === 'number'
+    && Number.isFinite(overageMicros) && overageMicros >= 0 && overageMicros <= 1e12
+    ? overageMicros / 1_000_000
+    : null;
+
   const out = {
     planName: plan.planName || 'Unknown',
     // proto3-JSON omits zero values, so a fully-used quota (0% remaining) comes
@@ -351,7 +365,7 @@ function normalizeUserStatus(data) {
       : ((ps.weeklyQuotaResetAtUnix != null || typeof ps.dailyQuotaRemainingPercent === 'number') ? 0 : null),
     dailyResetAt: asUnix(ps.dailyQuotaResetAtUnix),
     weeklyResetAt: asUnix(ps.weeklyQuotaResetAtUnix),
-    overageBalance: typeof ps.overageBalanceMicros === 'number' ? ps.overageBalanceMicros / 1_000_000 : null,
+    overageBalance,
     prompt: {
       limit: legacyDiv(plan.monthlyPromptCredits),
       used: legacyDiv(ps.usedPromptCredits),
