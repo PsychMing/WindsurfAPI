@@ -5,7 +5,105 @@ import { isValidToolId } from '../src/tool-ids.js';
 
 const longName = 'a'.repeat(64);
 
+function chatChunk(chunk) {
+  return `data: ${JSON.stringify(chunk)}\n\n`;
+}
+
+function fakeRes() {
+  const listeners = new Map();
+  return {
+    body: '',
+    writableEnded: false,
+    write(chunk) {
+      this.body += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      return true;
+    },
+    end(chunk) {
+      if (chunk) this.write(chunk);
+      this.writableEnded = true;
+      for (const cb of listeners.get('close') || []) cb();
+    },
+    on(event, cb) {
+      if (!listeners.has(event)) listeners.set(event, []);
+      listeners.get(event).push(cb);
+      return this;
+    },
+  };
+}
+
+function parseSseFrames(raw) {
+  return raw
+    .split('\r\n\r\n')
+    .filter(Boolean)
+    .filter(frame => frame.startsWith('data: '))
+    .map(frame => JSON.parse(frame.slice(6)));
+}
+
+// Two DISTINCT calls, one reused upstream id (GFProtocol Q1-04).
+function duplicateIdUpstream() {
+  return {
+    status: 200,
+    stream: true,
+    async handler(res) {
+      res.write(chatChunk({ choices: [{ index: 0, delta: { tool_calls: [
+        { index: 0, id: 'call_dup', type: 'function', function: { name: 'alpha', arguments: '{"n":1}' } },
+        { index: 1, id: 'call_dup', type: 'function', function: { name: 'beta', arguments: '{"n":2}' } },
+      ] } }] }));
+      res.write(chatChunk({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }));
+      res.end('data: [DONE]\n\n');
+    },
+  };
+}
+
+async function runGeminiStream() {
+  const result = await handleGemini('gemini-2.5-pro', {
+    contents: [{ role: 'user', parts: [{ text: 'go' }] }],
+  }, {
+    async handleChatCompletions() { return duplicateIdUpstream(); },
+  }, { stream: true, alt: 'sse' });
+  const res = fakeRes();
+  await result.handler(res);
+  return parseSseFrames(res.body)
+    .flatMap(f => f.candidates?.[0]?.content?.parts || [])
+    .filter(p => p.functionCall)
+    .map(p => p.functionCall);
+}
+
 describe('Gemini tool boundary', () => {
+  it('emits distinct functionCall ids when the upstream reuses one call id', async () => {
+    const first = await runGeminiStream();
+    assert.deepEqual(first.map(c => c.id), ['call_dup', 'call_dup_2']);
+    assert.deepEqual(first.map(c => c.name), ['alpha', 'beta']);
+    assert.deepEqual(first.map(c => c.args), [{ n: 1 }, { n: 2 }]);
+    // Deterministic: the same upstream turn maps to the same wire ids.
+    const second = await runGeminiStream();
+    assert.deepEqual(second.map(c => c.id), first.map(c => c.id));
+    // The emitted ids survive the next turn's request leg unchanged, so each
+    // functionResponse still binds to the call it answered.
+    const out = geminiToOpenAI({
+      contents: [
+        { role: 'model', parts: first.map(c => ({ functionCall: { id: c.id, name: c.name, args: c.args } })) },
+        { role: 'user', parts: first.map(c => ({ functionResponse: { id: c.id, name: c.name, response: {} } })) },
+      ],
+    });
+    assert.deepEqual(out.messages.find(m => m.tool_calls).tool_calls.map(c => c.id), first.map(c => c.id));
+    assert.deepEqual(out.messages.filter(m => m.role === 'tool').map(m => m.tool_call_id), first.map(c => c.id));
+  });
+
+  it('dedupes non-stream functionCall ids too', () => {
+    const out = openAIToGemini({
+      choices: [{
+        message: { tool_calls: [
+          { id: 'call_dup', function: { name: 'alpha', arguments: '{"n":1}' } },
+          { id: 'call_dup', function: { name: 'beta', arguments: '{"n":2}' } },
+        ] },
+        finish_reason: 'tool_calls',
+      }],
+    }, 'gemini-2.5-pro');
+    const ids = out.candidates[0].content.parts.filter(p => p.functionCall).map(p => p.functionCall.id);
+    assert.deepEqual(ids, ['call_dup', 'call_dup_2']);
+  });
+
   it('bounds a 64-char function name to a 64-char id and pairs the response', () => {
     const out = geminiToOpenAI({
       contents: [

@@ -113,6 +113,27 @@ function uniqueToolId(base, reserved, maxLen) {
   return wire;
 }
 
+// Egress-side counterpart to the request-leg repair above. Upstream can reuse
+// one call id for two DISTINCT calls (parallel calls or a repeated turn); a
+// client that keys tool results by id then cannot tell them apart. Allocate in
+// first-arrival order: the first occurrence keeps the raw (sanitized) id, later
+// occurrences get the same deterministic suffix the request leg uses, so the
+// mapping is stable across turns. `makeFallback` supplies the surface's
+// historical generated id when upstream omitted one; without it an absent id
+// stays absent.
+export function createToolIdAllocator({ maxLen = MAX_TOOL_ID_LEN, charsetOnly = false, makeFallback = null } = {}) {
+  const opts = { maxLen, charsetOnly };
+  const reserved = new Set();
+  let slot = 0;
+  return function allocateToolId(rawId) {
+    const base = sanitizeToolId(rawId, opts);
+    if (base) return uniqueToolId(base, reserved, maxLen);
+    if (!makeFallback) return '';
+    const generated = sanitizeToolId(String(makeFallback(slot++) ?? ''), opts);
+    return uniqueToolId(generated || synthToolId('call', '', slot), reserved, maxLen);
+  };
+}
+
 export function normalizeToolIdsInMessages(messages, { seed = '', maxLen = MAX_TOOL_ID_LEN, charsetOnly = false } = {}) {
   if (!Array.isArray(messages)) return messages;
 

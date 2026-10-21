@@ -27,7 +27,7 @@ import { handleChatCompletions, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
 import { SseFramer } from '../sse-framer.js';
 import { buildToolNameMap, restoreToolName, sanitizeToolName } from '../tool-names.js';
-import { normalizeToolIdsInMessages, sanitizeToolId, toolHygieneEnabled } from '../tool-ids.js';
+import { createToolIdAllocator, normalizeToolIdsInMessages, sanitizeToolId, toolHygieneEnabled } from '../tool-ids.js';
 import { normalizeHistoryTail } from '../history-normalize.js';
 
 // ─── finish_reason mapping (OpenAI → Gemini) ────────────────────
@@ -413,11 +413,14 @@ export function openAIToGemini(result, model, toolNameMap = null) {
   }
   if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
     if (msg.content) parts.push({ text: msg.content });
+    // Upstream may reuse one call id for two distinct calls; the client must
+    // never see the same functionCall id twice (GFProtocol Q1-04).
+    const allocateToolId = toolHygieneEnabled() ? createToolIdAllocator() : (id) => id || '';
     for (const tc of msg.tool_calls) {
       const name = restoreToolName(tc.function?.name, toolNameMap) || 'unknown';
       const args = parseToolArgs(tc.function?.arguments, name);
       const functionCall = { name, args };
-      if (tc.id) functionCall.id = tc.id;
+      if (tc.id) functionCall.id = allocateToolId(tc.id);
       parts.push({ functionCall });
     }
   } else {
@@ -452,7 +455,11 @@ class GeminiStreamTranslator {
     this.model = model;
     this.mode = mode;
     this.toolNameMap = toolNameMap;
-    this.toolCallBufs = new Map(); // index → { id, name, argsBuffered }
+    this.toolCallBufs = new Map(); // index → { id, rawId, name, argsBuffered }
+    // Egress id allocator: upstream may reuse one call id for two distinct
+    // calls, but the client must never see the same functionCall id twice
+    // (GFProtocol Q1-04). First-seen id wins; duplicates get a stable suffix.
+    this.allocateToolId = toolHygieneEnabled() ? createToolIdAllocator() : (id) => id || '';
     this.finalUsage = null;
     this.finishReason = 'STOP';
     this.finished = false;
@@ -502,10 +509,19 @@ class GeminiStreamTranslator {
     const idx = tc.index ?? 0;
     let existing = this.toolCallBufs.get(idx);
     if (!existing) {
-      existing = { id: tc.id, wireName: '', name: '', argsBuffered: '' };
+      existing = {
+        id: tc.id ? this.allocateToolId(tc.id) : null,
+        rawId: tc.id || null,
+        wireName: '',
+        name: '',
+        argsBuffered: '',
+      };
       this.toolCallBufs.set(idx, existing);
-    } else if (tc.id) {
-      existing.id = tc.id;
+    } else if (tc.id && tc.id !== existing.rawId) {
+      // The id is delivered once, possibly on a later delta than the first. A
+      // repeated id is the same call and must not be allocated twice.
+      existing.rawId = tc.id;
+      existing.id = this.allocateToolId(tc.id);
     }
     const rawName = tc.function?.name;
     if (rawName) {
