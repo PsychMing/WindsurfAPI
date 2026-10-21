@@ -6829,11 +6829,15 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const storeCred = document.getElementById('wl-store-cred');
     const noPassword = probe.hasPassword === false;
     const emailCode = probe.emailCode === true;
+    // `method:"not_found"`: no account at all, so neither the code form nor
+    // the "log in with Google/GitHub" hint applies — both would send the
+    // operator down a path that cannot work for this address.
+    const missingAccount = probe.userExists === false;
 
     passwordField?.classList.toggle('hidden', noPassword);
     passwordBtn?.classList.toggle('hidden', noPassword);
     codeField?.classList.toggle('hidden', !(noPassword && emailCode));
-    oauthHint?.classList.toggle('hidden', !(noPassword && !emailCode));
+    oauthHint?.classList.toggle('hidden', missingAccount || !(noPassword && !emailCode));
     if (storeCred) storeCred.closest('label')?.classList.toggle('hidden', noPassword);
 
     if (status) {
@@ -6959,6 +6963,13 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     // password path (upstream answers 401 and the operator sees "wrong
     // password" for an account that has none).
     const probe = await this.windsurfProbe(email);
+    // A missing account (upstream `method:"not_found"`) is neither a password
+    // account nor an email-code account: stop here instead of offering a code
+    // for a typo, or the operator waits for mail that will never arrive.
+    if (probe && probe.userExists === false) {
+      this.applyWindsurfLoginMethod(probe);
+      return this.toast(I18n.t('emailLogin.methodNotFound'), 'error');
+    }
     if (probe && probe.hasPassword === false) {
       if (probe.emailCode) {
         this.applyWindsurfLoginMethod(probe);

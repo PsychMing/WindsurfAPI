@@ -473,16 +473,31 @@ function interpretConnections(data) {
   const hasPassword = authMethod && typeof authMethod.has_password === 'boolean'
     ? authMethod.has_password
     : null;
-  // method:null on a present auth_method is upstream's "no such account".
-  const method = authMethod ? (authMethod.method || null) : null;
+  // `method:null` on a present auth_method is upstream's "no such account", and
+  // so is the LITERAL string "not_found": measured live 2026-10-22, an unknown
+  // address returns
+  //   auth_method: { method: "not_found", has_password: false, enterprise_sso_domain: false }
+  // and windsurf.com's own login bundle branches on exactly that value
+  // (`method === 'not_found'` → "No account found. Sign up?"). Reading it as a
+  // method made `userExists` true and offered an email code for a typo (F1).
+  // It is a sentinel, never a login method — do not return it to callers.
+  const rawMethod = authMethod && typeof authMethod.method === 'string'
+    ? authMethod.method.trim()
+    : '';
+  const method = rawMethod && rawMethod !== 'not_found' ? rawMethod : null;
   const userExists = authMethod
     ? method !== null
     : (conns ? conns.length > 0 : null);
   // Email-code login is the alternative whenever there is no password. With
   // `hasPassword:true` the email connection is the password form, not a code.
-  const emailCode = hasPassword === false
-    ? (conns ? emailOffered : true)
-    : (hasPassword === null ? emailOffered : false);
+  // A missing account gets neither: upstream's has_password:false describes a
+  // method with no account behind it, so it must not become an offer to send
+  // mail (F1).
+  const emailCode = userExists === false
+    ? false
+    : hasPassword === false
+      ? (conns ? emailOffered : true)
+      : (hasPassword === null ? emailOffered : false);
   return { method, hasPassword, userExists, emailCode, oauth, raw: data };
 }
 
@@ -961,7 +976,8 @@ async function windsurfLoginPrimaryHost(email, password, fingerprint, proxy) {
 
   if (probe.userExists === false) {
     const err = createFriendlyAuthError('Auth1', 'EMAIL_NOT_FOUND');
-    recordEmailFailure(email, err.message);
+    // A nonexistent address is not a wrong credential; locking it would let a
+    // typo (or an enumeration probe) ban a real operator for 15 minutes.
     throw err;
   }
 
@@ -1042,6 +1058,14 @@ async function windsurfLoginPrimaryHost(email, password, fingerprint, proxy) {
 // module's memory keyed by an opaque flowId, never travels to the browser, and
 // never appears in a log line. The code is equally secret: it is forwarded
 // upstream and dropped.
+//
+// DESIGN GAP (Q2 F2, deliberately NOT implemented here): the resulting
+// `devin-session-token$…` has no refresh path. refreshAllFirebaseTokens skips
+// accounts without a refreshToken, reLoginAccount needs a stored password this
+// flow never has (storeCredential:false), and the Auth1 token's TTL is
+// unmeasured — so a retired session is only recoverable by re-adding the
+// account. The design work that remains is an explicit "needs reauth" account
+// state (or encrypted Auth1 storage once its TTL is known), not a retry here.
 const EMAIL_FLOW_TTL_MS = 10 * 60 * 1000;
 const EMAIL_FLOW_MAX_ATTEMPTS = 5;
 const EMAIL_FLOW_MAX_ENTRIES = 200;
@@ -1049,6 +1073,38 @@ const EMAIL_FLOW_MAX_ENTRIES = 200;
 // loop cannot burn the upstream send quota (and the account's sender
 // reputation) without an operator decision.
 const EMAIL_CODE_RESEND_COOLDOWN_MS = 30 * 1000;
+// A successful email/complete mints an Auth1 token that is single-use upstream,
+// so it is the only thing that can be replayed when the PostAuth exchange
+// fails. Keep it briefly: long enough to ride out a PostAuth blip, short enough
+// that a forgotten flow cannot be used as a session minter (F6).
+const EMAIL_FLOW_POSTAUTH_RETRY_MS = 2 * 60 * 1000;
+const EMAIL_FLOW_POSTAUTH_MAX_ATTEMPTS = 3;
+
+// Upstream `email/complete` failures are NOT all credential guesses (F5).
+// Only a positive "the code is wrong" detail may feed the per-email lockout:
+//   - an expired/consumed verification token (measured: 401
+//     {"detail":"Invalid verification token"}, 6/6) says nothing about the
+//     digits the user typed, and the token cannot be retried anyway;
+//   - a 5xx / transport failure says nothing at all.
+// Counting either as a wrong code locked PASSWORD login for 15 minutes after a
+// code simply expired.
+const EMAIL_CODE_MISMATCH_RE = /invalid verification code|invalid code|incorrect code|wrong code/i;
+const EMAIL_FLOW_DEAD_RE = /invalid verification token|verification token|expired|already used|already consumed/i;
+
+// 'expired'   → the verification token is dead upstream: drop the flow, retry
+//               is impossible, no lockout.
+// 'code'      → upstream positively says the digits are wrong: count the flow
+//               attempt AND the email lockout.
+// 'rejected'  → upstream 400/422 without a reason: count the flow attempt
+//               (one flow must not be an unlimited oracle) but not the lockout.
+// 'unavailable' → 403/404/405/429/5xx: availability, retry the same code.
+function classifyEmailCompleteFailure(res, detail) {
+  const text = String(detail || '');
+  if (res.status === 401 || res.status === 410 || EMAIL_FLOW_DEAD_RE.test(text)) return 'expired';
+  if (EMAIL_CODE_MISMATCH_RE.test(text)) return 'code';
+  if (res.status === 400 || res.status === 422) return 'rejected';
+  return 'unavailable';
+}
 
 const _emailFlows = new Map();
 const _emailCodeSentAt = new Map();
@@ -1125,10 +1181,17 @@ function upstreamDetail(data) {
 // existing DEVIN_CONNECT_LOGIN_HOST_FALLBACK switch is on. A 4xx is upstream
 // answering (wrong code, expired token, rate limit) — retrying it on a second
 // host would just double-spend the attempt, so it is returned as-is.
+//
+// `kind === 'start'` sends mail, so it is EXACTLY ONCE (F8): no 5xx backoff and
+// no second host after a transport error. A 504 can arrive after the message
+// was queued and a transport error leaves delivery unknown, so either retry
+// sends a second code (measured: 3 sends / 7.0 s for one request). Only an
+// explicit 404/405 — proof that host has no such endpoint — falls through.
 async function requestEmailEndpoint(kind, preferredHost, payload, fingerprint, proxy) {
   const first = preferredHost || 'windsurf';
   const second = first === 'windsurf' ? 'devin' : 'windsurf';
   const hosts = isLoginHostFallbackEnabled() ? [first, second] : [first];
+  const exactlyOnce = kind === 'start';
   let lastErr = null;
   for (let i = 0; i < hosts.length; i++) {
     const host = hosts[i];
@@ -1137,7 +1200,9 @@ async function requestEmailEndpoint(kind, preferredHost, payload, fingerprint, p
     const headers = buildJsonHeaders(fingerprint, body);
     const label = `Auth1 email/${kind} (${host})`;
     try {
-      const res = await httpsRequestRetrying(url, { method: 'POST', headers }, body, proxy, label);
+      const res = exactlyOnce
+        ? await httpsRequest(url, { method: 'POST', headers }, body, proxy)
+        : await httpsRequestRetrying(url, { method: 'POST', headers }, body, proxy, label);
       const endpointGone = res.status === 404 || res.status === 405;
       if (endpointGone && i < hosts.length - 1) {
         log.warn(`${label} unavailable (${res.status}); trying the other login host`);
@@ -1147,11 +1212,9 @@ async function requestEmailEndpoint(kind, preferredHost, payload, fingerprint, p
       return { res, host };
     } catch (err) {
       lastErr = err;
-      if (i < hosts.length - 1) {
-        log.warn(`${label} failed (${err.message}); trying the other login host`);
-        continue;
-      }
-      throw err;
+      if (exactlyOnce || i === hosts.length - 1) throw err;
+      log.warn(`${label} failed (${err.message}); trying the other login host`);
+      continue;
     }
   }
   throw lastErr || new Error('ERR_EMAIL_ENDPOINT_UNREACHABLE');
@@ -1195,7 +1258,23 @@ export async function emailLoginStart(email, proxy = null) {
   _emailCodeSentAt.set(sendKey, now);
 
   const fingerprint = generateFingerprint();
-  const { res, host } = await requestEmailEndpoint('start', 'windsurf', { email: normalizedEmail }, fingerprint, proxy);
+  let started;
+  try {
+    started = await requestEmailEndpoint('start', 'windsurf', { email: normalizedEmail }, fingerprint, proxy);
+  } catch (err) {
+    // The transport layer rejects with a bare Error (no code), which used to
+    // reach the route as HTTP 400 + a raw English message, breaking the
+    // stable-code contract (F8). One send was attempted; whether the mail went
+    // out is unknowable, so say so instead of inviting an immediate resend.
+    if (err && typeof err.code === 'string' && err.code.startsWith('ERR_EMAIL_') && err.statusCode) throw err;
+    log.warn(`Auth1 email/start transport failure: ${err?.message || err}`);
+    throw emailFlowError(
+      'ERR_EMAIL_START_FAILED',
+      'The email endpoint failed before confirming the send — check the inbox before retrying.',
+      502,
+    );
+  }
+  const { res, host } = started;
   const detail = upstreamDetail(res.data);
   if (res.status >= 400 || detail) {
     throw emailFlowError(
@@ -1220,6 +1299,11 @@ export async function emailLoginStart(email, proxy = null) {
     attempts: 0,
     used: false,
     inFlight: false,
+    // Set only after upstream accepts the code; the sole retryable state when
+    // the PostAuth exchange fails (F6). Never the verification token.
+    auth1Token: null,
+    verifiedAt: 0,
+    postAuthAttempts: 0,
   });
   _emailCodeSentAt.set(sendKey, Date.now());
   log.info(`Email login code requested: ${safeEmailRef(normalizedEmail)} host=${host} flowHash=${logHash(flowId)}`);
@@ -1229,9 +1313,11 @@ export async function emailLoginStart(email, proxy = null) {
 /**
  * Verify the emailed code and finish the login.
  *
- * On success the flow is consumed (the code is single-use), the Auth1 token is
- * exchanged through the same PostAuth path the password login uses, and the
- * result has the same shape as windsurfLogin().
+ * The code is single-use upstream, but the *exchange* is not the code: a
+ * successful email/complete mints an Auth1 token that is kept on the flow for
+ * EMAIL_FLOW_POSTAUTH_RETRY_MS, so a PostAuth failure can be retried without
+ * asking the user for another email (F6). The flow is marked used only once the
+ * session token exists.
  *
  * @param {string} flowId - opaque id returned by emailLoginStart
  * @param {string} code - the 6-digit code from the inbox
@@ -1268,59 +1354,151 @@ export async function emailLoginComplete(flowId, code, proxy = null) {
   let completedHost = flow.host;
   flow.inFlight = true;
   try {
-    const { res, host } = await requestEmailEndpoint(
-      'complete', flow.host, { email: flow.email, token: flow.token, code: normalizedCode }, fingerprint, proxy,
-    );
-    completedHost = host;
-    const detail = upstreamDetail(res.data);
-    if (res.status >= 400 || detail) {
-      flow.attempts += 1;
-      // Wrong codes are credential guesses: they feed the same per-email
-      // lockout the password path uses, and a single flow cannot be used as an
-      // unlimited oracle.
-      recordEmailFailure(flow.email, 'email_code_rejected');
-      if (flow.attempts >= EMAIL_FLOW_MAX_ATTEMPTS) {
-        flow.used = true;
-        flow.token = null;
+    // A code that upstream already accepted is spent: replaying its verification
+    // token would only earn a 401. Retry the exchange with the stored Auth1
+    // token instead, and only inside the short window.
+    const reusable = typeof flow.auth1Token === 'string' && flow.auth1Token
+      && flow.verifiedAt && now - flow.verifiedAt <= EMAIL_FLOW_POSTAUTH_RETRY_MS;
+    if (reusable) {
+      auth1Token = flow.auth1Token;
+      log.info(`Email code already verified; retrying the session exchange: ${safeEmailRef(flow.email)} flowHash=${logHash(id)}`);
+    } else {
+      if (!flow.token) {
+        // Spent verification token, retry window closed: nothing left to send.
+        _emailFlows.delete(id);
+        throw emailFlowError('ERR_EMAIL_FLOW_EXPIRED', 'The verification code was already used — request a new one.', 410);
       }
+      let exchange;
+      try {
+        exchange = await requestEmailEndpoint(
+          'complete', flow.host, { email: flow.email, token: flow.token, code: normalizedCode }, fingerprint, proxy,
+        );
+      } catch (err) {
+        // Transport layer gave up (plain Error, no code). Upstream never judged
+        // the digits: keep the flow and its attempt count, and say so with a
+        // stable code (F5) instead of leaking a raw message as HTTP 400.
+        if (err && typeof err.code === 'string' && err.code.startsWith('ERR_EMAIL_') && err.statusCode) throw err;
+        log.warn(`Auth1 email/complete transport failure for ${safeEmailRef(flow.email)}: ${err?.message || err}`);
+        throw emailFlowError(
+          'ERR_EMAIL_VERIFY_UNAVAILABLE',
+          'The verification service did not answer — the code was not checked. Try again.',
+          502,
+          { retryable: true },
+        );
+      }
+      const { res, host } = exchange;
+      completedHost = host;
+      const detail = upstreamDetail(res.data);
+      if (res.status >= 400 || detail) {
+        const kind = classifyEmailCompleteFailure(res, detail);
+        if (kind === 'expired') {
+          // The verification token is dead upstream — a retry can only 401
+          // again. Drop the flow and count NOTHING: this is not a code guess
+          // and must never feed the 900 s lockout (F5).
+          _emailFlows.delete(id);
+          throw emailFlowError(
+            'ERR_EMAIL_FLOW_EXPIRED',
+            'The verification code expired or was already used — request a new one.',
+            410,
+          );
+        }
+        if (kind === 'unavailable') {
+          // 5xx / transport / 429 / 403: upstream never judged the digits.
+          // Keep the flow and its attempt count exactly as they were.
+          log.warn(`Auth1 email/complete unavailable (${res.status}) for ${safeEmailRef(flow.email)}`);
+          throw emailFlowError(
+            'ERR_EMAIL_VERIFY_UNAVAILABLE',
+            'The verification service did not answer — the code was not checked. Try again.',
+            502,
+            { retryable: true },
+          );
+        }
+        flow.attempts += 1;
+        // Only a positive "wrong code" answer is a credential guess and feeds
+        // the per-email lockout the password path uses. An ambiguous 400/422
+        // still burns a flow attempt so one flow cannot be an unlimited oracle.
+        if (kind === 'code') recordEmailFailure(flow.email, 'email_code_rejected');
+        if (flow.attempts >= EMAIL_FLOW_MAX_ATTEMPTS) {
+          flow.used = true;
+          flow.token = null;
+        }
+        throw emailFlowError(
+          'ERR_EMAIL_CODE_REJECTED',
+          detail || `upstream ${res.status}`,
+          400,
+          { isAuthFail: kind === 'code', attemptsRemaining: Math.max(0, EMAIL_FLOW_MAX_ATTEMPTS - flow.attempts) },
+        );
+      }
+      auth1Token = res.data?.token;
+      if (typeof auth1Token !== 'string' || !auth1Token) {
+        throw emailFlowError(
+          'ERR_EMAIL_VERIFY_UNAVAILABLE',
+          'The verification service accepted the code but returned no session token. Try again.',
+          502,
+          { retryable: true },
+        );
+      }
+      // The verification token is spent; the Auth1 token is the only thing a
+      // retry may replay, and only for the exchange window.
+      flow.token = null;
+      flow.auth1Token = auth1Token;
+      flow.verifiedAt = Date.now();
+      flow.host = host;
+      log.info(`Email code accepted: ${safeEmailRef(flow.email)} host=${host} flowHash=${logHash(id)}`);
+    }
+
+    flow.postAuthAttempts += 1;
+    const postAuthAttempt = flow.postAuthAttempts;
+    const remaining = Math.max(0, EMAIL_FLOW_POSTAUTH_MAX_ATTEMPTS - postAuthAttempt);
+    const giveUp = () => {
+      flow.used = true;
+      flow.auth1Token = null;
+    };
+    let br;
+    let label;
+    try {
+      ({ res: br, label } = await postAuthDualPath(auth1Token, fingerprint, proxy));
+    } catch (e) {
+      // Both PostAuth hosts failed at the transport/5xx layer. The code stays
+      // valid for the retry window (F6).
+      log.warn(`PostAuth unavailable after an accepted code (${safeEmailRef(flow.email)}): ${e.message}`);
+      if (remaining === 0) giveUp();
       throw emailFlowError(
-        'ERR_EMAIL_CODE_REJECTED',
-        detail || `upstream ${res.status}`,
-        400,
-        { isAuthFail: true, attemptsRemaining: Math.max(0, EMAIL_FLOW_MAX_ATTEMPTS - flow.attempts) },
+        'ERR_POSTAUTH_FAILED',
+        'Windsurf accepted the code but the session exchange did not answer — retry the same code.',
+        502,
+        { retryable: remaining > 0, attemptsRemaining: remaining },
       );
     }
-    auth1Token = res.data?.token;
-    if (typeof auth1Token !== 'string' || !auth1Token) {
-      throw new Error(`ERR_AUTH1_TOKEN_MISSING:${sliceRedactedJson(res.data, 200)}`);
+    if (br.status >= 400 || !br.data?.sessionToken) {
+      log.warn(`PostAuth refused after an accepted code (${safeEmailRef(flow.email)}): HTTP ${br.status}`);
+      if (remaining === 0) giveUp();
+      throw emailFlowError(
+        'ERR_POSTAUTH_FAILED',
+        'Windsurf accepted the code but the session exchange was refused — retry the same code.',
+        502,
+        { retryable: remaining > 0, attemptsRemaining: remaining },
+      );
     }
-    // Single use: consume before the exchange so a retry can never replay the
-    // same verification token. The entry stays (used:true) until its TTL so a
-    // replay reports "already used" instead of "not found".
+    // Only a real session token consumes the flow.
     flow.used = true;
-    flow.token = null;
-    log.info(`Email code accepted: ${safeEmailRef(flow.email)} host=${host} flowHash=${logHash(id)}`);
+    flow.auth1Token = null;
+    recordEmailSuccess(flow.email);
+    const accountId = br.data.accountId || 'unknown';
+    log.info(`Email-code login OK (${label}): ${safeEmailRef(flow.email)} accountHash=${logHash(accountId)} → using sessionToken as apiKey`);
+    return {
+      apiKey: br.data.sessionToken,
+      name: flow.email,
+      email: flow.email,
+      apiServerUrl: '',
+      sessionToken: br.data.sessionToken,
+      auth1Token,
+      viaEmailCode: true,
+      ...(completedHost === 'devin' ? { viaHost: 'app.devin.ai' } : {}),
+    };
   } finally {
     flow.inFlight = false;
   }
-
-  const { res: br, label } = await postAuthDualPath(auth1Token, fingerprint, proxy);
-  if (br.status >= 400 || !br.data?.sessionToken) {
-    throw new Error(`ERR_POSTAUTH_FAILED:${sliceRedactedJson(br.data, 200)}`);
-  }
-  recordEmailSuccess(flow.email);
-  const accountId = br.data.accountId || 'unknown';
-  log.info(`Email-code login OK (${label}): ${safeEmailRef(flow.email)} accountHash=${logHash(accountId)} → using sessionToken as apiKey`);
-  return {
-    apiKey: br.data.sessionToken,
-    name: flow.email,
-    email: flow.email,
-    apiServerUrl: '',
-    sessionToken: br.data.sessionToken,
-    auth1Token,
-    viaEmailCode: true,
-    ...(completedHost === 'devin' ? { viaHost: 'app.devin.ai' } : {}),
-  };
 }
 
 /**
