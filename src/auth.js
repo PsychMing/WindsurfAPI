@@ -676,6 +676,13 @@ function _serializeAccounts() {
     // DevinMap card 3: when the upstream session key last changed. Absent for
     // accounts that were never rotated, so the default file is unchanged.
     ...(a.keyRotatedAt ? { keyRotatedAt: a.keyRotatedAt } : {}),
+    // G2: the operator needs to know WHY an account is banned, not just that it
+    // is. Persist the timestamp and the (sanitized at the payload boundary)
+    // upstream message so a restart does not erase the only explanation.
+    ...(a.status === 'banned' ? {
+      bannedAt: a.bannedAt || a._banSignalAt || 0,
+      bannedReason: a.bannedReason || a._banSignalLastMessage || '',
+    } : {}),
     // C5: persisted rolling-hour health window (pruned at save time so the
     // file never carries stale/out-of-window events across restarts).
     _health: Array.isArray(a._health) ? pruneHealthWindow(a, Date.now()) : [],
@@ -815,6 +822,10 @@ function _deserializeAccount(a, now = Date.now()) {
     apiServerUrl: a.apiServerUrl || '',
     method: a.method || 'api_key',
     status,
+    // G2: restore the ban explanation across restarts. Only meaningful while
+    // status === 'banned'; a manually re-enabled account clears both fields.
+    bannedAt: Number.isFinite(a.bannedAt) ? a.bannedAt : 0,
+    bannedReason: typeof a.bannedReason === 'string' ? a.bannedReason : '',
     lastUsed: 0, errorCount: 0,
     refreshToken: a.refreshToken || '', expiresAt: 0, refreshTimer: null,
     addedAt: a.addedAt || now,
@@ -1760,6 +1771,17 @@ export function getAvailableModelsForAccount(account) {
   return allowed;
 }
 
+// Manual recovery is the only path out of `banned`; leaving the reason and the
+// detector streak behind would make the drawer claim a healthy account is
+// still banned and let a stale streak re-ban it on the next single hit.
+function clearBanState(account) {
+  account.bannedAt = 0;
+  account.bannedReason = '';
+  account._banSignalAt = 0;
+  account._banSignalCount = 0;
+  account._banSignalLastMessage = '';
+}
+
 /**
  * Set account status (active, disabled, error).
  */
@@ -1767,7 +1789,10 @@ export function setAccountStatus(id, status) {
   const account = accounts.find(a => a.id === id);
   if (!account) return false;
   account.status = status;
-  if (status === 'active') account.errorCount = 0;
+  if (status === 'active') {
+    account.errorCount = 0;
+    clearBanState(account);
+  }
   saveAccounts();
   log.info(`Account ${id} status set to ${status}`);
   trySyncModelCatalog();
@@ -1782,6 +1807,7 @@ export function resetAccountErrors(id) {
   if (!account) return false;
   account.errorCount = 0;
   account.status = 'active';
+  clearBanState(account);
   saveAccounts();
   log.info(`Account ${id} errors reset`);
   trySyncModelCatalog();
@@ -3705,12 +3731,16 @@ function accountUserStatusSummary(userStatus) {
 // its own. `state` rides the account payload so the client never recomputes it
 // and the filter can never disagree with the badge it painted.
 export const ACCOUNT_STATE_VALUES = Object.freeze([
-  'disabled', 'error', 'quota_cooled', 'rate_limited', 'capacity', 'near_limit', 'watch', 'active',
+  'disabled', 'banned', 'error', 'quota_cooled', 'rate_limited', 'capacity', 'near_limit', 'watch', 'active',
 ]);
 
 export function resolveAccountState(a, now = Date.now(), { rpmUsed, rpmLimit } = {}) {
   if (!a) return 'active';
   if (a.status === 'disabled') return 'disabled';
+  // A banned account is out of routing and only the operator can recover it
+  // (reset errors / enable). It must never render as healthy, and it outranks
+  // every transient cooldown: the credential itself was rejected upstream.
+  if (a.status === 'banned') return 'banned';
   if (a.status === 'error') return 'error';
   if (a.quotaResetAt && a.quotaResetAt > now) return 'quota_cooled';
   if (a.rateLimitedUntil && a.rateLimitedUntil > now) return 'rate_limited';
@@ -3720,6 +3750,21 @@ export function resolveAccountState(a, now = Date.now(), { rpmUsed, rpmLimit } =
   if (limit > 0 && used / limit >= 0.9) return 'near_limit';
   if ((a.errorCount || 0) > 0) return 'watch';
   return 'active';
+}
+
+// The ban reason is the upstream error text that tripped the detector. It is
+// operator-facing (why is this account dead?), but it is still untrusted text:
+// cap it and redact anything token-shaped before it rides the account payload
+// into the dashboard, logs or an export. Never expose the credential itself.
+export function publicBanReason(reason) {
+  if (typeof reason !== 'string' || !reason) return '';
+  return reason
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [redacted]')
+    .replace(/\b(?:sk|sess|key|tok)[-_][A-Za-z0-9_-]{8,}\b/gi, '[redacted]')
+    .replace(/\b[A-Za-z0-9_-]{40,}\b/g, '[redacted]')
+    .slice(0, 240);
 }
 
 function publicAccount(a, now, { view = 'full' } = {}) {
@@ -3734,6 +3779,11 @@ function publicAccount(a, now, { view = 'full' } = {}) {
     method: a.method,
     status: a.status,
     state: resolveAccountState(a, now, { rpmUsed, rpmLimit }),
+    // Ban metadata is operator-facing only: when it happened, and the
+    // sanitized upstream text that tripped the detector. Empty for healthy
+    // accounts, so the drawer can render conditionally.
+    bannedAt: a.status === 'banned' ? (a.bannedAt || a._banSignalAt || 0) : 0,
+    bannedReason: a.status === 'banned' ? publicBanReason(a.bannedReason || a._banSignalLastMessage) : '',
     errorCount: a.errorCount,
     lastUsed: a.lastUsed ? new Date(a.lastUsed).toISOString() : null,
     addedAt: new Date(a.addedAt).toISOString(),
@@ -3842,7 +3892,8 @@ export const ACCOUNT_SORT_VALUES = Object.freeze(['quota_weekly', 'balance', 'la
 // to count byTier[tier] while rows honoured both).
 function accountMatchesQuery(a, { filter = '', tier = '', q = '', status = '', now = Date.now() }) {
   if (filter === 'flagged') {
-    const flagged = a.status === 'error' || (a.errorCount || 0) > 0 || (a.rateLimitedUntil && a.rateLimitedUntil > now);
+    const flagged = a.status === 'error' || a.status === 'banned'
+      || (a.errorCount || 0) > 0 || (a.rateLimitedUntil && a.rateLimitedUntil > now);
     if (!flagged) return false;
   }
   if (tier && tierBucket(a.tier) !== tier) return false;
@@ -3905,6 +3956,7 @@ export function getAccountListStats() {
   let flagged = 0;
   let rateLimited = 0;
   let disabled = 0;
+  let banned = 0;
   const byTier = { pro: 0, free: 0, unknown: 0, expired: 0 };
   let balanceTotal = 0;
   let balanceAccounts = 0;
@@ -3912,7 +3964,8 @@ export function getAccountListStats() {
     const isRateLimited = !!(account.rateLimitedUntil && account.rateLimitedUntil > now);
     if (isRateLimited) rateLimited++;
     if (account.status !== 'active') disabled++;
-    if (account.status === 'error' || (account.errorCount || 0) > 0 || isRateLimited) flagged++;
+    if (account.status === 'banned') banned++;
+    if (account.status === 'error' || account.status === 'banned' || (account.errorCount || 0) > 0 || isRateLimited) flagged++;
     byTier[tierBucket(account.tier)]++;
     // On-demand prepaid balance ($) — only Teams/paid accounts carry it. Sum for
     // a pool total. NOTE: Teams share one balance, so multiple accounts in the
@@ -3929,6 +3982,7 @@ export function getAccountListStats() {
     flagged,
     rateLimited,
     disabled,
+    banned,
     byTier,
     balanceTotal,
     balanceAccounts,
@@ -4581,6 +4635,7 @@ export function getAccountCount() {
     total: accounts.length,
     active: accounts.filter(a => a.status === 'active').length,
     error: accounts.filter(a => a.status === 'error').length,
+    banned: accounts.filter(a => a.status === 'banned').length,
   };
 }
 
