@@ -246,6 +246,30 @@ export function resolveStreamCommitMs(raw = process.env.WINDSURFAPI_STREAM_COMMI
   return Number.isFinite(n) && n >= 0 ? Math.min(n, 14_000) : undefined;
 }
 
+// O10: classify a failed stream with the same failure class the non-stream
+// error rows carry (`result.body.error.code` — the DEVIN_CONNECT
+// classification: RATE_LIMITED, CAPACITY, ...). Gemini's error envelope puts
+// the HTTP-ish numeric status in `code` and the class in `__upstream_code`, so
+// a string `code` wins and the generic 'error' is the fallback the non-stream
+// expression already uses when no class survives.
+function streamFailureClass(error) {
+  if (!error || typeof error !== 'object') return 'error';
+  if (typeof error.code === 'string' && error.code) return error.code;
+  if (typeof error.__upstream_code === 'string' && error.__upstream_code) return error.__upstream_code;
+  return 'error';
+}
+
+// O10: the streaming routes patch their ring row once the handler settles. A
+// stream that fails after the commit gate still ends as HTTP 200, so `status`
+// alone cannot classify it — the failure the gate observed supplies the class.
+function streamRingDone(ringRow, reqStartedAt, res) {
+  return (stream) => updateRequest(ringRow.id, {
+    durationMs: Date.now() - reqStartedAt,
+    status: res.statusCode,
+    ...(stream?.failure ? { class: streamFailureClass(stream.failure) } : {}),
+  });
+}
+
 export async function serveChatStream(res, result, {
   headers,
   requestId,
@@ -295,7 +319,7 @@ export async function serveChatStream(res, result, {
     streamRes.dispose();
     // A handler that throws after committing must not leave the socket open.
     if (res.headersSent && !res.writableEnded) res.end();
-    onDone?.();
+    onDone?.({ failure: streamRes.failure });
   }
 }
 
@@ -728,7 +752,7 @@ async function route(req, res) {
         headers: streamHeaders,
         requestId,
         commitMs,
-        onDone: () => updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode }),
+        onDone: streamRingDone(ringRow, reqStartedAt, res),
       });
     } else {
       for (const [k, v] of Object.entries(modelHeaders)) res.setHeader(k, v);
@@ -873,7 +897,7 @@ async function route(req, res) {
             ...(error?.code ? { code: error.code } : {}),
           },
         }),
-        onDone: () => updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode }),
+        onDone: streamRingDone(ringRow, reqStartedAt, res),
       });
     } else {
       for (const [k, v] of Object.entries(modelHeaders)) res.setHeader(k, v);
@@ -1068,7 +1092,7 @@ async function route(req, res) {
         isBootstrap: (obj) => obj?.type === 'message_start' || obj?.type === 'ping',
         parseError: (obj) => (obj?.type === 'error' && obj.error ? obj.error : null),
         errorBody: (error, status) => toAnthropicError(status, error?.type, error?.message).body,
-        onDone: () => updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode }),
+        onDone: streamRingDone(ringRow, reqStartedAt, res),
       });
     } else {
       for (const [k, v] of Object.entries(anthropicHeaders)) res.setHeader(k, v);
@@ -1153,7 +1177,7 @@ async function route(req, res) {
           && obj.candidates.every((c) => !c?.finishReason && (c?.content?.parts || []).every((p) => !p?.text && !p?.functionCall)),
         parseError: (obj) => (obj?.error && typeof obj.error === 'object' ? obj.error : null),
         errorBody: (error, status) => geminiError(status, error?.type, error?.message).body,
-        onDone: () => updateRequest(ringRow.id, { durationMs: Date.now() - reqStartedAt, status: res.statusCode }),
+        onDone: streamRingDone(ringRow, reqStartedAt, res),
       });
     } else {
       for (const [k, v] of Object.entries(geminiHeaders)) res.setHeader(k, v);
