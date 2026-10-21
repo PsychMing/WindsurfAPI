@@ -6,7 +6,7 @@
     {
       "name": "Independent DONE stage is disabled",
       "file": "src/handlers/chat.js",
-      "anchor": "          if (emittedClientPayload && !res.writableEnded) res.write('data: [DONE]\\n\\n');",
+      "anchor": "          if (emittedClientPayload) writeRaw('data: [DONE]\\n\\n');",
       "replacement": "          // Mutant: omit terminal sentinel.",
       "expectCaught": true
     },
@@ -34,8 +34,8 @@
     {
       "name": "Synthetic finish also writes DONE and duplicates the terminal marker",
       "file": "src/handlers/chat.js",
-      "anchor": "            finishPartialStreamAfterError({ id, created, model, send, res: null,",
-      "replacement": "            finishPartialStreamAfterError({ id, created, model, send, res,",
+      "anchor": "            return finishPartialStreamAfterError({ id, created, model, send, res: null,",
+      "replacement": "            return finishPartialStreamAfterError({ id, created, model, send, res,",
       "expectCaught": true
     }
   ],

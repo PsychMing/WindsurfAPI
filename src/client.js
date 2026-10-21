@@ -1202,7 +1202,13 @@ export class WindsurfClient {
                   ? { text: '', thinking: '', isError: false, nativeToolResult: tc }
                   : { text: '', thinking: '', isError: false, nativeToolCall: tc };
                 chunks.push(chunk);
-                onChunk?.(chunk);
+                // C2: await the consumer. A slow downstream write must hold this
+                // poll loop (and the next trajectory RPC) instead of piling
+                // frames into a socket that already reported backpressure. A
+                // synchronous consumer returns undefined, so the await is a
+                // no-op for it — and a rejection is the real callback failure,
+                // never a parsing error.
+                await onChunk?.(chunk);
               }
             }
             // Native bridge is a proposal bridge for OpenAI clients. Once a
@@ -1239,7 +1245,7 @@ export class WindsurfClient {
               lastGrowthAt = Date.now();
               const tchunk = { text: '', thinking: thinkDelta, isError: false };
               chunks.push(tchunk);
-              onChunk?.(tchunk);
+              await onChunk?.(tchunk);   // C2: same backpressure contract as the text delta below
             }
           }
 
@@ -1264,7 +1270,7 @@ export class WindsurfClient {
             sawText = true;
             const chunk = { text: delta, thinking: '', isError: false };
             chunks.push(chunk);
-            onChunk?.(chunk);
+            await onChunk?.(chunk);
           }
         }
         if (endReason === 'native_tool_call') break;
@@ -1366,7 +1372,10 @@ export class WindsurfClient {
                 yieldedByStep.set(stepIndex, responseText.length);
                 totalYielded += delta.length;
                 chunks.push({ text: delta, thinking: '', isError: false });
-                onChunk?.({ text: delta, thinking: '', isError: false });
+                // C2: the end-of-turn top-ups are producer frames like any
+                // other; a pressured writer must hold them (and the terminal
+                // DONE that follows this loop) rather than let them overtake.
+                await onChunk?.({ text: delta, thinking: '', isError: false });
               }
 
               // Modified-response top-up: only if it's a strict extension of
@@ -1380,7 +1389,7 @@ export class WindsurfClient {
                 yieldedByStep.set(stepIndex, modifiedText.length);
                 totalYielded += delta.length;
                 chunks.push({ text: delta, thinking: '', isError: false });
-                onChunk?.({ text: delta, thinking: '', isError: false });
+                await onChunk?.({ text: delta, thinking: '', isError: false });
               }
             }
             endReason = sawText ? 'idle_done' : 'idle_empty';

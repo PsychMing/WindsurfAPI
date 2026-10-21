@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
-function run(options = {}) {
+async function run(options = {}) {
   const source = readFileSync(new URL('../src/handlers/chat.js', import.meta.url), 'utf8');
   const start = source.indexOf('        // All attempts failed\n');
   const end = source.indexOf('      } finally {\n        unregisterSse();', start);
@@ -52,20 +52,31 @@ function run(options = {}) {
     flushContentGate: options.gateFail ? boom : () => {},
     shouldFallbackThinkingToText: () => false, finishPartialStreamAfterError: options.helperFail ? boom : finishPartialStreamAfterError,
     chatStreamError: (message, type, code) => ({ error: { message, type, code } }),
+    // C2 writer gate. This harness models a writable that never reports
+    // backpressure, so the gate is a no-op here: the assertions below stay about
+    // failure isolation, not about draining. The real drain contract is pinned
+    // end-to-end in test/stream-backpressure-drain.test.js.
+    writerGone: () => res.writableEnded,
+    awaitWriter: async () => {},
+    settleWriter: async () => {},
+    pendingEmission: null,
   };
-  new Function(...Object.keys(deps), `
-    let emittedClientPayload = !!options.partial, accThinking = '', accText = '';
-    const send = frame => res.write('data: ' + JSON.stringify(frame) + '\\n\\n');
-    const emitContent = text => { emittedClientPayload = true; send({ content: text }); };
-    const emitThinking = emitContent;
-    ${block}
+  await new Function(...Object.keys(deps), `
+    return (async () => {
+      let emittedClientPayload = !!options.partial, accThinking = '', accText = '';
+      const writeRaw = text => res.write(text);
+      const send = frame => writeRaw('data: ' + JSON.stringify(frame) + '\\n\\n');
+      const emitContent = text => { emittedClientPayload = true; return send({ content: text }); };
+      const emitThinking = emitContent;
+      ${block}
+    })();
   `)(...Object.values(deps));
   return { warnings, fallback, writes, visited, res };
 }
 const done = r => r.writes.filter(x => x === 'data: [DONE]\n\n').length;
 
-test('R4 an error-frame-only write failure ends without DONE and reports one redacted warn', () => {
-  const r = run({ errorWrite: true });
+test('R4 an error-frame-only write failure ends without DONE and reports one redacted warn', async () => {
+  const r = await run({ errorWrite: true });
   assert.equal(done(r), 0, 'a pre-content failure must not claim a clean finish');
   assert.equal(r.warnings.length, 1);
   assert.match(r.warnings[0], /stage=error-frame/);
@@ -74,16 +85,16 @@ test('R4 an error-frame-only write failure ends without DONE and reports one red
   assert.equal(r.res.endAttempts, 1, 'the failed error-frame write must not skip end');
 });
 
-test('R4 a broken warning logger uses the fallback sink and still ends without DONE', () => {
-  const r = run({ errorWrite: true, logWarnFail: true });
+test('R4 a broken warning logger uses the fallback sink and still ends without DONE', async () => {
+  const r = await run({ errorWrite: true, logWarnFail: true });
   assert.equal(done(r), 0);
   assert.equal(r.fallback.length, 1);
   assert.match(r.fallback[0], /stage=error-frame.*logger=failed/);
   assert.equal(r.res.endAttempts, 1);
 });
 
-test('R4 a failed DONE write on a partial failure keeps the synthetic finish and still ends', () => {
-  const r = run({ partial: true, doneWrite: true });
+test('R4 a failed DONE write on a partial failure keeps the synthetic finish and still ends', async () => {
+  const r = await run({ partial: true, doneWrite: true });
   assert.ok(r.writes.some(x => x.includes('"finish_reason":"stop"')), 'the synthetic finish must already be on the wire');
   assert.equal(r.writes.some(x => x.includes('"error"')), false, 'a partial failure has no error frame');
   assert.match(r.warnings.join(''), /stage=done/);
@@ -91,8 +102,8 @@ test('R4 a failed DONE write on a partial failure keeps the synthetic finish and
   assert.equal(r.res.endAttempts, 1);
 });
 
-test('R4 a flush failure does not suppress other flushes or the error frame', () => {
-  const r = run({ pathFail: true });
+test('R4 a flush failure does not suppress other flushes or the error frame', async () => {
+  const r = await run({ pathFail: true });
   assert.deepEqual(r.visited, ['egress', 'think']);
   assert.ok(r.writes.some(x => x.includes('"error"')));
   assert.equal(done(r), 0, 'a pre-content failure ends on the error frame');
@@ -100,18 +111,18 @@ test('R4 a flush failure does not suppress other flushes or the error frame', ()
   assert.equal(r.res.endAttempts, 1);
 });
 
-test('R4 a failed held tail or synthetic finish cannot prevent partial DONE', () => {
+test('R4 a failed held tail or synthetic finish cannot prevent partial DONE', async () => {
   for (const flags of [{ dedupFail: true }, { finishWrite: true }, { helperFail: true }]) {
-    const r = run({ partial: true, internal: true, ...flags });
+    const r = await run({ partial: true, internal: true, ...flags });
     assert.equal(done(r), 1);
     assert.equal(r.writes.some(x => x.includes('"error"')), false);
     assert.match(r.warnings.join(''), /stage=(dedup-tail|finish-frame)/);
   }
 });
 
-test('R4 synthetic finish markers remain internal-only and successful termination is single-shot', () => {
+test('R4 synthetic finish markers remain internal-only and successful termination is single-shot', async () => {
   for (const internal of [false, true]) {
-    const r = run({ partial: true, internal });
+    const r = await run({ partial: true, internal });
     const finish = JSON.parse(r.writes[0].slice(6));
     assert.equal(finish.choices[0].finish_reason, 'stop');
     assert.equal(Object.hasOwn(finish, '__synthetic_finish'), internal);
@@ -119,9 +130,9 @@ test('R4 synthetic finish markers remain internal-only and successful terminatio
   }
 });
 
-test('R4 classification and ordinary error logging cannot block terminal delivery', () => {
+test('R4 classification and ordinary error logging cannot block terminal delivery', async () => {
   for (const flags of [{ classifyFail: true }, { logErrorFail: true }]) {
-    const r = run(flags);
+    const r = await run(flags);
     assert.equal(done(r), 0, 'a pre-content failure has no success sentinel');
     assert.equal(r.res.writableEnded, true);
     assert.equal(r.res.endAttempts, 1);
@@ -129,15 +140,15 @@ test('R4 classification and ordinary error logging cannot block terminal deliver
   }
 });
 
-test('R4 end failures are diagnosed rather than escaping the finalizer', () => {
-  const r = run({ endFail: true });
+test('R4 end failures are diagnosed rather than escaping the finalizer', async () => {
+  const r = await run({ endFail: true });
   assert.equal(done(r), 0);
   assert.match(r.warnings.join(''), /stage=end/);
   assert.equal(r.res.endAttempts, 1, 'the end attempt must still happen');
 });
 
-test('R4 a stop-gate flush failure still delivers the error frame and ends without DONE', () => {
-  const r = run({ gateFail: true });
+test('R4 a stop-gate flush failure still delivers the error frame and ends without DONE', async () => {
+  const r = await run({ gateFail: true });
   assert.equal(done(r), 0);
   assert.ok(r.writes.some(x => x.includes('"error"')));
   assert.equal(r.warnings.length, 1);
@@ -146,10 +157,10 @@ test('R4 a stop-gate flush failure still delivers the error frame and ends witho
   assert.equal(r.res.endAttempts, 1);
 });
 
-test('R4 a pre-content failure never writes the success sentinel', () => {
+test('R4 a pre-content failure never writes the success sentinel', async () => {
   // Explicit guard against restoring the unconditional DONE stage: the error
   // frame is the last signal a pre-content failure is allowed to emit.
-  const r = run({});
+  const r = await run({});
   assert.ok(r.writes.some(x => x.includes('"error"')));
   assert.equal(done(r), 0);
   assert.equal(r.writes.at(-1).includes('"error"'), true, 'the error frame must be the last write');
