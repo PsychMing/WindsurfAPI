@@ -3992,6 +3992,27 @@ export async function searchWebForAccount(id, { query, limit, domain } = {}) {
  * must not push a zero-delta row that later reads as "no spend".
  */
 
+/** Raw credit snapshots for one account, oldest first. Empty when unknown. */
+export function getCreditLedger(id) {
+  const account = accounts.find(a => a.id === id);
+  if (!account || !Array.isArray(account._creditHistory)) return [];
+  return account._creditHistory
+    .filter((row) => row && typeof row === 'object' && typeof row.ts === 'number')
+    .slice(-CREDIT_LEDGER_CAP);
+}
+
+/** Test seam: drop every account's credit history without touching the file. */
+export function __resetCreditLedgerForTest() {
+  for (const account of accounts) delete account._creditHistory;
+}
+
+/**
+ * Fetch live credit balance + plan info from server.codeium.com and stash it
+ * on the account. Used by manual refresh and by the 15-minute background loop.
+ * Errors are returned in-band so the dashboard can show them without throwing.
+ */
+const _creditInFlight = new Map();
+
 function creditSnapshotOf(credits) {
   const c = credits && typeof credits === 'object' ? credits : {};
   const pick = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -4028,32 +4049,12 @@ export function recordCreditSnapshot(account, credits = null) {
   const last = history.length ? history[history.length - 1] : null;
   if (sameCreditSnapshot(last, snapshot)) return last;
   history.push(snapshot);
-  if (history.length > CREDIT_LEDGER_CAP) history.splice(0, history.length - CREDIT_LEDGER_CAP);
+  if (history.length > 24) history.splice(0, history.length - 24);
   account._creditHistory = history;
-  markDirty();
+  if (typeof markDirty === 'function') markDirty();
   return snapshot;
 }
 
-/** Raw credit snapshots for one account, oldest first. Empty when unknown. */
-export function getCreditLedger(id) {
-  const account = accounts.find(a => a.id === id);
-  if (!account || !Array.isArray(account._creditHistory)) return [];
-  return account._creditHistory
-    .filter((row) => row && typeof row === 'object' && typeof row.ts === 'number')
-    .slice(-CREDIT_LEDGER_CAP);
-}
-
-/** Test seam: drop every account's credit history without touching the file. */
-export function __resetCreditLedgerForTest() {
-  for (const account of accounts) delete account._creditHistory;
-}
-
-/**
- * Fetch live credit balance + plan info from server.codeium.com and stash it
- * on the account. Used by manual refresh and by the 15-minute background loop.
- * Errors are returned in-band so the dashboard can show them without throwing.
- */
-const _creditInFlight = new Map();
 
 export async function refreshCredits(id) {
   const existing = _creditInFlight.get(id);
