@@ -976,7 +976,8 @@ async function windsurfLoginPrimaryHost(email, password, fingerprint, proxy) {
 
   if (probe.userExists === false) {
     const err = createFriendlyAuthError('Auth1', 'EMAIL_NOT_FOUND');
-    recordEmailFailure(email, err.message);
+    // A nonexistent address is not a wrong credential; locking it would let a
+    // typo (or an enumeration probe) ban a real operator for 15 minutes.
     throw err;
   }
 
