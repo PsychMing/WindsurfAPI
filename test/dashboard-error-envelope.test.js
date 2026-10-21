@@ -174,6 +174,7 @@ function appStub(apiResult, extra = {}) {
     enhanceControls: () => {},
     accountsListUrl: () => '/accounts',
     renderTablePagination: () => {},
+    downloadAccountsJson: () => {},
     poll: () => {},
     ...extra,
   };
@@ -326,21 +327,23 @@ describe('#257 the client fetch wrappers force success:false on non-2xx', () => 
 
 // ── 4. loaders keep the last good panel when the read fails ─────────────────
 describe('#257 panel loaders keep the last good state on a failed read', () => {
-  it('loadBans (pre-existing guard) no longer repaints into an empty table', async () => {
-    const dom = makeDom(['ban-cards']);
-    dom.el('ban-cards').innerHTML = 'LAST-GOOD';
-    let paginated = 0;
-    const self = appStub(FAILED, { renderTablePagination: () => { paginated += 1; } });
+  it('loadAccounts no longer repaints over a valid table on a failed read', async () => {
+    let painted = 0;
+    const stub = (result) => appStub(result, {
+      loadDrought: () => {},
+      renderAccountsPagination: () => {},
+      renderAccountsKpis: () => {},
+      renderAccountsFilterState: () => {},
+      renderAccountsTable: () => { painted += 1; },
+      applyAccountsDensity: () => {},
+      startAccountsClock: () => {},
+    });
 
-    await runLoader(MAIN_HTML, 'async loadBans()', self, dom);
-    assert.equal(dom.el('ban-cards').innerHTML, 'LAST-GOOD', 'a failed read must not clear the bans panel');
+    await runLoader(MAIN_HTML, 'async loadAccounts()', stub(FAILED), makeDom());
+    assert.equal(painted, 0, 'a failed read must not paint an empty table over a valid pool');
 
-    const okDom = makeDom(['ban-cards']);
-    okDom.el('ban-cards').innerHTML = 'LAST-GOOD';
-    const okSelf = appStub({ accounts: [], stats: {}, total: 0 }, { renderTablePagination: () => { paginated += 1; } });
-    await runLoader(MAIN_HTML, 'async loadBans()', okSelf, okDom);
-    assert.notEqual(okDom.el('ban-cards').innerHTML, 'LAST-GOOD',
-      'control: a successful read must still repaint, or this test proves nothing');
+    await runLoader(MAIN_HTML, 'async loadAccounts()', stub({ accounts: [], stats: {}, total: 0 }), makeDom());
+    assert.equal(painted, 1, 'control: a successful read must still paint, or this test proves nothing');
   });
 
   it('loadModels keeps the previous catalog and mode on failure', async () => {

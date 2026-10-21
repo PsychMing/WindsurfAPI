@@ -3590,6 +3590,30 @@ function accountUserStatusSummary(userStatus) {
   };
 }
 
+// One closed status vocabulary for the dashboard's row badge, status filter and
+// drawer. The five server booleans overlap (a rate-limited account also has
+// errorCount > 0, a quota-cooled account can still be `active`), so every
+// consumer resolves them through THIS precedence ladder instead of re-deriving
+// its own. `state` rides the account payload so the client never recomputes it
+// and the filter can never disagree with the badge it painted.
+export const ACCOUNT_STATE_VALUES = Object.freeze([
+  'disabled', 'error', 'quota_cooled', 'rate_limited', 'capacity', 'near_limit', 'watch', 'active',
+]);
+
+export function resolveAccountState(a, now = Date.now(), { rpmUsed, rpmLimit } = {}) {
+  if (!a) return 'active';
+  if (a.status === 'disabled') return 'disabled';
+  if (a.status === 'error') return 'error';
+  if (a.quotaResetAt && a.quotaResetAt > now) return 'quota_cooled';
+  if (a.rateLimitedUntil && a.rateLimitedUntil > now) return 'rate_limited';
+  if (a._modelRateLimits && Object.values(a._modelRateLimits).some((until) => until > now)) return 'capacity';
+  const limit = rpmLimit ?? rpmLimitFor(a);
+  const used = rpmUsed ?? pruneRpmHistory(a, now);
+  if (limit > 0 && used / limit >= 0.9) return 'near_limit';
+  if ((a.errorCount || 0) > 0) return 'watch';
+  return 'active';
+}
+
 function publicAccount(a, now, { view = 'full' } = {}) {
   const rpmLimit = rpmLimitFor(a);
   const rpmUsed = pruneRpmHistory(a, now);
@@ -3598,8 +3622,10 @@ function publicAccount(a, now, { view = 'full' } = {}) {
   const base = {
     id: a.id,
     email: a.email,
+    label: a.label || '',
     method: a.method,
     status: a.status,
+    state: resolveAccountState(a, now, { rpmUsed, rpmLimit }),
     errorCount: a.errorCount,
     lastUsed: a.lastUsed ? new Date(a.lastUsed).toISOString() : null,
     addedAt: new Date(a.addedAt).toISOString(),
@@ -3698,18 +3724,64 @@ export function tierBucket(tier) {
   return 'pro';
 }
 
-export function getAccountList({ view = 'full', offset = 0, limit = Infinity, filter = '', tier = '' } = {}) {
-  const now = Date.now();
-  let list = accounts;
+export const ACCOUNT_SORT_VALUES = Object.freeze(['quota_weekly', 'balance', 'last_used', 'errors']);
+
+// Shared predicate: getAccountList() slices the result and getAccountsPayload()
+// counts it, so `total` and the rows can never disagree (D10 — flagged+tier used
+// to count byTier[tier] while rows honoured both).
+function accountMatchesQuery(a, { filter = '', tier = '', q = '', status = '', now = Date.now() }) {
   if (filter === 'flagged') {
-    list = list.filter(a => a.status === 'error' || (a.errorCount || 0) > 0 || (a.rateLimitedUntil && a.rateLimitedUntil > now));
+    const flagged = a.status === 'error' || (a.errorCount || 0) > 0 || (a.rateLimitedUntil && a.rateLimitedUntil > now);
+    if (!flagged) return false;
   }
-  if (tier) {
-    list = list.filter(a => tierBucket(a.tier) === tier);
+  if (tier && tierBucket(a.tier) !== tier) return false;
+  if (status && resolveAccountState(a, now) !== status) return false;
+  if (q) {
+    const needle = String(q).toLowerCase();
+    const hay = `${a.email || ''}\n${a.id || ''}\n${a.label || ''}`.toLowerCase();
+    if (!hay.includes(needle)) return false;
   }
+  return true;
+}
+
+function sortAccountList(list, sort, order) {
+  if (!ACCOUNT_SORT_VALUES.includes(sort)) return list;
+  const dir = order === 'asc' ? 1 : -1;
+  const valueOf = (a) => {
+    switch (sort) {
+      case 'quota_weekly': return typeof a.credits?.weeklyPercent === 'number' ? a.credits.weeklyPercent : null;
+      case 'balance': return typeof a.credits?.balance === 'number' ? a.credits.balance : null;
+      case 'last_used': return a.lastUsed || 0;
+      case 'errors': return a.errorCount || 0;
+      default: return null;
+    }
+  };
+  return [...list].sort((a, b) => {
+    const av = valueOf(a);
+    const bv = valueOf(b);
+    // Nulls sort last in both directions: an account that never reported a
+    // weekly quota is not "the lowest quota", it is unknown.
+    if (av == null && bv == null) return a.id < b.id ? -1 : 1;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (av === bv) return a.id < b.id ? -1 : 1;
+    return (av - bv) * dir;
+  });
+}
+
+export function getAccountList({ view = 'full', offset = 0, limit = Infinity, filter = '', tier = '', q = '', status = '', sort = '', order = '' } = {}) {
+  const now = Date.now();
+  let list = accounts.filter((a) => accountMatchesQuery(a, { filter, tier, q, status, now }));
+  list = sortAccountList(list, sort, order);
   const start = Math.max(0, Number.isFinite(offset) ? offset : 0);
   const end = Number.isFinite(limit) ? start + Math.max(0, limit) : undefined;
   return list.slice(start, end).map(a => publicAccount(a, now, { view }));
+}
+
+// Count with the exact predicate getAccountList() applies, for pagination.
+export function countAccountList({ filter = '', tier = '', q = '', status = '' } = {}) {
+  const now = Date.now();
+  return accounts.filter((a) => accountMatchesQuery(a, { filter, tier, q, status, now })).length;
 }
 
 export function getAccountPublic(id, { view = 'full' } = {}) {

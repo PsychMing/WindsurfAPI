@@ -275,7 +275,7 @@ describe('#257 UI maps a 401 add to the generic Add failed toast', () => {
     assert.match(html, /!Array\.isArray\(d\?\.accounts\)/);
   });
 
-  it('overview/models/proxy/bans loaders bail on success:false instead of painting empty', () => {
+  it('overview/models/proxy loaders bail on success:false instead of painting empty', () => {
     const sliceFn = (html, name) => {
       const start = html.indexOf(`async ${name}()`);
       assert.ok(start >= 0, `missing async ${name}()`);
@@ -283,7 +283,12 @@ describe('#257 UI maps a 401 add to the generic Add failed toast', () => {
     };
     for (const rel of ['src/dashboard/index.html', 'src/dashboard/index-sketch.html']) {
       const html = readFileSync(join(ROOT, rel), 'utf8');
-      for (const name of ['loadOverview', 'loadModels', 'loadProxy', 'loadBans', 'loadStats']) {
+      // index.html merged the 异常监测 panel into 账号管理 (2026-10-22), so its
+      // loadBans is gone; the sketch skin still has that page.
+      const names = rel.includes('index-sketch')
+        ? ['loadOverview', 'loadModels', 'loadProxy', 'loadBans', 'loadStats']
+        : ['loadOverview', 'loadModels', 'loadProxy', 'loadStats'];
+      for (const name of names) {
         assert.match(
           sliceFn(html, name),
           /success === false/,

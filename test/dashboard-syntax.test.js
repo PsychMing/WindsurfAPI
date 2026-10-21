@@ -65,14 +65,29 @@ test('dashboard drought banners expose restriction fail-open state', () => {
   assert.equal(typeof zh.drought.restrictionFailOpen, 'string');
 });
 
-test('dashboard proxy and abnormal-account tables use paged account summaries', () => {
+test('dashboard proxy table pages summaries; accounts page is the single merged list', () => {
   const html = readFileSync(join(root, 'src/dashboard/index.html'), 'utf8');
   assert.match(html, /id="proxy-accounts-pagination"/);
-  assert.match(html, /id="ban-pagination"/);
   assert.match(html, /setProxyPage\(page\)/);
-  assert.match(html, /setBansPage\(page\)/);
   assert.match(html, /this\.accountsListUrl\(\{\s*page:\s*this\.proxyPage,\s*pageSize:\s*this\.proxyPageSize/s);
-  assert.match(html, /filter:\s*'flagged'/);
+  assert.match(html, /filter:\s*this\.accountsFlagged\s*\?\s*'flagged'\s*:\s*''/);
+  // The 异常监测 page and the 登录取号 page are gone: one account-management
+  // destination, one table, one add/login entry point.
+  assert.doesNotMatch(html, /id="p-bans"/);
+  assert.doesNotMatch(html, /id="ban-pagination"/);
+  assert.doesNotMatch(html, /id="p-windsurf-login"/);
+  assert.doesNotMatch(html, /setBansPage\(/);
+  assert.match(html, /id="accounts-kpis"/);
+  assert.match(html, /id="accounts-batch-bar"/);
+  assert.match(html, /id="acct-drawer"/);
+  assert.match(html, /id="add-account-overlay"/);
+  assert.doesNotMatch(html, /account-detail-row/);
+  // 9-column table: checkbox, account, tier, status, quota, models, RPM, last
+  // used, actions. The Key/ID/Error columns are folded into cells/drawer.
+  const thead = html.match(/<table id="accounts-table">[\s\S]*?<\/thead>/)?.[0] || '';
+  assert.equal((thead.match(/<th\b/g) || []).length, 9, 'accounts table must have exactly 9 columns');
+  assert.match(html, /accounts\.filter\.searchPlaceholder/);
+  assert.match(html, /accounts\.status\.quotaCooled/);
   // These two used to read `doesNotMatch(html, /pageSize=1000/)` — TAUTOLOGIES.
   // index.html never writes the page size in the query-string form `pageSize=N`; it
   // builds it as an object property (`pageSize: this.proxyPageSize`), so no page-size

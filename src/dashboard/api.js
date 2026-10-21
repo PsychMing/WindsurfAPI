@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import {
   getAccountList, getAccountCount, getAccountListStats, getAccountPublic, addAccountByKey, addAccountByPastedSecret,
+  countAccountList, ACCOUNT_STATE_VALUES, ACCOUNT_SORT_VALUES,
   removeAccount, setAccountStatus, resetAccountErrors, updateAccountLabel,
   isAuthenticated, probeAccount, ensureLsForAccount,
   refreshCredits, refreshAllCredits, searchWebForAccount,
@@ -222,7 +223,8 @@ function parseBoundedInt(value, fallback, { min = 0, max = Number.MAX_SAFE_INTEG
 function getAccountsPayload(req) {
   const url = dashboardUrl(req);
   const qs = url.searchParams;
-  const wantsPaged = qs.has('page') || qs.has('pageSize') || qs.has('offset') || qs.has('limit') || qs.has('view') || qs.has('filter') || qs.has('tier');
+  const wantsPaged = qs.has('page') || qs.has('pageSize') || qs.has('offset') || qs.has('limit') || qs.has('view')
+    || qs.has('filter') || qs.has('tier') || qs.has('q') || qs.has('status') || qs.has('sort') || qs.has('order');
   if (!wantsPaged) return { accounts: getAccountList() };
 
   const view = qs.get('view') === 'summary' ? 'summary' : 'full';
@@ -234,11 +236,18 @@ function getAccountsPayload(req) {
   const offset = explicitOffset ?? ((page - 1) * pageSize);
   const filter = qs.get('filter') === 'flagged' ? 'flagged' : '';
   const tier = ['pro', 'free', 'unknown', 'expired'].includes(qs.get('tier')) ? qs.get('tier') : '';
+  // Unknown values are ignored, never a 400: a stale bookmark must still list
+  // the pool instead of blanking the table. `q` is a literal substring (no SQL
+  // LIKE), so % and _ are ordinary characters. 200 chars bounds the work.
+  const q = String(qs.get('q') ?? '').trim().slice(0, 200);
+  const status = ACCOUNT_STATE_VALUES.includes(qs.get('status')) ? qs.get('status') : '';
+  const sort = ACCOUNT_SORT_VALUES.includes(qs.get('sort')) ? qs.get('sort') : '';
+  const order = qs.get('order') === 'asc' || qs.get('order') === 'desc' ? qs.get('order') : '';
   const stats = getAccountListStats();
-  const total = filter === 'flagged'
-    ? stats.flagged
-    : (tier ? (stats.byTier?.[tier] ?? 0) : stats.total);
-  const accounts = getAccountList({ view, offset, limit: pageSize, filter, tier });
+  // D10: total comes from the SAME predicate the rows use (filter + tier + q +
+  // status), not from a single stat that silently drops the other filters.
+  const total = countAccountList({ filter, tier, q, status });
+  const accounts = getAccountList({ view, offset, limit: pageSize, filter, tier, q, status, sort, order });
   return {
     accounts,
     page,
@@ -249,7 +258,24 @@ function getAccountsPayload(req) {
     view,
     filter,
     tier,
+    q,
+    status,
+    sort,
+    order,
     stats,
+  };
+}
+
+// Query params shared by GET /accounts and GET /accounts/ids. Kept in one place
+// so "select all N results" fetches exactly the rows the table is showing.
+function accountFiltersFromQuery(qs) {
+  return {
+    filter: qs.get('filter') === 'flagged' ? 'flagged' : '',
+    tier: ['pro', 'free', 'unknown', 'expired'].includes(qs.get('tier')) ? qs.get('tier') : '',
+    q: String(qs.get('q') ?? '').trim().slice(0, 200),
+    status: ACCOUNT_STATE_VALUES.includes(qs.get('status')) ? qs.get('status') : '',
+    sort: ACCOUNT_SORT_VALUES.includes(qs.get('sort')) ? qs.get('sort') : '',
+    order: qs.get('order') === 'asc' || qs.get('order') === 'desc' ? qs.get('order') : '',
   };
 }
 
@@ -1427,6 +1453,59 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   // ─── Accounts ─────────────────────────────────────────
   if (subpath === '/accounts' && method === 'GET') {
     return json(res, 200, getAccountsPayload(req));
+  }
+
+  // GET /accounts/ids — the id list for "select all N results". Same filters as
+  // the list, no paging: the client must never guess that "all" means "page 1".
+  if (subpath === '/accounts/ids' && method === 'GET') {
+    const f = accountFiltersFromQuery(dashboardUrl(req).searchParams);
+    const ids = getAccountList({ view: 'summary', ...f, limit: Infinity }).map((a) => a.id);
+    return json(res, 200, { ids, total: ids.length });
+  }
+
+  // POST /accounts/batch — one request for a bulk operation, per-item results.
+  // Serial by design: parallel writes to the same pool trip the upstream
+  // brute-force guard. Partial failure is a 200 with `failed[]`, never a 500
+  // that hides the items that did succeed.
+  if (subpath === '/accounts/batch' && method === 'POST') {
+    const op = String(body?.op || '');
+    if (!['enable', 'disable', 'probe', 'refresh', 'reset', 'delete'].includes(op)) {
+      return json(res, 400, { error: 'ERR_BATCH_OP_INVALID' });
+    }
+    const rawIds = Array.isArray(body?.ids) ? body.ids : [];
+    const ids = [...new Set(rawIds.filter((id) => typeof id === 'string' && id))];
+    if (ids.length === 0) return json(res, 400, { error: 'ERR_BATCH_IDS_EMPTY' });
+    if (ids.length > 1000) return json(res, 400, { error: 'ERR_BATCH_TOO_LARGE', max: 1000 });
+    const results = [];
+    for (const id of ids) {
+      try {
+        if (op === 'probe') {
+          const r = await probeAccount(id, { allowLsStart: false, canary: false });
+          results.push(r ? { id, ok: true, tier: r.tier || 'unknown' } : { id, ok: false, error: 'ERR_ACCOUNT_NOT_FOUND' });
+        } else if (op === 'refresh') {
+          const r = await refreshCredits(id);
+          results.push(r?.ok ? { id, ok: true } : { id, ok: false, error: r?.error || 'ERR_REFRESH_FAILED' });
+        } else {
+          const ok = op === 'enable' ? setAccountStatus(id, 'active')
+            : op === 'disable' ? setAccountStatus(id, 'disabled')
+              : op === 'reset' ? resetAccountErrors(id)
+                : removeAccount(id);
+          results.push(ok ? { id, ok: true } : { id, ok: false, error: 'ERR_ACCOUNT_NOT_FOUND' });
+        }
+      } catch (err) {
+        results.push({ id, ok: false, error: err.message || 'ERR_BATCH_ITEM_FAILED' });
+      }
+    }
+    const failed = results.filter((r) => !r.ok);
+    if (op === 'delete') log.info(`dashboard accounts/batch delete: ${results.length - failed.length}/${ids.length} removed`);
+    return json(res, 200, {
+      success: true,
+      op,
+      results,
+      failed,
+      okCount: results.length - failed.length,
+      failCount: failed.length,
+    });
   }
 
   if (subpath === '/accounts' && method === 'POST') {
