@@ -43,6 +43,7 @@ async function run(options = {}) {
     recordRequest() {}, isAllTemporarilyUnavailable: options.classifyFail ? boom : () => ({ allUnavailable: false }),
     isAllRateLimited: () => ({ allLimited: false }), isLsPoolExhausted: () => false,
     isUpstreamDeadlineExceeded: () => false, isCascadeTransportError: () => false,
+    isBudgetExceededError: () => false,
     upstreamTransientErrorMessage: () => 'transient', upstreamDeadlineExceededMessage: () => 'deadline',
     sanitizeText: x => x, poolCheckin() {}, ttlHintFromCachePolicy() {},
     pathStreamText: { flush() { visited.push('egress'); if (options.pathFail) boom(); return ''; } },

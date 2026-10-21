@@ -267,16 +267,17 @@ describe('stream error protocol', () => {
     assert.equal(res.body.includes('data: [DONE]'), false, 'no [DONE] after a pre-content error');
   });
 
-  it('route: an error after the SSE bootstrap commit is not followed by [DONE]', async () => {
+  it('route: a pre-content failure with no prior write returns the real status, not a committed 200', async () => {
     const account = addAccountByKey(`late-precontent-${Date.now()}-${Math.random().toString(36).slice(2)}`, 'late-precontent');
     createdAccountIds.push(account.id);
 
     class LatePreContentDeadlineClient {
       async cascadeChat() {
-        // The SSE gate's bootstrap timer (5 ms in this test) commits HTTP 200
-        // first; the failure arrives after that commit, so the gate cannot
-        // rewrite the status. The handler must still end with the error frame
-        // alone, not error + [DONE].
+        // No frame is written before this failure. The gate used to arm its
+        // bootstrap timer at CONSTRUCTION, so `commitMs: 5` committed HTTP 200
+        // before the 20 ms failure and the 504 could only arrive in-band. The
+        // timer now arms on the first write, so the error frame is the first
+        // write and rewrites the status — the measured P0 fix.
         await new Promise((resolve) => setTimeout(resolve, 20));
         throw new Error('Encountered retryable error from model provider: context deadline exceeded (Client.Timeout or context cancellation while reading body)');
       }
@@ -305,16 +306,9 @@ describe('stream error protocol', () => {
       onDone: () => { onDoneCalls += 1; },
     });
 
-    const frames = res.body
-      .split('\n\n')
-      .filter(Boolean)
-      .filter(frame => !frame.startsWith(':'))
-      .map(frame => frame.split('\n').find(line => line.startsWith('data: '))?.slice(6))
-      .filter(Boolean);
-    assert.equal(res.statusCode, 200, 'the bootstrap timer committed before the error arrived');
-    assert.ok(frames.some(frame => frame !== '[DONE]' && JSON.parse(frame).error), 'the error frame must survive the committed 200');
-    assert.equal(frames.includes('[DONE]'), false, 'a committed 200 must not gain a success sentinel after the error');
-    assert.ok(frames.at(-1) !== '[DONE]' && JSON.parse(frames.at(-1)).error, 'the error frame must be the last signal');
+    assert.equal(res.statusCode, 504, 'the uncommitted gate must rewrite the real status');
+    assert.match(res.body, /"error"/);
+    assert.equal(res.body.includes('data: [DONE]'), false, 'a failed request must not gain a success sentinel');
     assert.equal(res.writableEnded, true, 'the response must be closed');
     assert.equal(onDoneCalls, 1, 'cleanup must still run exactly once');
   });

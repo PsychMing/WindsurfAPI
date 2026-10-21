@@ -32,6 +32,9 @@ async function run(pattern, env = {}, emittedInitially = false) {
     reLoginAccount: async id => `fresh-${id}`, currentApiKeyForId: (_id, key) => key,
     bumpConnect: event => events.push(event), releaseAccountById() {}, bindConnectSticky() {}, commitConnectSession() {},
     reportDeadToken() {}, isAccountFailoverError: code => ['QUOTA_EXHAUSTED', 'RATE_LIMITED'].includes(code),
+    // The failover loop reads the route budget from context; an empty context
+    // means "no budget", which is the pre-budget behaviour these cases pin.
+    context: {}, budgetExceededError: message => Object.assign(new Error(message), { code: 'DEADLINE_EXCEEDED' }),
     chatStreamError: (message, type, code) => ({ error: { message, type, code } }),
     log: { info() {}, error() {} }, AbortController,
   };

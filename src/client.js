@@ -692,7 +692,7 @@ export class WindsurfClient {
    */
   async cascadeChat(messages, modelEnum, modelUid, opts = {}) {
     let onChunk, onEnd, onError, signal, reuseEntry, toolPreamble, displayModel, nativeEnvironment;
-    let nativeMode, nativeAllowlist, additionalSteps;
+    let nativeMode, nativeAllowlist, additionalSteps, requestMaxWaitMs;
     acquireLsUseOrThrow(this.port);
     try {
     ({
@@ -703,6 +703,10 @@ export class WindsurfClient {
       // carries fake "completed" trajectory steps for the caller's prior
       // tool turns so the planner reasons from post-tool state.
       nativeMode, nativeAllowlist, additionalSteps,
+      // Route-owned request budget: an upper bound on this turn's poll window.
+      // The caller passes what the request has left; it can only shorten the
+      // configured CASCADE_MAX_WAIT_MS, never extend it.
+      maxWaitMs: requestMaxWaitMs,
     } = opts);
     const aborted = () => signal?.aborted;
     const inputChars = messages.reduce((n, m) => n + contentToString(m?.content).length, 0);
@@ -997,7 +1001,12 @@ export class WindsurfClient {
       // alone) for stall detection fixes the false-positive warm stalls where
       // Cascade is legitimately mid-thinking but `responseText` hasn't moved.
       let lastGrowthAt = Date.now();
-      const { maxWaitMs: maxWait, pollIntervalMs: pollInterval, idleGraceMs: IDLE_GRACE_MS, warmStallMs: NO_GROWTH_STALL_MS, stallRetryMinText: STALL_RETRY_MIN_TEXT } = CASCADE_TIMEOUTS;
+      const { maxWaitMs: configuredMaxWait, pollIntervalMs: pollInterval, idleGraceMs: IDLE_GRACE_MS, warmStallMs: NO_GROWTH_STALL_MS, stallRetryMinText: STALL_RETRY_MIN_TEXT } = CASCADE_TIMEOUTS;
+      // Request-budget clamp: a route that has 8 s left must not start a
+      // 600 s poll window. Only shortens, never extends, the configured bound.
+      const maxWait = Number.isFinite(requestMaxWaitMs) && requestMaxWaitMs >= 0
+        ? Math.min(configuredMaxWait, requestMaxWaitMs)
+        : configuredMaxWait;
       const startTime = Date.now();
       let endReason = 'unknown';
       const nativeBridgePollAfterTool = nativeMode && process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_POLL_AFTER_TOOL === '1';
