@@ -66,6 +66,15 @@ export const MAX_ERROR_BODY_BYTES = (() => {
   const raw = Number.parseInt(String(process.env.DEVIN_CONNECT_MAX_ERROR_BODY_BYTES ?? ''), 10);
   return Number.isSafeInteger(raw) && raw > 0 ? raw : 8 * 1024 * 1024;
 })();
+
+// Strict positive-integer env reader (same fallback rule as client.js/auth.js:
+// unparseable or non-positive values fall back to the default rather than
+// disabling the bound — "no cap" is the bug). Used by the per-stream queue
+// caps below; read once per request, never on the per-frame path.
+function positiveIntEnv(value, fallback) {
+  const n = Number.parseInt(String(value ?? ''), 10);
+  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+}
 // Appended when the ceiling is hit, so the truncation is visible to whoever
 // reads the error rather than the error silently describing a prefix of
 // itself. Mirrors RESPONSE_STORE's TRUNCATION_MARKER.
@@ -2570,7 +2579,32 @@ export async function* streamChat({
     effectiveHost = validatedAccountConnectHost(host);
   }
 
+  // Bounded frame queue (GFReliability). `res.on('data')` decodes frames far
+  // faster than a slow consumer drains them (a client applying backpressure
+  // suspends the generator at `yield`), and this array used to be unbounded —
+  // one stalled client could pin a whole upstream stream's decoded output in
+  // memory. Cap by frames AND bytes: pause the socket at half the cap so TCP
+  // carries the backpressure upstream, and fail the stream with QUEUE_OVERFLOW
+  // if one chunk still crosses the cap (a single data event can carry thousands
+  // of tiny frames, and pausing cannot interrupt the synchronous loop that is
+  // already running). Below the pause threshold nothing changes — same events,
+  // same order, no pause/resume.
+  const maxQueueFrames = positiveIntEnv(env.DEVIN_CONNECT_MAX_QUEUE_FRAMES, 4096);
+  const maxQueueBytes = positiveIntEnv(env.DEVIN_CONNECT_MAX_QUEUE_BYTES, 8 * 1024 * 1024);
+  const pauseQueueFrames = Math.max(1, Math.ceil(maxQueueFrames / 2));
+  const pauseQueueBytes = Math.max(1, Math.ceil(maxQueueBytes / 2));
+  // Resume well below the pause point: resuming at the threshold itself would
+  // let the producer refill to it immediately, cycling pause/resume once per
+  // event. Half the pause point lets a real batch through per cycle.
+  const resumeQueueFrames = Math.max(1, Math.floor(pauseQueueFrames / 2));
+  const resumeQueueBytes = Math.max(1, Math.floor(pauseQueueBytes / 2));
   const queue = [];
+  let queueBytes = 0;
+  let queuePaused = false;
+  let queueOverflowed = false;
+  // Assigned by the response handler (it needs `res`); the consumer loop calls
+  // it after every shift. A no-op until the response arrives.
+  let noteQueueConsumed = () => {};
   let done = false;
   let streamError = null;
   let wake = null;
@@ -2650,6 +2684,58 @@ export async function* streamChat({
       return;
     }
     const parser = new StreamingFrameParser();
+    // Queue accounting. Text dominates the retained memory (UTF-16 chars) and
+    // hex dumps are one char per wire byte; 96 bytes covers the event object
+    // itself. Deliberately cheap — it runs once per pushed event, not per byte,
+    // and the caps are safety bounds rather than an exact allocator.
+    const eventBytes = (ev) => {
+      let n = 96;
+      if (typeof ev.text === 'string') n += ev.text.length * 2;
+      // Reasoning signatures are opaque payloads of the same order as content,
+      // but they ride in `reasoning_signature`, not `text`. Without this the
+      // byte cap would charge them a flat 96 bytes and a thinking-heavy stream
+      // could exceed the bound by maxQueueFrames × signature size.
+      if (typeof ev.reasoning_signature === 'string') n += ev.reasoning_signature.length * 2;
+      if (typeof ev.hex === 'string') n += ev.hex.length;
+      return n;
+    };
+    const pushEvent = (ev) => {
+      if (queueOverflowed) return;
+      queue.push(ev);
+      queueBytes += eventBytes(ev);
+      if (queue.length > maxQueueFrames || queueBytes > maxQueueBytes) {
+        // Hard cap. Drop what is buffered: the consumer has not seen these
+        // events yet and the stream is failing anyway — retaining them would
+        // defeat the bound this exists to enforce.
+        queueOverflowed = true;
+        queue.length = 0;
+        queueBytes = 0;
+        streamError = Object.assign(
+          new Error(`DEVIN_CONNECT: frame queue exceeded ${maxQueueFrames} frames / ${maxQueueBytes} bytes (consumer too slow)`),
+          { code: 'QUEUE_OVERFLOW' },
+        );
+        done = true;
+        req.destroy();
+        pump();
+        return;
+      }
+      // High-water mark: stop reading the socket and let TCP carry the
+      // backpressure upstream. A transport without pause() still gets the hard
+      // cap above, so the bound holds either way.
+      if (!queuePaused && typeof res.pause === 'function'
+          && (queue.length >= pauseQueueFrames || queueBytes >= pauseQueueBytes)) {
+        queuePaused = true;
+        res.pause();
+      }
+    };
+    noteQueueConsumed = (ev) => {
+      queueBytes = Math.max(0, queueBytes - eventBytes(ev));
+      if (queuePaused && !queueOverflowed
+          && queue.length <= resumeQueueFrames && queueBytes <= resumeQueueBytes) {
+        queuePaused = false;
+        if (typeof res.resume === 'function') res.resume();
+      }
+    };
     const _wireCapture = String(process.env.DEVIN_CONNECT_WIRE_DUMP || '') === '1'
       || (String(process.env.WINDSURFAPI_TRACE || '') === '1' && !!traceId);
     const _wireResChunks = _wireCapture ? [] : null;
@@ -2660,6 +2746,7 @@ export async function* streamChat({
       try { frames = parser.drain(); }
       catch (err) { streamError = err; done = true; req.destroy(); pump(); return; }
       for (const frame of frames) {
+        if (queueOverflowed) break;
         if (frame.isEndStream) {
           sawEndOfStream = true;
           // Trailer is JSON: {} on success, {"error":{...}} on failure.
@@ -2668,7 +2755,7 @@ export async function* streamChat({
           // so a probe can check whether usage/billing ever rides the trailer
           // rather than a frame. Pure additive; zero effect on production.
           if (env.DEVIN_CONNECT_DUMP_RAW === '1') {
-            queue.push({ type: 'raw-frame', endStream: true, hex: frame.payload.toString('hex'), text });
+            pushEvent({ type: 'raw-frame', endStream: true, hex: frame.payload.toString('hex'), text });
           }
           if (text && text !== '{}') {
             try {
@@ -2699,7 +2786,7 @@ export async function* streamChat({
         // exactly where billing cost fields (likely doubles) would hide. Pure
         // additive; only under DEVIN_CONNECT_DUMP_RAW.
         if (env.DEVIN_CONNECT_DUMP_RAW === '1') {
-          queue.push({ type: 'raw-frame', endStream: false, hex: frame.payload.toString('hex') });
+          pushEvent({ type: 'raw-frame', endStream: false, hex: frame.payload.toString('hex') });
         }
         if (frameDump) log.info(`DEVIN_CONNECT frame dump (top-level tag=value): ${JSON.stringify(frameDump)}`);
         if (metaDump) log.info(`DEVIN_CONNECT meta dump (tag=value varints): ${JSON.stringify(metaDump)}`);
@@ -2707,7 +2794,7 @@ export async function* streamChat({
         // When dumping, also surface the raw dumps as a structured event so a
         // calibration consumer can aggregate tags without scraping logs. Pure
         // additive — only emitted under DEVIN_CONNECT_DEBUG_META.
-        if (frameDump || metaDump || subDump) { queue.push({ type: 'frame-dump', frameDump: frameDump || null, metaDump: metaDump || null, subDump: subDump || null }); }
+        if (frameDump || metaDump || subDump) { pushEvent({ type: 'frame-dump', frameDump: frameDump || null, metaDump: metaDump || null, subDump: subDump || null }); }
         if (actualModel) lastActualModel = actualModel;
         if (signature) {
           // delta_signature is an INCREMENT (like Anthropic signature_delta).
@@ -2723,15 +2810,15 @@ export async function* streamChat({
             ...(signature.signatureType != null ? { signatureType: signature.signatureType } : {}),
             ...(signature.thinkingId != null ? { thinkingId: signature.thinkingId } : {}),
           };
-          queue.push({
+          pushEvent({
             type: 'signature',
             reasoning_signature: signature.text,
             ...(signature.signatureType != null ? { signatureType: signature.signatureType } : {}),
             ...(signature.thinkingId != null ? { thinkingId: signature.thinkingId } : {}),
           });
         }
-        if (reasoning) { queue.push({ type: 'reasoning', text: reasoning }); }
-        if (content) { queue.push({ type: 'content', text: content }); }
+        if (reasoning) { pushEvent({ type: 'reasoning', text: reasoning }); }
+        if (content) { pushEvent({ type: 'content', text: content }); }
         if (finish != null) lastFinish = finish;
         if (usage) lastUsage = usage;
         if (billing) lastBilling = { ...lastBilling, ...billing };
@@ -2785,7 +2872,12 @@ export async function* streamChat({
   // Consumer loop: drain the queue, awaiting more data until the stream ends.
   try {
     while (true) {
-      if (queue.length) { yield queue.shift(); continue; }
+      if (queue.length) {
+        const ev = queue.shift();
+        noteQueueConsumed(ev);
+        yield ev;
+        continue;
+      }
       if (streamError) throw streamError;
       if (done) {
         // wire-01: flush any trailing bytes the decoders were holding (an

@@ -1848,18 +1848,72 @@ const RELOGIN_MAX_CONCURRENT = () => {
 };
 let _reloginActive = 0;
 const _reloginWaiters = [];
-function acquireReloginSlot() {
+
+// A waiter used to sit in `_reloginWaiters` until a slot freed up, with no
+// bound: a holder whose upstream login hung kept every queued reLoginAccount
+// pending forever, and an aborted caller's waiter was never removed. Bound the
+// WAIT (not the login itself) and let both a timer and an AbortSignal settle
+// it. The default is generous next to a real Auth1 login; a caller that cannot
+// be served within it is better off failing fast than pinning a request slot.
+const RELOGIN_QUEUE_TIMEOUT_MS = () => positiveIntEnv('DEVIN_CONNECT_RELOGIN_QUEUE_TIMEOUT_MS', 60 * 1000);
+
+function reloginQueueError(message, code, name) {
+  return Object.assign(new Error(message), name ? { name, code } : { code });
+}
+
+/**
+ * Acquire a global re-login slot. Resolves when the caller may run its login;
+ * rejects (never hangs) when the optional `signal` aborts or `timeoutMs` /
+ * DEVIN_CONNECT_RELOGIN_QUEUE_TIMEOUT_MS elapses first. A cancelled waiter is
+ * spliced out of the FIFO, so releaseReloginSlot never hands a slot to a
+ * promise nobody is awaiting.
+ */
+function acquireReloginSlot({ signal, timeoutMs } = {}) {
+  if (signal?.aborted) {
+    return Promise.reject(reloginQueueError('re-login queue wait aborted', 'ABORT_ERR', 'AbortError'));
+  }
   if (_reloginActive < RELOGIN_MAX_CONCURRENT()) {
     _reloginActive += 1;
     return Promise.resolve();
   }
-  return new Promise(resolve => _reloginWaiters.push(resolve));
+  const waitMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : RELOGIN_QUEUE_TIMEOUT_MS();
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    let onAbort = null;
+    const cleanup = () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (signal && onAbort) { signal.removeEventListener('abort', onAbort); onAbort = null; }
+    };
+    const drop = () => {
+      const i = _reloginWaiters.indexOf(waiter);
+      if (i !== -1) _reloginWaiters.splice(i, 1);
+    };
+    const waiter = {
+      grant() { cleanup(); resolve(); },
+      cancel(err) { cleanup(); reject(err); },
+    };
+    timer = setTimeout(() => {
+      drop();
+      waiter.cancel(reloginQueueError(
+        `re-login queue wait exceeded ${waitMs}ms`, 'RELOGIN_QUEUE_TIMEOUT'));
+    }, waitMs);
+    // A pending waiter must not be the reason the process stays alive.
+    if (typeof timer.unref === 'function') timer.unref();
+    if (signal) {
+      onAbort = () => {
+        drop();
+        waiter.cancel(reloginQueueError('re-login queue wait aborted', 'ABORT_ERR', 'AbortError'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+    _reloginWaiters.push(waiter);
+  });
 }
 function releaseReloginSlot() {
   const next = _reloginWaiters.shift();
   if (next) {
     // Hand the slot directly to the next waiter — active count stays the same.
-    next();
+    next.grant();
   } else {
     _reloginActive = Math.max(0, _reloginActive - 1);
   }
@@ -1875,6 +1929,12 @@ export function __setReloginDeps(deps) { _reloginDeps = deps; }
 export function __resetReloginState() {
   _reloginState.clear();
   _reloginActive = 0;
+  // Settle, don't orphan: a pending waiter is awaiting a promise inside
+  // reLoginAccount, which turns this rejection into `false`. Dropping the array
+  // alone would leave those promises pending forever.
+  for (const w of _reloginWaiters) {
+    w.cancel(reloginQueueError('re-login state reset', 'ABORT_ERR', 'AbortError'));
+  }
   _reloginWaiters.length = 0;
 }
 
@@ -1899,8 +1959,9 @@ export function __reloginGateState() {
  * @param {string} id account id
  * @param {object} [opts]
  * @param {boolean} [opts.force] bypass the cooldown (e.g. liveness-probe driven)
+ * @param {AbortSignal} [opts.signal] abort a queued wait for a global login slot
  */
-export async function reLoginAccount(id, { force = false } = {}) {
+export async function reLoginAccount(id, { force = false, signal } = {}) {
   if (!getBackendSwitch('autoRelogin')) return false;
   const account = accounts.find(a => a.id === id);
   if (!account) return false;
@@ -1931,8 +1992,17 @@ export async function reLoginAccount(id, { force = false } = {}) {
       return false;
     }
     // Hold a global slot only around the heavy Auth1 login network call so a
-    // mass token-death event can't launch an unbounded login stampede.
-    await acquireReloginSlot();
+    // mass token-death event can't launch an unbounded login stampede. The wait
+    // is bounded: a hung holder or a cancelled caller must not pin this attempt
+    // (and its request slot) forever. `false` preserves reLoginAccount's
+    // "apiKey or false, never throws" contract.
+    try {
+      await acquireReloginSlot({ signal });
+    } catch (e) {
+      log.debug(`re-login ${safeAccountRef(account)} skipped: ${
+        e.code === 'RELOGIN_QUEUE_TIMEOUT' ? 'queue wait timed out' : 'queue wait aborted'}`);
+      return false;
+    }
     try {
       const proxy = getEffectiveProxy(account.id) || null;
       const { windsurfLogin } = _reloginDeps || await import('./dashboard/windsurf-login.js');

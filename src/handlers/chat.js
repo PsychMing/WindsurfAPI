@@ -2531,6 +2531,12 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       bumpConnect('capacity_throttled');
     }
     else if (aborted) { /* no penalty — client left, and the upstream declared nothing */ }
+    // QUEUE_OVERFLOW: the LOCAL consumer fell behind the upstream stream and the
+    // bounded frame queue hit its cap (devin-connect.js). The upstream and the
+    // account are healthy — the slowness is ours — so this must not charge the
+    // error budget that evicts accounts. Counted so a fleet-wide spike points at
+    // the queue cap or a downstream writer instead of the pool.
+    else if (err.code === 'QUEUE_OVERFLOW') { bumpConnect('queue_overflow'); }
     // MODEL_BLOCKED is a tier/entitlement wall (free account asked for a paid
     // selector → upstream "/upgrade"), NOT an account-health problem. Penalizing
     // it would demote a perfectly good free account toward eviction every time a
