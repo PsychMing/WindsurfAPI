@@ -92,7 +92,10 @@ export function normalizeUsage({ quota, status, limits, dailyUsage, now = Date.n
       start: str(d.cycle_start),
       end: str(d.cycle_end),
       previousAvailable: bool(d.previous_cycle_available),
-      total: num(d.total, 0),
+      // `null` when the daily-usage read did not carry a total: a cycle total of
+      // 0 would assert "no ACU spent this cycle", which is the fabricated-zero
+      // class this payload exists to avoid. A real reported 0 stays 0.
+      total: num(d.total),
     },
     days,
     products,

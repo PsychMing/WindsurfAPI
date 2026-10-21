@@ -6020,6 +6020,22 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     return `rgba(${r},${g},${b},${a})`;
   },
 
+  // Overview usage card. `availableCredits` is null when the upstream billing
+  // status omitted the field (or the read failed): that is "unknown", not a zero
+  // balance, so it renders an em dash. A real upstream 0 (free plan, no
+  // purchased credits) still renders "0".
+  renderUsageCard(usage) {
+    if (!usage?.ok) return '';
+    const credits = usage.availableCredits == null ? '—' : usage.availableCredits;
+    return `<div class="card info">
+        <div class="card-header"><div class="card-title">Usage</div>
+          <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+        </div>
+        <div class="card-value" style="font-size:20px">${usage.quota?.dailyPercentage ?? '-'}%</div>
+        <div class="card-sub">${usage.plan || '-'} · daily · weekly ${usage.quota?.weeklyPercentage ?? '-'}% · ${credits} credits</div>
+      </div>`;
+  },
+
   async loadOverview() {
     const generation = (this._overviewLoadGeneration || 0) + 1;
     this._overviewLoadGeneration = generation;
@@ -6088,14 +6104,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         <div class="card-value" style="font-size:20px">${I18n.t(ls.running ? 'card.languageServer.running' : 'card.languageServer.stopped')}</div>
         <div class="card-sub">${I18n.t('card.languageServer.subtitle', { count: poolCount, port: ls.port || '-' })} · RSS ${totalRss} · Cap ${ls.maxInstances || '-'}</div>
       </div>` : '';
-    const usageCard = usage?.ok ? `
-      <div class="card info">
-        <div class="card-header"><div class="card-title">Usage</div>
-          <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
-        </div>
-        <div class="card-value" style="font-size:20px">${usage.quota?.dailyPercentage ?? '-'}%</div>
-        <div class="card-sub">${usage.plan || '-'} · daily · weekly ${usage.quota?.weeklyPercentage ?? '-'}% · ${usage.availableCredits ?? 0} credits</div>
-      </div>` : '';
+    const usageCard = this.renderUsageCard(usage);
     document.getElementById('overview-cards').innerHTML = `
       <div class="card success">
         <div class="card-header"><div class="card-title">${I18n.t('card.activeAccounts.title')}</div>
@@ -7387,7 +7396,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         total: Number(stats.total || 0),
         active: Number(stats.active || 0),
         flagged: Number(stats.flagged || 0),
-        balance: Number(stats.balanceTotal || 0).toFixed(2),
+        balance: this.poolBalanceText(stats),
       });
     }
   },
@@ -7429,10 +7438,20 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     return I18n.t(key);
   },
 
+  // Pool balance is the SUM of the accounts that reported a plausible on-demand
+  // balance (getAccountListStats only counts 0 ≤ bal ≤ $1M). With zero reporting
+  // accounts the arithmetic identity is 0, but "nobody reported a balance" is
+  // unknown — printing $0.00 asserted an empty pool. Em dash instead; a real
+  // reported 0 still renders $0.00.
+  poolBalanceText(stats = {}) {
+    if (!(Number(stats.balanceAccounts || 0) > 0)) return '—';
+    const total = Number(stats.balanceTotal);
+    return Number.isFinite(total) ? `$${total.toFixed(2)}` : '—';
+  },
+
   renderAccountsKpis(stats = {}, total = 0) {
     const el = document.getElementById('accounts-kpis');
     if (!el) return;
-    const balance = Number(stats.balanceTotal || 0);
     const cell = (labelKey, value, sub, tone) => `
       <div class="acct-kpi">
         <div class="acct-kpi-label">${I18n.t(labelKey)}</div>
@@ -7446,7 +7465,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         Number(stats.banned || 0) > 0 ? I18n.t('accounts.kpi.disabledSub', { count: Number(stats.banned) }) : ''),
       cell('accounts.kpi.flagged', Number(stats.flagged || 0), '', 'var(--warn)'),
       cell('accounts.kpi.rateLimited', Number(stats.rateLimited || 0), '', 'var(--warn)'),
-      cell('accounts.kpi.balance', `$${balance.toFixed(2)}`, I18n.t('accounts.kpi.balanceSub', { count: Number(stats.balanceAccounts || 0) })),
+      cell('accounts.kpi.balance', this.poolBalanceText(stats), I18n.t('accounts.kpi.balanceSub', { count: Number(stats.balanceAccounts || 0) })),
     ].join('');
   },
 
@@ -8330,7 +8349,6 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const stateMeta = this.accountStateMeta(state);
     const barColor = (v) => v == null ? 'var(--text-dim)' : v <= 10 ? 'var(--error)' : v <= 30 ? 'var(--warn)' : 'var(--success)';
     const fmtUnix = (u) => u ? new Date(u * 1000).toLocaleString() : '—';
-    const fmtDate = (v) => v ? new Date(v).toLocaleDateString() : '—';
     const fmtAgo = (ts) => {
       if (!ts) return '—';
       const s = Math.floor((Date.now() - ts) / 1000);
@@ -8399,32 +8417,18 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         </div>`;
       }).join('');
 
-    // Plan dates
-    let trialDaysLeft = null;
-    if (us.trialEndMs) trialDaysLeft = Math.max(0, Math.ceil((us.trialEndMs - Date.now()) / 86400000));
-
     return `
     <div class="account-detail-wrap">
       <div class="detail-grid">
-        <div class="detail-card">
-          <div class="detail-card-head"><span class="dot"></span>${T('plan.title')}</div>
-          <div class="detail-kv">
-            <span class="k">${T('plan.name')}</span><span class="v"><b>${this.esc(cr.planName || us.planName || '—')}</b></span>
-            <span class="k">${T('plan.tier')}</span><span class="v"><span class="tier ${this.esc(a.tier || 'unknown')}" style="padding:1px 8px;font-size:10px">${this.esc(a.tier || 'unknown')}</span>${a.tierManual ? ' <span style="color:var(--text-dim);font-size:10px">✎ ' + I18n.t('account.tierManualBadge') + '</span>' : ''}</span>
-            ${a.balance != null ? `<span class="k">${T('plan.balance')}</span><span class="v"><b style="color:var(--success)">$${Number(a.balance).toFixed(2)}</b></span>` : ''}
-            ${a.periodStart ? `<span class="k">${T('plan.periodStart')}</span><span class="v">${fmtDate(a.periodStart)}</span>` : `<span class="k">${T('plan.start')}</span><span class="v">${fmtDate(cr.planStart || us.planStart)}</span>`}
-            ${a.periodEnd ? `<span class="k">${T('plan.periodEnd')}</span><span class="v">${fmtDate(a.periodEnd)}</span>` : `<span class="k">${T('plan.end')}</span><span class="v">${fmtDate(cr.planEnd || us.planEnd)}${trialDaysLeft != null ? ` <span style="color:${trialDaysLeft <= 3 ? 'var(--error)' : 'var(--text-dim)'};font-size:11px">(${trialDaysLeft}d left)</span>` : ''}</span>`}
-            ${cr.overageBalance != null ? `<span class="k">${T('plan.overage')}</span><span class="v">$${cr.overageBalance.toFixed(4)}</span>` : ''}
-          </div>
-        </div>
+        ${this.renderPlanCard(a, cr, us)}
 
         <div class="detail-card">
           <div class="detail-card-head"><span class="dot" style="background:var(--warn)"></span>${T('quota.title')}</div>
           ${renderBar(T('quota.daily'), cr.dailyPercent, cr.dailyResetAt, I18n.t('creditsBar.dailyNA'))}
           ${renderBar(T('quota.weekly'), cr.weeklyPercent, cr.weeklyResetAt, I18n.t('creditsBar.weeklyNA'))}
           <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)" class="detail-kv">
-            ${cr.prompt?.limit ? `<span class="k">${T('quota.promptCredits')}</span><span class="v"><b>${cr.prompt.remaining ?? 0}</b> / ${cr.prompt.limit} <span style="color:var(--text-dim);font-size:10px">(${T('quota.used')} ${cr.prompt.used ?? 0})</span></span>` : `<span class="k">${T('quota.promptCredits')}</span><span class="v" style="color:var(--text-dim)">${T('quota.notApplicable')}</span>`}
-            ${cr.flex?.limit ? `<span class="k">${T('quota.flexCredits')}</span><span class="v"><b>${cr.flex.remaining ?? 0}</b> / ${cr.flex.limit} <span style="color:var(--text-dim);font-size:10px">(${T('quota.used')} ${cr.flex.used ?? 0})</span></span>` : `<span class="k">${T('quota.flexCredits')}</span><span class="v" style="color:var(--text-dim)">${T('quota.notApplicable')}</span>`}
+            ${cr.prompt?.limit ? `<span class="k">${T('quota.promptCredits')}</span><span class="v"><b>${this.creditText(cr.prompt.remaining)}</b> / ${cr.prompt.limit} <span style="color:var(--text-dim);font-size:10px">(${T('quota.used')} ${this.creditText(cr.prompt.used)})</span></span>` : `<span class="k">${T('quota.promptCredits')}</span><span class="v" style="color:var(--text-dim)">${T('quota.notApplicable')}</span>`}
+            ${cr.flex?.limit ? `<span class="k">${T('quota.flexCredits')}</span><span class="v"><b>${this.creditText(cr.flex.remaining)}</b> / ${cr.flex.limit} <span style="color:var(--text-dim);font-size:10px">(${T('quota.used')} ${this.creditText(cr.flex.used)})</span></span>` : `<span class="k">${T('quota.flexCredits')}</span><span class="v" style="color:var(--text-dim)">${T('quota.notApplicable')}</span>`}
             <span class="k">${T('quota.fetchedAt')}</span><span class="v">${fmtAgo(cr.fetchedAt)}</span>
           </div>
         </div>
@@ -8650,6 +8654,48 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       this.confirm(I18n.t('modal.blockedModels.title', {email: acct.email}), html, { okText: I18n.t('action.save'), html: true, wide: true });
       setTimeout(() => this._bindBlockedModal(id), 0);
     } catch (e) { this.toast(I18n.t('error.openFailed') + ': ' + e.message, 'error'); }
+  },
+
+  // Subscription card in the account drawer.
+  //
+  // `a.periodStart/periodEnd` are the protobuf decoder's DEPRECATED aliases for
+  // the daily/weekly QUOTA RESET timestamps (src/devin-connect-catalog.js) — not
+  // a billing period. Rendering them under "Period start/end" claimed a billing
+  // cycle that does not exist, so they get quota-reset labels here. The real plan
+  // cycle (`cr.planStart/planEnd` from GetUserStatus) gets its own Start/End rows
+  // instead of being hidden behind the reset alias.
+  renderPlanCard(a, cr = {}, us = {}) {
+    const T = (k, v) => I18n.t('account.detail.plan.' + k, v);
+    const fmtDate = (v) => (v ? new Date(v).toLocaleDateString() : '—');
+    const fmtReset = (v) => (v ? new Date(v).toLocaleString() : '—');
+    const planStart = cr.planStart || us.planStart || null;
+    const planEnd = cr.planEnd || us.planEnd || null;
+    const trialDaysLeft = us.trialEndMs
+      ? Math.max(0, Math.ceil((us.trialEndMs - Date.now()) / 86400000))
+      : null;
+    const resetRow = (key, at) => (at
+      ? `<span class="k">${T(key)}</span><span class="v">${fmtReset(at)}</span>`
+      : '');
+    return `<div class="detail-card">
+          <div class="detail-card-head"><span class="dot"></span>${T('title')}</div>
+          <div class="detail-kv">
+            <span class="k">${T('name')}</span><span class="v"><b>${this.esc(cr.planName || us.planName || '—')}</b></span>
+            <span class="k">${T('tier')}</span><span class="v"><span class="tier ${this.esc(a.tier || 'unknown')}" style="padding:1px 8px;font-size:10px">${this.esc(a.tier || 'unknown')}</span>${a.tierManual ? ' <span style="color:var(--text-dim);font-size:10px">✎ ' + I18n.t('account.tierManualBadge') + '</span>' : ''}</span>
+            ${a.balance != null ? `<span class="k">${T('balance')}</span><span class="v"><b style="color:var(--success)">$${Number(a.balance).toFixed(2)}</b></span>` : ''}
+            <span class="k">${T('start')}</span><span class="v">${fmtDate(planStart)}</span>
+            <span class="k">${T('end')}</span><span class="v">${fmtDate(planEnd)}${trialDaysLeft != null ? ` <span style="color:${trialDaysLeft <= 3 ? 'var(--error)' : 'var(--text-dim)'};font-size:11px">(${trialDaysLeft}d left)</span>` : ''}</span>
+            ${resetRow('dailyReset', a.periodStart)}
+            ${resetRow('weeklyReset', a.periodEnd)}
+            ${cr.overageBalance != null ? `<span class="k">${T('overage')}</span><span class="v">$${cr.overageBalance.toFixed(4)}</span>` : ''}
+          </div>
+        </div>`;
+  },
+
+  // A null credit amount is UNKNOWN (proto3-JSON omits zero values, and an older
+  // snapshot may predate the field), not zero. Rendering 0 claimed the account
+  // had spent its whole allowance; an em dash says "not reported".
+  creditText(v) {
+    return v == null ? '—' : v;
   },
 
   // Bind listeners once the blocked-models modal is mounted.

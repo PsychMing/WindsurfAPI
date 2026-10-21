@@ -57,6 +57,7 @@ describe('dashboard usage normalizer', () => {
     });
     assert.equal(out.plan, null);
     assert.equal(out.availableCredits, null);
+    assert.equal(out.cycle.total, null);
     assert.equal(out.quota.dailyPercentage, null);
     assert.equal(out.quota.overageBalance, null);
     assert.deepEqual(out.days, [{ date: '2026-10-18', amount: 2, cumulative: 0 }]);
