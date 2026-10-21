@@ -277,8 +277,9 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | `WINDSURFAPI_QUOTA_COOLDOWN` | **开**（`true`） | `bool` | 配额冷却。 |
 | `WINDSURFAPI_ON_DEMAND_RESERVE_USD` | `0` | 0–100000 | 按需消费的预留额度（`float`，美元）。**涉及真实花钱，改前想清楚。** |
 
-至此三前缀开关 160 个全部有据可查：`.env.example` + README 覆盖 78 个（含 PR #249
-的 `WINDSURFAPI_LEAK_TRACE`），本文覆盖其余 82 个（2026-10-21 按 `e3e39d9` 重测）。这个不变式由
+至此三前缀开关 **161** 个全部有据可查（2026-10-22 按 `release/3.9.42` 的集成树重测；`e3e39d9`
+上为 160，本版 C2 新增 `WINDSURFAPI_MAX_DRAIN_MS` 一个读取点）：`.env.example` + README 覆盖 78 个（含 PR #249
+的 `WINDSURFAPI_LEAK_TRACE`），本文覆盖其余 83 个。这个不变式由
 [`test/docs-consistency-guard.test.js`](../test/docs-consistency-guard.test.js) 的
 「every switch read in src/ is findable in some reader-facing doc」守着 ——
 **加新开关不写文档会直接让测试变红**，不再依赖人记得。

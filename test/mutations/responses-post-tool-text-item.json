@@ -9,8 +9,8 @@
     {
       "name": "the original defect — no seal at tool-item creation, so post-tool text is appended to the first message item and done comes out [1,0]",
       "file": "src/handlers/responses.js",
-      "anchor": "      this.sealMessageSegment();",
-      "replacement": ""
+      "anchor": "    if (seal) this.sealMessageSegment();",
+      "replacement": "    if (false) this.sealMessageSegment();"
     },
     {
       "name": "the seal fires but does not re-arm the item — messageStarted stays latched, so no second item ever opens",

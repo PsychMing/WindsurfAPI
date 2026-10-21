@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **192** 份,v2.0.6 → v3.9.41 |
+| 发布说明 | **193** 份,v2.0.6 → v3.9.42 |
 | git tag | 202 个（截至 2026-10-15） |
-| 当前 | **v3.9.41**(2026-10-19, 待发布) |
+| 当前 | **v3.9.42**(2026-10-22, 待发布) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -41,6 +41,16 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.9.42](docs/releases/RELEASE_NOTES_3.9.42.md) · 2026-10-22（待发布）
+
+v3.9.41 之后的加固补丁（8 条分支）：客户端断开后不再缓存/计费/复用半截答案（流式跳过完成尾，
+非流式返回 499）；Cascade SSE 增加写端背压门与 `WINDSURFAPI_MAX_DRAIN_MS` 上限，慢读客户端不再
+买到无限上游工作；Messages 在工具块打开时持有交错文本（参数不再被截成 `{"path"`）并把
+`tool_result.is_error` 传播到所有工具；Responses 修掉空尾 `message` 与分片 `function.name` 冻结；
+重复的上游 call id 在 Messages/Responses/Gemini 三个出口唯一化；SSE 修前导 BOM、提交后失败帧
+扫描与 typed ping 提交门；Node 20/22 的 Connect 绝对 deadline 不再被 unref；补 4 条流式两轮工具
+循环测试。无协议破坏、无新路由、默认 wire 由门禁对 `v3.9.41` 基线比较。
 
 ### [v3.9.41](docs/releases/RELEASE_NOTES_3.9.41.md) · 2026-10-19（待发布）
 
