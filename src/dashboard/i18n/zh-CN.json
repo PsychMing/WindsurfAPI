@@ -856,7 +856,7 @@
       "promptCredits": "Prompt 额度：套餐每月包含的 prompt 模型请求配额，显示为 剩余 / 上限。用尽后按套餐停止或转为按量计费（overage）。",
       "flowCredits": "Flow 额度（即 flex 额度）：每月包含的 agentic/flow 动作配额，与 prompt 额度分开，显示为 剩余 / 上限。",
       "overage": "按量（overage）余额：超出包含额度后的按用量计费，单位美元。仅在包含额度用尽后累计。",
-      "weeklyQuota": "本周配额 %：账号滚动周额度的已用比例。所有账号都偏低时触发 drought 模式。",
+      "weeklyQuota": "本周配额 %：账号滚动周额度中仍剩余的比例。所有账号都偏低时触发 drought 模式。",
       "poolHealthView": "发光网格：每个账号一个呼吸核心，按健康度着色，RPM 打满会燃烧火焰、请求流过时闪光。状态条：每号一横条，密集展示 RPM/在途/成功失败/最近使用。悬停任一账号查看详情。",
       "trendRange": "切换请求趋势的时间范围：24 小时（按小时）、7 天或 30 天（按天聚合）。数据来自本地遥测，无上游调用。"
     }
@@ -1102,7 +1102,7 @@
       "balance": "池余额",
       "balanceSub": "{{count}} 个账号"
     },
-    "subtitle": "共 {{total}} · 启用 {{active}} · 需关注 {{flagged}} · 余额 ${{balance}}",
+    "subtitle": "共 {{total}} · 启用 {{active}} · 需关注 {{flagged}} · 余额 {{balance}}",
     "selectAllPage": "选择本页",
     "selectRow": "选择账号",
     "row": {
@@ -1204,8 +1204,8 @@
         "name": "套餐",
         "tier": "层级",
         "balance": "账户余额",
-        "periodStart": "账期开始",
-        "periodEnd": "账期结束",
+        "dailyReset": "每日配额重置",
+        "weeklyReset": "每周配额重置",
         "start": "开始",
         "end": "到期",
         "overage": "透支余额"
