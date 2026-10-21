@@ -16,7 +16,7 @@ import { handleChatCompletions, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
 import { SseFramer } from '../sse-framer.js';
 import { buildToolNameMap, restoreToolName } from '../tool-names.js';
-import { normalizeToolIdsInMessages, toolHygieneEnabled } from '../tool-ids.js';
+import { createToolIdAllocator, normalizeToolIdsInMessages, toolHygieneEnabled } from '../tool-ids.js';
 import { normalizeHistoryTail } from '../history-normalize.js';
 import { leakTraceEnabled, thinkMarkersIn, leakSample } from '../leak-trace.js';
 
@@ -916,6 +916,12 @@ export function openAIToAnthropic(result, model, msgId, cachePolicy = null, stop
   }
   if (choice?.message?.tool_calls?.length) {
     if (choice.message.content) content.push({ type: 'text', text: choice.message.content });
+    // Upstream may reuse one call id for two distinct calls; the client must
+    // never see the same tool_use id twice (GFProtocol Q1-04).
+    const fallbackToolId = () => `toolu_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+    const allocateToolId = toolHygieneEnabled()
+      ? createToolIdAllocator({ makeFallback: fallbackToolId })
+      : (id) => id || fallbackToolId();
     for (const tc of choice.message.tool_calls) {
       let input = {};
       const rawArgs = tc.function?.arguments;
@@ -935,7 +941,7 @@ export function openAIToAnthropic(result, model, msgId, cachePolicy = null, stop
         // B3: fall back to a generated toolu_ id when the upstream omits one,
         // symmetric with the request-side id fallback in anthropicToOpenAI. A
         // tool_use block without an id is invalid Anthropic output.
-        id: tc.id || `toolu_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+        id: allocateToolId(tc.id),
         name: restoreToolName(tc.function?.name, toolNameMap) || 'unknown',
         input,
       });
@@ -1114,7 +1120,13 @@ class AnthropicStreamTranslator {
     // type: 'text' | 'thinking' | 'tool_use'
     this.current = null;
     this.blockIndex = 0;
-    this.toolCallBufs = new Map();   // index → { id, name, argsBuffered }
+    this.toolCallBufs = new Map();   // index → { id, rawId, name, argsBuffered }
+    // Egress id allocator: upstream may reuse one call id for two distinct
+    // calls, but the client must never see the same tool_use id twice
+    // (GFProtocol Q1-04). First-seen id wins; duplicates get a stable suffix.
+    this.allocateToolId = toolHygieneEnabled()
+      ? createToolIdAllocator()
+      : (id) => id || '';
     this.finalUsage = null;
     this.stopReason = 'end_turn';
     // B5/SEED-C3a: the request's accepted stop_sequences (used to validate the
@@ -1297,15 +1309,27 @@ class AnthropicStreamTranslator {
   emitToolCallDelta(toolCall) {
     const idx = toolCall.index ?? 0;
     let existing = this.toolCallBufs.get(idx);
-    const id = toolCall.id || existing?.id;
+    const rawId = toolCall.id || null;
     const rawName = toolCall.function?.name || '';
     const argsChunk = toolCall.function?.arguments || '';
 
     if (!existing) {
-      existing = { id, name: '', wireName: '', blockIndex: null, argsBuffered: '', pendingArgs: '' };
+      existing = {
+        id: rawId ? this.allocateToolId(rawId) : null,
+        rawId,
+        name: '',
+        wireName: '',
+        blockIndex: null,
+        argsBuffered: '',
+        pendingArgs: '',
+      };
       this.toolCallBufs.set(idx, existing);
-    } else if (id) {
-      existing.id = id;
+    } else if (rawId && rawId !== existing.rawId) {
+      // The id is delivered once, possibly on a later delta than the first. A
+      // repeated id is the same call and must not be allocated twice; a changed
+      // id can only take effect before the block published it.
+      existing.rawId = rawId;
+      if (existing.blockIndex == null) existing.id = this.allocateToolId(rawId);
     }
     if (rawName) {
       // A spec-legal stream may split `function.name` across deltas. Accumulate

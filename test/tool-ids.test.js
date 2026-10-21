@@ -8,6 +8,7 @@ import {
   sanitizeToolId,
   synthToolId,
   wireToolId,
+  createToolIdAllocator,
   foldOrphanResultText,
   normalizeToolIdsInMessages,
   foldOrphanToolResults,
@@ -286,5 +287,43 @@ describe('foldOrphanResultText', () => {
     assert.match(out[0].content, /IMPORTANT-TEXT/);
     assert.match(out[0].content, /\[image_url\]/);
     assert.doesNotMatch(out[0].content, /\[object Object\]/);
+  });
+});
+
+describe('createToolIdAllocator (egress dedupe)', () => {
+  it('keeps the first id and suffixes later duplicates in arrival order', () => {
+    const allocate = createToolIdAllocator();
+    assert.deepEqual(
+      [allocate('call_dup'), allocate('call_dup'), allocate('call_dup'), allocate('call_other')],
+      ['call_dup', 'call_dup_2', 'call_dup_3', 'call_other'],
+    );
+  });
+
+  it('sanitizes before deduping, so two malformed spellings collapse and split', () => {
+    const allocate = createToolIdAllocator();
+    assert.deepEqual(
+      [allocate('a:b'), allocate('a/b'), allocate('a:b')],
+      ['a_b', 'a_b_2', 'a_b_3'],
+    );
+  });
+
+  it('reserves generated fallbacks against later upstream ids', () => {
+    let n = 0;
+    const allocate = createToolIdAllocator({ makeFallback: () => `gen_${n++}` });
+    assert.equal(allocate(undefined), 'gen_0');
+    assert.equal(allocate('gen_0'), 'gen_0_2');
+    assert.equal(allocate(''), 'gen_1');
+  });
+
+  it('stays within maxLen and stays deterministic across allocator instances', () => {
+    const ids = (maxLen) => {
+      const allocate = createToolIdAllocator({ maxLen });
+      return [allocate('x'.repeat(10)), allocate('x'.repeat(10))];
+    };
+    const first = ids(12);
+    assert.deepEqual(first, ids(12));
+    assert.equal(first[0].length <= 12, true);
+    assert.equal(first[1].length <= 12, true);
+    assert.notEqual(first[0], first[1]);
   });
 });

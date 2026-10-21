@@ -12,7 +12,7 @@ import { safeLogValue } from '../log-safety.js';
 import { log } from '../config.js';
 import { SseFramer } from '../sse-framer.js';
 import { buildToolNameMap, restoreToolName } from '../tool-names.js';
-import { normalizeToolIdsInMessages, sanitizeToolId, toolHygieneEnabled } from '../tool-ids.js';
+import { createToolIdAllocator, normalizeToolIdsInMessages, sanitizeToolId, toolHygieneEnabled } from '../tool-ids.js';
 import { normalizeHistoryTail } from '../history-normalize.js';
 
 function genResponseId() {
@@ -589,7 +589,7 @@ function clientToolId(id) {
   return toolHygieneEnabled() ? sanitizeToolId(id) : (id || '');
 }
 
-function functionCallItem(toolCall, status = 'completed', requestedTools = [], toolNameMap = null) {
+function functionCallItem(toolCall, status = 'completed', requestedTools = [], toolNameMap = null, allocateId = null) {
   const wireName = toolCall.function?.name || 'unknown';
   const name = restoreToolName(wireName, toolNameMap) || wireName;
   const argsText = toolCall.function?.arguments || '';
@@ -597,6 +597,13 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = [], t
     ? requestedTools.find(t => (t?.function?.name || t?.name || (t?.__response_tool?.type === 'web_search' ? 'web_search' : null)) === wireName)
     : null;
   const responseTool = requestedTool?.__response_tool || null;
+  // Upstream may reuse one call id for two distinct calls; the client must
+  // never see the same call_id twice (GFProtocol Q1-04). The allocator keeps
+  // the first id and suffixes later duplicates deterministically. An absent id
+  // keeps this surface's historical generated fallback (per item type below).
+  const callId = toolCall.id
+    ? (allocateId ? allocateId(toolCall.id) : clientToolId(toolCall.id))
+    : '';
   if (responseTool?.type === 'custom') {
     const parsed = safeJsonParse(argsText);
     const input = parsed && typeof parsed === 'object' && parsed.input != null
@@ -604,7 +611,7 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = [], t
       : argsText;
     return {
       type: 'custom_tool_call',
-      call_id: clientToolId(toolCall.id) || `call_${randomUUID().slice(0, 8)}`,
+      call_id: callId || `call_${randomUUID().slice(0, 8)}`,
       name: responseTool.originalName || name,
       ...(responseTool.namespace ? { namespace: responseTool.namespace } : {}),
       input,
@@ -616,10 +623,10 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = [], t
     return {
       type: responseTool.type === 'web_search' ? 'web_search_call' : 'function_call',
       ...(responseTool.type === 'web_search'
-        ? { id: clientToolId(toolCall.id) || `ws_${randomUUID().replace(/-/g, '').slice(0, 24)}` }
+        ? { id: callId || `ws_${randomUUID().replace(/-/g, '').slice(0, 24)}` }
         : {
             id: genFunctionCallId(),
-            call_id: clientToolId(toolCall.id) || `call_${randomUUID().slice(0, 8)}`,
+            call_id: callId || `call_${randomUUID().slice(0, 8)}`,
             name: responseTool.originalName || name,
             ...(responseTool.namespace ? { namespace: responseTool.namespace } : {}),
           }),
@@ -639,7 +646,7 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = [], t
   return {
     type: 'function_call',
     id: genFunctionCallId(),
-    call_id: clientToolId(toolCall.id) || `call_${randomUUID().slice(0, 8)}`,
+    call_id: callId || `call_${randomUUID().slice(0, 8)}`,
     name: responseTool?.originalName || name,
     ...(responseTool?.namespace ? { namespace: responseTool.namespace } : {}),
     arguments: argsText,
@@ -655,7 +662,9 @@ export function chatToResponse(chatBody, requestedModel, responseId = genRespons
   const output = [];
   if (message.reasoning_content) output.push(reasoningItem('rs_' + msgId.slice(4), message.reasoning_content));
   if (text) output.push(textMessageItem(msgId, text));
-  for (const tc of (message.tool_calls || [])) output.push(functionCallItem(tc, 'completed', requestedTools, toolNameMap));
+  // One allocator per turn: duplicate upstream call ids become distinct wire ids.
+  const allocateCallId = toolHygieneEnabled() ? createToolIdAllocator() : null;
+  for (const tc of (message.tool_calls || [])) output.push(functionCallItem(tc, 'completed', requestedTools, toolNameMap, allocateCallId));
 
   // A turn that ends by emitting function calls is `completed` in the OpenAI
   // Responses API — `incomplete` is reserved for truncation (length /
@@ -723,6 +732,10 @@ class ResponsesStreamTranslator {
     this.nextOutputIndex = 0;
     this.outputItems = [];
     this.toolCalls = new Map();
+    // Egress id allocator: upstream may reuse one call id for two distinct
+    // calls, but the client must never see the same call_id twice
+    // (GFProtocol Q1-04). First-seen id wins; duplicates get a stable suffix.
+    this.allocateCallId = toolHygieneEnabled() ? createToolIdAllocator() : (id) => id || '';
     // Tool events buffered until a split function.name is settled. Without this,
     // output_item.added publishes the first fragment (e.g. "get_") and the name
     // cannot be corrected in the Responses event contract.
@@ -947,7 +960,8 @@ class ResponsesStreamTranslator {
         custom: false,
         webSearch: false,
         responseTool: null,
-        callId: toolCall.id || null,
+        callId: toolCall.id ? this.allocateCallId(toolCall.id) : null,
+        rawId: toolCall.id || null,
         wireName: null,
         toolName: null,
         pendingArgDeltas: [],
@@ -991,7 +1005,12 @@ class ResponsesStreamTranslator {
       this.send('response.output_item.added', { output_index: existing.outputIndex, item });
     };
 
-    if (toolCall.id) existing.callId = clientToolId(toolCall.id) || existing.callId;
+    if (toolCall.id && toolCall.id !== existing.rawId) {
+      // The id is delivered once, possibly on a later delta than the first. A
+      // repeated id is the same call and must not be allocated twice.
+      existing.rawId = toolCall.id;
+      existing.callId = this.allocateCallId(toolCall.id) || existing.callId;
+    }
     if (toolCall.function?.name) {
       const rawName = toolCall.function.name;
       // function.name may be split across deltas. Accumulate idempotently: a
@@ -1466,7 +1485,10 @@ function storedResponseBody(responseId, entry) {
   const answer = text.replace(/^\[\.\.\. \d+ earlier message\(s\) dropped by the response store[^\]]*\]\n\n/, '');
   const output = [];
   if (answer) output.push(textMessageItem(genMessageId(), answer));
-  for (const tc of assistant?.tool_calls || []) output.push(functionCallItem(tc));
+  // A stored turn may predate the egress dedupe (or come from a non-stream
+  // response): never hand two items the same call_id on retrieval either.
+  const allocateCallId = toolHygieneEnabled() ? createToolIdAllocator() : null;
+  for (const tc of assistant?.tool_calls || []) output.push(functionCallItem(tc, 'completed', [], null, allocateCallId));
   return {
     object: 'response',
     id: responseId,
