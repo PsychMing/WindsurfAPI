@@ -58,7 +58,7 @@ import { readQuotaBurnDown } from './quota-burn-down.js';
 import { readBillingHealth } from './billing-health.js';
 import { readModelReconciliation } from './model-reconcile.js';
 import { listRequests, requestRingStats } from './request-ring.js';
-import { windsurfLogin, refreshFirebaseToken, reRegisterWithCodeium } from './windsurf-login.js';
+import { windsurfLogin, refreshFirebaseToken, reRegisterWithCodeium, probeLoginMethod, emailLoginStart, emailLoginComplete, checkEmailLocked } from './windsurf-login.js';
 import { getModelAccessConfig, setModelAccessMode, setModelAccessList, addModelToList, removeModelFromList, setDefaultModel } from './model-access.js';
 import { checkMessageRateLimit } from '../windsurf-api.js';
 import { getNativeBridgeConfigStatus } from '../cascade-native-bridge.js';
@@ -459,7 +459,15 @@ async function processWindsurfLogin({ email, password, loginProxy, autoAdd, stor
   // Use provided proxy, or global proxy
   const proxy = loginProxy?.host ? loginProxy : getProxyConfig().global;
   const result = await windsurfLogin(email, password, proxy);
+  return finalizeWindsurfLogin(result, { password, loginProxy, autoAdd, storeCredential: wantStore, req });
+}
 
+// Shared tail of every successful login (password or email code): add the
+// account to the pool, persist the per-account proxy, optionally persist the
+// password for auto-relogin, and shape the response. `password` is null for
+// the email-code flow — there is nothing to store.
+async function finalizeWindsurfLogin(result, { password, loginProxy, autoAdd, storeCredential: wantStore, req }) {
+  const email = result.email || '';
   // Auto-add to account pool if requested
   let account = null;
   // Whether the password the caller asked to store actually landed. null = not
@@ -484,7 +492,7 @@ async function processWindsurfLogin({ email, password, loginProxy, autoAdd, stor
     // request's storeCredential:true. Best-effort: a store failure must never
     // break the login that already succeeded. Plaintext password is never
     // logged (only the masked email).
-    if (credStoreGateOpen(wantStore, req)) {
+    if (password && credStoreGateOpen(wantStore, req)) {
       // True only after a credential was actually persisted. It used to start
       // true, so a store that is disabled (no DEVIN_CONNECT_CRED_KEY) reported
       // "stored" without ever calling the store (2026-09-17 review, F3).
@@ -522,6 +530,7 @@ async function processWindsurfLogin({ email, password, loginProxy, autoAdd, stor
     email: result.email,
     apiServerUrl: result.apiServerUrl,
     account: account ? { id: account.id, email: account.email, status: account.status } : null,
+    ...(result.viaEmailCode ? { method: 'email_code' } : {}),
     ...(wantStore ? { credentialStored: credentialStored === true } : {}),
   };
 }
@@ -2494,6 +2503,76 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       return json(res, 200, await processWindsurfLogin({ email, password, loginProxy, autoAdd, storeCredential, req }));
     } catch (err) {
       return json(res, err.statusCode || 400, { error: err.message, isAuthFail: !!err.isAuthFail, firebaseCode: err.firebaseCode });
+    }
+  }
+
+  // Login-method probe. The UI calls this BEFORE showing a password field:
+  // `hasPassword:false` means the account can only log in with an emailed code
+  // or OAuth, so a password attempt would be a guaranteed, misleading 401.
+  // Dashboard auth is enforced above; this route never sees a credential.
+  if (subpath === '/windsurf-login/probe' && method === 'POST') {
+    const email = String(body?.email || '').trim();
+    if (!email) return json(res, 400, { error: 'ERR_EMAIL_REQUIRED' });
+    // Per-email rate limit, shared with the login path. 400 (not 429): the
+    // dashboard renders 429 as an IP-wide ban overlay, and this lock is
+    // per-email.
+    const lockMs = checkEmailLocked(email);
+    if (lockMs != null) return json(res, 400, { error: 'ERR_EMAIL_LOCKED', retryAfterMs: lockMs });
+    try {
+      const loginProxy = body?.proxy?.host ? body.proxy : getProxyConfig().global;
+      const probe = await probeLoginMethod(email, loginProxy);
+      return json(res, 200, {
+        ok: true,
+        email,
+        userExists: probe.userExists,
+        hasPassword: probe.hasPassword,
+        method: probe.method,
+        emailCode: probe.emailCode,
+        oauth: probe.oauth,
+        source: probe.source,
+      }, NO_STORE);
+    } catch (err) {
+      return json(res, 502, { ok: false, error: err.code || 'ERR_LOGIN_PROBE_FAILED' }, NO_STORE);
+    }
+  }
+
+  // Ask Windsurf to email a login code. The upstream verification token stays
+  // server-side, keyed by the returned opaque flowId — only {flowId, sent} is
+  // returned, and neither the token nor the code is ever logged.
+  if (subpath === '/windsurf-login/email/start' && method === 'POST') {
+    const email = String(body?.email || '').trim();
+    if (!email) return json(res, 400, { error: 'ERR_EMAIL_REQUIRED' });
+    try {
+      const loginProxy = body?.proxy?.host ? body.proxy : getProxyConfig().global;
+      return json(res, 200, await emailLoginStart(email, loginProxy), NO_STORE);
+    } catch (err) {
+      return json(res, err.statusCode || 400, {
+        error: err.code || err.message,
+        ...(err.retryAfterMs ? { retryAfterMs: err.retryAfterMs } : {}),
+      }, NO_STORE);
+    }
+  }
+
+  // Verify the emailed code and finish the login. Same response shape as
+  // /windsurf-login, including the auto-add + credential-store tail.
+  if (subpath === '/windsurf-login/email/complete' && method === 'POST') {
+    const { flowId, code, proxy: loginProxy, autoAdd } = body || {};
+    if (!flowId || !code) return json(res, 400, { error: 'ERR_EMAIL_FLOW_CODE_REQUIRED' });
+    try {
+      const result = await emailLoginComplete(flowId, code, loginProxy?.host ? loginProxy : getProxyConfig().global);
+      // No password exists in this flow, so there is nothing for the credential
+      // store to persist — pass storeCredential:false regardless of the request.
+      return json(res, 200, await finalizeWindsurfLogin(result, {
+        password: null, loginProxy, autoAdd, storeCredential: false, req,
+      }));
+    } catch (err) {
+      return json(res, err.statusCode || 400, {
+        error: err.code || err.message,
+        ...(err.detail ? { detail: err.detail } : {}),
+        ...(err.retryAfterMs ? { retryAfterMs: err.retryAfterMs } : {}),
+        ...(err.attemptsRemaining != null ? { attemptsRemaining: err.attemptsRemaining } : {}),
+        isAuthFail: !!err.isAuthFail,
+      });
     }
   }
 
