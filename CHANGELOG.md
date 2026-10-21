@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **194** 份,v2.0.6 → v3.9.43 |
+| 发布说明 | **195** 份,v2.0.6 → v3.9.44 |
 | git tag | 202 个（截至 2026-10-15） |
-| 当前 | **v3.9.43**(2026-10-22) |
+| 当前 | **v3.9.44**(2026-10-22) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -42,7 +42,14 @@ flowchart LR
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
 
-### [v3.9.43](docs/releases/RELEASE_NOTES_3.9.43.md) · 2026-10-22
+### [v3.9.44](docs/releases/RELEASE_NOTES_3.9.44.md) · 2026-10-22
+
+登录修复：OAuth-only 账号不再被误判成密码错误（`has_password` 才是密码信号），并补上邮箱验证码
+登录（probe / email/start / email/complete，服务端 flowId，10 分钟 TTL/一次性/5 次尝试/30 秒冷却）；
+Devin host 可回退。DEVIN_CONNECT 帧队列加上限（4096 帧 / 8 MiB，背压暂停/恢复）与 relogin 等待
+超时/中止。无协议破坏，无默认开启的新开关。
+
+### [v3.9.43](docs/releases/RELEASE_NOTES_3.9.43.md) · 2026-10-22（已发布）
 
 v3.9.42 之后的两条补丁：ACP 的 `tool_call`/`tool_call_update` 不再被丢弃，工具类 `stopReason`
 投影成 `tool_calls` + `finish_reason:"tool_calls"`，无法映射时返回 502 而不是静默 `stop`；
