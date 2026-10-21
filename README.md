@@ -69,6 +69,26 @@ JavaScript · MIT · ★3,046
   <a href="README.en.md">English</a>
 </p>
 
+## 项目定位与使用边界
+
+WindsurfAPI 是一个独立的、开源的、自托管协议兼容网关，用于将部署者**自己拥有或获授权使用的 Windsurf / Devin 账号能力**接入 OpenAI、Anthropic 和 Gemini 兼容客户端。
+
+### 使用模型
+
+- **Bring Your Own Account（BYO-account）**：部署者自行提供并控制自己的上游账号与凭据。
+- 项目本身**不提供、出售、出租、共享或打包任何 Windsurf / Devin 账号、订阅或凭据**。
+- 多账号能力用于同一部署者拥有或获授权管理的账号集合，例如故障切换、健康检查和限流隔离；它不是公共共享账号池。
+- 本项目的目标是协议互操作、自托管客户端兼容和工程研究，不以订阅转售、跨用户账号共享、绕过上游配额或规避访问控制为目的。
+- 部署者应自行确认其账号、订阅以及具体使用方式符合对应上游服务条款和适用法律。
+
+### 独立项目声明
+
+WindsurfAPI 是独立开源项目，与 Cognition、Windsurf、Devin、OpenAI、Anthropic、Google 或其他模型提供商不存在隶属、授权或背书关系，除非另有明确说明。
+
+项目代码依据 [MIT License](LICENSE) 开源。MIT License 授予的是本项目代码的使用权，并不授予任何第三方服务、模型、账号或订阅的访问权。
+
+本节只界定边界；下面说明它具体能做什么。
+
 ## 它到底在干嘛
 
 ```mermaid

@@ -50,6 +50,26 @@ Turns [Windsurf](https://windsurf.com) (formerly Codeium, now Devin Desktop)'s A
   <a href="README.md">中文</a>
 </p>
 
+## Project Scope and Usage Boundaries
+
+WindsurfAPI is an independent, open-source, self-hosted protocol-compatibility gateway for connecting **Windsurf / Devin account capabilities that the deployer owns or is authorized to use** to OpenAI-, Anthropic-, and Gemini-compatible clients.
+
+### Usage Model
+
+- **Bring Your Own Account (BYO-account)**: the deployer supplies and controls their own upstream accounts and credentials.
+- The project itself **does not provide, sell, rent, share, or bundle any Windsurf / Devin accounts, subscriptions, or credentials**.
+- Multi-account support is for account sets owned or authorized for management by the same deployer — for example failover, health checks, and rate-limit isolation; it is not a public shared account pool.
+- The project aims at protocol interoperability, self-hosted client compatibility, and engineering research; it is not intended for subscription resale, cross-user account sharing, bypassing upstream quotas, or circumventing access controls.
+- Deployers are responsible for confirming that their accounts, subscriptions, and specific usage comply with the applicable upstream terms of service and applicable law.
+
+### Independent Project Statement
+
+WindsurfAPI is an independent open-source project and is not affiliated with, authorized by, or endorsed by Cognition, Windsurf, Devin, OpenAI, Anthropic, Google, or any other model provider, unless explicitly stated otherwise.
+
+The project code is released under the [MIT License](LICENSE). The MIT License grants rights to this project's code; it does not grant access to any third-party service, model, account, or subscription.
+
+This section only sets the boundaries; the rest of this document covers what it actually does.
+
 ## What is it doing?
 
 ```mermaid
