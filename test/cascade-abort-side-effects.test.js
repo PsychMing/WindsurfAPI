@@ -39,6 +39,7 @@ const PARTIAL = 'PARTIAL-ANSWER-FROM-UPSTREAM';
 
 let WindsurfClient;
 let handleChatCompletions;
+let resolveModel;
 let auth;
 let cache;
 let pool;
@@ -106,7 +107,7 @@ async function withFakeLanguageServer(handler, fn) {
  * counts StartCascade / metadata calls so the test can tell a cache replay
  * (zero new upstream turns) from a fresh attempt.
  */
-function cascadeUpstream() {
+function cascadeUpstream({ onSteps } = {}) {
   const state = { startCalls: 0, stepsCalls: 0, metadataCalls: 0, statusCalls: 0 };
   const handler = (stream, headers) => {
     const chunks = [];
@@ -127,6 +128,7 @@ function cascadeUpstream() {
       }
       if (method === 'GetCascadeTrajectorySteps') {
         state.stepsCalls += 1;
+        onSteps?.(state.stepsCalls);
         stream.respond({ ':status': 200, 'content-type': contentType });
         stream.end(responseBody(trajectoryStepsResponse(PARTIAL), headers));
         return;
@@ -233,6 +235,7 @@ const createdIds = [];
 before(async () => {
   ({ WindsurfClient } = await import('../src/client.js'));
   ({ handleChatCompletions } = await import('../src/handlers/chat.js'));
+  ({ resolveModel } = await import('../src/models.js'));
   auth = await import('../src/auth.js');
   cache = await import('../src/cache.js');
   pool = await import('../src/conversation-pool.js');
@@ -372,6 +375,116 @@ describe('Cascade abort is not a completed turn', () => {
       assert.equal(state.startCalls, 2,
         'the follow-up identical request was served locally (cache hit) instead of reaching upstream — '
         + 'the aborted partial answer was cached as a completed turn');
+    });
+  });
+});
+
+function nonStreamAbortBody() {
+  return {
+    model: 'gemini-2.5-flash',
+    messages: [
+      { role: 'user', content: 'first turn' },
+      { role: 'assistant', content: 'first answer' },
+      { role: 'user', content: 'abort this turn' },
+    ],
+    stream: false,
+  };
+}
+
+async function withNonStreamAbort(fn) {
+  const ac = new AbortController();
+  const { state, handler } = cascadeUpstream({ onSteps: () => ac.abort() });
+  return withFakeLanguageServer(handler, (port) => fn({ port, ac, state }));
+}
+
+/**
+ * Runs one non-stream request that aborts on its first trajectory poll. The
+ * reuse pool is seeded under the handler's own pre-turn fingerprint so the
+ * test also covers the restore-on-failure path, not just the success check-in.
+ */
+async function runNonStreamAbortedTurn(port, acct, ac) {
+  const ctx = { ...handlerContext(port, acct), signal: ac.signal };
+  const body = nonStreamAbortBody();
+  const modelKey = resolveModel(body.model);
+  // buildReuseOpts() for a tool-less chat request is exactly this bag.
+  const fpBefore = pool.fingerprintBefore(body.messages, modelKey, ctx.callerKey, {
+    tools: [], toolChoice: null, toolPreamble: '', preambleTier: null,
+    emulateTools: false, route: 'chat',
+  });
+  pool.checkin(fpBefore, {
+    cascadeId: 'seeded-cascade',
+    sessionId: 'seeded-session',
+    lsPort: port,
+    lsGeneration: 1,
+    apiKey: acct.apiKey,
+    modelKey,
+    stepOffset: 1,
+    generatorOffset: 1,
+  }, ctx.callerKey, 0);
+  assert.equal(pool.poolStats().size, 1, 'precondition: seeded reuse entry');
+  const hitsBefore = pool.poolStats().hits;
+  const spendBefore = auth.getAccountPublic(acct.id)?.totalSpend?.totalTokens ?? 0;
+
+  const result = await handleChatCompletions(body, ctx);
+
+  assert.equal(pool.poolStats().hits, hitsBefore + 1,
+    'precondition: the handler must have checked out the seeded cascade');
+  return { result, spendBefore };
+}
+
+describe('Cascade non-stream abort is not a completed turn', () => {
+  it('returns 499 instead of a success body', async () => {
+    const acct = seedAccount('nonstream-body');
+    createdIds.push(acct.id);
+    await withNonStreamAbort(async ({ port, ac }) => {
+      const { result } = await runNonStreamAbortedTurn(port, acct, ac);
+      assert.equal(result.status, 499,
+        `an aborted non-stream turn must not return a success body (got ${result.status})`);
+      assert.equal(result.body?.error?.type, 'client_disconnect');
+      assert.equal(result.body?.choices, undefined, 'no completion choices may be returned');
+    });
+  });
+
+  it('does not restore or check in the cascade', async () => {
+    const acct = seedAccount('nonstream-pool');
+    createdIds.push(acct.id);
+    await withNonStreamAbort(async ({ port, ac }) => {
+      await runNonStreamAbortedTurn(port, acct, ac);
+      assert.equal(pool.poolStats().size, 0,
+        'an aborted non-stream turn must not restore or check in the cascade');
+    });
+  });
+
+  it('does not cache the partial answer', async () => {
+    const acct = seedAccount('nonstream-cache');
+    createdIds.push(acct.id);
+    await withNonStreamAbort(async ({ port, ac }) => {
+      await runNonStreamAbortedTurn(port, acct, ac);
+      assert.equal(cache.cacheStats().stores, 0,
+        'an aborted non-stream turn must not populate the response cache');
+    });
+  });
+
+  it('does not bill the turn', async () => {
+    const acct = seedAccount('nonstream-spend');
+    createdIds.push(acct.id);
+    await withNonStreamAbort(async ({ port, ac }) => {
+      const { spendBefore } = await runNonStreamAbortedTurn(port, acct, ac);
+      const spendAfter = auth.getAccountPublic(acct.id)?.totalSpend?.totalTokens ?? 0;
+      assert.equal(spendAfter, spendBefore,
+        `an aborted non-stream turn must not be billed (${spendBefore} -> ${spendAfter})`);
+    });
+  });
+
+  it('stops polling without retry or a post-turn metadata RPC', async () => {
+    const acct = seedAccount('nonstream-poll');
+    createdIds.push(acct.id);
+    await withNonStreamAbort(async ({ port, ac, state }) => {
+      await runNonStreamAbortedTurn(port, acct, ac);
+      assert.equal(state.stepsCalls, 1,
+        'the abort must stop the polling loop without a retry/failover');
+      assert.equal(state.metadataCalls, 0,
+        'the post-turn metadata RPC must not run for an aborted turn');
     });
   });
 });

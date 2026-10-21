@@ -4963,6 +4963,10 @@ async function _handleChatCompletionsInner(body, context = {}) {
       // in-flight cascade/legacy calls instead of burning LS + account quota.
       context.signal,
     );
+    if (context.signal?.aborted || result?.body?.error?.code === 'client_disconnect') {
+      log.info(`Chat[${reqId}]: non-stream aborted (client gone) — not failing over or restoring reuse`);
+      return result;
+    }
     if (result.status === 200) return result;
     reuseEntry = null; // don't try to reuse on the retry
     if (result.reuseEntryInvalid) reuseEntryDead = true;
@@ -5466,6 +5470,20 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
       }
     }
 
+    // A client disconnect can land after the call resolved but before the turn
+    // is committed (the NLU retry and resume-snapshot windows are awaits). The
+    // success block below is fully synchronous, so this one check gates the
+    // pool check-in, cache write, spend record, and success body: nothing can
+    // fire between here and the return. A 499 is the same shape the connect
+    // non-stream path returns for a client that left.
+    if (signal?.aborted) {
+      log.info('Chat[non-stream]: aborted (client gone) — discarding turn');
+      return {
+        status: 499,
+        body: { error: { message: 'Client closed request', type: 'client_disconnect', code: 'client_disconnect' } },
+      };
+    }
+
     // #185 egress hotfix. The shared transform preserves all ordinary JSON,
     // unwraps only the exact Cascade metadata record on an unqualified chat
     // turn, then applies the same path + identity neutralizers ordinary prose
@@ -5665,6 +5683,17 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
       },
     };
   } catch (err) {
+    // A client disconnect is not a turn failure: cascadeChat throws AbortError
+    // and rawGetChatMessage rejects with the same shape when the request
+    // signal aborts. Return the established 499 without billing, caching, or
+    // counting an upstream fault — the caller's socket is already gone.
+    if (signal?.aborted || err?.name === 'AbortError' || err?.code === 'ABORT_ERR') {
+      log.info('Chat[non-stream]: aborted (client gone) — not billing or caching');
+      return {
+        status: 499,
+        body: { error: { message: 'Client closed request', type: 'client_disconnect', code: 'client_disconnect' } },
+      };
+    }
     // Only count true auth failures against the account. Workspace/cascade/model
     // errors and transport issues shouldn't disable the key.
     const isAuthFail = /unauthenticated|invalid api key|invalid_grant|permission_denied.*account/i.test(err.message);
