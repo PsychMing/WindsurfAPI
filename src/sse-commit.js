@@ -159,6 +159,11 @@ export function createDeferredSseResponse(realRes, {
   let inspectedChars = 0;
   let timer = null;
   let disposed = false;
+  // O10: the first failure this stream surfaced, kept after it is delivered so
+  // the caller can classify the request-ring row. The commit gate already
+  // parses frames until it commits; from then on an error frame cannot change
+  // the status any more, but it still has to reach the ring.
+  let failure = null;
 
   const clearTimer = () => {
     if (timer) {
@@ -183,6 +188,7 @@ export function createDeferredSseResponse(realRes, {
 
   const finishError = (error) => {
     if (ended) return;
+    if (!failure) failure = error;
     ended = true;
     clearTimer();
     if (realRes.writableEnded || realRes.destroyed) return;
@@ -258,6 +264,10 @@ export function createDeferredSseResponse(realRes, {
     get headersSent() { return committed; },
     get statusCode() { return headerStatus; },
     set statusCode(v) { headerStatus = v; },
+    // O10: first failure frame this stream carried (pre- or post-commit), or
+    // null. Read by serveChatStream after the handler settles to classify the
+    // request-ring row; it never changes what was sent to the client.
+    get failure() { return failure; },
     setHeader(name, value) {
       if (committed) return realRes.setHeader(name, value);
       headerObj[name] = value;
@@ -283,6 +293,16 @@ export function createDeferredSseResponse(realRes, {
       if (ended || disposed) return false;
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
       if (committed) {
+        // O10: a failure that lands after the commit gate is already on the
+        // wire with HTTP 200, so it cannot rewrite the status — but the request
+        // ring must still record its class. Scan for the `"error"` key first:
+        // JSON-escaped content cannot produce that exact byte sequence (inner
+        // quotes carry a backslash), and a false positive is rejected by
+        // `parseError` below because the frame is parsed as a whole.
+        if (!failure && buf.indexOf('"error"') !== -1) {
+          const error = errorFromFrame(buf.toString('utf8'), parseError);
+          if (error) failure = error;
+        }
         const ok = realRes.write(buf);
         if (typeof cb === 'function') process.nextTick(cb);
         return ok;
