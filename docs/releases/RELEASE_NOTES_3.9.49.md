@@ -29,7 +29,9 @@
 - 合入 3 条分支（均基于 `312c148`）：`fix/descriptor-fields` `ca35fea`、`fix/ls-manifest-install` `bdb63eb`、`fix/billing-truth` `ee20d01`。
 - Windows `npm run test:release`：**5,819 pass / 0 fail / 82 skip（477 文件，5,901 tests）**，exit 0。
 - Windows `npm run gate`：**PASS exit=0** —— 全部子门绿。
-- Linux/mutation/wire：见发布提交与 CI。
+- Linux `npm run test:release`（HMC，Node v24.21.0，477 文件）：**5,900 pass / 0 fail / 1 skip（5,901 tests）**，exit 0。
+- mutation：`connect-catalog-hotfix`、`dashboard-connect-parity`、`credit-cost-top-level` 三个受影响规格 exit 0。
+- wire：对 `v3.9.48`（`d909ae6`）**270/270 比较相同**，exit 0。
 
 ## 尚未验证
 
