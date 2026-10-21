@@ -3877,7 +3877,11 @@ export function getAccountListStats() {
     // a pool total. NOTE: Teams share one balance, so multiple accounts in the
     // same team over-count; surfaced with a caveat until we have a team id to dedupe.
     const bal = account?.credits?.balance;
-    if (typeof bal === 'number' && Number.isFinite(bal)) { balanceTotal += bal; balanceAccounts++; }
+    // Negative values are "no billing snapshot" sentinels; uint64 -1 decodes to
+    // ~1.8e13 USD. Only a plausible on-demand balance counts toward the pool.
+    if (typeof bal === 'number' && Number.isFinite(bal) && bal >= 0 && bal <= 1_000_000) {
+      balanceTotal += bal; balanceAccounts++;
+    }
   }
   return {
     ...getAccountCount(),
@@ -3985,6 +3989,7 @@ async function _refreshCreditsImpl(account) {
       const billing = await fetchUserStatus({ token: apiKey, withCatalog: true });
       if (billing) {
         if (billing.balance != null) persist.balance = billing.balance;
+        else delete persist.balance; // never keep a stale sentinel value
         if (billing.periodStart) persist.periodStart = billing.periodStart;
         if (billing.periodEnd) persist.periodEnd = billing.periodEnd;
         // Only a PAIRED rate table (selector-keyed object) is usable. An unpaired
