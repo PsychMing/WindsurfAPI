@@ -1327,10 +1327,18 @@ class AnthropicStreamTranslator {
       || !rawName
     );
     // Open this tool's block the first time we have both id and a settled name.
-    // If another block is currently open (text/thinking/another tool), startBlock
-    // closes it first, so on return `this.current` is guaranteed to be THIS tool's
-    // block.
-    if (buf.blockIndex == null && buf.id && buf.name && nameSettled) {
+    // If a TEXT/thinking block is current, startBlock closes it first, so on
+    // return `this.current` is guaranteed to be THIS tool's block.
+    //
+    // Do NOT open a second tool_use block while one is still current: an
+    // Anthropic tool_use block can never be reopened, so opening B here would
+    // close A and strand every A fragment that arrives afterwards (finish()
+    // could only log the drop). Parallel calls interleave in the upstream
+    // stream, so B is held until finish(), which opens it with its complete
+    // arguments while A keeps its block and streams to the end. The cost is
+    // that all but the first call buffer instead of streaming their args.
+    if (buf.blockIndex == null && buf.id && buf.name && nameSettled
+        && this.current?.type !== 'tool_use') {
       this.startBlock('tool_use', { id: buf.id, name: buf.name });
       buf.blockIndex = this.current.index;
     }
@@ -1499,14 +1507,10 @@ class AnthropicStreamTranslator {
     // terminal signal regardless of whether content started.
     if (!this.messageStarted) this.startMessage();
     this.closeCurrentBlock();
-    // B1: interleaved-fragment edge case. flushToolArgs only emits arg fragments
-    // while a tool's block is the currently-open one; a tool_use block that got
-    // permanently closed (a text/other-tool delta interleaved) can still receive
-    // late fragments that stay parked in pendingArgs and never make it out. The
-    // buffered-flush design (BUG3) covers the common case, but this residual
-    // corner is real — surface it as a warning instead of dropping silently so a
-    // truncated tool call is diagnosable. (Reopening a closed block is not
-    // spec-legal in Anthropic's stream, so we log rather than re-emit.)
+    // Open every tool still held at finish: either its name settled late (the
+    // block is opened only now) or another tool_use block was current when it
+    // became openable (emitToolCallDelta holds it so the current tool keeps its
+    // block). Each gets its complete buffered arguments in one delta.
     for (const buf of this.toolCallBufs.values()) {
       if (buf.blockIndex == null && buf.id && buf.name) {
         this.startBlock('tool_use', { id: buf.id, name: buf.name });
@@ -1516,10 +1520,19 @@ class AnthropicStreamTranslator {
         // the block did not yet exist.
         this.flushToolArgs(buf);
       }
+      // B1: the residual loss that remains is TEXT/thinking interleaving. A text
+      // delta closes the current tool_use block; a later fragment for that tool
+      // has no legal place to go (a block is never reopened), so it is surfaced
+      // as a warning instead of dropped silently. Tool-vs-tool interleaving no
+      // longer reaches this branch — the second tool is held until finish.
       if (buf.pendingArgs) {
         log.warn(`messages: dropped ${buf.pendingArgs.length} buffered tool_use arg char(s) for tool "${buf.name || 'unknown'}" (id=${buf.id || 'none'}) — fragments arrived after the block closed (interleaved stream)`);
       }
     }
+    // The held tools opened above are current one at a time; close the last one
+    // so every content_block_start has its content_block_stop before the
+    // message_delta. No-op when the loop opened nothing.
+    this.closeCurrentBlock();
     const u = this.finalUsage || {};
     // A1/G2: the final message_delta carries the AUTHORITATIVE upstream usage.
     // When the upstream supplied prompt/input tokens, they win. When it did NOT
