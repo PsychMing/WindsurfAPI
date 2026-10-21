@@ -1,7 +1,7 @@
 # 环境变量参考（补 .env.example 未收录的部分）
 
 README 的表格列常用变量，[.env.example](../.env.example) 是完整清单 —— 两者合计覆盖
-75 个。本文补齐**剩下 82 个只存在于源码里**的开关：注释很全，但运营翻不到。
+78 个。本文补齐**剩下 82 个只存在于源码里**的开关：注释很全，但运营翻不到。
 （2026-10-16 按 `d3f0490` 重测：全量 **157**。旧值 158 / 74 / 84 是 `ab4e66f` 树的口径：
 `9031b9b` 把 `CASCADE_MAX_WAIT_MS` 写进 README（覆盖 +1），`054806a` 删掉一个开关的读取点
 （全量 −1）。重测命令就是下面那段脚本。
@@ -47,7 +47,7 @@ for f in files:
     for m in PAT.finditer(strip(pathlib.Path(f).read_text(errors='replace'))):
         n=next(g for g in m.groups() if g)
         if n.startswith(('DEVIN_CONNECT_','WINDSURFAPI_','CASCADE_')): names.add(n)
-print(len(names))   # 158（2026-08-10，合入 PR #249 之后）
+print(len(names))   # 160（2026-10-21 按 e3e39d9 重测）
 PY
 ```
 
@@ -276,8 +276,8 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | `WINDSURFAPI_QUOTA_COOLDOWN` | **开**（`true`） | `bool` | 配额冷却。 |
 | `WINDSURFAPI_ON_DEMAND_RESERVE_USD` | `0` | 0–100000 | 按需消费的预留额度（`float`，美元）。**涉及真实花钱，改前想清楚。** |
 
-至此三前缀开关 157 个全部有据可查：`.env.example` + README 覆盖 75 个（含 PR #249
-的 `WINDSURFAPI_LEAK_TRACE`），本文覆盖其余 82 个（2026-10-16 按 `d3f0490` 重测）。这个不变式由
+至此三前缀开关 160 个全部有据可查：`.env.example` + README 覆盖 78 个（含 PR #249
+的 `WINDSURFAPI_LEAK_TRACE`），本文覆盖其余 82 个（2026-10-21 按 `e3e39d9` 重测）。这个不变式由
 [`test/docs-consistency-guard.test.js`](../test/docs-consistency-guard.test.js) 的
 「every switch read in src/ is findable in some reader-facing doc」守着 ——
 **加新开关不写文档会直接让测试变红**，不再依赖人记得。
