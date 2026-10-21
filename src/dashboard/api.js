@@ -563,6 +563,28 @@ async function finalizeWindsurfLogin(result, { password, loginProxy, autoAdd, st
 }
 
 /**
+ * Normalize one probeAccount() result into the per-item shape the batch and
+ * fleet routes return. `skipped` is deliberately NOT success: the probe never
+ * touched the account (the LS is not resident and allowLsStart was false), so
+ * counting it as ok made a cold pool look like a healthy sweep.
+ */
+export function probeOutcomeEntry(id, result) {
+  if (!result) return { id, ok: false, error: 'ERR_ACCOUNT_NOT_FOUND' };
+  if (result.skipped) {
+    return { id, ok: false, skipped: true, reason: result.reason || 'probe_skipped', tier: result.tier || 'unknown' };
+  }
+  return { id, ok: true, tier: result.tier || 'unknown' };
+}
+
+/** Attempted/succeeded/failed/skipped totals for a probe result list. */
+export function summarizeProbeResults(results = []) {
+  const skippedCount = results.filter((r) => r.skipped).length;
+  const okCount = results.filter((r) => r.ok && !r.skipped).length;
+  const failCount = results.filter((r) => !r.ok && !r.skipped).length;
+  return { attempted: results.length - skippedCount, okCount, failCount, skippedCount };
+}
+
+/**
  * Handle all /dashboard/api/* requests.
  */
 export async function handleDashboardApi(method, subpath, body, req, res) {
@@ -1482,7 +1504,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       try {
         if (op === 'probe') {
           const r = await probeAccount(id, { allowLsStart: false, canary: false });
-          results.push(r ? { id, ok: true, tier: r.tier || 'unknown' } : { id, ok: false, error: 'ERR_ACCOUNT_NOT_FOUND' });
+          results.push(probeOutcomeEntry(id, r));
         } else if (op === 'refresh') {
           const r = await refreshCredits(id);
           results.push(r?.ok ? { id, ok: true } : { id, ok: false, error: r?.error || 'ERR_REFRESH_FAILED' });
@@ -1497,15 +1519,16 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         results.push({ id, ok: false, error: err.message || 'ERR_BATCH_ITEM_FAILED' });
       }
     }
-    const failed = results.filter((r) => !r.ok);
+    const failed = results.filter((r) => !r.ok && !r.skipped);
+    const skipped = results.filter((r) => r.skipped);
     if (op === 'delete') log.info(`dashboard accounts/batch delete: ${results.length - failed.length}/${ids.length} removed`);
     return json(res, 200, {
       success: true,
       op,
       results,
       failed,
-      okCount: results.length - failed.length,
-      failCount: failed.length,
+      skipped,
+      ...summarizeProbeResults(results),
     });
   }
 
@@ -1675,19 +1698,18 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     for (const a of list) {
       try {
         const r = await probeAccount(a.id, { allowLsStart: force });
+        const entry = probeOutcomeEntry(a.id, r);
         results.push({
-          id: a.id,
+          ...entry,
           email: a.email,
-          tier: r?.tier || 'unknown',
-          skipped: !!r?.skipped,
-          reason: r?.reason || null,
+          reason: entry.reason || r?.reason || null,
           admission: r?.admission || null,
         });
       } catch (err) {
-        results.push({ id: a.id, email: a.email, error: err.message });
+        results.push({ id: a.id, email: a.email, ok: false, error: err.message });
       }
     }
-    return json(res, 200, { success: true, results });
+    return json(res, 200, { success: true, total: list.length, ...summarizeProbeResults(results), results });
   }
 
   // POST /accounts/:id/probe — manually trigger capability probe

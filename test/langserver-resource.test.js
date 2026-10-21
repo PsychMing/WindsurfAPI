@@ -182,7 +182,12 @@ describe('language server resource policy', () => {
     assert.match(src, /const force = body\?\.force === true \|\| body\?\.allowLsStart === true/);
     assert.match(src, /probeAccount\(a\.id, \{ allowLsStart: force \}\)/);
     assert.match(src, /probeAccount\(accountProbe\[1\], \{ allowLsStart: force, canary \}\)/);
-    assert.match(src, /skipped: !!r\?\.skipped/);
+    // A skipped probe must remain visible as skipped (never `ok: true`); the
+    // classification lives in probeOutcomeEntry so both fleet and batch routes
+    // share it.
+    assert.match(src, /const entry = probeOutcomeEntry\(a\.id, r\)/);
+    assert.match(src, /if \(result\.skipped\)/);
+    assert.match(src, /ok: false, skipped: true, reason:/);
   });
 
   test('LS admission is serialized and never evicts starting instances', () => {

@@ -122,6 +122,7 @@
   },
   "batchOps": {
     "selected": "{{count}} selected",
+    "selectedAll": "All {{count}} matching selected",
     "selectAll": "Select all",
     "enable": "Enable",
     "disable": "Disable",
@@ -130,7 +131,7 @@
     "delete": "Delete",
     "clear": "Clear selection",
     "confirmDeleteTitle": "Delete {{count}} accounts",
-    "confirmDeleteDesc": "This removes {{count}} accounts from the pool. This cannot be undone. Continue?",
+    "confirmDeleteDesc": "{{scope}}. This removes {{count}} accounts from the pool. This cannot be undone. Continue?",
     "running": "Processing {{count}} accounts…",
     "done": "{{ok}} succeeded / {{fail}} failed"
   },
@@ -1080,6 +1081,7 @@
     "status": {
       "active": "Healthy",
       "disabled": "Disabled",
+      "banned": "Banned",
       "error": "Error",
       "quotaCooled": "Quota exhausted",
       "rateLimited": "Rate limited",
@@ -1094,6 +1096,7 @@
       "total": "Accounts",
       "active": "Active",
       "disabled": "Disabled",
+      "disabledSub": "includes {{count}} banned",
       "flagged": "Needs attention",
       "rateLimited": "Rate limited",
       "balance": "Pool balance",
@@ -1116,11 +1119,18 @@
       "reset": "Reset errors",
       "export": "Export selected",
       "viewFailures": "View failures",
+      "viewSkipped": "View {{count}} skipped",
       "failedTitle": "{{count}} failed",
+      "skippedTitle": "{{count}} skipped",
+      "scopeAll": "Scope: all {{count}} accounts matching the current filter",
+      "scopeSelected": "Scope: the {{count}} checked accounts",
+      "selectionCleared": "Filters changed — the selection was cleared",
       "tooMany": "Select at most {{max}} accounts at once"
     },
     "op": {
-      "probing": "Probing 0/{{total}}…",
+      "probing": "Probing {{total}} active accounts…",
+      "probeSummary": "Probe complete: attempted {{attempted}}, succeeded {{ok}}, failed {{fail}}, skipped {{skipped}}",
+      "skipped": "Skipped: {{reason}}",
       "refreshing": "Refreshing balances for {{total}} accounts…",
       "done": "{{ok}} succeeded · {{fail}} failed"
     },
@@ -1226,6 +1236,8 @@
         "accountId": "Account ID",
         "apiKey": "API Key",
         "lastError": "Last error",
+        "bannedAt": "Banned at",
+        "bannedReason": "Ban reason",
         "spendTitle": "Lifetime spend",
         "spendRequests": "Requests",
         "spendTokens": "Total tokens",

@@ -1382,6 +1382,11 @@ tbody tr:hover td { background: var(--surface-2); }
   background: var(--error-soft);
   --badge-dot: var(--error);
 }
+.badge.banned {
+  background: var(--error-soft);
+  --badge-dot: var(--error);
+  box-shadow: inset 0 0 0 1px var(--error);
+}
 .badge.disabled, .badge.muted {
   background: var(--surface-3);
   --badge-dot: var(--text-dim);
@@ -2340,6 +2345,7 @@ tbody tr:hover td { background: var(--surface-2); }
 .acct-batch-chip { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 4px; }
 .acct-batch-chip.ok { background: var(--success-soft); color: var(--text); }
 .acct-batch-chip.fail { background: var(--error-soft); color: var(--text); }
+.acct-batch-chip.skip { background: var(--warn-soft); color: var(--text); }
 
 .row-menu-btn {
   display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
@@ -2761,6 +2767,7 @@ tbody tr:hover td { background: var(--surface-2); }
         <option value="" data-i18n="accounts.filter.allStatus">全部状态</option>
         <option value="active" data-i18n="accounts.status.active">正常</option>
         <option value="disabled" data-i18n="accounts.status.disabled">停用</option>
+        <option value="banned" data-i18n="accounts.status.banned">已封禁</option>
         <option value="error" data-i18n="accounts.status.error">异常</option>
         <option value="quota_cooled" data-i18n="accounts.status.quotaCooled">配额耗尽</option>
         <option value="rate_limited" data-i18n="accounts.status.rateLimited">限流中</option>
@@ -4742,7 +4749,8 @@ docker compose up -d --force-recreate</pre>
   // toasts (healthy ↔ cooling ↔ capacity ↔ quota ↔ disabled).
   _poolAccountState(a) {
     if (!a) return 'unknown';
-    if (a.status === 'disabled' || a.status === 'banned') return 'disabled';
+    if (a.status === 'disabled') return 'disabled';
+    if (a.status === 'banned') return 'banned';
     if (a.status === 'error') return 'error';
     if (a.quotaCooled) return 'quota';
     if (a.rateLimited) return 'rate_limited';
@@ -4752,7 +4760,7 @@ docker compose up -d --force-recreate</pre>
   _poolClassify(from, to) {
     if (from === to) return null;
     if (to === 'active') return { kind: 'recovered', severity: 'success' };
-    const sev = (to === 'disabled' || to === 'quota') ? 'error' : 'warn';
+    const sev = (to === 'disabled' || to === 'quota' || to === 'banned') ? 'error' : 'warn';
     return { kind: to, severity: sev };
   },
   _poolCollapse(events, collapseAt) {
@@ -7156,6 +7164,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   setAccountsTier(tier) {
     this.accountsTier = ['pro', 'free', 'unknown', 'expired'].includes(tier) ? tier : '';
     this.accountsPage = 1;
+    this.clearAccountSelection();
     this.loadAccounts();
   },
 
@@ -7257,6 +7266,37 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   _accountsById: new Map(),
   _drawerAccountId: null,
   _batchResults: new Map(),
+  // The selection is only valid inside the filter that produced it. `mode` is
+  // 'ids' for explicit row/page checks and 'all' for the explicit
+  // "select all N matching" scope; `filterKey` is the filter signature at the
+  // moment of selection. Any filter/search change clears the Set (sub2api
+  // pattern) so a bulk delete can never hit rows the operator can no longer see.
+  _selectionMode: 'ids',
+  _selectionFilterKey: null,
+
+  accountsFilterKey() {
+    return [this.accountsQuery || '', this.accountsTier || '', this.accountsStatus || '', this.accountsFlagged ? '1' : '0'].join('\u0001');
+  },
+
+  _selectionMatchesFilters() {
+    return !this._selectionFilterKey || this._selectionFilterKey === this.accountsFilterKey();
+  },
+
+  _rememberSelectionScope(mode = 'ids') {
+    this._selectionMode = mode === 'all' ? 'all' : 'ids';
+    this._selectionFilterKey = this.accountsFilterKey();
+  },
+
+  // Called from loadAccounts(): a filter that changed outside the setters (hash
+  // alias, restore, another tab) must not leave a hidden selection armed.
+  _dropStaleSelection() {
+    if ((this._selectedAccounts?.size || 0) > 0 && !this._selectionMatchesFilters()) {
+      this.clearAccountSelection();
+      this.toast(I18n.t('accounts.batch.selectionCleared'), 'info');
+      return true;
+    }
+    return false;
+  },
 
   accountsListUrl({ page = this.accountsPage, pageSize = this.accountsPageSize, filter = '', tier = '', q = '', status = '', sort = '', order = '' } = {}) {
     const qs = new URLSearchParams();
@@ -7273,7 +7313,11 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   },
 
   onAccountsSearchInput(value) {
-    this.accountsQuery = String(value || '').trim();
+    const next = String(value || '').trim();
+    // Clear at input time, not at debounce time: a delete click inside the
+    // 300 ms window must not act on a selection made under the old query.
+    if (next !== this.accountsQuery) this.clearAccountSelection();
+    this.accountsQuery = next;
     clearTimeout(this._accountsSearchTimer);
     this._accountsSearchTimer = setTimeout(() => {
       this.accountsPage = 1;
@@ -7282,15 +7326,17 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   },
 
   setAccountsStatus(value) {
-    const allowed = ['', 'active', 'disabled', 'error', 'quota_cooled', 'rate_limited', 'capacity', 'near_limit', 'watch'];
+    const allowed = ['', 'active', 'disabled', 'banned', 'error', 'quota_cooled', 'rate_limited', 'capacity', 'near_limit', 'watch'];
     this.accountsStatus = allowed.includes(value) ? value : '';
     this.accountsPage = 1;
+    this.clearAccountSelection();
     this.loadAccounts();
   },
 
   toggleAccountsFlagged() {
     this.accountsFlagged = !this.accountsFlagged;
     this.accountsPage = 1;
+    this.clearAccountSelection();
     this.loadAccounts();
   },
 
@@ -7302,6 +7348,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this.accountsPage = 1;
     const search = document.getElementById('accounts-search');
     if (search) search.value = '';
+    this.clearAccountSelection();
     this.loadAccounts();
   },
 
@@ -7340,6 +7387,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   accountStateOf(a) {
     if (!a) return 'active';
     if (a.status === 'disabled') return 'disabled';
+    if (a.status === 'banned') return 'banned';
     if (a.status === 'error') return 'error';
     if (a.quotaCooled) return 'quota_cooled';
     if (a.rateLimited) return 'rate_limited';
@@ -7354,6 +7402,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   accountStateMeta(state) {
     switch (state) {
       case 'disabled': return { labelKey: 'accounts.status.disabled', cls: 'disabled', band: 'var(--text-dim)' };
+      case 'banned': return { labelKey: 'accounts.status.banned', cls: 'banned', band: 'var(--error)' };
       case 'error': return { labelKey: 'accounts.status.error', cls: 'error', band: 'var(--error)' };
       case 'quota_cooled': return { labelKey: 'accounts.status.quotaCooled', cls: 'warn', band: 'var(--error)' };
       case 'rate_limited': return { labelKey: 'accounts.status.rateLimited', cls: 'warn', band: 'var(--error)' };
@@ -7382,7 +7431,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     el.innerHTML = [
       cell('accounts.kpi.total', Number(stats.total ?? total ?? 0)),
       cell('accounts.kpi.active', Number(stats.active || 0), '', 'var(--success)'),
-      cell('accounts.kpi.disabled', Number(stats.disabled || 0)),
+      cell('accounts.kpi.disabled', Number(stats.disabled || 0),
+        Number(stats.banned || 0) > 0 ? I18n.t('accounts.kpi.disabledSub', { count: Number(stats.banned) }) : ''),
       cell('accounts.kpi.flagged', Number(stats.flagged || 0), '', 'var(--warn)'),
       cell('accounts.kpi.rateLimited', Number(stats.rateLimited || 0), '', 'var(--warn)'),
       cell('accounts.kpi.balance', `$${balance.toFixed(2)}`, I18n.t('accounts.kpi.balanceSub', { count: Number(stats.balanceAccounts || 0) })),
@@ -7390,6 +7440,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   },
 
   async loadAccounts() {
+    // A filter changed outside the setters (hash alias, restored state) must
+    // not leave a selection armed for rows this reload will hide.
+    this._dropStaleSelection();
     // Drought banner is pool-level and lives on this page (v2.0.57 Fix 5).
     this.loadDrought();
     const d = await this.api('GET', this.accountsListUrl({
@@ -7403,6 +7456,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     // A failed GET (401 / lockout / network) must leave the last valid table
     // painted — never replace a real pool with an empty one (#257).
     if (!Array.isArray(d?.accounts)) return;
+    this._accountsStats = d.stats || {};
     this.renderAccountsPagination(d);
     this.renderAccountsKpis(d.stats || {}, d.total);
     this.renderAccountsFilterState(d);
@@ -7458,7 +7512,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const isSelected = this._selectedAccounts?.has(a.id);
     const batch = this._batchResults?.get(a.id);
     const batchChip = batch
-      ? `<span class="acct-batch-chip ${batch.ok ? 'ok' : 'fail'}" title="${this.esc(batch.error || '')}">${batch.ok ? '✓' : '✗'}</span>`
+      ? (batch.skipped
+        ? `<span class="acct-batch-chip skip" title="${this.esc(batch.error || '')}">⏭</span>`
+        : `<span class="acct-batch-chip ${batch.ok ? 'ok' : 'fail'}" title="${this.esc(batch.error || '')}">${batch.ok ? '✓' : '✗'}</span>`)
       : '';
     const label = String(a.label || '').trim();
     const labelChip = label && label !== a.email
@@ -8256,6 +8312,11 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const us = a.userStatus || {};
     const catalog = this._modelsCatalog || {};
     const T = (k, v) => I18n.t('account.detail.' + k, v);
+    // The row badge and the drawer runtime card must resolve through the same
+    // ladder; printing the raw `status` enum showed banned/quota-cooled
+    // accounts as "active" here while the row above said otherwise.
+    const state = a.state || this.accountStateOf(a);
+    const stateMeta = this.accountStateMeta(state);
     const barColor = (v) => v == null ? 'var(--text-dim)' : v <= 10 ? 'var(--error)' : v <= 30 ? 'var(--warn)' : 'var(--success)';
     const fmtUnix = (u) => u ? new Date(u * 1000).toLocaleString() : '—';
     const fmtDate = (v) => v ? new Date(v).toLocaleDateString() : '—';
@@ -8379,7 +8440,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           <div class="detail-card-head"><span class="dot" style="background:var(--info)"></span>${T('runtime.title')}</div>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px">
             <div class="detail-kv">
-              <span class="k">${T('runtime.status')}</span><span class="v"><span class="badge ${this.esc(a.status)}">${this.esc(a.status)}</span>${a.rateLimited ? ` <span class="badge warn">${I18n.t('card.rateLimit.badge')}</span>` : ''}${!a.rateLimited && a.capacityThrottled ? ` <span class="badge" style="background:var(--info-bg,rgba(96,165,250,.15));color:var(--info,#60a5fa)" title="${this.esc(I18n.t('card.capacity.tip'))}">${I18n.t('card.capacity.badge')}</span>` : ''}</span>
+              <span class="k">${T('runtime.status')}</span><span class="v"><span class="badge ${this.esc(stateMeta.cls)}">${this.esc(this.accountStateLabel(stateMeta))}</span>${a.rateLimited ? ` <span class="badge warn">${I18n.t('card.rateLimit.badge')}</span>` : ''}${!a.rateLimited && a.capacityThrottled ? ` <span class="badge" style="background:var(--info-bg,rgba(96,165,250,.15));color:var(--info,#60a5fa)" title="${this.esc(I18n.t('card.capacity.tip'))}">${I18n.t('card.capacity.badge')}</span>` : ''}</span>
+              ${state === 'banned' ? `<span class="k">${T('runtime.bannedAt')}</span><span class="v">${a.bannedAt ? new Date(a.bannedAt).toLocaleString() : '—'}</span>` : ''}
+              ${state === 'banned' && a.bannedReason ? `<span class="k">${T('runtime.bannedReason')}</span><span class="v" style="color:var(--error);font-size:11px">${this.esc(a.bannedReason)}</span>` : ''}
               <span class="k">${T('runtime.errors')}</span><span class="v" style="color:${a.errorCount > 0 ? 'var(--error)' : 'inherit'}">${a.errorCount || 0}</span>
               <span class="k">${T('runtime.rpm')}</span><span class="v">${a.rpmUsed ?? 0} / ${a.rpmLimit ?? 0}</span>
             </div>
@@ -8447,26 +8510,41 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   },
 
   async probeAll() {
-    const total = Number(this.accountsTotal || 0);
-    this.setOpStatus(I18n.t('accounts.op.probing', { done: 0, total }));
+    // Probe-all only targets active accounts. The old text hard-coded "0/N"
+    // and never moved because the request is one blocking POST; report the
+    // target up front and the attempted/succeeded/failed/skipped split at the
+    // end. A skipped probe (LS not resident) is NOT a success.
+    const active = Number(this._accountsStats?.active);
+    const total = Number.isFinite(active) ? active : Number(this.accountsTotal || 0);
+    this.setOpStatus(I18n.t('accounts.op.probing', { total }));
     try {
       const r = await this.api('POST', '/accounts/probe-all', {});
       if (r.success) {
         const results = r.results || [];
-        const okCount = results.filter(x => !x.error).length;
-        const failCount = results.length - okCount;
-        this._batchResults = new Map(results.map((x) => [x.id, { ok: !x.error, error: x.error }]));
+        const skippedCount = Number(r.skippedCount ?? results.filter(x => x.skipped).length);
+        const okCount = Number(r.okCount ?? results.filter(x => !x.error && !x.skipped).length);
+        const failCount = Number(r.failCount ?? (results.length - okCount - skippedCount));
+        const attempted = Number(r.attempted ?? (results.length - skippedCount));
+        this._batchResults = new Map(results.map((x) => [x.id, x.skipped
+          ? { ok: false, skipped: true, error: x.reason || '' }
+          : { ok: !x.error, error: x.error }]));
         this._accountDetails?.clear();
         this._cardsByAccount?.clear();
-        this.setOpStatus(I18n.t('accounts.op.done', { ok: okCount, fail: failCount }), failCount ? 'error' : 'success');
+        const summary = I18n.t('accounts.op.probeSummary', { attempted, ok: okCount, fail: failCount, skipped: skippedCount });
+        this.setOpStatus(summary, failCount ? 'error' : (skippedCount ? '' : 'success'));
         this.renderBatchFailures();
-        this.toast(I18n.t('toast.probeAllComplete', { summary: I18n.t('accounts.op.done', { ok: okCount, fail: failCount }) }));
+        this.toast(I18n.t('toast.probeAllComplete', { summary }));
         this.loadAccounts();
       } else {
         this.setOpStatus(this.translateError(r.error, 'error.probeFailed'), 'error');
         this.toast(this.translateError(r.error, 'error.probeFailed'), 'error');
       }
-    } catch (e) { this.toast(I18n.t('error.probeFailed') + ': ' + e.message, 'error'); }
+    } catch (e) {
+      // Clear the "probing" line on failure — otherwise the toolbar spins
+      // forever and the operator cannot tell the request died.
+      this.setOpStatus(I18n.t('error.probeFailed') + ': ' + e.message, 'error');
+      this.toast(I18n.t('error.probeFailed') + ': ' + e.message, 'error');
+    }
   },
 
   async probeAccount(id) {
@@ -8474,6 +8552,14 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     try {
       const r = await this.api('POST', `/accounts/${id}/probe`, {});
       this._batchResults ||= new Map();
+      if (r.skipped) {
+        // A skip means nothing was probed. Showing "success" here made a cold
+        // pool (LS not resident) look like a healthy sweep.
+        this._batchResults.set(id, { ok: false, skipped: true, error: r.reason || '' });
+        this.renderBatchFailures();
+        this.toast(I18n.t('accounts.op.skipped', { reason: r.reason || '—' }), 'info');
+        return;
+      }
       this._batchResults.set(id, { ok: !!r.success, error: r.success ? undefined : r.error });
       if (r.success) {
         const tierLabel = { pro: 'Pro', free: 'Free', expired: I18n.t('tier.expiredLabel'), unknown: I18n.t('tier.unknown') };
@@ -8843,6 +8929,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   toggleAccountSelect(id, checked) {
     this._selectedAccounts ||= new Set();
     if (checked) this._selectedAccounts.add(id); else this._selectedAccounts.delete(id);
+    if (this._selectedAccounts.size) this._rememberSelectionScope('ids');
+    else this._selectionFilterKey = null;
     const row = document.querySelector(`#accounts-table tr[data-id="${CSS.escape(String(id))}"]`);
     if (row) row.classList.toggle('acct-selected', !!checked);
     this._syncSelectAllState();
@@ -8854,6 +8942,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       cb.checked = checked;
       if (checked) this._selectedAccounts.add(cb.dataset.id); else this._selectedAccounts.delete(cb.dataset.id);
     });
+    if (checked) this._rememberSelectionScope('ids');
+    else if (!this._selectedAccounts.size) this._selectionFilterKey = null;
     this._syncSelectAllState();
     this._updateBatchBar();
   },
@@ -8871,6 +8961,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       return;
     }
     this._selectedAccounts = new Set(r.ids);
+    // "Select all N" is an explicit scope. Remember the filter it was computed
+    // under so a later filter change cannot silently widen or move it.
+    this._rememberSelectionScope('all');
     document.querySelectorAll('#accounts-table .acct-select').forEach((cb) => { cb.checked = this._selectedAccounts.has(cb.dataset.id); });
     this._syncSelectAllState();
     this._updateBatchBar();
@@ -8901,6 +8994,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   clearAccountSelection() {
     this._selectedAccounts?.clear();
     this._batchResults?.clear();
+    this._selectionMode = 'ids';
+    this._selectionFilterKey = null;
     document.querySelectorAll('#accounts-table .acct-select, #accounts-select-all').forEach((cb) => { cb.checked = false; cb.indeterminate = false; });
     this.setBatchProgress('');
     this.renderBatchFailures();
@@ -8911,14 +9006,25 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const total = Number(this.accountsTotal || 0);
     const bar = document.getElementById('accounts-batch-bar');
     if (!bar) return;
-    bar.style.display = n > 0 ? 'flex' : 'none';
-    if (!n) return;
+    // A stale Set (filter changed under us) is never an armed scope: hide the
+    // bar and let the next load clear it. batchAccountOp() enforces the same
+    // rule server-call-side, so a hidden button cannot delete hidden rows.
+    const stale = n > 0 && !this._selectionMatchesFilters();
+    bar.style.display = (n > 0 && !stale) ? 'flex' : 'none';
+    if (!n || stale) return;
     const cnt = document.getElementById('accounts-batch-count');
-    if (cnt) cnt.textContent = I18n.t('batchOps.selected', { count: n });
+    if (cnt) {
+      cnt.textContent = this._selectionMode === 'all'
+        ? I18n.t('batchOps.selectedAll', { count: n })
+        : I18n.t('batchOps.selected', { count: n });
+    }
     const scope = document.getElementById('accounts-batch-scope');
     if (scope) {
       const pageCount = document.querySelectorAll('#accounts-table .acct-select').length;
-      scope.innerHTML = `<button type="button" onclick="App.selectAllOnPage()">${I18n.t('accounts.batch.selectPage', { count: pageCount })}</button> · <button type="button" onclick="App.selectAllMatching()">${I18n.t('accounts.batch.selectAll', { total })}</button>`;
+      const allLink = this._selectionMode === 'all' && n >= total
+        ? ''
+        : ` · <button type="button" onclick="App.selectAllMatching()">${I18n.t('accounts.batch.selectAll', { total })}</button>`;
+      scope.innerHTML = `<button type="button" onclick="App.selectAllOnPage()">${I18n.t('accounts.batch.selectPage', { count: pageCount })}</button>${allLink}`;
     }
   },
   setBatchProgress(text, tone = '') {
@@ -8937,13 +9043,21 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const link = document.getElementById('accounts-batch-fail');
     const pop = document.getElementById('accounts-batch-fail-pop');
     if (!link || !pop) return;
-    const failed = [...(this._batchResults || [])]
-      .filter(([, v]) => !v.ok)
-      .map(([id, v]) => ({ id, error: v.error }));
-    link.hidden = failed.length === 0;
+    const all = [...(this._batchResults || [])].filter(([, v]) => !v.ok);
+    const failed = all.filter(([, v]) => !v.skipped).map(([id, v]) => ({ id, error: v.error }));
+    const skipped = all.filter(([, v]) => v.skipped).map(([id, v]) => ({ id, reason: v.error }));
+    link.hidden = all.length === 0;
+    if (!link.hidden) {
+      link.textContent = failed.length === 0
+        ? I18n.t('accounts.batch.viewSkipped', { count: skipped.length })
+        : I18n.t('accounts.batch.viewFailures');
+    }
     pop.hidden = true;
-    pop.innerHTML = failed.length
-      ? `<div style="font-weight:600;margin-bottom:4px">${I18n.t('accounts.batch.failedTitle', { count: failed.length })}</div><ul>${failed.map((f) => `<li><code>${this.esc(f.id)}</code> — ${this.esc(f.error || '')}</li>`).join('')}</ul>`
+    const list = (rows, label) => (rows.length
+      ? `<div style="font-weight:600;margin:6px 0 2px">${label}</div><ul>${rows.map((f) => `<li><code>${this.esc(f.id)}</code> — ${this.esc(f.error || f.reason || '')}</li>`).join('')}</ul>`
+      : '');
+    pop.innerHTML = all.length
+      ? `${list(failed, I18n.t('accounts.batch.failedTitle', { count: failed.length }))}${list(skipped, I18n.t('accounts.batch.skippedTitle', { count: skipped.length }))}`
       : '';
   },
   toggleBatchFailures() {
@@ -8953,11 +9067,22 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   async batchAccountOp(op) {
     const ids = [...(this._selectedAccounts || [])];
     if (!ids.length) return;
+    // Defence in depth: every filter setter already clears the Set, and
+    // loadAccounts() drops a stale one, but a bulk delete must also refuse to
+    // run if the armed scope no longer belongs to the visible filter.
+    if (!this._selectionMatchesFilters()) {
+      this.clearAccountSelection();
+      this.toast(I18n.t('accounts.batch.selectionCleared'), 'error');
+      return;
+    }
     if (op === 'export') return this.exportSelectedAccounts(ids);
     if (op === 'delete') {
+      const scope = this._selectionMode === 'all'
+        ? I18n.t('accounts.batch.scopeAll', { count: ids.length })
+        : I18n.t('accounts.batch.scopeSelected', { count: ids.length });
       const ok = await this.confirm(
         I18n.t('batchOps.confirmDeleteTitle', { count: ids.length }),
-        I18n.t('batchOps.confirmDeleteDesc', { count: ids.length }),
+        I18n.t('batchOps.confirmDeleteDesc', { count: ids.length, scope }),
         { danger: true, okText: I18n.t('action.delete') });
       if (!ok) return;
     }
@@ -8970,10 +9095,21 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         return;
       }
       const results = r.results || [];
-      for (const item of results) this._batchResults.set(item.id, { ok: !!item.ok, error: item.error });
+      for (const item of results) {
+        this._batchResults.set(item.id, {
+          ok: !!item.ok,
+          skipped: !!item.skipped,
+          error: item.error || item.reason || '',
+        });
+      }
+      const skipCount = Number(r.skipCount ?? results.filter((x) => x.skipped).length);
       const okCount = Number(r.okCount ?? results.filter((x) => x.ok).length);
-      const failCount = Number(r.failCount ?? results.length - okCount);
-      this.setBatchProgress(I18n.t('accounts.op.done', { ok: okCount, fail: failCount }), failCount ? 'error' : 'success');
+      const failCount = Number(r.failCount ?? (results.length - okCount - skipCount));
+      const attempted = Number(r.attempted ?? (results.length - skipCount));
+      const summary = op === 'probe'
+        ? I18n.t('accounts.op.probeSummary', { attempted, ok: okCount, fail: failCount, skipped: skipCount })
+        : I18n.t('accounts.op.done', { ok: okCount, fail: failCount });
+      this.setBatchProgress(summary, failCount ? 'error' : (okCount ? 'success' : ''));
       this._accountDetails?.clear();
       this._cardsByAccount?.clear();
       this.renderBatchFailures();

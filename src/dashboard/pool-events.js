@@ -25,7 +25,8 @@
 // This is the state we diff transitions against.
 export function accountState(a) {
   if (!a) return 'unknown';
-  if (a.status === 'disabled' || a.status === 'banned') return 'disabled';
+  if (a.status === 'disabled') return 'disabled';
+  if (a.status === 'banned') return 'banned';
   if (a.status === 'error') return 'error';
   if (a.quotaCooled) return 'quota';
   if (a.rateLimited) return 'rate_limited';
@@ -65,7 +66,7 @@ export function cooldownState({ rateLimitedUntil = 0, quotaResetAt = 0, capacity
 export function classifyTransition(from, to) {
   if (from === to) return null;
   if (to === 'active') return { kind: 'recovered', severity: 'success' };
-  const sev = (to === 'disabled' || to === 'quota') ? 'error' : 'warn';
+  const sev = (to === 'disabled' || to === 'quota' || to === 'banned') ? 'error' : 'warn';
   return { kind: to, severity: sev };
 }
 
