@@ -376,12 +376,17 @@ jobs:
         # tampered download was indistinguishable from a real one. Hash exactly
         # the files listed in the release `files:` block below; a missing file
         # fails the job rather than publishing a partial manifest.
+        #
+        # The manifest must name the assets as they appear on the release page
+        # (flat), not their build-tree paths: GitHub release assets have no
+        # directories, so `sha256sum -c SHA256SUMS` in a flat download folder
+        # failed for every asset that carried a `dist-*/` prefix (v3.9.53, the
+        # first release with a manifest). The subshells keep the build layout
+        # while flattening names.
         run: |
-          sha256sum \
-            dist-windows/windsurfapi.exe \
-            dist-windows/windsurfapi-windows.zip \
-            dist-macos/windsurfapi-macos-arm64 \
-            windsurfapi-macos.zip > SHA256SUMS
+          ( cd dist-windows && sha256sum windsurfapi.exe windsurfapi-windows.zip ) > SHA256SUMS
+          ( cd dist-macos && sha256sum windsurfapi-macos-arm64 ) >> SHA256SUMS
+          sha256sum windsurfapi-macos.zip >> SHA256SUMS
           cat SHA256SUMS
 
       - name: Create GitHub Release

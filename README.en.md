@@ -42,7 +42,9 @@ Turns [Windsurf](https://windsurf.com) (formerly Codeium, now Devin Desktop)'s A
 > clients, but it puts the key in the URL, where reverse proxies, access logs,
 > browser history and packet captures can retain it. The bundled `nginx.conf`
 > logs only `$uri` (the query string is dropped); proxies you add are yours to
-> configure.
+> configure. `?key=` is **supported but deprecated** — see
+> [docs/QUERY-KEY-DEPRECATION.md](docs/QUERY-KEY-DEPRECATION.md) for the removal
+> plan and the header migration.
 
 **100+ Models**: Claude 4.5/4.6/Opus 4.7/5 · GPT-5/5.1/5.2/5.4/5.5/5.6-Luna series · Gemini 2.5/3.0/3.1 · Grok · Qwen · Kimi K2.x · GLM 4.7/5/5.1/5.2 · MiniMax · SWE 1.5/1.6/1.7/2 · Arena, etc. Zero npm dependencies, pure Node.js.
 
@@ -683,7 +685,7 @@ MIT License. See [LICENSE](LICENSE).
 
 ## Release and Secret Boundary
 
-Release automation may publish Docker images and GitHub Releases. Every release attaches a `SHA256SUMS` manifest covering the four published assets (Windows exe/zip, macOS arm64 binary/zip); verify with `sha256sum -c SHA256SUMS` (or `shasum -a 256 -c SHA256SUMS` on macOS) before running a download. Keep tokens, API keys, cookies, and provider credentials out of issues, pull requests, logs, and committed config. If a report needs authentication details, share only redacted metadata and reproduction steps.
+Release automation may publish Docker images and GitHub Releases. Every release built by the current workflow attaches a `SHA256SUMS` manifest covering the four published assets (Windows exe/zip, macOS arm64 binary/zip); verify with `sha256sum -c SHA256SUMS` (or `shasum -a 256 -c SHA256SUMS` on macOS; on Windows use `Get-FileHash`) before running a download. The manifest uses the flat asset names, so all five files can sit in one directory; v3.9.53 (the first release with a manifest) recorded `dist-windows/` / `dist-macos/` paths and needs that layout recreated; earlier releases have no manifest. **The hashes prove integrity, not origin**: the manifest and the binaries live in the same Release, and the releases are currently unsigned — OTA updates verify tag/commit ancestry, not a signature. See [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md) for the trust boundary, the OTA checks, and the future minisign/cosign path (no key material is kept in this repository). Keep tokens, API keys, cookies, and provider credentials out of issues, pull requests, logs, and committed config. If a report needs authentication details, share only redacted metadata and reproduction steps.
 
 ---
 
