@@ -89,7 +89,9 @@
 - Windows `GATE_INERT_SKIP_PATHS="test/wire-byte-identity.test.js;test/devin-connect-relogin-live.test.js;test/mutate-verify-harness.test.js;test/self-update-untracked-safety.test.js" npm run gate`：
   **PASS exit=0** —— 全部子门绿。
 - `npm run secret-scan`：exit 0。`git diff --check`：clean。
-- 增量门**不执行** mutation（按设计）；本版未跑 Linux 全量门、mutation sweep 与 wire 基线比较。
+- Linux `npm run test:release`（HMC，Node v24.21.0，502 文件）：**6,174 pass / 0 fail / 3 skip（6,177 tests）**，exit 0。
+- mutation：`connect-catalog-hotfix`（pin 41→46）、`dashboard-connect-parity`、`sticky-queue-on-pin`、`retry-rescue-budget-split` 四个受影响规格 exit 0。
+- wire：对 `v3.9.52`（`432aee3`）基线比较（见发布提交）。
 
 ## 尚未验证
 
@@ -97,5 +99,5 @@
   健康门 / 回滚序列。
 - `[UNVERIFIED]` `docker compose config` 校验：本机 Docker CLI 29.7.2 在，但 daemon 未运行，矩阵按设计
   跳过并标记。
-- `[UNVERIFIED]` Linux 全量门、mutation sweep、对上一发布 tag 的 wire 字节比较（本机为 Windows）。
+
 - `[UNVERIFIED]` CascadeTurn 在真实 Cascade 上游上的长轮询恢复（回归用脚本化上游）。
