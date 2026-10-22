@@ -41,6 +41,43 @@ function addAccount(label) {
   return acct;
 }
 
+// A budget that passes the pre-sleep gate but is spent by the time the backoff
+// returns — the interleaving that made CI v3.9.57 (run 39861008441) issue one
+// doomed retry: budgetedSleep() returns `remainingMs() > 0`, and timer
+// granularity lets that be true with less than a millisecond left, so a loop
+// that only checked BEFORE the wait re-issued an attempt the deadline killed
+// mid-flight. canStartAttempt() is this stub's own clock, so the test never
+// races wall time; remainingMs() stays positive so the REAL budgetedSleep()
+// actually sleeps instead of short-circuiting.
+function budgetSpentDuringBackoff() {
+  let canStartCalls = 0;
+  return {
+    totalMs: 60_000,
+    get canStartAttemptCalls() { return canStartCalls; },
+    remainingMs: () => 60_000,
+    expired: () => false,
+    takeTurn: () => true,
+    canStartAttempt: () => { canStartCalls += 1; return canStartCalls === 1; },
+    describe: () => 'stub budget remaining=60000ms turns=0/6',
+  };
+}
+
+// A budget with time left, but far less than the backoff the retry asked for:
+// the state both outer loops were in when CI v3.9.57 issued a doomed retry.
+// canStartAttempt() is deliberately true — a post-sleep gate cannot catch this
+// one, because budgetedSleep() had already returned `remainingMs() > 0`. The
+// rule under test is that the backoff itself must be affordable.
+function budgetTooShortForBackoff(leftMs = 5) {
+  return {
+    totalMs: 60_000,
+    remainingMs: () => leftMs,
+    expired: () => false,
+    takeTurn: () => true,
+    canStartAttempt: () => true,
+    describe: () => `stub budget remaining=${leftMs}ms`,
+  };
+}
+
 describe('budget primitives', () => {
   it('defaults to 10 min, +5 min for streams, and honours env overrides', () => {
     assert.equal(resolveRequestBudgetMs({ stream: false, env: {} }), 600_000);
@@ -128,6 +165,86 @@ describe('the connect adapter observes the request budget', () => {
     const elapsed = Date.now() - started;
     assert.equal(calls, 1, 'no retry may start after the deadline');
     assert.ok(elapsed < 600, `the retry loop must stop at the deadline (took ${elapsed} ms)`);
+  });
+
+  it('re-checks the budget after the backoff (non-stream): a spent wait never reaches the upstream', async () => {
+    let calls = 0;
+    __setStreamChatForTest(async function* fake() {
+      calls += 1;
+      throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    });
+    const budget = budgetSpentDuringBackoff();
+    await assert.rejects(
+      () => toChatCompletion(
+        { model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }] },
+        { budget, maxRetries: 3, retryBaseMs: 1 },
+      ),
+      (err) => {
+        assert.equal(err.message, 'socket hang up', 'the real upstream error surfaces');
+        assert.equal(isBudgetExceededError(err), false, 'not a synthetic budget error');
+        return true;
+      },
+    );
+    assert.equal(calls, 1, 'the retry after the backoff must never be issued');
+    assert.equal(budget.canStartAttemptCalls, 2, 'both the pre-sleep and the post-sleep gate ran');
+  });
+
+  it('re-checks the budget after the backoff (stream): a spent wait never reaches the upstream', async () => {
+    let calls = 0;
+    __setStreamChatForTest(async function* fake() {
+      calls += 1;
+      throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    });
+    const budget = budgetSpentDuringBackoff();
+    await assert.rejects(
+      () => streamChatCompletion(
+        { model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }] },
+        () => {},
+        { budget, maxRetries: 3, retryBaseMs: 1 },
+      ),
+      (err) => {
+        assert.equal(err.message, 'socket hang up', 'the real upstream error surfaces');
+        assert.equal(isBudgetExceededError(err), false, 'not a synthetic budget error');
+        return true;
+      },
+    );
+    assert.equal(calls, 1, 'the retry after the backoff must never be issued');
+    assert.equal(budget.canStartAttemptCalls, 2, 'both the pre-sleep and the post-sleep gate ran');
+  });
+
+  it('will not pace a retry the budget cannot cover (non-stream)', async () => {
+    let calls = 0;
+    __setStreamChatForTest(async function* fake() {
+      calls += 1;
+      throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    });
+    await assert.rejects(
+      () => toChatCompletion(
+        { model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }] },
+        { budget: budgetTooShortForBackoff(), maxRetries: 3, retryBaseMs: 400 },
+      ),
+      /socket hang up/,
+      'the real upstream error surfaces, not a synthetic budget error',
+    );
+    assert.equal(calls, 1, 'a 400 ms backoff with 5 ms of budget must not start a retry');
+  });
+
+  it('will not pace a retry the budget cannot cover (stream)', async () => {
+    let calls = 0;
+    __setStreamChatForTest(async function* fake() {
+      calls += 1;
+      throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    });
+    await assert.rejects(
+      () => streamChatCompletion(
+        { model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }] },
+        () => {},
+        { budget: budgetTooShortForBackoff(), maxRetries: 3, retryBaseMs: 400 },
+      ),
+      /socket hang up/,
+      'the real upstream error surfaces, not a synthetic budget error',
+    );
+    assert.equal(calls, 1, 'a 400 ms backoff with 5 ms of budget must not start a retry');
   });
 });
 

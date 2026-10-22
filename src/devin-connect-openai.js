@@ -507,8 +507,9 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
 }
 
 // Sleep that can never outlive the request budget. Returns false when the
-// budget has no time left, so the caller stops instead of starting an attempt
-// that the route deadline would kill mid-flight.
+// budget has no time left — including when it cannot cover the full backoff —
+// so the caller stops instead of starting an attempt that the route deadline
+// would kill mid-flight.
 async function budgetedSleep(ms, budget) {
   if (!ms) return true;
   if (!budget) {
@@ -516,8 +517,15 @@ async function budgetedSleep(ms, budget) {
     return true;
   }
   const left = budget.remainingMs();
-  if (left <= 0) return false;
-  await new Promise((r) => setTimeout(r, Math.min(ms, left)));
+  // A backoff the budget cannot fully honour means there is no room left for
+  // the retry it was pacing. Sleeping the clamped remainder and then re-issuing
+  // starts the attempt with a sliver of time, and the deadline kills it
+  // mid-flight — the v3.9.57 CI flake (run 39861008441). The final
+  // `remainingMs() > 0` check cannot catch that: it is the same condition
+  // budgetedSleep already returned, and canStartAttempt() adds only the turn
+  // cap. Stop here; each caller surfaces its own error.
+  if (left < ms) return false;
+  await new Promise((r) => setTimeout(r, ms));
   return budget.remainingMs() > 0;
 }
 
@@ -593,6 +601,11 @@ export async function toChatCompletion(params, opts = {}) {
       const backoff = retryBaseMs * 2 ** attempt;
       log.warn(`DEVIN_CONNECT: retryable error (${err.code || err.message}); retry ${attempt + 1}/${maxRetries} in ${backoff}ms`);
       if (!(await budgetedSleep(backoff, budget))) throw err;
+      // Re-read the gate after the wait: the pre-sleep check is a snapshot, and
+      // the retry must be admitted by the budget as it stands now. (The deadline
+      // sliver itself is budgetedSleep()'s job — it refuses a backoff the budget
+      // cannot cover.) The real upstream error is what surfaces.
+      if (budget && !budget.canStartAttempt()) throw err;
     }
   }
 
@@ -918,6 +931,10 @@ export async function streamChatCompletion(params, send, opts = {}) {
       log.warn(`DEVIN_CONNECT: stream retryable error (${err.code || err.status || err.message}); retry ${attempt + 1}/${maxRetries} in ${backoff}ms`);
       bumpConnect('transient_replays');
       if (!(await budgetedSleep(backoff, budget))) throw err;
+      // Same post-wait gate as the non-stream loop: the budget's state after the
+      // sleep, not the pre-sleep snapshot, decides whether the stream may be
+      // re-issued. The real upstream error is what surfaces.
+      if (budget && !budget.canStartAttempt()) throw err;
       if (params.signal?.aborted) throw err;
       // Nothing was emitted, so a clean restart cannot duplicate output.
       content = ''; reasoning = ''; finishReason = 'stop'; usage = null;
