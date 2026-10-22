@@ -22,7 +22,8 @@ import {
   setAccountStatus,
   _resetLockoutForTests,
 } from '../src/auth.js';
-import { handleDashboardApi, probeOutcomeEntry, summarizeProbeResults } from '../src/dashboard/api.js';
+import { handleDashboardApi } from '../src/dashboard/api.js';
+import { probeOutcomeEntry, summarizeProbeResults } from '../src/dashboard/fleet-jobs.js';
 import { _resetRuntimeConfigForTests } from '../src/runtime-config.js';
 
 const originalDashboardPassword = config.dashboardPassword;
@@ -267,7 +268,9 @@ describe('banned accounts are visible as banned', () => {
     assert.deepEqual(flagged.body.accounts.map((a) => a.id), [banned.id],
       '仅异常 must include banned accounts');
     assert.ok(flagged.body.stats.flagged >= 1);
-    assert.ok(flagged.body.stats.disabled >= 1, 'banned counts toward 停用');
+    assert.equal(flagged.body.stats.disabled, 0,
+      'banned is 需处理, not 已停用 — the KPI no longer double-counts it');
+    assert.ok(flagged.body.stats.attention >= 1);
     assert.equal(flagged.body.stats.banned, 1);
     assert.ok(!flagged.body.accounts.some((a) => a.id === healthy.id),
       'a healthy account must not be pulled in by 仅异常');

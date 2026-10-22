@@ -14,9 +14,9 @@
  * Read-only: every upstream call goes through `readDevinJson` (GET only).
  */
 
-import { createHash } from 'node:crypto';
 import { getAccountInternal, getAccountList } from '../auth.js';
 import { accountRef } from '../log-safety.js';
+import { orgRefOf, rememberAccountOrg } from '../org-identity.js';
 import {
   ReadError,
   httpStatusForKind,
@@ -41,10 +41,11 @@ function num(value) {
 /**
  * Hash the org id. The browser gets a stable, non-reversible handle so it can
  * dedupe/select orgs without receiving the upstream identifier.
+ *
+ * Re-exported from `org-identity.js` so the ACU panel and the pool-balance KPI
+ * name the same org with the same handle (one hashing convention, not two).
  */
-export function orgRefOf(orgId) {
-  return `orgref-${createHash('sha256').update(String(orgId || '')).digest('hex').slice(0, 12)}`;
-}
+export { orgRefOf };
 
 /**
  * Build the three ACU cells the panel renders.
@@ -240,6 +241,9 @@ export async function readAcuUsageByOrg({
         accounts: [],
       });
     }
+    // Publish the mapping so pool-level arithmetic (the balance KPI) dedupes by
+    // the same billing owner this panel reads. Raw org id stays server-side.
+    rememberAccountOrg(item.id, item.orgId);
     groups.get(item.orgId).accounts.push({ id: item.id, ref: item.ref, token: item.token });
   }
 
