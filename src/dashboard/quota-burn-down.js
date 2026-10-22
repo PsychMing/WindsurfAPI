@@ -21,13 +21,23 @@ import {
 } from './devin-read.js';
 import { normalizeUsage } from './usage.js';
 
-export async function readQuotaBurnDown({ id, force = false, fetchImpl = null, now = Date.now() } = {}) {
-  const account = resolveAccount(id);
+export async function readQuotaBurnDown({
+  id,
+  // Org-scoped aggregators already resolved the org and hold the exact token
+  // that must be used (e.g. a synthetic env-token candidate). Passing both
+  // avoids a second membership read and keeps the cache key on that account.
+  account: providedAccount = null,
+  orgId: providedOrgId = '',
+  force = false,
+  fetchImpl = null,
+  now = Date.now(),
+} = {}) {
+  const account = providedAccount || resolveAccount(id);
   if (!account.ok) return { ok: false, error: account.error, httpStatus: account.status };
 
-  let orgId;
+  let orgId = providedOrgId;
   try {
-    orgId = await resolveOrgId({ token: account.token, fetchImpl, force });
+    if (!orgId) orgId = await resolveOrgId({ token: account.token, fetchImpl, force });
   } catch (err) {
     const kind = err instanceof ReadError ? err.kind : 'upstream';
     return {
