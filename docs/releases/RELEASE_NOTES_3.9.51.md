@@ -30,7 +30,9 @@ Owner 遇到的“正确密码也报 `ERR_INVALID_CREDENTIALS`”根因是 **3.9
 - 合入 2 条分支（均基于 `ec4e599`）：`fix/login-flows-wave3` `821b804`、`feat/acu-usage-cards` `26b50a4`；合并后补一条“非 auth1 探测方法直接走 legacy”的路由修正，并更新两条测试到新顺序。
 - Windows `npm run test:release`：**5,910 pass / 0 fail / 82 skip（487 文件，5,992 tests）**，exit 0。
 - Windows `npm run gate`：**PASS exit=0** —— 全部子门绿。
-- Linux/mutation/wire：见发布提交与 CI。
+- Linux `npm run test:release`（HMC，Node v24.21.0，487 文件）：**5,991 pass / 0 fail / 1 skip（5,992 tests）**，exit 0。合并期间发现 `test/chat-cache-hit.test.js` 在装有真实 LS 的 HMC 上会留下 LS 子进程导致 runner 不退出；测试 teardown 现在调用 `stopLanguageServerAndWait`（仅测试代码）。
+- mutation：`firebase-referrer-block-map`、`dashboard-connect-parity`、`gap-dashboard-loopback-proxy` 三个受影响规格 exit 0。
+- wire：对 `v3.9.49`（`ec4e599`，3.9.50 未单独打 tag）**270/270 比较相同**，exit 0。
 
 ## 尚未验证
 
