@@ -18,6 +18,8 @@
     "smoke:special-agent": "node scripts/special-agent-smoke.mjs",
     "smoke:devin-connect": "node scripts/devin-connect-smoke.mjs",
     "smoke:dashboard": "node scripts/dashboard-smoke.mjs",
+    "smoke:matrix": "node scripts/smoke-matrix.mjs",
+    "smoke:matrix:mutants": "node scripts/smoke-matrix-mutants.mjs",
     "verify:devin-paid": "node scripts/devin-connect-paid-verify.mjs",
     "calibrate:devin-image": "node scripts/devin-connect-image-calibrate.mjs",
     "calibrate:devin": "node scripts/devin-connect-calibrate.mjs",

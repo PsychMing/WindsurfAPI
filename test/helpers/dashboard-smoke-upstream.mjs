@@ -91,20 +91,24 @@ function selectRoute(routes, target, body) {
   throw new Error(`dashboard-smoke fake upstream: unrouted request to ${target}`);
 }
 
-function replyFor(route, target, body) {
-  return typeof route.reply === 'function' ? route.reply(target, body) : route.reply;
+function replyFor(route, target, body, raw, opts) {
+  return typeof route.reply === 'function' ? route.reply(target, body, raw, opts) : route.reply;
 }
 
 /**
  * windsurf-login transport. Reply `{ status, json }` for parsed calls, or
  * `{ status, buffer }` when the caller asked for `opts.raw` (PostAuth).
+ * `reply(target, body, raw, opts)` also receives the RAW post body and the
+ * request options: PostAuth posts an EMPTY body and carries the Auth1 token in
+ * the `X-Devin-Auth1-Token` header, so a route that must distinguish two login
+ * flows cannot rely on the parsed body alone.
  */
 export function scriptedLoginTransport(routes) {
   const seen = [];
   const fn = async (url, opts = {}, postData) => {
     seen.push(String(url));
     const body = parseBody(postData);
-    const reply = replyFor(selectRoute(routes, String(url), body), String(url), body);
+    const reply = replyFor(selectRoute(routes, String(url), body), String(url), body, postData, opts);
     const status = reply.status ?? 200;
     if (opts.raw) {
       const data = Buffer.isBuffer(reply.buffer)
