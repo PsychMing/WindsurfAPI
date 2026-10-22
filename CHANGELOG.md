@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 207 份发布说明</a> ·
+  <a href="docs/releases/">全部 208 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **207** 份,v2.0.6 → v3.9.56 |
+| 发布说明 | **208** 份,v2.0.6 → v3.9.57 |
 | git tag | 214 个（2026-10-23 实测；以 `git tag \| wc -l` 为准） |
-| 当前 | **v3.9.56**(2026-10-23) |
+| 当前 | **v3.9.57**(2026-10-23) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -42,7 +42,12 @@ flowchart LR
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
 
-### [v3.9.56](docs/releases/RELEASE_NOTES_3.9.56.md) · 2026-10-23
+### [v3.9.57](docs/releases/RELEASE_NOTES_3.9.57.md) · 2026-10-23
+
+修复发布门：GitHub Actions 的 `actions/checkout` 把 `refs/tags/vX` 强制指向提交，守卫却要求它是
+annotated 对象，导致 v3.9.54/55/56 的 Release 全部在 Test 失败。现在两种 ref 形态都能通过，本地
+annotated 检查不放宽；非祖先/伪造 SHA 仍红。
+### [v3.9.56](docs/releases/RELEASE_NOTES_3.9.56.md) · 2026-10-23（已发布）
 
 ACU 按量余额改为有符号美元（负数 = 已透支，不 clamp，亚分显示 6 位）；`?key=` 弃用与发布签名文档；
 **修复 SHA256SUMS 平铺名**（3.9.53 清单用 `dist-windows/…`，3/4 资产 `sha256sum -c` 失败）。
