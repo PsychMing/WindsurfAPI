@@ -24,8 +24,10 @@
 
 ## 工程与门禁
 
-- 合入 3 条分支（均基于 `ec4e599`）：`fix/retry-ownership` `2eea3d0`、`feat/account-ui-v3` `8ba1c3c`、`test/smoke-matrix` `c64ca8a`。
-- Windows/Linux/gate/mutation/wire：见发布提交与 CI。
+- 合入 3 条分支（均基于 `ec4e599`）：`fix/retry-ownership` `2eea3d0`、`feat/account-ui-v3` `8ba1c3c`、`test/smoke-matrix` `c64ca8a`；合并后把 smoke fixture 的凭据改为运行时拼接，secret-scan 保持 0 命中。
+- Windows `npm run test:release`：**5,851 pass / 0 fail / 82 skip（483 文件，5,933 tests）**，exit 0。
+- Windows `npm run gate`：**PASS exit=0** —— 全部子门绿。
+- Linux/mutation/wire：见发布提交与 CI。
 
 ## 尚未验证
 
