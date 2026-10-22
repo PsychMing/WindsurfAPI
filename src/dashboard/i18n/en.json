@@ -26,7 +26,7 @@
     "logs": "Logs",
     "experimental": "Experimental",
     "credits": "Credits",
-    "usage": "ACU & Usage"
+    "usage": "Usage"
   },
   "page": {
     "overview": "Dashboard",
@@ -40,7 +40,7 @@
     "logs": "Runtime Logs",
     "experimental": "Experimental Features",
     "credits": "Credits",
-    "usage": "ACU & Usage"
+    "usage": "Usage"
   },
   "pageTitle": {
     "main": "WindsurfAPI bydwgx1337 Control Panel"
@@ -48,23 +48,24 @@
   "pageSubtitle": {
     "overview": "System status and key metrics overview",
     "windsurf-login": "Login to Windsurf via Google / GitHub / Email to get API Key",
-    "accounts": "Manage account pool, probe subscription tiers and available models",
+    "accounts": "Manage the pool: check each account's plan tier and available models",
     "models": "Configure model access policies, limit available model scope",
     "proxy": "Configure global or per-account exit proxies; each dedicated proxy spawns an independent Language Server instance",
     "logs": "Receive server logs in real-time via SSE streaming",
     "stats": "Request volume, success rate, latency percentiles and account/model dimension stats",
-    "usage": "Organization-scoped ACU limit, cycle usage, daily burn-down and per-product breakdown. Accounts that share an org are shown once.",
+    "usage": "ACU is Devin's usage unit. This page answers what is left this cycle first, then what was used, the daily burn-down and the per-product split. Accounts in one workspace are shown once.",
     "bans": "Track error accounts and abnormal status",
     "settings": "Shared preferences and security thresholds — customizable",
     "experimental": "Unstable optimizations; disable anytime if issues occur",
     "credits": "Thanks to contributors who submitted PRs / audited code / reported issues"
   },
   "usage": {
-    "title": "ACU & usage",
-    "subtitle": "Organization-scoped ACU limit, cycle usage, daily burn-down and per-product breakdown. Accounts that share an org are shown once.",
-    "org": "Organization",
-    "orgOption": "Org {{index}} · {{plan}} · {{count}} account(s)",
-    "orgOptionUnknownPlan": "Org {{index}} · {{count}} account(s)",
+    "title": "Usage",
+    "subtitle": "ACU is Devin's usage unit. This page answers what is left this cycle first, then what was used, the daily burn-down and the per-product split. Accounts in one workspace are shown once.",
+    "acuDefinition": "ACU is Devin's usage unit; the conversion is defined by the service, so this page does not estimate it.",
+    "org": "Workspace",
+    "orgOption": "Workspace {{index}} · {{plan}} · {{count}} account(s)",
+    "orgOptionUnknownPlan": "Workspace {{index}} · {{count}} account(s)",
     "singleOrg": "{{plan}} · {{count}} account(s)",
     "accounts": "{{count}} account(s)",
     "accountsOne": "1 account",
@@ -73,22 +74,23 @@
     "stale": "Stale",
     "partial": "Partial",
     "truncated": "Only the first {{count}} accounts were scanned; more exist.",
-    "unresolved": "{{count}} account(s) could not be resolved to an org.",
+    "unresolved": "{{count}} account(s) could not be matched to a workspace.",
     "cards": {
       "limit": "ACU limit",
       "used": "Used this cycle",
-      "remaining": "Remaining",
+      "remaining": "Left this cycle",
       "today": "Latest day"
     },
     "limitSub": "Configured cap · ∞ = unlimited",
     "usedSub": "ACU consumed in the current cycle",
-    "remainingSub": "Derived: limit − used",
+    "remainingSub": "What is left this cycle (limit − used)",
     "todaySub": "Most recent daily row",
     "unlimited": "∞",
     "unlimitedLabel": "Unlimited",
     "unknown": "—",
     "derivedTip": "Calculated as the configured ACU limit minus usage in this cycle. It is not a balance the service reports directly.",
     "limitTip": "The ACU limit the service reports. Null means unlimited, never zero.",
+    "rawTip": "Technical details: {{code}}",
     "maxSession": "Max per session",
     "cycleTitle": "Billing cycle",
     "cycleStart": "Cycle start",
@@ -150,7 +152,8 @@
       "no_account": "No Devin account with a session token.",
       "bad_org": "The resolved organization id is invalid.",
       "redirect_blocked": "The Windsurf service redirect was blocked.",
-      "network_error": "Network error."
+      "network_error": "Network error.",
+      "unknown": "Usage is unavailable right now — try again shortly."
     }
   },
   "button": {
@@ -187,8 +190,8 @@
     "confirm": "Confirm",
     "delete": "Delete",
     "refresh": "Refresh",
-    "probe": "Probe",
-    "probeTitle": "Probe capabilities",
+    "probe": "Check",
+    "probeTitle": "Check capabilities",
     "enable": "Enable",
     "disable": "Disable",
     "copy": "Copy",
@@ -223,8 +226,8 @@
     "selectAll": "Select all",
     "enable": "Enable",
     "disable": "Disable",
-    "refresh": "Refresh credits",
-    "probe": "Probe",
+    "refresh": "Refresh balances",
+    "probe": "Check",
     "delete": "Delete",
     "clear": "Clear selection",
     "confirmDeleteTitle": "Delete {{count}} accounts",
@@ -286,7 +289,7 @@
     "workingDirDirtyHint": "The following files have local changes:<br>{{files}}<br>Continue will overwrite with remote version.",
     "notFetched": "Not fetched",
     "fetchFailed": "Fetch failed",
-    "clickToEditTier": "Click to manually edit tier (use when probe fails)",
+    "clickToEditTier": "Click to manually edit tier (use when a check fails)",
     "unreleasedHint": "Remote has {{count}} newer unpublished commit(s); this OTA installs the latest release {{tag}} only.",
     "updateDiverged": "Update blocked: Git history diverged",
     "updateDivergedHint": "Current {{current}} and release target {{target}} have different histories. Resolve the Git branch manually before using OTA.",
@@ -358,12 +361,12 @@
       "desc": "Language Server instance status"
     },
     "oauthLogin": {
-      "title": "Quick Login (Recommended)",
-      "desc": "Click a button to open Windsurf's official sign-in page, log in with Google/GitHub, then paste the returned token to add the account"
+      "title": "Google / GitHub sign-in",
+      "desc": "Sign in on Windsurf's official page, then come back and paste the token."
     },
     "emailLogin": {
-      "title": "Email Login",
-      "desc": "The account type is probed first: accounts with a password use the password form, OAuth / email-code accounts use the verification code."
+      "title": "Email sign-in",
+      "desc": "Accounts with a password use the password form; accounts without one use an email code."
     },
     "loginProxy": {
       "title": "Login Proxy (Optional)",
@@ -390,7 +393,7 @@
     },
     "accountList": {
       "title": "Account List",
-      "desc": "Click probe button to update capability info for a specific account"
+      "desc": "Click the check button to refresh one account's capability info"
     },
     "modelPolicy": {
       "title": "Access Policy",
@@ -736,7 +739,7 @@
       "credits": "Loading...",
       "accountNotFound": "Account not found",
       "noValidAccounts": "No valid accounts available for routing",
-      "probeFailed": "Probe failed",
+      "probeFailed": "Check failed",
       "noRequestData": "No request data",
       "noAccountRequestData": "No account-level request data",
       "noData": "No data"
@@ -1058,15 +1061,15 @@
     "openWindsurfToken": "Open windsurf.com for Token",
     "tokenPlaceholder": "Paste Auth Token...",
     "urlOrTokenPlaceholder": "Paste callback URL or Auth Token...",
-    "fetchToken": "Get a token from windsurf.com",
+    "openSignin": "Open the Windsurf sign-in page",
     "pasteFromClipboard": "Paste from clipboard",
     "step1": "Finish signing in on the new tab (Google, GitHub or an email code).",
     "step2": "The page then shows the token — click copy, or select the address bar.",
-    "step3": "Back here, click “Paste from clipboard” — the token is imported immediately.",
+    "step3": "Back here, paste and add — the token is written to the pool immediately.",
     "tokenImported": "Token imported: {{email}}",
     "addWithToken": "Add via Token",
-    "step2Title": "② Paste the token Windsurf gives you",
-    "step2Desc": "After signing in on the new tab, the page shows a token string — copy it here and click Add.",
+    "step2Title": "Paste the token Windsurf gives you",
+    "step2Desc": "When sign-in finishes, Windsurf shows a token. Copy it, or copy the whole callback address.",
     "openManually": "Sign-in page didn't open? Click here",
     "status": {
       "loading": "Logging in via {{provider}}...",
@@ -1154,16 +1157,21 @@
       "failed": "Export failed"
     },
     "add": {
-      "button": "Add account",
-      "groupLabel": "Add or sign in to an account",
-      "login": "Login",
+      "groupLabel": "Sign in, import, or paste a credential",
+      "login": "Sign in",
       "import": "Import",
-      "paste": "Add",
-      "title": "Add account",
-      "desc": "Log in, paste a credential, bulk import, or scan this machine",
+      "paste": "Paste credential",
+      "modalTitle": {
+        "login": "Sign in",
+        "paste": "Paste a credential",
+        "import": "Bulk import",
+        "local": "Import from this computer",
+        "reauth": "Sign in again as {{email}}"
+      },
+      "desc": "Choose how to add an account: sign in, paste a credential, bulk import, or scan this computer",
       "tabsLabel": "Add account methods",
       "tab": {
-        "login": "Login",
+        "login": "Sign in",
         "paste": "Paste credential",
         "import": "Bulk import",
         "local": "Local scan"
@@ -1172,23 +1180,33 @@
       "localDesc": "Read accounts already signed in on the Windsurf app on this computer (this computer only)",
       "reloginHint": "Email prefilled from the row. A successful login adds or reuses that account."
     },
+    "login": {
+      "methodsLabel": "Choose how to add an account",
+      "pasteToken": "Paste a token",
+      "back": "Choose another way",
+      "advanced": "Advanced options (proxy / login history / saved password)"
+    },
     "toolbar": {
       "fleet": "Pool operations",
       "view": "View options",
-      "probeAll": "Probe all",
+      "probeAll": "Check all",
       "refreshAll": "Refresh all balances"
     },
     "filter": {
       "searchPlaceholder": "Search email / ID / label",
       "allStatus": "All statuses",
+      "allStatusTip": "No status filter — every account is shown.",
       "statusTitle": "Filter by status",
-      "flagged": "Needs attention",
+      "attention": "Needs attention",
+      "attentionTip": "Same count as the “Needs attention” KPI: every account that is neither healthy nor switched off.",
+      "moreStatus": "More statuses",
+      "fewerStatus": "Fewer statuses",
       "count": "Showing {{shown}} / {{total}}",
       "clear": "Clear filters"
     },
     "status": {
       "active": "Healthy",
-      "disabled": "Disabled",
+      "disabled": "Switched off",
       "banned": "Banned",
       "reauth": "Needs re-auth",
       "error": "Error",
@@ -1200,6 +1218,18 @@
       "resumesIn": "resumes in {{time}}",
       "errorCount": "Error count",
       "blockedCount": "Blocked models"
+    },
+    "statusTip": {
+      "active": "Can take requests: not switched off, not rate limited, quota not exhausted.",
+      "disabled": "You switched this account off. Enable it to put it back in rotation.",
+      "banned": "Windsurf banned this account; it can only be removed or replaced.",
+      "reauth": "The credential is dead; signing in again replaces it on the same row.",
+      "error": "The last request or check failed; reset the errors and check again.",
+      "quota_cooled": "Quota is used up; it recovers when the reset time arrives.",
+      "rate_limited": "The service is rate limiting; it recovers when the window ends.",
+      "capacity": "Model capacity is short right now; switch models or retry later.",
+      "near_limit": "Per-minute requests are close to the cap; slow down or wait for the window.",
+      "watch": "There are past errors, but the account can still take requests."
     },
     "kpi": {
       "total": "Accounts",
@@ -1213,7 +1243,7 @@
       "totalTip": "Every account in the pool: healthy + switched off + needs attention.",
       "activeTip": "Accounts that can take a request right now. Rate-limited, quota-dry and near-limit accounts are not healthy.",
       "disabledTip": "Accounts you switched off yourself. Banned, re-auth and error accounts are not here — they are under Needs attention.",
-      "attentionTip": "Accounts that need you: banned, needs re-auth, error, quota dry, rate limited, model busy, near limit, has errors. Same count as the “problems only” filter.",
+      "attentionTip": "Accounts that need you: banned, needs re-auth, error, quota dry, rate limited, model busy, near limit, has errors. Same count as the “Needs attention” filter.",
       "balanceTip": "Sum of on-demand balances. A balance shared by one team is counted once; accounts with no known team are summed individually."
     },
     "subtitle": "{{total}} total · {{active}} healthy · {{attention}} need attention · balance {{balance}}",
@@ -1236,11 +1266,16 @@
     "row": {
       "menu": "Account actions",
       "details": "View details",
-      "probe": "Probe tier / models",
+      "probe": "Check tier and models",
       "refreshBalance": "Refresh balance",
       "blockedModels": "Block models",
       "relogin": "Log in again",
-      "reauth": "Re-authenticate"
+      "reauth": "Re-authenticate",
+      "lastCheck": "Checked {{ago}} ago",
+      "lastCheckResult": "Checked {{ago}} ago · {{result}}",
+      "neverChecked": "Not checked yet",
+      "skipCheck": "Not checked: {{reason}}",
+      "retryCheck": "Retry"
     },
     "reauth": {
       "bannerTitle": "Re-authentication required",
@@ -1291,8 +1326,14 @@
       "stateDone": "done",
       "stateCancelled": "cancelled",
       "details": "View details",
-      "detailsCount": "View {{count}} unfinished",
-      "dismiss": "Dismiss"
+      "detailsCount": "View details ({{count}})",
+      "dismiss": "Dismiss",
+      "reopen": "Last result",
+      "excludedToggle": "{{count}} inactive account(s) excluded",
+      "resultOk": "ok",
+      "resultFail": "failed",
+      "resultSkipped": "skipped",
+      "resultExcluded": "not run"
     },
     "empty": {
       "poolTitle": "No accounts yet",
@@ -1338,15 +1379,15 @@
       }
     },
     "probe": {
-      "doing": "Probing, takes about 10-30 seconds...",
-      "complete": "Probe complete: {{result}}",
-      "allDoing": "Probing all accounts, takes 1-3 minutes depending on count...",
-      "allComplete": "Probe complete: {{summary}}",
-      "probeAllComplete": "Probe complete: {{summary}}",
-      "probeComplete": "Probe complete: {{tier}}"
+      "doing": "Checking, takes about 10-30 seconds...",
+      "complete": "Check complete: {{result}}",
+      "allDoing": "Checking all accounts, takes 1-3 minutes depending on count...",
+      "allComplete": "Check complete: {{summary}}",
+      "probeAllComplete": "Check complete: {{summary}}",
+      "probeComplete": "Check complete: {{tier}}"
     },
     "credits": {
-      "refreshTitle": "Refresh credits",
+      "refreshTitle": "Refresh balance",
       "refreshed": "Credits refreshed",
       "refreshFailed": "Refresh failed",
       "allRefreshed": "All account credits refreshed: {{ok}} success / {{fail}} failed",
@@ -1358,6 +1399,8 @@
     },
     "detail": {
       "toggle": "Expand / collapse details",
+      "advanced": "Advanced information",
+      "advancedHint": "Ledger, model entitlement, runtime, key and capacity preflight",
       "ago": "ago",
       "resetAt": "resets",
       "creditPerCall": "Credits charged per call",
@@ -1394,7 +1437,7 @@
         "errors": "Errors",
         "rpm": "RPM",
         "lastUsed": "Last used",
-        "lastProbed": "Last probed",
+        "lastProbed": "Last check",
         "creditsFetched": "Credits refreshed",
         "accountId": "Account ID",
         "apiKey": "API Key",
@@ -1465,7 +1508,7 @@
         "tierListed": "tier list",
         "attention": "Needs attention",
         "allEntitled": "All {{total}} models are entitled.",
-        "noneProbed": "No entitlement snapshot yet — run a probe to populate this card.",
+        "noneProbed": "No entitlement snapshot yet — run a check to populate this card.",
         "source": "Source: last check",
         "sourceTech": "Technical details: GetUserStatus allowlist + capability probes",
         "probedAt": "snapshot",
@@ -1482,7 +1525,7 @@
         "expires": "Expires",
         "notObservable": "not observable",
         "expiryNote": "The service gives session keys no expiry field, so a dead key only shows as a failed check. Signing in again mints a fresh key.",
-        "lastProbe": "Last probe",
+        "lastProbe": "Last check",
         "autoRefresh": "Auto-refresh",
         "autoRefreshOn": "refresh token stored",
         "autoRefreshOff": "no refresh token",
@@ -1611,13 +1654,13 @@
     "enterKeyOrToken": "Please enter Key or Token",
     "addFailed": "Add failed",
     "probe": {
-      "doing": "Probing, takes about 10-30 seconds...",
-      "probeComplete": "Probe complete: {{tier}}",
-      "allDoing": "Probing all accounts, takes 1-3 minutes depending on count...",
-      "probeAllComplete": "Probe complete: {{summary}}"
+      "doing": "Checking, takes about 10-30 seconds...",
+      "probeComplete": "Check complete: {{tier}}",
+      "allDoing": "Checking all accounts, takes 1-3 minutes depending on count...",
+      "probeAllComplete": "Check complete: {{summary}}"
     },
-    "probeComplete": "Probe complete: {{tier}}",
-    "probeAllComplete": "Probe complete: {{summary}}",
+    "probeComplete": "Check complete: {{tier}}",
+    "probeAllComplete": "Check complete: {{summary}}",
     "credits": {
       "refreshed": "Credits refreshed",
       "refreshFailed": "Failed to refresh credits",
@@ -1668,7 +1711,7 @@
     "unreachableHint": "Not serveable right now: no account in the pool is entitled to it, or the name maps to nothing on the current backend. Still clickable, so you can add or remove it from the list.",
     "freeBadge": "FREE",
     "paidBadge": "QUOTA",
-    "costUnknownHint": "Cost unknown: no account has reported an upstream rate table yet, so this is neither confirmed free nor confirmed billable. Refresh credits on an account to populate it.",
+    "costUnknownHint": "Cost unknown: no account has reported a service rate table yet, so this is neither confirmed free nor confirmed billable. Refresh an account's balance to populate it.",
     "dailyExhaustedBadge": "QUOTA · daily exhausted",
     "weeklyDroughtBadge": "QUOTA · drought",
     "notInCatalogBadge": "NOT IN CATALOG",
@@ -1709,7 +1752,7 @@
     "updateFailed": "Update failed",
     "apiError": "API error",
     "loadFailed": "Failed to load",
-    "probeFailed": "Probe failed",
+    "probeFailed": "Check failed",
     "accountNotFound": "Account not found",
     "openFailed": "Failed to open",
     "saveFailed": "Save failed",

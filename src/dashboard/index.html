@@ -2351,22 +2351,20 @@ tbody tr:hover td { background: var(--surface-2); }
 .fleet-panel-head #accounts-fleet-summary { color: var(--text-muted); }
 .fleet-list { margin: 6px 0 0; padding-left: 18px; max-height: 200px; overflow: auto; }
 .fleet-list li { margin: 2px 0; color: var(--text-muted); word-break: break-all; }
+.fleet-item { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.fleet-item-email { color: var(--text); font-weight: 600; }
+.fleet-item-result {
+  flex: none; padding: 0 5px; border-radius: 4px; font-size: 10px; font-weight: 700;
+}
+.fleet-item-result.ok { background: var(--success-soft); color: var(--text); }
+.fleet-item-result.fail { background: var(--error-soft); color: var(--text); }
+.fleet-item-result.skip { background: var(--warn-soft); color: var(--text); }
 
 .acct-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .acct-filters .input, .acct-filters .select { width: auto; height: 32px; padding-top: 4px; padding-bottom: 4px; }
 .acct-filters .cs { width: auto; flex: 0 0 auto; min-width: 150px; }
 .acct-filters .cs-trigger { height: 32px; padding-top: 4px; padding-bottom: 4px; }
 .acct-filters .input { flex: 1 1 240px; min-width: 160px; max-width: 360px; }
-.chip-toggle {
-  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
-  border: 1px solid var(--border-strong); border-radius: 999px; background: transparent;
-  color: var(--text-muted); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
-}
-.chip-toggle:hover { color: var(--text); background: var(--surface-2); }
-.chip-toggle[aria-pressed="true"] {
-  background: var(--error-soft); border-color: var(--error); color: var(--text);
-}
-.chip-toggle[aria-pressed="true"]::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--error); }
 .acct-filter-count { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .acct-filter-clear[hidden] { display: none; }
 
@@ -2403,6 +2401,19 @@ tbody tr:hover td { background: var(--surface-2); }
 .acct-line2 { display: flex; align-items: center; gap: 6px; font-size: 11px; line-height: 1.3; color: var(--text-dim); min-width: 0; }
 .acct-line2 code { background: transparent; border: 0; padding: 0; font-size: 11px; color: var(--text-dim); }
 .acct-line2 .acct-key { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Last check lives on the existing second line, so the 44px row budget holds. */
+.acct-last-check {
+  margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 4px;
+  max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text-dim); font-size: 10px;
+}
+.acct-last-check.is-skip { color: var(--warn); }
+.acct-last-check-text { overflow: hidden; text-overflow: ellipsis; }
+.acct-last-check-retry {
+  border: 0; background: transparent; padding: 0; color: var(--accent);
+  font: inherit; font-size: 10px; cursor: pointer; text-decoration: underline; flex: none;
+}
+.acct-last-check-retry:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .note-chip {
   display: inline-flex; align-items: center; max-width: 120px; height: 18px; padding: 0 6px;
   border-radius: 999px; border: 1px dashed var(--border-strong);
@@ -2491,6 +2502,20 @@ tbody tr:hover td { background: var(--surface-2); }
 .acct-drawer .account-detail-wrap { padding: 0; background: none; }
 .acct-drawer .detail-grid { grid-template-columns: 1fr; gap: 12px; margin-bottom: 0; }
 .acct-drawer .detail-card { border-radius: var(--radius); }
+/* Primary cards answer the four questions; technical cards live behind this
+   disclosure so the drawer's first screen is not a wall of ledgers. */
+.detail-advanced { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.detail-advanced > summary {
+  cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 8px;
+  padding: 6px 2px; font-size: 12px; font-weight: 600; color: var(--text-muted);
+}
+.detail-advanced > summary::-webkit-details-marker { display: none; }
+.detail-advanced > summary::before { content: '▸'; color: var(--text-dim); }
+.detail-advanced[open] > summary::before { content: '▾'; }
+.detail-advanced > summary:hover { color: var(--text); }
+.detail-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.detail-advanced-hint { font-weight: 400; font-size: 11px; color: var(--text-dim); }
+.detail-advanced .detail-grid { margin-top: 10px; }
 
 /* Add-account modal: 4 tabs (login / paste / import / local) */
 .add-modal { width: min(720px, 100%); max-width: 720px; max-height: 88vh; display: flex; flex-direction: column; }
@@ -2513,6 +2538,32 @@ tbody tr:hover td { background: var(--surface-2); }
 .add-panel .section-body { padding: 0; }
 .add-panel .section-body.tight { padding: 0; }
 .add-panel .field-row { margin-bottom: 10px; }
+/* Login step 1: two method cards + a secondary token link. */
+.login-methods { display: grid; gap: 10px; margin-bottom: 4px; }
+.login-methods.hidden { display: none; }
+.login-method {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%;
+  padding: 14px 16px; text-align: left; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
+  color: var(--text); font: inherit;
+}
+.login-method:hover { border-color: var(--accent); background: var(--surface-2); }
+.login-method:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.login-method-title { font-size: 14px; font-weight: 700; }
+.login-method-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.login-method-token { justify-self: start; }
+.login-method-panel.hidden { display: none; }
+.login-panel-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.login-panel-title { font-size: 13px; font-weight: 700; }
+.login-steps { margin: 0; padding-left: 18px; display: grid; gap: 10px; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+.login-steps li { display: grid; gap: 6px; justify-items: start; }
+.login-steps li > .btn { justify-self: start; }
+.login-advanced { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.login-advanced > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text-muted); padding: 4px 0; }
+.login-advanced > summary:hover { color: var(--text); }
+.login-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.login-advanced-body { padding-top: 8px; }
+.login-advanced-body .section { margin-bottom: 8px; }
 
 @media (max-width: 1100px) {
   .acct-kpis { grid-template-columns: repeat(3, 1fr); }
@@ -2603,7 +2654,7 @@ tbody tr:hover td { background: var(--surface-2); }
       <div class="nav-group-label" data-i18n="nav.group.usage">用量</div>
       <a href="#usage" data-panel="usage">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
-        <span data-i18n="nav.usage">ACU 用量</span>
+        <span data-i18n="nav.usage">用量</span>
       </a>
       <a href="#stats" data-panel="stats">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
@@ -2798,15 +2849,15 @@ tbody tr:hover td { background: var(--surface-2); }
     <div class="page-header">
       <div>
         <h1 class="page-title" data-i18n="page.accounts">账号管理</h1>
-        <div class="page-subtitle" id="accounts-subtitle" data-i18n="pageSubtitle.accounts">维护账号池，探测各账号订阅层级与可用模型</div>
+        <div class="page-subtitle" id="accounts-subtitle" data-i18n="pageSubtitle.accounts">维护账号池，检查各账号的套餐层级与可用模型</div>
       </div>
       <!-- One credential-entry surface (the add modal), three inline entry verbs.
            The old standalone add-account box and the separate login page are gone,
            so this group is the only place on the page that opens a credential form. -->
-      <div class="acct-add-group" role="group" data-i18n-aria-label="accounts.add.groupLabel">
+      <div class="acct-add-group" role="group" aria-label="登录、导入或粘贴凭证" data-i18n-aria-label="accounts.add.groupLabel">
         <button class="btn btn-primary" id="accounts-login-btn" onclick="App.openAddAccountModal('login')" data-i18n="accounts.add.login">登录</button>
         <button class="btn btn-outline" id="accounts-import-btn" onclick="App.openAddAccountModal('import')" data-i18n="accounts.add.import">导入</button>
-        <button class="btn btn-outline" id="accounts-add-btn" onclick="App.openAddAccountModal('paste')" data-i18n="accounts.add.paste">添加</button>
+        <button class="btn btn-outline" id="accounts-add-btn" onclick="App.openAddAccountModal('paste')" data-i18n="accounts.add.paste">粘贴凭证</button>
       </div>
     </div>
     <!-- v2.0.57 Fix 5 — drought mode banner: shown only when every active
@@ -2832,9 +2883,10 @@ tbody tr:hover td { background: var(--surface-2); }
     <!-- Fleet toolbar: long-running pool operations live here, not in the page header. -->
     <div class="acct-toolbar">
       <div class="tb-group" role="group" data-i18n-aria-label="accounts.toolbar.fleet">
-        <button class="btn btn-outline btn-sm" onclick="App.startFleetRun('probe')" data-i18n="accounts.toolbar.probeAll">全部探测</button>
+        <button class="btn btn-outline btn-sm" onclick="App.startFleetRun('probe')" data-i18n="accounts.toolbar.probeAll">全部检查</button>
         <button class="btn btn-outline btn-sm" onclick="App.startFleetRun('refresh')" data-i18n="accounts.toolbar.refreshAll">刷新全部余额</button>
         <button class="btn btn-outline btn-sm" id="accounts-fleet-cancel" onclick="App.cancelFleetRun()" hidden data-i18n="accounts.fleet.cancel">取消</button>
+        <button class="btn btn-outline btn-sm" id="accounts-fleet-reopen" onclick="App.reopenFleetPanel()" hidden data-i18n="accounts.fleet.reopen">本次结果</button>
         <button class="btn btn-outline btn-sm" onclick="App.exportAccounts()" data-i18n="accounts.export.label">导出</button>
       </div>
       <div class="tb-group" role="group" data-i18n-aria-label="accounts.toolbar.view">
@@ -2849,13 +2901,15 @@ tbody tr:hover td { background: var(--surface-2); }
     <div id="accounts-fleet-panel" class="fleet-panel" hidden>
       <div class="fleet-panel-head">
         <span id="accounts-fleet-summary"></span>
+        <button class="btn btn-ghost btn-xs" id="accounts-fleet-excluded" hidden onclick="App.toggleFleetExcluded()" aria-expanded="false" data-i18n="accounts.fleet.excludedToggle">已排除非活跃账号</button>
         <button class="btn btn-ghost btn-xs" id="accounts-fleet-toggle" aria-expanded="false" hidden onclick="App.toggleFleetDetails()" data-i18n="accounts.fleet.details">查看明细</button>
         <button class="btn btn-ghost btn-xs" id="accounts-fleet-dismiss" onclick="App.dismissFleetPanel()" data-i18n="accounts.fleet.dismiss">关闭</button>
       </div>
       <ul id="accounts-fleet-list" class="fleet-list" hidden></ul>
+      <ul id="accounts-fleet-excluded-list" class="fleet-list" hidden></ul>
     </div>
 
-    <!-- Filter bar: search / tier / status / flagged / count / clear. Every control
+    <!-- Filter bar: search / tier / status groups / count / clear. Every control
          maps to a server query param, so a filter never silently means "this page". -->
     <div class="acct-filters" role="search">
       <input id="accounts-search" type="search" class="input" autocomplete="off" oninput="App.onAccountsSearchInput(this.value)" data-i18n-placeholder="accounts.filter.searchPlaceholder" placeholder="搜索邮箱 / ID / 标签">
@@ -2866,20 +2920,29 @@ tbody tr:hover td { background: var(--surface-2); }
         <option value="unknown" data-i18n="accounts.tierFilter.unknown">未知</option>
         <option value="expired" data-i18n="accounts.tierFilter.expired">已过期</option>
       </select>
+      <!-- Status vocabulary: three human groups by default. The ten raw states
+           stay one click away behind the "more statuses" button, each with a
+           one-line explanation; "needs attention" is the SAME `filter=flagged`
+           predicate as the KPI cell. -->
       <select id="accounts-status-filter" class="select" onchange="App.setAccountsStatus(this.value)" data-i18n-title="accounts.filter.statusTitle" title="按状态筛选">
-        <option value="" data-i18n="accounts.filter.allStatus">全部状态</option>
-        <option value="active" data-i18n="accounts.status.active">正常</option>
-        <option value="disabled" data-i18n="accounts.status.disabled">停用</option>
-        <option value="banned" data-i18n="accounts.status.banned">已封禁</option>
-        <option value="reauth" data-i18n="accounts.status.reauth">需要重新授权</option>
-        <option value="error" data-i18n="accounts.status.error">异常</option>
-        <option value="quota_cooled" data-i18n="accounts.status.quotaCooled">配额耗尽</option>
-        <option value="rate_limited" data-i18n="accounts.status.rateLimited">限流中</option>
-        <option value="capacity" data-i18n="accounts.status.capacity">模型繁忙</option>
-        <option value="near_limit" data-i18n="accounts.status.nearLimit">接近上限</option>
-        <option value="watch" data-i18n="accounts.status.watch">有错误</option>
+        <option value="" data-i18n="accounts.filter.allStatus" data-i18n-title="accounts.filter.allStatusTip" title="不按状态筛选">全部状态</option>
+        <option value="active" data-i18n="accounts.status.active" data-i18n-title="accounts.statusTip.active" title="能接请求：未停用、未限流、配额未耗尽">正常</option>
+        <option value="disabled" data-i18n="accounts.status.disabled" data-i18n-title="accounts.statusTip.disabled" title="你手动停用的账号">已停用</option>
+        <option value="attention" data-i18n="accounts.filter.attention" data-i18n-title="accounts.filter.attentionTip" title="需处理">需处理</option>
       </select>
-      <button class="chip-toggle" id="accounts-flagged-toggle" aria-pressed="false" onclick="App.toggleAccountsFlagged()" data-i18n="accounts.filter.flagged">仅异常</button>
+      <button class="btn btn-ghost btn-xs" id="accounts-status-more" aria-expanded="false" aria-controls="accounts-status-filter" onclick="App.toggleStatusDetails()" data-i18n="accounts.filter.moreStatus">更多状态</button>
+      <template id="accounts-status-details">
+        <option value="active" data-status-detail data-i18n="accounts.status.active" data-i18n-title="accounts.statusTip.active" title="能接请求：未停用、未限流、配额未耗尽">正常</option>
+        <option value="disabled" data-status-detail data-i18n="accounts.status.disabled" data-i18n-title="accounts.statusTip.disabled" title="你手动停用的账号">已停用</option>
+        <option value="banned" data-status-detail data-i18n="accounts.status.banned" data-i18n-title="accounts.statusTip.banned" title="Windsurf 封禁了这个账号">已封禁</option>
+        <option value="reauth" data-status-detail data-i18n="accounts.status.reauth" data-i18n-title="accounts.statusTip.reauth" title="登录凭证已失效，需要重新登录">需要重新授权</option>
+        <option value="error" data-status-detail data-i18n="accounts.status.error" data-i18n-title="accounts.statusTip.error" title="最近一次请求或检查失败">异常</option>
+        <option value="quota_cooled" data-status-detail data-i18n="accounts.status.quotaCooled" data-i18n-title="accounts.statusTip.quota_cooled" title="配额用尽，等待重置">配额耗尽</option>
+        <option value="rate_limited" data-status-detail data-i18n="accounts.status.rateLimited" data-i18n-title="accounts.statusTip.rate_limited" title="被服务限流，稍后自动恢复">限流中</option>
+        <option value="capacity" data-status-detail data-i18n="accounts.status.capacity" data-i18n-title="accounts.statusTip.capacity" title="当前模型容量不足，换模型或稍后重试">模型繁忙</option>
+        <option value="near_limit" data-status-detail data-i18n="accounts.status.nearLimit" data-i18n-title="accounts.statusTip.near_limit" title="每分钟请求用量已接近上限">接近上限</option>
+        <option value="watch" data-status-detail data-i18n="accounts.status.watch" data-i18n-title="accounts.statusTip.watch" title="有历史错误计数，但仍可接请求">有错误</option>
+      </template>
       <span class="acct-filter-count" id="accounts-filter-count"></span>
       <button class="btn btn-ghost btn-xs acct-filter-clear" id="accounts-filter-clear" onclick="App.clearAccountsFilters()" hidden data-i18n="accounts.filter.clear">清除筛选</button>
     </div>
@@ -2892,8 +2955,8 @@ tbody tr:hover td { background: var(--surface-2); }
           <div class="btn-group">
             <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('enable')" data-i18n="batchOps.enable">启用</button>
             <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('disable')" data-i18n="batchOps.disable">禁用</button>
-            <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('probe')" data-i18n="batchOps.probe">探测</button>
-            <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('refresh')" data-i18n="batchOps.refresh">刷新额度</button>
+            <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('probe')" data-i18n="batchOps.probe">检查</button>
+            <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('refresh')" data-i18n="batchOps.refresh">刷新余额</button>
             <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('reset')" data-i18n="accounts.batch.reset">重置错误</button>
             <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('export')" data-i18n="accounts.batch.export">导出所选</button>
             <button class="btn btn-ghost btn-xs" style="color:var(--error)" onclick="App.batchAccountOp('delete')" data-i18n="batchOps.delete">删除</button>
@@ -2943,8 +3006,10 @@ tbody tr:hover td { background: var(--surface-2); }
     <div class="modal add-modal" role="dialog" aria-modal="true" aria-labelledby="add-modal-title">
       <div class="modal-header add-modal-head">
         <div>
-          <div class="modal-title" id="add-modal-title" data-i18n="accounts.add.title">添加账号</div>
-          <div class="modal-desc" data-i18n="accounts.add.desc">登录、粘贴凭证、批量导入或从本机导入</div>
+          <!-- Title follows the active tab (set by App.setAddModalTitle), so the
+               entry verb the user clicked is the one they land on. -->
+          <div class="modal-title" id="add-modal-title"></div>
+          <div class="modal-desc" data-i18n="accounts.add.desc">选择一种方式添加账号：登录、粘贴凭证、批量导入或从本机扫描</div>
         </div>
         <button class="btn btn-ghost btn-sm" onclick="App.closeAddAccountModal()" aria-label="关闭" data-i18n-aria-label="action.close">×</button>
       </div>
@@ -2964,12 +3029,26 @@ tbody tr:hover td { background: var(--surface-2); }
       </div>
       <div class="add-modal-body">
         <div class="add-panel active" id="add-panel-login" role="tabpanel" aria-labelledby="add-tab-login">
-          <div class="section">
-            <div class="section-header">
-              <div>
-                <div class="section-title" data-i18n="section.oauthLogin.title">快捷登录（推荐）</div>
-                <div class="section-desc" data-i18n="section.oauthLogin.desc">用你的 Google 或 GitHub 账号直接登录 Windsurf 无需密码</div>
-              </div>
+          <!-- Step 1: choose ONE method. The proxy fields, the saved-password
+               checkbox and the login history are under the advanced disclosure,
+               so the first screen is two choices plus a secondary token link —
+               not four stacked sections competing for attention. -->
+          <div class="login-methods" id="wl-method-step" role="group" data-i18n-aria-label="accounts.login.methodsLabel">
+            <button type="button" class="login-method" id="wl-method-oauth-btn" onclick="App.selectLoginMethod('oauth')">
+              <span class="login-method-title" data-i18n="section.oauthLogin.title">Google / GitHub 登录</span>
+              <span class="login-method-desc" data-i18n="section.oauthLogin.desc">在 Windsurf 官方页面完成登录，回到这里粘贴 Token。</span>
+            </button>
+            <button type="button" class="login-method" id="wl-method-email-btn" onclick="App.selectLoginMethod('email')">
+              <span class="login-method-title" data-i18n="section.emailLogin.title">邮箱登录</span>
+              <span class="login-method-desc" data-i18n="section.emailLogin.desc">有密码的账号用密码登录；没有密码的账号改用邮箱验证码。</span>
+            </button>
+            <button type="button" class="btn btn-ghost btn-sm login-method-token" id="wl-method-token-btn" onclick="App.selectLoginMethod('token')" data-i18n="accounts.login.pasteToken">粘贴 Token</button>
+          </div>
+
+          <div class="login-method-panel hidden" id="wl-panel-oauth">
+            <div class="login-panel-head">
+              <button type="button" class="btn btn-ghost btn-xs" onclick="App.selectLoginMethod(null)" data-i18n="accounts.login.back">换一种方式</button>
+              <span class="login-panel-title" data-i18n="section.oauthLogin.title">Google / GitHub 登录</span>
             </div>
             <div class="section-body">
               <div style="display:flex;gap:12px;flex-wrap:wrap">
@@ -2981,36 +3060,39 @@ tbody tr:hover td { background: var(--surface-2); }
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.08-.73.08-.73 1.2.08 1.84 1.23 1.84 1.23 1.07 1.83 2.81 1.3 3.5 1 .1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 016.02 0c2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.8 5.63-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.21.7.82.58C20.56 21.8 24 17.3 24 12 24 5.37 18.63 0 12 0z"/></svg>
                   <span data-i18n="oauth.github">GitHub 登录</span>
                 </button>
-                <button class="btn btn-outline" onclick="App.fetchWindsurfToken()" id="oauth-fetch-token-btn" style="padding:10px 20px;font-weight:600">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
-                  <span data-i18n="oauth.fetchToken">从 windsurf.com 获取 Token</span>
-                </button>
               </div>
               <div id="oauth-status" aria-live="polite" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
+              <!-- Three steps, each with its own action button. Step 2 fills the
+                   box and imports; step 3 imports whatever is in the box. -->
               <div id="oauth-token-step" class="hidden" style="margin-top:14px;padding:14px;background:var(--surface-2);border-radius:var(--radius);border-left:3px solid var(--accent)">
-                <div style="font-weight:600;margin-bottom:6px" data-i18n="oauth.step2Title">② 粘贴 Windsurf 返回的 Token</div>
-                <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px" data-i18n="oauth.step2Desc">在新标签完成登录后 复制整条回调地址栏 URL(或页面显示的 Token)粘到这里点添加</div>
-                <ol style="font-size:12px;color:var(--text-muted);margin:0 0 10px 18px;line-height:1.7">
-                  <li data-i18n="oauth.step1">在新标签页完成登录（Google / GitHub / 邮箱验证码均可）。</li>
-                  <li data-i18n="oauth.step2">登录完成后页面会显示 Token；点“复制”或直接全选地址栏。</li>
-                  <li data-i18n="oauth.step3">回到这里点“从剪贴板粘贴并导入”，Token 会立即写入账号池。</li>
+                <div style="font-weight:600;margin-bottom:6px" data-i18n="oauth.step2Title">粘贴 Windsurf 返回的 Token</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px" data-i18n="oauth.step2Desc">登录完成后，Windsurf 会显示一串 Token。复制它，或直接复制整条回调地址。</div>
+                <ol class="login-steps">
+                  <li>
+                    <span data-i18n="oauth.step1">在新标签页完成登录（Google、GitHub 或邮箱验证码均可）。</span>
+                    <button class="btn btn-outline btn-sm" onclick="App.fetchWindsurfToken()" id="oauth-fetch-token-btn" data-i18n="oauth.openSignin">打开 Windsurf 登录页</button>
+                  </li>
+                  <li>
+                    <span data-i18n="oauth.step2">登录完成后页面会显示 Token；点“复制”或直接全选地址栏。</span>
+                    <button class="btn btn-outline btn-sm" onclick="App.pasteOAuthTokenFromClipboard()" id="oauth-paste-btn" data-i18n="oauth.pasteFromClipboard">从剪贴板粘贴</button>
+                  </li>
+                  <li>
+                    <span data-i18n="oauth.step3">回到这里，粘贴并添加；Token 会立即写入账号池。</span>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">
+                      <input id="oauth-token-input" type="text" class="input" style="flex:1;min-width:220px" data-i18n-placeholder="oauth.urlOrTokenPlaceholder" placeholder="粘贴回调 URL 或 Auth Token...">
+                      <button class="btn btn-primary" onclick="App.submitOAuthToken()" id="oauth-import-btn" data-i18n="oauth.addWithToken">用 Token 添加</button>
+                    </div>
+                  </li>
                 </ol>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-                  <input id="oauth-token-input" type="text" class="input" style="flex:1;min-width:260px" data-i18n-placeholder="oauth.urlOrTokenPlaceholder" placeholder="粘贴回调 URL 或 Auth Token...">
-                  <button class="btn btn-outline" onclick="App.pasteOAuthTokenFromClipboard()" id="oauth-paste-btn" data-i18n="oauth.pasteFromClipboard">从剪贴板粘贴</button>
-                  <button class="btn btn-primary" onclick="App.submitOAuthToken()" id="oauth-import-btn" data-i18n="oauth.addWithToken">用 Token 添加</button>
-                </div>
                 <a id="oauth-manual-link" href="#" class="hidden" onclick="return App.openWindsurfSignin(event)" style="display:inline-block;margin-top:8px;font-size:12px;color:var(--accent)" data-i18n="oauth.openManually">登录页没弹出来？点这里手动打开</a>
               </div>
             </div>
           </div>
 
-          <div class="section">
-            <div class="section-header">
-              <div>
-                <div class="section-title" data-i18n="section.emailLogin.title">邮箱登录</div>
-                <div class="section-desc" data-i18n="section.emailLogin.desc">先检测账号登录方式：有密码的账号用密码登录，OAuth/邮箱验证码账号用验证码登录</div>
-              </div>
+          <div class="login-method-panel hidden" id="wl-panel-email">
+            <div class="login-panel-head">
+              <button type="button" class="btn btn-ghost btn-xs" onclick="App.selectLoginMethod(null)" data-i18n="accounts.login.back">换一种方式</button>
+              <span class="login-panel-title" data-i18n="section.emailLogin.title">邮箱登录</span>
             </div>
             <div class="section-body">
               <div class="field-row">
@@ -3066,13 +3148,19 @@ tbody tr:hover td { background: var(--surface-2); }
                 <div class="text-sm" data-i18n="emailLogin.oauthOnlyHint">该账号没有密码，也不支持邮箱验证码。请用上面的 Google / GitHub 按钮登录，或粘贴 show-auth-token 页面的 Token。</div>
                 <button class="btn btn-outline" style="margin-top:8px" onclick="App.showOAuthTokenStep()" data-i18n="emailLogin.useToken">改用 Token 登录</button>
               </div>
-              <label class="checkbox" style="margin-top:10px" data-i18n-title="field.storeCredentialHint" title="加密保存密码用于自动续期">
+            </div>
+          </div>
+
+          <!-- Advanced: proxy, saved-password opt-in, login history. Closed by
+               default so the first screen is the two methods above. -->
+          <details class="login-advanced" id="wl-advanced">
+            <summary data-i18n="accounts.login.advanced">高级选项（代理 / 登录历史 / 存储密码）</summary>
+            <div class="login-advanced-body">
+              <label class="checkbox" style="margin:8px 0 12px" data-i18n-title="field.storeCredentialHint" title="加密保存密码用于自动续期">
                 <input type="checkbox" id="wl-store-cred">
                 <span class="box"></span>
                 <span data-i18n="field.storeCredential">加密保存密码以在会话失效时自动续期</span>
               </label>
-            </div>
-          </div>
 
           <div class="section" id="wl-proxy-section">
             <div class="section-header">
@@ -3134,6 +3222,8 @@ tbody tr:hover td { background: var(--surface-2); }
               </div>
             </div>
           </div>
+            </div>
+          </details>
         </div>
 
         <div class="add-panel" id="add-panel-paste" role="tabpanel" aria-labelledby="add-tab-paste">
@@ -3574,8 +3664,8 @@ tbody tr:hover td { background: var(--surface-2); }
   <section class="panel" id="p-usage">
     <div class="page-header">
       <div>
-        <h1 class="page-title" data-i18n="page.usage">ACU 用量</h1>
-        <div class="page-subtitle" data-i18n="pageSubtitle.usage">按组织读取 ACU 限额、周期用量、每日消耗与产品拆分；同一组织下的多个账号只显示一次。</div>
+        <h1 class="page-title" data-i18n="page.usage">用量</h1>
+        <div class="page-subtitle" data-i18n="pageSubtitle.usage">ACU 是 Devin 的用量单位；这里先回答本周期还剩多少，再看已用、每日与按产品的消耗。同一工作区的多个账号只显示一次。</div>
       </div>
       <div class="btn-group">
         <button class="btn btn-ghost btn-sm" onclick="App.loadUsage(true)" data-i18n-title="action.refresh" title="刷新">
@@ -6242,9 +6332,10 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const T = (k, v) => I18n.t('usage.' + k, v);
     const noAccounts = payload?.error === 'no_account' || payload?.accountsScanned === 0;
     if ((payload?.ok === false || payload?.success === false) && !noAccounts) {
+      const raw = payload.error || 'upstream';
       return `<div class="section"><div class="section-body">
         <div class="section-title">${this.esc(T('errorTitle'))}</div>
-        <div class="section-desc">${this.esc(this.usageReason(payload.error || 'upstream'))}</div>
+        <div class="section-desc" title="${this.esc(this.usageReasonTip(raw))}">${this.esc(this.usageReason(raw))}</div>
         <button class="btn btn-primary btn-sm" style="margin-top:12px" onclick="App.loadUsage(true)">${this.esc(T('retry'))}</button>
       </div></div>`;
     }
@@ -6281,7 +6372,13 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const raw = String(reason || 'upstream');
     const key = 'usage.reason.' + raw;
     const text = I18n.t(key);
-    return text === key ? raw : text;
+    // An unmapped reason is a code, not a sentence: show the human fallback and
+    // keep the code in the caller's technical-detail title.
+    return text === key ? I18n.t('usage.reason.unknown') : text;
+  },
+
+  usageReasonTip(reason) {
+    return I18n.t('usage.rawTip', { code: String(reason || 'upstream') });
   },
 
   fmtAcu(value) {
@@ -6340,9 +6437,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       </div>`;
 
     const cards = `<div class="metrics-grid" style="margin-bottom:18px">
-      ${card(T('cards.limit'), limitText, T('limitSub'), 'accent', T('limitTip'))}
+      ${card(T('cards.remaining'), remainingText, T('remainingSub'), 'accent', T('derivedTip'))}
       ${card(T('cards.used'), usedText, T('usedSub'))}
-      ${card(T('cards.remaining'), remainingText, T('remainingSub'), '', T('derivedTip'))}
+      ${card(T('cards.limit'), limitText, T('limitSub'), '', T('limitTip'))}
       ${card(T('cards.today'), latestText, latest?.date ? this.fmtUsageDate(latest.date) : T('todaySub'))}
     </div>`;
 
@@ -6369,7 +6466,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     if (payload?.unresolvedAccounts) notices.push(T('unresolved', { count: payload.unresolvedAccounts }));
     const failedSources = Object.entries(org.sources || {})
       .filter(([, source]) => source && source.ok === false)
-      .map(([sourceName, source]) => `${sourceName}: ${this.usageReason(source.error || 'upstream')}`);
+      .map(([, source]) => this.usageReason(source.error || 'upstream'));
     if (failedSources.length) notices.push(`${T('partial')} — ${failedSources.join(' · ')}`);
     const noticeHtml = notices.length
       ? `<div class="section-body" style="padding:0 20px 10px"><div class="section-desc" style="color:var(--warn)">${this.esc(notices.join(' · '))}</div></div>`
@@ -6487,7 +6584,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const count = Array.isArray(org?.accounts) ? org.accounts.length : 0;
     return `<div class="section"><div class="section-body">
       <div class="section-title">${this.esc(T('errorTitle'))}</div>
-      <div class="section-desc">${this.esc(this.usageReason(reason))}</div>
+      <div class="section-desc" title="${this.esc(this.usageReasonTip(reason))}">${this.esc(this.usageReason(reason))}</div>
       <div class="section-desc" style="margin-top:6px">${this.esc(count === 1 ? T('accountsOne') : T('accounts', { count }))}</div>
       <button class="btn btn-primary btn-sm" style="margin-top:12px" onclick="App.loadUsage(true)">${this.esc(T('retry'))}</button>
     </div></div>`;
@@ -7401,11 +7498,19 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   },
 
   showOAuthTokenStep() {
+    // Reachable from the OAuth panel and from the email panel's "no password,
+    // no code" hint, so it must switch the method view itself.
+    this._loginMethod = 'token';
+    document.getElementById('wl-method-step')?.classList.add('hidden');
+    document.getElementById('wl-panel-oauth')?.classList.remove('hidden');
+    document.getElementById('wl-panel-email')?.classList.add('hidden');
+    document.getElementById('wl-method-oauth-btn')?.setAttribute('aria-pressed', 'true');
+    document.getElementById('wl-method-email-btn')?.setAttribute('aria-pressed', 'false');
     const step = document.getElementById('oauth-token-step');
     if (!step) return;
     step.classList.remove('hidden');
     document.getElementById('oauth-token-input')?.focus();
-    step.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    step.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
   },
 
   // "从 windsurf.com 获取 Token": open the official sign-in page in a new tab
@@ -7988,17 +8093,46 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
 
   setAccountsStatus(value) {
     const allowed = ['', 'active', 'disabled', 'banned', 'reauth', 'error', 'quota_cooled', 'rate_limited', 'capacity', 'near_limit', 'watch'];
-    this.accountsStatus = allowed.includes(value) ? value : '';
+    // 需处理 is not a server state: it is the KPI's `filter=flagged` predicate.
+    if (value === 'attention') {
+      this.accountsFlagged = true;
+      this.accountsStatus = '';
+    } else {
+      this.accountsFlagged = false;
+      this.accountsStatus = allowed.includes(value) ? value : '';
+    }
     this.accountsPage = 1;
     this.clearAccountSelection();
     this.loadAccounts();
   },
 
-  toggleAccountsFlagged() {
-    this.accountsFlagged = !this.accountsFlagged;
-    this.accountsPage = 1;
-    this.clearAccountSelection();
-    this.loadAccounts();
+  // Reveal the ten raw states only on request. They stay in a <template> so the
+  // default select has four choices and the page still loads without JS.
+  toggleStatusDetails() {
+    const sel = document.getElementById('accounts-status-filter');
+    const tpl = document.getElementById('accounts-status-details');
+    const btn = document.getElementById('accounts-status-more');
+    if (!sel || !tpl) return;
+    this._statusDetailsOpen = !this._statusDetailsOpen;
+    if (this._statusDetailsOpen) {
+      sel.appendChild(tpl.content.cloneNode(true));
+      I18n.apply(sel);
+    } else {
+      for (const option of [...sel.querySelectorAll('option[data-status-detail]')]) option.remove();
+      // A hidden option cannot stay selected; clear it and reload so the table
+      // never disagrees with the control above it.
+      if (this.accountsStatus && !['active', 'disabled'].includes(this.accountsStatus)) {
+        this.accountsStatus = '';
+        this.accountsPage = 1;
+        this.clearAccountSelection();
+        this.loadAccounts();
+      }
+    }
+    if (btn) {
+      btn.setAttribute('aria-expanded', String(this._statusDetailsOpen));
+      btn.textContent = I18n.t(this._statusDetailsOpen ? 'accounts.filter.fewerStatus' : 'accounts.filter.moreStatus');
+    }
+    sel.value = this.accountsFlagged ? 'attention' : this.accountsStatus;
   },
 
   clearAccountsFilters() {
@@ -8017,9 +8151,10 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const tierSel = document.getElementById('accounts-tier-filter');
     if (tierSel && tierSel.value !== this.accountsTier) tierSel.value = this.accountsTier;
     const statusSel = document.getElementById('accounts-status-filter');
-    if (statusSel && statusSel.value !== this.accountsStatus) statusSel.value = this.accountsStatus;
-    const flaggedBtn = document.getElementById('accounts-flagged-toggle');
-    if (flaggedBtn) flaggedBtn.setAttribute('aria-pressed', this.accountsFlagged ? 'true' : 'false');
+    if (statusSel) {
+      const wanted = this.accountsFlagged ? 'attention' : this.accountsStatus;
+      if (statusSel.value !== wanted) statusSel.value = wanted;
+    }
     const clearBtn = document.getElementById('accounts-filter-clear');
     const anyFilter = !!(this.accountsQuery || this.accountsStatus || this.accountsTier || this.accountsFlagged);
     if (clearBtn) clearBtn.hidden = !anyFilter;
@@ -8295,6 +8430,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           <div class="acct-line2">
             <code class="text-xs">${this.esc(a.id)}</code>
             <code class="acct-key" title="${this.esc(a.apiKey_masked || '')}">${this.esc(a.apiKey_masked || '')}</code>
+            ${this.renderLastCheck(a, batch)}
           </div>
         </td>
         <td class="acct-tier-cell" data-label="${this.esc(I18n.t('table.header.tier'))}">
@@ -8314,6 +8450,29 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       </tr>`;
   },
 
+  // The "when was this account last checked, and how did it go" line. It lives
+  // in the account cell's existing second line (not a new row line) so the
+  // 44px row budget from 3.9.50 is preserved. `lastProbed` comes from the
+  // server, so the time survives a page reload; a skip that only happened in
+  // this session says why and offers a retry.
+  renderLastCheck(a, batch = null) {
+    if (batch?.skipped) {
+      const reason = this.skipReasonText(batch.error) || I18n.t('accounts.skip.other');
+      return `<span class="acct-last-check is-skip" title="${this.esc(I18n.t('accounts.row.skipCheck', { reason }))}">
+        <span class="acct-last-check-text">${this.esc(reason)}</span>
+        <button type="button" class="acct-last-check-retry" onclick="App.probeAccount('${this.escJsAttr(a.id)}')">${this.esc(I18n.t('accounts.row.retryCheck'))}</button>
+      </span>`;
+    }
+    const ts = Number(a.lastProbed || a.userStatusLastFetched || 0);
+    if (!ts) return `<span class="acct-last-check">${this.esc(I18n.t('accounts.row.neverChecked'))}</span>`;
+    const ago = this.fmtAgoShort(ts);
+    const result = batch ? (batch.ok ? I18n.t('accounts.fleet.resultOk') : I18n.t('accounts.fleet.resultFail')) : '';
+    const text = result
+      ? I18n.t('accounts.row.lastCheckResult', { ago, result })
+      : I18n.t('accounts.row.lastCheck', { ago });
+    return `<span class="acct-last-check" title="${this.esc(new Date(ts).toLocaleString())}">${this.esc(text)}</span>`;
+  },
+
   renderStatusCell(a, state, meta, extra = '') {
     const until = state === 'quota_cooled' ? Number(a.quotaResetAt || 0)
       : state === 'rate_limited' ? Number(a.rateLimitedUntil || 0)
@@ -8326,7 +8485,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       : '';
     return `<div class="acct-state">
       <span class="acct-state-dot" style="background:${meta.band}"></span>
-      <span class="badge ${meta.cls}">${this.accountStateLabel(meta)}</span>
+      <span class="badge ${meta.cls}" title="${this.esc(I18n.t(`accounts.statusTip.${state}`))}">${this.accountStateLabel(meta)}</span>
       ${errors}${countdown}${extra}
     </div>`;
   },
@@ -8591,6 +8750,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const mask = document.getElementById('acct-drawer-mask');
     const drawer = document.getElementById('acct-drawer');
     if (!mask || !drawer) return;
+    // Remembered for this tab session: reopening a drawer must not make the
+    // operator re-expand 高级信息 every time.
+    try { this._advancedOpen = sessionStorage.getItem('acct_advanced_open') === '1'; } catch { this._advancedOpen = false; }
     this._drawerAccountId = id;
     this._drawerReturnFocus = document.activeElement;
     const summary = this._accountsById?.get(id) || { id };
@@ -8650,6 +8812,13 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     }
   },
 
+  // <details> toggle event: persist only the boolean, never re-render (a
+  // re-render here would close the element the user just opened).
+  onDrawerAdvancedToggle(open) {
+    this._advancedOpen = !!open;
+    try { sessionStorage.setItem('acct_advanced_open', open ? '1' : '0'); } catch { /* private mode */ }
+  },
+
   // Free GetUserStatus confirmation for a benched account: alive → back in
   // rotation, UNAUTHORIZED → the state stays, anything else → no change.
   async checkAccountToken(id) {
@@ -8698,6 +8867,10 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this._reauthAccountId = accountId || null;
     overlay.classList.remove('hidden');
     this.switchAddTab(tab);
+    // A fresh open starts at the method chooser. A re-auth binding or a
+    // prefilled email goes straight to the email form, because that is the
+    // only path those flows can finish on.
+    if (this._addTab === 'login') this.selectLoginMethod(email || accountId ? 'email' : null);
     const emailInput = document.getElementById('wl-email');
     if (emailInput && email) {
       emailInput.value = email;
@@ -8763,6 +8936,43 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   clearReauthBinding() {
     this._reauthAccountId = null;
     this.renderReauthBanner();
+    this.setAddModalTitle();
+  },
+
+  // The modal title is the verb the user clicked: 登录 / 批量导入 / 粘贴凭证 /
+  // 本机扫描, or 重新登录 <email> while a re-auth binding is active.
+  setAddModalTitle() {
+    const el = document.getElementById('add-modal-title');
+    if (!el) return;
+    const email = this._reauthAccountId
+      ? (this._accountsById?.get(this._reauthAccountId)?.email || '')
+      : '';
+    if (email) {
+      el.textContent = I18n.t('accounts.add.modalTitle.reauth', { email });
+      return;
+    }
+    el.textContent = I18n.t(`accounts.add.modalTitle.${this._addTab || 'login'}`);
+  },
+
+  // P1-9: step 1 is a method chooser, not four stacked sections. `null` returns
+  // to the chooser; 'oauth' / 'email' reveal exactly one form; 'token' reveals
+  // the three paste steps (also reachable from the OAuth flow).
+  selectLoginMethod(method) {
+    const valid = [null, 'oauth', 'email', 'token'];
+    const next = valid.includes(method) ? method : null;
+    this._loginMethod = next;
+    document.getElementById('wl-method-step')?.classList.toggle('hidden', next !== null);
+    document.getElementById('wl-panel-oauth')?.classList.toggle('hidden', next !== 'oauth' && next !== 'token');
+    document.getElementById('wl-panel-email')?.classList.toggle('hidden', next !== 'email');
+    for (const [key, id] of [['oauth', 'wl-method-oauth-btn'], ['email', 'wl-method-email-btn']]) {
+      const btn = document.getElementById(id);
+      if (!btn) continue;
+      const on = next === key || (key === 'oauth' && next === 'token');
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+    if (next === 'token') this.showOAuthTokenStep();
+    if (next === 'email') setTimeout(() => document.getElementById('wl-email')?.focus?.(), 30);
+    if (next === 'oauth') setTimeout(() => document.getElementById('oauth-google-btn')?.focus?.(), 30);
   },
 
   switchAddTab(tab) {
@@ -8779,6 +8989,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       }
       if (panel) panel.classList.toggle('active', t === next);
     }
+    this.setAddModalTitle();
     if (next === 'local') this.checkLocalImportAvailability();
   },
 
@@ -9380,12 +9591,6 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           </div>
         </div>
 
-        ${this.renderSpendPolicyCard(a)}
-
-        ${this.renderLedgerCard(cards?.ledger)}
-
-        ${this.renderRequestHistoryCard(this._requestsByAccount?.get(a.id), a.id)}
-
         <div class="detail-card" style="grid-column:1/-1">
           <div class="detail-card-head">
             <span class="dot" style="background:var(--success)"></span>
@@ -9397,6 +9602,19 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           </div>
           ${tierModels.length === 0 ? `<div style="color:var(--text-dim);font-size:12px;padding:10px 0">${I18n.t('toast.noTierModels')}</div>` : modelGroupsHtml}
         </div>
+
+        ${this.renderRequestHistoryCard(this._requestsByAccount?.get(a.id), a.id)}
+      </div>
+
+      <!-- Six technical cards, collapsed by default: the first screen answers
+           "what plan / how much left / which models / what happened lately". -->
+      <details class="detail-advanced" id="acct-advanced"${this._advancedOpen ? ' open' : ''} ontoggle="App.onDrawerAdvancedToggle(this.open)">
+        <summary>${I18n.t('account.detail.advanced')}<span class="detail-advanced-hint">${I18n.t('account.detail.advancedHint')}</span></summary>
+        <div class="detail-grid detail-grid-advanced">
+
+        ${this.renderSpendPolicyCard(a)}
+
+        ${this.renderLedgerCard(cards?.ledger)}
 
         ${this.renderModelStatusCard(cards?.modelStatus)}
 
@@ -9427,7 +9645,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         ${this.renderKeyCard(cards?.key, a.id)}
 
         ${this.renderPreflightCard(a, this._preflightByAccount?.get(a.id))}
-      </div>
+        </div>
+      </details>
     </div>`;
   },
 
@@ -9529,6 +9748,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       fail: Number(job.fail ?? run.fail),
       skipped: Number(job.skipped ?? run.skipped),
       excluded: Number(job.excluded ?? run.excluded ?? 0),
+      excludedAccounts: Array.isArray(job.excludedAccounts) ? job.excludedAccounts : (run.excludedAccounts || []),
       cancelRequested: !!job.cancelRequested,
       current: job.current || null,
       error: job.error || null,
@@ -9619,10 +9839,12 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const panel = document.getElementById('accounts-fleet-panel');
     const summary = document.getElementById('accounts-fleet-summary');
     const list = document.getElementById('accounts-fleet-list');
+    const exList = document.getElementById('accounts-fleet-excluded-list');
     if (!panel || !summary || !list) return;
     const run = this._fleetRun;
     if (!run) {
       panel.hidden = true;
+      this._setFleetReopenVisible(false);
       return;
     }
     const verb = run.op === 'probe' ? I18n.t('accounts.op.probeVerb') : I18n.t('accounts.op.refreshVerb');
@@ -9636,24 +9858,71 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       fail: Number(run.fail || 0),
       skipped: Number(run.skipped || 0),
     });
-    const bad = (run.items || []).filter((item) => !item.ok);
+    // Every attempted account is listed — not only the failures — so "did my
+    // account get checked?" is answerable without opening the drawer.
+    const items = run.items || [];
     const toggle = document.getElementById('accounts-fleet-toggle');
     if (toggle) {
-      toggle.hidden = bad.length === 0;
-      toggle.textContent = bad.length ? I18n.t('accounts.fleet.detailsCount', { count: bad.length }) : '';
-      if (bad.length === 0) toggle.setAttribute('aria-expanded', 'false');
+      toggle.hidden = items.length === 0;
+      toggle.textContent = items.length ? I18n.t('accounts.fleet.detailsCount', { count: items.length }) : '';
+      if (items.length === 0) toggle.setAttribute('aria-expanded', 'false');
     }
     // Dismissing a RUNNING job would abandon the only view of its progress.
     const dismiss = document.getElementById('accounts-fleet-dismiss');
     if (dismiss) dismiss.hidden = run.state === 'running';
-    list.innerHTML = bad.map((item) => {
+    list.innerHTML = items.map((item) => {
       const code = String(item.skipped ? (item.reason || item.error || '') : (item.error || ''));
-      const human = item.skipped ? this.skipReasonText(code) : this.translateError(code, 'error.genericAction');
+      const human = item.skipped ? this.skipReasonText(code) : (item.ok ? '' : this.translateError(code, 'error.genericAction'));
+      const resultKey = item.skipped ? 'accounts.fleet.resultSkipped' : (item.ok ? 'accounts.fleet.resultOk' : 'accounts.fleet.resultFail');
+      const tone = item.skipped ? 'skip' : (item.ok ? 'ok' : 'fail');
+      const when = Number(item.at || 0);
       const tip = code ? I18n.t('accounts.batch.techDetail', { code }) : '';
-      return `<li${tip ? ` title="${this.esc(tip)}"` : ''}>${this.esc(item.email || item.id)} — ${this.esc(human)}</li>`;
+      const at = when ? ` · ${this.fmtAgoShort(when)}` : '';
+      return `<li class="fleet-item"${tip ? ` title="${this.esc(tip)}"` : ''}>
+        <span class="fleet-item-result ${tone}">${this.esc(I18n.t(resultKey))}</span>
+        <span class="fleet-item-email">${this.esc(item.email || item.id)}</span>
+        ${human ? ` — ${this.esc(human)}` : ''}${this.esc(at)}
+      </li>`;
     }).join('');
-    if (bad.length === 0) list.hidden = true;
+    if (items.length === 0) list.hidden = true;
+    // Non-active accounts are excluded from a fleet run; say so instead of
+    // silently shrinking the denominator, and let the list be opened.
+    const excluded = Array.isArray(run.excludedAccounts) ? run.excludedAccounts : [];
+    const exBtn = document.getElementById('accounts-fleet-excluded');
+    if (exBtn) {
+      exBtn.hidden = excluded.length === 0;
+      exBtn.textContent = I18n.t('accounts.fleet.excludedToggle', { count: excluded.length });
+      exBtn.setAttribute('aria-expanded', String(!!exList && !exList.hidden));
+    }
+    if (exList) {
+      exList.innerHTML = excluded.map((item) => `<li class="fleet-item">
+        <span class="fleet-item-result skip">${this.esc(I18n.t('accounts.fleet.resultExcluded'))}</span>
+        <span class="fleet-item-email">${this.esc(item.email || item.id)}</span>
+      </li>`).join('');
+      if (excluded.length === 0) exList.hidden = true;
+    }
     panel.hidden = false;
+    this._setFleetReopenVisible(false);
+  },
+
+  _setFleetReopenVisible(visible) {
+    const btn = document.getElementById('accounts-fleet-reopen');
+    if (btn) btn.hidden = !visible;
+  },
+
+  toggleFleetExcluded() {
+    const list = document.getElementById('accounts-fleet-excluded-list');
+    const btn = document.getElementById('accounts-fleet-excluded');
+    if (!list || !btn) return;
+    list.hidden = !list.hidden;
+    btn.setAttribute('aria-expanded', String(!list.hidden));
+  },
+
+  // The panel stays reachable from the toolbar after it is dismissed: results
+  // are not lost just because the operator closed the box.
+  reopenFleetPanel() {
+    if (!this._fleetRun) return;
+    this.renderFleetPanel();
   },
 
   toggleFleetDetails() {
@@ -9667,7 +9936,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   dismissFleetPanel() {
     const panel = document.getElementById('accounts-fleet-panel');
     if (panel) panel.hidden = true;
-    this._fleetRun = null;
+    this._setFleetReopenVisible(!!this._fleetRun);
   },
 
   // Single-account probe/refresh stays instant, but its outcome belongs in the
@@ -9675,8 +9944,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   _noteSingleResult(op, id, result) {
     const email = this._accountsById?.get(id)?.email || id;
     const item = result?.skipped
-      ? { id, email, ok: false, skipped: true, reason: result.reason || '' }
-      : { id, email, ok: !!result?.ok, error: result?.ok ? undefined : (result?.error || '') };
+      ? { id, email, ok: false, skipped: true, reason: result.reason || '', at: Date.now() }
+      : { id, email, ok: !!result?.ok, error: result?.ok ? undefined : (result?.error || ''), at: Date.now() };
     this._fleetRun = {
       id: `single-${Date.now()}`,
       op,
@@ -9687,6 +9956,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       fail: item.ok || item.skipped ? 0 : 1,
       skipped: item.skipped ? 1 : 0,
       excluded: 0,
+      excludedAccounts: [],
       items: [item],
       itemCount: 1,
     };

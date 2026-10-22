@@ -107,10 +107,14 @@ function selectTargets(ids) {
       targets.push(byId.get(id));
       if (targets.length >= MAX_ITEMS) break;
     }
-    return { targets, excluded: 0, requested: ids.length };
+    return { targets, excluded: 0, excludedAccounts: [], requested: ids.length };
   }
   const targets = all.filter((account) => account.status === 'active');
-  return { targets, excluded: all.length - targets.length, requested: all.length };
+  const targetIds = new Set(targets.map((account) => account.id));
+  const excludedAccounts = all
+    .filter((account) => !targetIds.has(account.id))
+    .map((account) => ({ id: account.id, email: account.email || '' }));
+  return { targets, excluded: excludedAccounts.length, excludedAccounts, requested: all.length };
 }
 
 /** Public snapshot. `since` pages the item list so a poll stays O(delta). */
@@ -128,6 +132,7 @@ export function publicFleetJob(job, { since = 0 } = {}) {
     fail: job.failCount,
     skipped: job.skippedCount,
     excluded: job.excluded,
+    excludedAccounts: Array.isArray(job.excludedAccounts) ? job.excludedAccounts : [],
     cancelRequested: !!job.cancelRequested,
     current: job.current,
     error: job.error || null,
@@ -171,6 +176,7 @@ async function runFleetJob(job, ops) {
       error: entry.ok ? undefined : (entry.error || undefined),
       reason: entry.reason || undefined,
       tier: entry.tier || undefined,
+      at: Date.now(),
     });
     job.done = job.items.length;
     if (entry.skipped) job.skippedCount++;
@@ -188,7 +194,7 @@ async function runFleetJob(job, ops) {
  */
 export function startFleetJob({ op, ids = null, force = false, ops = null, now = Date.now() } = {}) {
   pruneJobs(now);
-  const { targets, excluded, requested } = selectTargets(op, ids);
+  const { targets, excluded, excludedAccounts, requested } = selectTargets(op, ids);
   const job = {
     id: `fleet-${randomUUID()}`,
     op,
@@ -198,6 +204,7 @@ export function startFleetJob({ op, ids = null, force = false, ops = null, now =
     total: targets.length,
     requested,
     excluded,
+    excludedAccounts,
     done: 0,
     okCount: 0,
     failCount: 0,

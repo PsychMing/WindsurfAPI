@@ -58,7 +58,7 @@ const self = {
 };
 
 before(() => {
-  for (const name of ['fmtAcu', 'fmtUsageDate', 'fmtUsageDateTime', 'usageReason', 'renderAcuOrgError']) {
+  for (const name of ['fmtAcu', 'fmtUsageDate', 'fmtUsageDateTime', 'usageReason', 'usageReasonTip', 'renderAcuOrgError']) {
     self[name] = fn(name);
   }
   self.renderAcuOrg = fn('renderAcuOrg');
@@ -129,6 +129,12 @@ describe('renderAcuOrg — ACU limit / used / remaining', () => {
     assert.match(html, />7\.5</, 'derived remaining must be on screen');
     assert.match(html, />2\.5</, 'latest day amount must be on screen');
     assert.match(html, /i18n:usage\.derivedTip/, 'remaining must disclose that it is derived');
+    // P1-8: the page answers "what is left" before "what is the cap".
+    const order = ['remaining', 'used', 'limit', 'today'].map((k) => html.indexOf(`i18n:usage.cards.${k}`));
+    assert.ok(order.every((i) => i >= 0));
+    for (let i = 1; i < order.length; i++) {
+      assert.ok(order[i] > order[i - 1], `usage.cards.${['remaining', 'used', 'limit', 'today'][i]} must follow the previous card`);
+    }
   });
 
   it('renders a null limit as unlimited and an absent total as an em dash, never 0', () => {
