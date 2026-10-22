@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { addAccountByKey, removeAccount } from '../src/auth.js';
 import { cacheClear, cacheKey, cacheSet, cacheStats } from '../src/cache.js';
 import { handleChatCompletions, __setConnectDeps, __resetConnectDeps } from '../src/handlers/chat.js';
+import { stopLanguageServerAndWait } from '../src/langserver.js';
 
 const createdAccountIds = [];
 const originalResponseCacheEnabled = process.env.RESPONSE_CACHE_ENABLED;
@@ -42,7 +43,10 @@ function parseChatFrames(raw) {
     });
 }
 
-afterEach(() => {
+afterEach(async () => {
+  // The Cascade test starts a real LS; a surviving child keeps the test runner
+  // alive on hosts that have a language_server binary installed (HMC).
+  await stopLanguageServerAndWait({ perProcessTimeoutMs: 500 }).catch(() => {});
   cacheClear();
   __resetConnectDeps();
   while (createdAccountIds.length) {
