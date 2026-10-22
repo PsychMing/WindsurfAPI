@@ -85,10 +85,10 @@
 - 合并冲突 1 处：`docs/ENV-SWITCHES.md` 的开关计数行（两条分支各追加一条）。按同一脚本在合并树上重测，
   取 **168**（base `432aee3` 实测 164；新增 `WINDSURFAPI_CASCADE_TURN`、
   `DEVIN_CONNECT_PROSE_INTENT_DETECT`、`WINDSURFAPI_HISTORY_BUDGET_TURNS/BYTES`）。
-- Windows `npm run test:release`：**@@TESTRELEASE@@**。
+- Windows `npm run test:release`：**6,083 pass / 0 fail / 94 skip（502 文件，6,177 tests）**，exit 0。
 - Windows `GATE_INERT_SKIP_PATHS="test/wire-byte-identity.test.js;test/devin-connect-relogin-live.test.js;test/mutate-verify-harness.test.js;test/self-update-untracked-safety.test.js" npm run gate`：
-  **@@GATE@@**。
-- `npm run secret-scan`：@@SECRETSCAN@@。`git diff --check`：@@DIFFCHECK@@。
+  **PASS exit=0** —— 全部子门绿。
+- `npm run secret-scan`：exit 0。`git diff --check`：clean。
 - 增量门**不执行** mutation（按设计）；本版未跑 Linux 全量门、mutation sweep 与 wire 基线比较。
 
 ## 尚未验证
