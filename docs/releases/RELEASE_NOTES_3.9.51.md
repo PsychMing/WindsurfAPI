@@ -27,8 +27,10 @@ Owner 遇到的“正确密码也报 `ERR_INVALID_CREDENTIALS`”根因是 **3.9
 
 ## 工程与门禁
 
-- 合入 2 条分支（均基于 `ec4e599`）：`fix/login-flows-wave3` `821b804`、`feat/acu-usage-cards` `26b50a4`。
-- Windows/Linux/gate/mutation/wire：见发布提交与 CI。
+- 合入 2 条分支（均基于 `ec4e599`）：`fix/login-flows-wave3` `821b804`、`feat/acu-usage-cards` `26b50a4`；合并后补一条“非 auth1 探测方法直接走 legacy”的路由修正，并更新两条测试到新顺序。
+- Windows `npm run test:release`：**5,910 pass / 0 fail / 82 skip（487 文件，5,992 tests）**，exit 0。
+- Windows `npm run gate`：**PASS exit=0** —— 全部子门绿。
+- Linux/mutation/wire：见发布提交与 CI。
 
 ## 尚未验证
 
