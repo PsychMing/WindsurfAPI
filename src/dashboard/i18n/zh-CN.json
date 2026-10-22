@@ -26,7 +26,7 @@
     "logs": "运行日志",
     "experimental": "实验性功能",
     "credits": "致谢",
-    "usage": "ACU 用量"
+    "usage": "用量"
   },
   "pageTitle": {
     "main": "WindsurfAPI bydwgx1337 控制台"
@@ -43,28 +43,29 @@
     "logs": "运行日志",
     "experimental": "实验性功能",
     "credits": "致谢",
-    "usage": "ACU 用量"
+    "usage": "用量"
   },
   "pageSubtitle": {
     "overview": "系统运行状态与关键指标概览",
     "windsurf-login": "支持 Google / GitHub / 邮箱密码 三种方式登录 Windsurf 获取 API Key",
-    "accounts": "维护账号池，探测各账号订阅层级与可用模型",
+    "accounts": "维护账号池，检查各账号的套餐层级与可用模型",
     "models": "配置模型访问策略，限制可用模型范围",
     "proxy": "全局或按账号配置出口代理，独立代理将启动独立的语言服务器实例",
     "logs": "通过 SSE 实时流式接收服务端日志",
     "stats": "请求量、成功率、延迟分位数与账号/模型维度统计",
-    "usage": "按组织读取 ACU 限额、周期用量、每日消耗与产品拆分；同一组织下的多个账号只显示一次。",
+    "usage": "ACU 是 Devin 的用量单位；这里先回答本周期还剩多少，再看已用、每日与按产品的消耗。同一工作区的多个账号只显示一次。",
     "bans": "追踪错误账号和异常状态",
     "settings": "跨浏览器共享的偏好与安全阈值，可自定义",
     "experimental": "尚未稳定的优化项；如果发现异常可以随时关闭",
     "credits": "感谢以下朋友为项目提交 PR / 审计代码 / 修复问题"
   },
   "usage": {
-    "title": "ACU 与用量",
-    "subtitle": "按组织读取 ACU 限额、周期用量、每日消耗与产品拆分；同一组织下的多个账号只显示一次。",
-    "org": "组织",
-    "orgOption": "组织 {{index}} · {{plan}} · {{count}} 个账号",
-    "orgOptionUnknownPlan": "组织 {{index}} · {{count}} 个账号",
+    "title": "用量",
+    "subtitle": "ACU 是 Devin 的用量单位；这里先回答本周期还剩多少，再看已用、每日与按产品的消耗。同一工作区的多个账号只显示一次。",
+    "acuDefinition": "ACU 是 Devin 的用量单位，具体换算由服务决定，这里不做估算。",
+    "org": "工作区",
+    "orgOption": "工作区 {{index}} · {{plan}} · {{count}} 个账号",
+    "orgOptionUnknownPlan": "工作区 {{index}} · {{count}} 个账号",
     "singleOrg": "{{plan}} · {{count}} 个账号",
     "accounts": "{{count}} 个账号",
     "accountsOne": "1 个账号",
@@ -73,22 +74,23 @@
     "stale": "过期",
     "partial": "部分数据",
     "truncated": "仅扫描了前 {{count}} 个账号，仍有更多账号。",
-    "unresolved": "{{count}} 个账号无法解析到组织。",
+    "unresolved": "{{count}} 个账号无法归入工作区。",
     "cards": {
       "limit": "ACU 限额",
       "used": "本周期已用",
-      "remaining": "剩余",
+      "remaining": "本周期剩余",
       "today": "最近一天"
     },
     "limitSub": "配置上限 · ∞ 表示不限",
     "usedSub": "当前账期已消耗的 ACU",
-    "remainingSub": "派生值：限额 − 已用",
+    "remainingSub": "本周期还能用多少（限额 − 已用）",
     "todaySub": "最近一条每日记录",
     "unlimited": "∞",
     "unlimitedLabel": "不限",
     "unknown": "—",
     "derivedTip": "由配置的 ACU 限额减去本周期用量算出来，不是服务直接上报的余额。",
     "limitTip": "服务返回的 ACU 上限。返回 null 表示不限，绝不表示 0。",
+    "rawTip": "技术详情：{{code}}",
     "maxSession": "单会话上限",
     "cycleTitle": "账期",
     "cycleStart": "账期开始",
@@ -150,7 +152,8 @@
       "no_account": "没有带会话令牌的 Devin 账号。",
       "bad_org": "解析出的组织 ID 无效。",
       "redirect_blocked": "Windsurf 服务重定向被阻止。",
-      "network_error": "网络错误。"
+      "network_error": "网络错误。",
+      "unknown": "暂时读不到用量，请稍后重试。"
     }
   },
   "button": {
@@ -187,8 +190,8 @@
     "reset": "重置",
     "clearPool": "清空对话池",
     "refresh": "刷新",
-    "probe": "探测",
-    "probeTitle": "探测能力",
+    "probe": "检查",
+    "probeTitle": "检查能力",
     "enable": "启用",
     "disable": "停用",
     "copy": "复制",
@@ -223,8 +226,8 @@
     "selectAll": "全选",
     "enable": "启用",
     "disable": "禁用",
-    "refresh": "刷新额度",
-    "probe": "探测",
+    "refresh": "刷新余额",
+    "probe": "检查",
     "delete": "删除",
     "clear": "清除选择",
     "confirmDeleteTitle": "删除 {{count}} 个账号",
@@ -286,7 +289,7 @@
     "workingDirDirtyHint": "以下文件已被修改但未提交：<br>{{files}}<br>继续将用远程版本覆盖这些修改。",
     "notFetched": "尚未获取",
     "fetchFailed": "获取失败",
-    "clickToEditTier": "点击手动修改层级（探测异常时用）",
+    "clickToEditTier": "点击手动修改层级（检查异常时用）",
     "unreleasedHint": "远端另有 {{count}} 个未发布提交；本次 OTA 只安装最新 release {{tag}}。",
     "updateDiverged": "更新已阻止：Git 历史已分叉",
     "updateDivergedHint": "当前 {{current}} 与发布目标 {{target}} 不在同一条历史上，请先手动处理 Git 分支，再使用 OTA。",
@@ -358,12 +361,12 @@
       "desc": "语言服务器实例状态"
     },
     "oauthLogin": {
-      "title": "快捷登录（推荐）",
-      "desc": "点按钮打开 Windsurf 官方登录页 用 Google/GitHub 登录后 复制返回的 Token 即可添加账号"
+      "title": "Google / GitHub 登录",
+      "desc": "在 Windsurf 官方页面完成登录，回到这里粘贴 Token。"
     },
     "emailLogin": {
       "title": "邮箱登录",
-      "desc": "先检测账号登录方式：有密码的账号用密码登录，OAuth/邮箱验证码账号用验证码登录"
+      "desc": "有密码的账号用密码登录；没有密码的账号改用邮箱验证码。"
     },
     "loginProxy": {
       "title": "登录代理（可选）",
@@ -390,7 +393,7 @@
     },
     "accountList": {
       "title": "账号列表",
-      "desc": "点击探测按钮可单独更新某个账号的能力信息"
+      "desc": "点检查按钮可单独更新某个账号的能力信息"
     },
     "modelPolicy": {
       "title": "访问策略",
@@ -729,7 +732,7 @@
       "loginHistory": "暂无登录记录",
       "accounts": "暂无账号，请先添加",
       "accountNotFound": "账号不存在",
-      "probeFailed": "探测失败",
+      "probeFailed": "检查失败",
       "noRequestData": "暂无请求数据",
       "noAccountRequestData": "暂无账号级请求数据",
       "noData": "暂无数据",
@@ -1058,15 +1061,15 @@
     "openWindsurfToken": "打开 windsurf.com 拿 Token",
     "tokenPlaceholder": "粘贴 Auth Token...",
     "urlOrTokenPlaceholder": "粘贴回调 URL 或 Auth Token...",
-    "fetchToken": "从 windsurf.com 获取 Token",
+    "openSignin": "打开 Windsurf 登录页",
     "pasteFromClipboard": "从剪贴板粘贴",
-    "step1": "在新标签页完成登录（Google / GitHub / 邮箱验证码均可）。",
+    "step1": "在新标签页完成登录（Google、GitHub 或邮箱验证码均可）。",
     "step2": "登录完成后页面会显示 Token；点“复制”或直接全选地址栏。",
-    "step3": "回到这里点“从剪贴板粘贴”即可导入，无需修改任何配置。",
+    "step3": "回到这里，粘贴并添加；Token 会立即写入账号池。",
     "tokenImported": "Token 已导入：{{email}}",
     "addWithToken": "用 Token 添加",
-    "step2Title": "② 粘贴 Windsurf 返回的 Token",
-    "step2Desc": "在新标签完成登录后 页面会显示一串 Token 复制粘到这里点添加",
+    "step2Title": "粘贴 Windsurf 返回的 Token",
+    "step2Desc": "登录完成后，Windsurf 会显示一串 Token。复制它，或直接复制整条回调地址。",
     "openManually": "登录页没弹出来？点这里手动打开",
     "status": {
       "loading": "正在通过 {{provider}} 登录...",
@@ -1154,13 +1157,18 @@
       "failed": "导出失败"
     },
     "add": {
-      "button": "添加账号",
-      "groupLabel": "登录、导入或添加账号",
+      "groupLabel": "登录、导入或粘贴凭证",
       "login": "登录",
       "import": "导入",
-      "paste": "添加",
-      "title": "添加账号",
-      "desc": "登录、粘贴凭证、批量导入或从本机导入",
+      "paste": "粘贴凭证",
+      "modalTitle": {
+        "login": "登录账号",
+        "paste": "粘贴凭证",
+        "import": "批量导入",
+        "local": "从本机导入",
+        "reauth": "重新登录 {{email}}"
+      },
+      "desc": "选择一种方式添加账号：登录、粘贴凭证、批量导入或从本机扫描",
       "tabsLabel": "添加账号方式",
       "tab": {
         "login": "登录",
@@ -1172,23 +1180,33 @@
       "localDesc": "读取这台电脑上 Windsurf 客户端已登录的账号（只允许本机访问）",
       "reloginHint": "已填入该账号邮箱；登录成功后会新增或复用该账号。"
     },
+    "login": {
+      "methodsLabel": "选择添加账号的方式",
+      "pasteToken": "粘贴 Token",
+      "back": "换一种方式",
+      "advanced": "高级选项（代理 / 登录历史 / 存储密码）"
+    },
     "toolbar": {
       "fleet": "账号池操作",
       "view": "视图选项",
-      "probeAll": "全部探测",
+      "probeAll": "全部检查",
       "refreshAll": "刷新全部余额"
     },
     "filter": {
       "searchPlaceholder": "搜索邮箱 / ID / 标签",
       "allStatus": "全部状态",
+      "allStatusTip": "不按状态筛选，显示全部账号。",
       "statusTitle": "按状态筛选",
-      "flagged": "仅异常",
+      "attention": "需处理",
+      "attentionTip": "和 KPI 的“需处理”同一个口径：除正常和已停用之外的账号。",
+      "moreStatus": "更多状态",
+      "fewerStatus": "收起细分状态",
       "count": "显示 {{shown}} / 共 {{total}}",
       "clear": "清除筛选"
     },
     "status": {
       "active": "正常",
-      "disabled": "停用",
+      "disabled": "已停用",
       "banned": "已封禁",
       "reauth": "需要重新授权",
       "error": "异常",
@@ -1200,6 +1218,18 @@
       "resumesIn": "重置于 {{time}}",
       "errorCount": "错误数",
       "blockedCount": "已屏蔽模型"
+    },
+    "statusTip": {
+      "active": "能接请求：未停用、未限流、配额未耗尽。",
+      "disabled": "你手动停用的账号。启用后即可重新接请求。",
+      "banned": "Windsurf 封禁了这个账号；只能删除或换号。",
+      "reauth": "登录凭证已失效；重新登录会替换同一行的凭证。",
+      "error": "最近一次请求或检查失败；重置错误后重新检查。",
+      "quota_cooled": "配额用尽；到达重置时间后自动恢复。",
+      "rate_limited": "被服务限流；限流窗口结束后自动恢复。",
+      "capacity": "当前模型容量不足；换模型或稍后重试。",
+      "near_limit": "每分钟请求用量已接近上限；降速或等待窗口滚动。",
+      "watch": "有历史错误计数，但仍可接请求。"
     },
     "kpi": {
       "total": "账号总数",
@@ -1213,7 +1243,7 @@
       "totalTip": "账号池里的全部账号，等于“正常 + 已停用 + 需处理”。",
       "activeTip": "现在能接请求的账号。限流、配额耗尽、接近上限的账号不算正常。",
       "disabledTip": "你手动停用的账号。封禁、需重新授权、异常不在这一格，它们在“需处理”里。",
-      "attentionTip": "需要你处理的账号：封禁、需重新授权、异常、配额耗尽、限流、模型繁忙、接近上限、有错误。和“仅异常”筛选是同一个数。",
+      "attentionTip": "需要你处理的账号：封禁、需重新授权、异常、配额耗尽、限流、模型繁忙、接近上限、有错误。和“需处理”筛选是同一个数。",
       "balanceTip": "所有账号的按量计费余额之和。同一个团队共享的余额只计一次；识别不到团队的账号按各自余额相加。"
     },
     "subtitle": "共 {{total}} · 正常 {{active}} · 需处理 {{attention}} · 余额 {{balance}}",
@@ -1236,11 +1266,16 @@
     "row": {
       "menu": "账号操作",
       "details": "查看详情",
-      "probe": "探测层级 / 模型",
+      "probe": "检查层级与模型",
       "refreshBalance": "刷新余额",
       "blockedModels": "屏蔽模型",
       "relogin": "重新登录",
-      "reauth": "重新登录 / 重新导入"
+      "reauth": "重新登录 / 重新导入",
+      "lastCheck": "上次检查 {{ago}}",
+      "lastCheckResult": "上次检查 {{ago}} · {{result}}",
+      "neverChecked": "尚未检查",
+      "skipCheck": "未检查：{{reason}}",
+      "retryCheck": "重试"
     },
     "reauth": {
       "bannerTitle": "需要重新授权",
@@ -1291,8 +1326,14 @@
       "stateDone": "已完成",
       "stateCancelled": "已取消",
       "details": "查看明细",
-      "detailsCount": "查看 {{count}} 项未完成",
-      "dismiss": "关闭"
+      "detailsCount": "查看明细（{{count}} 项）",
+      "dismiss": "关闭",
+      "reopen": "本次结果",
+      "excludedToggle": "已排除 {{count}} 个非活跃账号",
+      "resultOk": "成功",
+      "resultFail": "失败",
+      "resultSkipped": "跳过",
+      "resultExcluded": "未参与"
     },
     "empty": {
       "poolTitle": "还没有账号",
@@ -1338,12 +1379,12 @@
       }
     },
     "probe": {
-      "doing": "探测中，约需 10-30 秒...",
-      "complete": "探测完成：{{result}}",
-      "allDoing": "全部探测中，依账号数量约需 1-3 分钟...",
-      "allComplete": "探测完成：{{summary}}",
-      "probeAllComplete": "探测完成：{{summary}}",
-      "probeComplete": "探测完成：{{tier}}"
+      "doing": "检查中，约需 10-30 秒...",
+      "complete": "检查完成：{{result}}",
+      "allDoing": "正在检查全部账号，依数量约需 1-3 分钟...",
+      "allComplete": "检查完成：{{summary}}",
+      "probeAllComplete": "检查完成：{{summary}}",
+      "probeComplete": "检查完成：{{tier}}"
     },
     "credits": {
       "refreshTitle": "刷新余额",
@@ -1358,6 +1399,8 @@
     },
     "detail": {
       "toggle": "展开/收起详情",
+      "advanced": "高级信息",
+      "advancedHint": "账本、模型授权、运行状态、密钥与容量预检",
       "ago": "前",
       "resetAt": "重置于",
       "creditPerCall": "每次调用扣费",
@@ -1394,7 +1437,7 @@
         "errors": "错误数",
         "rpm": "RPM 用量",
         "lastUsed": "最后使用",
-        "lastProbed": "最后探测",
+        "lastProbed": "最后检查",
         "creditsFetched": "额度刷新",
         "accountId": "账号 ID",
         "apiKey": "API Key",
@@ -1465,7 +1508,7 @@
         "tierListed": "层级列表",
         "attention": "需要关注",
         "allEntitled": "全部 {{total}} 个模型均已授权。",
-        "noneProbed": "尚无授权快照——运行一次探测以填充此卡片。",
+        "noneProbed": "尚无授权快照——运行一次检查以填充此卡片。",
         "source": "来源：最近一次检查",
         "sourceTech": "技术详情：GetUserStatus 白名单 + 能力探测",
         "probedAt": "快照",
@@ -1482,7 +1525,7 @@
         "expires": "过期",
         "notObservable": "不可观测",
         "expiryNote": "服务端没有给会话密钥设过期字段，密钥失效只会表现为检查失败。重新登录会签发新密钥。",
-        "lastProbe": "最近探测",
+        "lastProbe": "最近检查",
         "autoRefresh": "自动刷新",
         "autoRefreshOn": "已存刷新令牌",
         "autoRefreshOff": "无刷新令牌",
@@ -1611,13 +1654,13 @@
     "enterKeyOrToken": "请输入 Key 或 Token",
     "addFailed": "添加失败",
     "probe": {
-      "doing": "探测中，约需 10-30 秒...",
-      "probeComplete": "探测完成：{{tier}}",
-      "allDoing": "探测所有账号中，约需 1-3 分钟（视数量而定）...",
-      "probeAllComplete": "探测完成：{{summary}}"
+      "doing": "检查中，约需 10-30 秒...",
+      "probeComplete": "检查完成：{{tier}}",
+      "allDoing": "正在检查全部账号，约需 1-3 分钟（视数量而定）...",
+      "probeAllComplete": "检查完成：{{summary}}"
     },
-    "probeComplete": "探测完成：{{tier}}",
-    "probeAllComplete": "探测完成：{{summary}}",
+    "probeComplete": "检查完成：{{tier}}",
+    "probeAllComplete": "检查完成：{{summary}}",
     "credits": {
       "refreshed": "余额已刷新",
       "refreshFailed": "刷新余额失败",
@@ -1668,7 +1711,7 @@
     "unreachableHint": "当前无法调用：池里没有账号有它的权限，或这个名字在当前后端上映射不到任何 selector。仍可点击，方便你把它加入或移出列表。",
     "freeBadge": "免费",
     "paidBadge": "计费",
-    "costUnknownHint": "费用未知：还没有账号上报过上游费率表，所以既不能确认免费、也不能确认计费。在某个账号上刷新额度即可填上这张表。",
+    "costUnknownHint": "费用未知：还没有账号上报过服务端费率表，所以既不能确认免费、也不能确认计费。在某个账号上刷新余额即可填上这张表。",
     "dailyExhaustedBadge": "额度 · 日额度耗尽",
     "weeklyDroughtBadge": "额度 · 周额度紧张",
     "notInCatalogBadge": "不在目录",
@@ -1709,7 +1752,7 @@
     "updateFailed": "更新失败",
     "apiError": "API 错误",
     "loadFailed": "加载失败",
-    "probeFailed": "探测失败",
+    "probeFailed": "检查失败",
     "accountNotFound": "账号未找到",
     "openFailed": "打开失败",
     "saveFailed": "保存失败",

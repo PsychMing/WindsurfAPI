@@ -183,6 +183,15 @@ describe('fleet job payload (AC-FLEET-2)', () => {
     await job.promise;
     assert.equal(job.total, 2);
     assert.equal(job.excluded, 2, 'disabled/banned accounts are named, not silently dropped');
+    // The UI lists the excluded accounts (P1-7), so the count must come with names.
+    assert.deepEqual(
+      job.excludedAccounts.map((a) => a.email).sort(),
+      ['target-banned@fixture.invalid', 'target-off@fixture.invalid'],
+    );
+    const snapshot = publicFleetJob(job);
+    assert.equal(snapshot.excludedAccounts.length, 2);
+    assert.ok(snapshot.items.every((item) => Number.isFinite(item.at) && item.at > 0),
+      'every attempt carries the time it ran');
   });
 });
 
