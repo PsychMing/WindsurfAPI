@@ -16,7 +16,7 @@ import { isExperimentalEnabled, getDroughtThresholdPercent, getIpLockThreshold, 
 import { readFileSync, existsSync, unlinkSync, readdirSync } from 'fs';
 import { config, log } from './config.js';
 import { safeAccountRef } from './log-safety.js';
-import { renameSyncWithRetry, writeFileSyncDurable } from './fs-atomic.js';
+import { renameSyncWithRetry, writeFileSyncDurable, restrictFileToOwnerSync } from './fs-atomic.js';
 import { getEffectiveProxy } from './dashboard/proxy-config.js';
 import {
   getTierModels,
@@ -841,6 +841,10 @@ function saveAccounts() {
     // idToken) in cleartext — must not be world-readable on a shared host.
     writeFileSyncDurable(tempFile, JSON.stringify(_serializeAccounts(), null, 2), { mode: 0o600 });
     renameSyncWithRetry(tempFile, ACCOUNTS_FILE);
+    // Windows ignores mode 0o600 and the renamed file inherits the directory
+    // ACL (Users/Authenticated Users). Drop the inheritance best-effort; the
+    // helper warns on failure and never throws past this point.
+    restrictFileToOwnerSync(ACCOUNTS_FILE, { warn: (m) => log.warn(m) });
     // Only a persist that got this far captures the lazy state the dirty flag was
     // tracking. A throw from the directory fsync above leaves the pool dirty on
     // purpose even though the rename published (fs-atomic marks that error
@@ -875,6 +879,7 @@ export function saveAccountsSync() {
     // idToken) in cleartext — must not be world-readable on a shared host.
     writeFileSyncDurable(tempFile, JSON.stringify(_serializeAccounts(), null, 2), { mode: 0o600 });
     renameSyncWithRetry(tempFile, ACCOUNTS_FILE);
+    restrictFileToOwnerSync(ACCOUNTS_FILE, { warn: (m) => log.warn(m) });
     // Same rule as saveAccounts: the outcome of the write owns the flag, and a
     // throw after a published rename (renamePublished) still counts as "the
     // directory entry is not proven".
@@ -924,6 +929,7 @@ export function migrateReplicaAccountsTo({ sharedDir, accountsFile, logger = log
   try {
     writeFileSyncDurable(tempFile, JSON.stringify([...merged.values()], null, 2), { mode: 0o600 });
     renameSyncWithRetry(tempFile, accountsFile);
+    restrictFileToOwnerSync(accountsFile, { warn: (m) => logger.warn?.(m) });
     logger.warn?.(`Migrated ${merged.size} account(s) from ${scanned} replica-* subdir(s) into ${accountsFile} (issue #67)`);
     return { migrated: merged.size, scanned, skipped: false };
   } catch (e) {

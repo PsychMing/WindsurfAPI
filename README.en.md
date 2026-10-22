@@ -37,6 +37,13 @@ Turns [Windsurf](https://windsurf.com) (formerly Codeium, now Devin Desktop)'s A
 - `POST /v1/messages` — **Anthropic Compatible** for direct connection with Claude Code / Cline / Cursor.
 - `POST /v1beta/models/*` — **Gemini Compatible** for direct Gemini SDK use.
 
+> **Auth transport**: prefer the `Authorization: Bearer <API_KEY>` header, or
+> Gemini's `x-goog-api-key` header. `?key=` is accepted for Gemini-native
+> clients, but it puts the key in the URL, where reverse proxies, access logs,
+> browser history and packet captures can retain it. The bundled `nginx.conf`
+> logs only `$uri` (the query string is dropped); proxies you add are yours to
+> configure.
+
 **100+ Models**: Claude 4.5/4.6/Opus 4.7/5 · GPT-5/5.1/5.2/5.4/5.5/5.6-Luna series · Gemini 2.5/3.0/3.1 · Grok · Qwen · Kimi K2.x · GLM 4.7/5/5.1/5.2 · MiniMax · SWE 1.5/1.6/1.7/2 · Arena, etc. Zero npm dependencies, pure Node.js.
 
 <sub>Keywords: Windsurf reverse proxy · Devin API · Claude Code proxy · Cursor mirror · free Claude/GPT/Gemini · Codeium API · OpenAI-compatible endpoint · self-hosted LLM gateway</sub>
@@ -673,7 +680,7 @@ MIT License. See [LICENSE](LICENSE).
 
 ## Release and Secret Boundary
 
-Release automation may publish Docker images and GitHub Releases. Keep tokens, API keys, cookies, and provider credentials out of issues, pull requests, logs, and committed config. If a report needs authentication details, share only redacted metadata and reproduction steps.
+Release automation may publish Docker images and GitHub Releases. Every release attaches a `SHA256SUMS` manifest covering the four published assets (Windows exe/zip, macOS arm64 binary/zip); verify with `sha256sum -c SHA256SUMS` (or `shasum -a 256 -c SHA256SUMS` on macOS) before running a download. Keep tokens, API keys, cookies, and provider credentials out of issues, pull requests, logs, and committed config. If a report needs authentication details, share only redacted metadata and reproduction steps.
 
 ---
 
