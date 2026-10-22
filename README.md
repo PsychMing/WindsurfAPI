@@ -371,6 +371,10 @@ curl http://localhost:3003/v1/messages \
 Gemini 原生客户端不发 `Authorization: Bearer`，它用 `x-goog-api-key` 头或 `?key=`
 查询参数 —— 两种都收，所以官方 SDK 不用改代码就能连。
 
+> **优先用请求头**：`x-goog-api-key`（或 `Authorization: Bearer`）不会把密钥写进 URL。
+> `?key=` 仍可用，但完整 URL 会进反向代理日志、浏览器历史和抓包；自带 nginx 的访问日志
+> 已只记 `$uri`（丢弃全部 query），其它代理和上游日志不归本项目控制。
+
 ```python
 from google import genai
 client = genai.Client(
@@ -756,7 +760,11 @@ MIT License. See [LICENSE](LICENSE).
 
 ## 发布与密钥边界
 
-发布流程会自动推 Docker 镜像和 GitHub Release。**别把 token、API key、cookie、上游账号凭据
+发布流程会自动推 Docker 镜像和 GitHub Release，并为四个发布资产（Windows exe/zip、macOS
+arm64 二进制/zip）附上 `SHA256SUMS`。下载后先校验再运行：
+`sha256sum -c SHA256SUMS`（macOS 用 `shasum -a 256 -c SHA256SUMS`）。
+
+**别把 token、API key、cookie、上游账号凭据
 写进 issue、PR、日志或提交的配置文件里。** 如果报告问题必须带上鉴权信息，只贴脱敏后的元数据
 和复现步骤。
 

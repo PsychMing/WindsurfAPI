@@ -79,6 +79,34 @@ describe('release workflow', () => {
     }
   });
 
+  it('publishes SHA256SUMS covering exactly the four release assets', () => {
+    const release = jobBlock('release');
+    // SEC-04: a tampered download must be distinguishable from a real one.
+    assert.match(
+      release,
+      /sha256sum \\\n\s+dist-windows\/windsurfapi\.exe \\\n\s+dist-windows\/windsurfapi-windows\.zip \\\n\s+dist-macos\/windsurfapi-macos-arm64 \\\n\s+windsurfapi-macos\.zip > SHA256SUMS/,
+      'the manifest must hash exactly the four published files',
+    );
+    assert.match(release, /files: \|[\s\S]*\n\s+SHA256SUMS\s*$/,
+      'SHA256SUMS must be attached to the GitHub Release');
+    assert.ok(
+      release.indexOf('Generate SHA256SUMS') < release.indexOf('softprops/action-gh-release'),
+      'the manifest has to exist before the upload step',
+    );
+  });
+
+  it('pins build-time esbuild instead of floating the latest version', () => {
+    const releaseInstalls = workflow.split('\n').filter((line) => /npm i(?:nstall)? -g\b/.test(line));
+    assert.equal(releaseInstalls.length, 3, 'release builds install pkg + esbuild on three runners');
+    for (const [name, yaml] of [['release.yml', workflow], ['ci.yml', ciWorkflow]]) {
+      for (const line of yaml.split('\n').filter((l) => /npm i(?:nstall)? -g\b/.test(l))) {
+        assert.doesNotMatch(line, /(?:^|\s)esbuild(?:\s|$)/,
+          `${name} installs an unpinned esbuild: ${line.trim()}`);
+        assert.match(line, /esbuild@\d+\.\d+\.\d+/, `${name} must pin esbuild to an exact version: ${line.trim()}`);
+      }
+    }
+  });
+
   it('accepts only the exact v-prefixed package version as a release tag', () => {
     const run = (tag) => spawnSync(process.execPath, ['scripts/verify-release-version.mjs'], {
       cwd: process.cwd(),

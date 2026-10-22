@@ -64,6 +64,15 @@ if (-not (Test-Path $envPath)) {
     "API_KEY=$apiKey", "DASHBOARD_PASSWORD=$pw"
   )
   [System.IO.File]::WriteAllText($envPath, ($lines -join "`r`n") + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+  # .env 存 API_KEY + DASHBOARD_PASSWORD。Windows 默认继承目录 ACL,收紧为仅
+  # 当前用户;失败只警告(best-effort,不能阻止托盘启动)。
+  $aclUser = if ($env:USERDOMAIN) { "$env:USERDOMAIN\$env:USERNAME" } else { $env:USERNAME }
+  try {
+    & icacls $envPath /inheritance:r /grant:r "${aclUser}:(F)" *> $null
+    if ($LASTEXITCODE -ne 0) { Write-Warning "icacls could not restrict .env (exit $LASTEXITCODE)" }
+  } catch {
+    Write-Warning "icacls could not restrict .env: $($_.Exception.Message)"
+  }
   $genMsg = "已生成并写入 .env:`n`n面板密码 (DASHBOARD_PASSWORD):`n  $pw`n`nAPI Key (API_KEY):`n  $apiKey`n`n请截图妥善保存。"
 }
 

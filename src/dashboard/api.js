@@ -313,7 +313,16 @@ function checkAuth(req) {
   // (localhost only) also honours the runtime override.
   const pw = req.headers['x-dashboard-password'] || '';
   const storedDashboardPw = getEffectiveDashboardPasswordStored();
-  if (storedDashboardPw) return verifyPassword(pw, storedDashboardPw);
+  if (storedDashboardPw) {
+    // SEC-01 (audit 2026-10-22): an empty/blank header cannot match any
+    // configured password, yet it used to reach verifyPassword → scryptSync
+    // (N=2^14, ~20 ms of blocked event loop). Unlike a wrong NON-empty guess it
+    // also never advanced the brute-force lockout, so unauthenticated callers
+    // had a free CPU DoS. Reject before hashing; real guesses keep the exact
+    // same verifyPassword path.
+    if (!String(pw ?? '').trim()) return false;
+    return verifyPassword(pw, storedDashboardPw);
+  }
   // audit #1: the localhost API-key fallback (and the no-auth opt-in) let a
   // caller present the shared chat API key as the dashboard password. Gating on
   // isLocalBindHost() alone is unsafe: behind a same-host reverse proxy
@@ -379,7 +388,12 @@ function confirmReauth(req, body) {
     || req?.headers?.['x-dashboard-password-confirm']
     || '';
   const storedDashboardPw = getEffectiveDashboardPasswordStored();
-  if (storedDashboardPw) return verifyPassword(proof, storedDashboardPw);
+  if (storedDashboardPw) {
+    // SEC-01: same empty-proof guard as checkAuth. A blank re-auth proof is
+    // never valid and must not pay for scrypt before being refused.
+    if (!String(proof ?? '').trim()) return false;
+    return verifyPassword(proof, storedDashboardPw);
+  }
   // audit #1: same gate as checkAuth — use the TRUSTED client IP, not the raw
   // socket peer (which is the proxy's 127.0.0.1 for everyone behind a same-host
   // reverse proxy), so a remote proxied caller can't reauth with the shared chat

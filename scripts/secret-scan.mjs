@@ -94,6 +94,18 @@ const RULES = [
     id: 'account-credential-pair',
     regex: /[A-Za-z0-9._%+-]+@(?!example\.(?:com|org|net)\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}----\S{8,}/g,
   },
+  {
+    // SEC-05: `.env`-style UNQUOTED assignment. `literal-credential-assignment`
+    // requires the value to be quoted, so the exact spelling this project tells
+    // operators to use (`API_KEY=…`, `DASHBOARD_PASSWORD=…` in .env) was never
+    // scanned. Field name is env-style uppercase and ends in a credential word;
+    // the value must be a bare 16+ char run with at least one digit and one
+    // letter, so indirection (`process.env.API_KEY`, `${API_KEY}`) and readable
+    // placeholders (`YOUR_API_KEY_HERE`) stay legal. `$`, quotes and dots are
+    // excluded from the value class — that is what keeps code references out.
+    id: 'unquoted-env-secret',
+    regex: /(?<![A-Za-z0-9_])(?:[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD))[ \t]*=[ \t]*(?![$"'\s#])(?=[A-Za-z0-9_+=-]*[0-9])(?=[A-Za-z0-9_+=-]*[A-Za-z])[A-Za-z0-9_+=-]{16,}/g,
+  },
 ];
 
 const IGNORED_PATHS = new Set([
@@ -110,9 +122,17 @@ const IGNORED_PATHS = new Set([
 // `sk-1234567890…` form). Those are allow-listed below by SHAPE, not by path: a fixture
 // must look obviously synthetic to pass. A random-looking 20-char secret in a test file
 // still fails the scan, which is the point.
-const IGNORED_PREFIXES = [
-  'test/_research/',
-];
+//
+// `test/_research/` was the last path-based hole. It is four wire-capture fixtures and
+// scans clean under the current rules (verified 2026-10-23, exit 0), so there was no
+// measured reason to keep exempting it — and a real token pasted into a captured
+// response is exactly the leak this scanner exists to catch. Shape markers are the only
+// allowance a test file gets.
+//
+// SCOPE: this scans the WORKING TREE (`git ls-files -co`, plus explicit paths). A
+// credential that was committed and later deleted is invisible here. Git-history
+// scanning (`git log -p` / gitleaks / GitHub secret scanning) is a SEPARATE job and is
+// not provided by this script.
 
 // A match is a fixture only if the SECRET ITSELF advertises that it is fake. Keep this
 // list tight: every entry is a hole, so it must be a shape no real credential has.
@@ -173,7 +193,6 @@ function isIgnored(file) {
   if (!repoPath || (repoPath === '..' || repoPath.startsWith('../')) || repoPath.includes('\0')) return true;
   const resolved = resolvedRepoPath(file);
   if (IGNORED_PATHS.has(repoPath) || IGNORED_PATHS.has(resolved)) return true;
-  if (IGNORED_PREFIXES.some(prefix => repoPath.startsWith(prefix) || resolved.startsWith(prefix))) return true;
   const lower = repoPath.toLowerCase();
   const lowerResolved = resolved.toLowerCase();
   return [...IGNORED_EXTENSIONS].some(ext => lower.endsWith(ext) || lowerResolved.endsWith(ext));
