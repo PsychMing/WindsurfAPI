@@ -104,11 +104,13 @@ describe('CheckUserLoginMethod empty-body fallback (#follow-up)', () => {
     // The error must still make clear this is a no-password / OAuth account
     // (it now points users at the email code / OAuth / token instead of the
     // old wording).
-    assert.match(m[0], /ERR_NO_PASSWORD_OAUTH_ACCOUNT/,
-      'must keep the dedicated no-password error code');
+    assert.match(m[0], /noPasswordError\(probe\)/,
+      'must keep the dedicated no-password error helper');
+    assert.match(LOGIN_JS, /code\s*=\s*'ERR_NO_PASSWORD_OAUTH_ACCOUNT'/,
+      'the helper must keep the dedicated no-password error code');
     assert.match(m[0], /no password|OAuth|email/i,
       'must still surface a clear "this account has no password" friendly error');
-    assert.match(m[0], /method\s*=\s*probe\.emailCode \? 'email_code' : 'oauth'/,
+    assert.match(LOGIN_JS, /method\s*=\s*probe\.emailCode \? 'email_code' : 'oauth'/,
       'must tell the caller which method actually works');
     // v3: a no-password result is a WRONG-METHOD signal, not a brute-force
     // guess — it must NOT feed the email lockout (that locked users for using

@@ -639,7 +639,11 @@ export async function probeLoginMethod(email, proxy = null, fingerprint = null) 
       const connections = await fetchAuth1Connections(email, fp, proxy, host);
       lastRaw = connections;
       const interpreted = interpretConnections(connections);
-      if (interpreted.hasPassword !== null || interpreted.userExists === false) {
+      // A known non-auth1 method (firebase/oauth) is a routing answer, not noise:
+      // returning it lets windsurfLoginPrimaryHost reach the legacy Firebase path
+      // instead of guessing Auth1. Only a bare/empty body stays "unknown".
+      if (interpreted.hasPassword !== null || interpreted.userExists === false
+          || (interpreted.method && interpreted.method !== 'auth1')) {
         rememberProbeHost(email, host);
         return { ...interpreted, source: 'connections', host };
       }
@@ -1093,6 +1097,14 @@ async function windsurfLoginPrimaryHost(email, password, fingerprint, proxy) {
       if (e && typeof e === 'object') e.probeUnknown = false;
       throw e;
     }
+  }
+
+  // A known non-auth1 method (legacy firebase/oauth) is an explicit routing
+  // answer: go straight to the legacy path instead of guessing Auth1.
+  if (probe.method && probe.method !== 'auth1') {
+    const result = await windsurfLoginViaFirebase(email, password, fingerprint, proxy);
+    recordEmailSuccess(email);
+    return result;
   }
 
   // Probe unknown (both hosts and the secondary probe silent): we have no
