@@ -49,6 +49,7 @@ flowchart TD
 | Take `DEVIN_CONNECT` to production | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** — production runs with this ON while the code default is OFF, so this is not optional reading |
 | Log in / add an account (password, email code, token, Devin) | **[login-flows.md](login-flows.md)** — the probe-first rules, the exact click path for each account shape, and the CDP token capture |
 | Localise the dashboard | [dashboard-i18n.md](dashboard-i18n.md) |
+| Verify a release download / understand the OTA trust boundary | [RELEASE-SIGNING.md](RELEASE-SIGNING.md) — what `SHA256SUMS` proves (integrity, not origin), the git and Docker OTA checks, and the unsigned-release path (minisign / cosign; no key material in the repo) |
 | See what changed in a version | [releases/](releases/) — one file per version, v2.0.6 → present |
 
 ## 🔬 Understand the internals
@@ -139,6 +140,11 @@ silently stopped guarding. These are the tools that close that gap:
 - [Architecture Review](review.html): project map from startup to HTTP routes, protocol bridge,
   account/LS pools, dashboard, security boundaries, tests, and core runtime behavior.
 - [Dashboard i18n](dashboard-i18n.md): dashboard localization notes.
+- [`?key=` deprecation](QUERY-KEY-DEPRECATION.md): Gemini-native query auth is supported but
+  deprecated; the header alternative, the logging exposure, and the phased removal plan.
+- [OpenCodeReview decision](OPENCODE-REVIEW.md): why no review workflow exists yet (zero repo
+  secrets; SARIF needs an LLM run), the trial procedure, and the ready-to-enable
+  `workflow_dispatch`-only job.
 
 ## Release history
 

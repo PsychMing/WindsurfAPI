@@ -388,8 +388,13 @@ Gemini 原生客户端不发 `Authorization: Bearer`，它用 `x-goog-api-key` �
 查询参数 —— 两种都收，所以官方 SDK 不用改代码就能连。
 
 > **优先用请求头**：`x-goog-api-key`（或 `Authorization: Bearer`）不会把密钥写进 URL。
-> `?key=` 仍可用，但完整 URL 会进反向代理日志、浏览器历史和抓包；自带 nginx 的访问日志
-> 已只记 `$uri`（丢弃全部 query），其它代理和上游日志不归本项目控制。
+> `?key=` 目前**仍然支持**（兼容用途，不是推荐用法），但完整 URL 会进反向代理日志、
+> 浏览器历史和抓包；自带 nginx 的访问日志已只记 `$uri`（丢弃全部 query），其它代理和
+> 上游日志不归本项目控制。
+>
+> **弃用路径**：`?key=` 已进入弃用流程 —— 先警告（响应头 + 只记 key 哈希的日志），再在
+> 下个主版本默认拒绝，最后移除；补丁版本不会移除。每个阶段的版本门槛、迁移命令和
+> “为什么”见 [docs/QUERY-KEY-DEPRECATION.md](docs/QUERY-KEY-DEPRECATION.md)。
 
 ```python
 from google import genai
@@ -777,8 +782,14 @@ MIT License. See [LICENSE](LICENSE).
 ## 发布与密钥边界
 
 发布流程会自动推 Docker 镜像和 GitHub Release，并为四个发布资产（Windows exe/zip、macOS
-arm64 二进制/zip）附上 `SHA256SUMS`。下载后先校验再运行：
-`sha256sum -c SHA256SUMS`（macOS 用 `shasum -a 256 -c SHA256SUMS`）。
+arm64 二进制/zip）附上 `SHA256SUMS`。**它证明的是完整性，不是来源**：清单和二进制在同一个
+Release 下，能改 Release 的人也能一起改；当前发布**没有签名**，OTA 更新校验的是 tag/commit
+（GitHub 引用 + TLS），不是签名。下载后先校验再运行：`sha256sum -c SHA256SUMS`
+（macOS 用 `shasum -a 256 -c SHA256SUMS`；Windows 用 `Get-FileHash`）。清单使用**扁平
+文件名**，把五个资产下载到同一目录即可；v3.9.53（首个带清单的版本）的清单带
+`dist-windows/` / `dist-macos/` 前缀，需要先按目录摆放（更早的版本没有 `SHA256SUMS`）。
+信任边界、OTA 的具体校验步骤，以及未来的签名路径（minisign / cosign，仓库内不放任何密钥）
+见 [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md)。
 
 **别把 token、API key、cookie、上游账号凭据
 写进 issue、PR、日志或提交的配置文件里。** 如果报告问题必须带上鉴权信息，只贴脱敏后的元数据

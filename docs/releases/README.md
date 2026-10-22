@@ -106,6 +106,21 @@ identically to the previous tag, the release asks users to download nothing.
 The release workflow builds the GHCR image and publishes the GitHub Release. The body
 comes from the matching file in this folder.
 
+### Release assets and verification
+
+The release job attaches four assets plus `SHA256SUMS`. The manifest uses the
+**flat asset names** (`windsurfapi.exe`, `windsurfapi-windows.zip`,
+`windsurfapi-macos-arm64`, `windsurfapi-macos.zip`), so `sha256sum -c SHA256SUMS`
+works in the directory where the five files were downloaded. Do not change it
+back to build-tree paths (`dist-windows/...`): v3.9.53, the first release with a
+manifest, shipped that shape, and it made the documented command fail for three
+of the four files. `test/release-workflow.test.js` pins the flat form.
+
+Releases are **unsigned**. `SHA256SUMS` proves integrity, not origin; the git and
+Docker OTA paths verify tags/ancestry and health, not signatures. The trust
+boundary and the future minisign/cosign path are in
+[RELEASE-SIGNING.md](../RELEASE-SIGNING.md).
+
 ## House style for the notes themselves
 
 These files are **published** — each one becomes a GitHub Release body — and they are

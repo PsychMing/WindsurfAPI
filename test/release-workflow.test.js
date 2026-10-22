@@ -82,10 +82,18 @@ describe('release workflow', () => {
   it('publishes SHA256SUMS covering exactly the four release assets', () => {
     const release = jobBlock('release');
     // SEC-04: a tampered download must be distinguishable from a real one.
+    // The manifest names the assets as they appear on the release page (flat),
+    // because GitHub release assets have no directories. v3.9.53 shipped
+    // build-tree paths and `sha256sum -c` failed for three of the four files.
     assert.match(
       release,
-      /sha256sum \\\n\s+dist-windows\/windsurfapi\.exe \\\n\s+dist-windows\/windsurfapi-windows\.zip \\\n\s+dist-macos\/windsurfapi-macos-arm64 \\\n\s+windsurfapi-macos\.zip > SHA256SUMS/,
-      'the manifest must hash exactly the four published files',
+      /\( cd dist-windows && sha256sum windsurfapi\.exe windsurfapi-windows\.zip \) > SHA256SUMS[\s\S]*?\( cd dist-macos && sha256sum windsurfapi-macos-arm64 \) >> SHA256SUMS[\s\S]*?sha256sum windsurfapi-macos\.zip >> SHA256SUMS/,
+      'the manifest must hash exactly the four published files using their flat release-asset names',
+    );
+    assert.doesNotMatch(
+      release.slice(release.indexOf('Generate SHA256SUMS'), release.indexOf('Create GitHub Release')),
+      /sha256sum[^\n]*dist-(?:windows|macos)\//,
+      'manifest entries must not carry build-tree directory prefixes',
     );
     assert.match(release, /files: \|[\s\S]*\n\s+SHA256SUMS\s*$/,
       'SHA256SUMS must be attached to the GitHub Release');
