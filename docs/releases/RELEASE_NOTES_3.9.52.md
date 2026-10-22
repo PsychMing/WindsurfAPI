@@ -12,7 +12,9 @@
 - Dashboard：`reauth` 徽章/筛选/抽屉提示 + “检查 token”；重新登录会**替换**同一账号行而不是新增；`PATCH` 在 token 未变时返回 409 `ERR_REAUTH_TOKEN_UNCHANGED`；删除账号现在会同时删除已存的加密凭据（此前会留在磁盘）。
 - 不存 Auth1、不引入新秘密落盘。
 
-回归：state/route/UI 三组 33+19+12 条；`dashboard-*`/`auth-*`/`login-*`/`chat-*` 等 693 条回归 0 fail；两个强制突变（确认分支、状态拒绝）均被抓。
+回归：state/route/UI/hooks/terminal 五组；`dashboard-*`/`auth-*`/`login-*`/`chat-*` 等 704 条回归 0 fail；三个强制突变（确认分支、状态拒绝、reportError 守卫）均被抓。
+
+独立审查后补的四个修正：`reauth` 现在是**终态**（`reportError` 不再把它降成 `error`，900 秒半开恢复无法把死 token 拉回；`reportSuccess` 只在非 reauth 时提升 active）；同 key 粘贴在三个入口都返回 409 `ERR_REAUTH_TOKEN_UNCHANGED` 且保留证据；绑定密码/邮箱登录与 token 路由共用 `ERR_REAUTH_NOT_APPLICABLE` 拒绝 disabled/banned，且不会清掉活跃封禁；`chat.js` 的两个 `requestReauthCheck` 调用点与 `removeAccount → deleteCredential` 都有测试钉住，改标签后仍按记录时的 `credentialEmail` 删除。
 
 ### Node：22.13+，Node 20 明确不支持
 
