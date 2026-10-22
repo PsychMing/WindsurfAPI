@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 209 份发布说明</a> ·
+  <a href="docs/releases/">全部 210 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **209** 份,v2.0.6 → v3.9.58 |
+| 发布说明 | **210** 份,v2.0.6 → v3.9.59 |
 | git tag | 214 个（2026-10-23 实测；以 `git tag \| wc -l` 为准） |
-| 当前 | **v3.9.58**(2026-10-23) |
+| 当前 | **v3.9.59**(2026-10-23) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -42,7 +42,11 @@ flowchart LR
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
 
-### [v3.9.58](docs/releases/RELEASE_NOTES_3.9.58.md) · 2026-10-23
+### [v3.9.59](docs/releases/RELEASE_NOTES_3.9.59.md) · 2026-10-23
+
+发布工作流 Test job 超时 10 → 20 分钟：506 文件 / ~6,250 测试在托管 runner 上已超过 10 分钟，
+v3.9.58 的 Release 因此被取消。产品代码零改动。
+### [v3.9.58](docs/releases/RELEASE_NOTES_3.9.58.md) · 2026-10-23（已发布）
 
 修复重试预算竞态：`budgetedSleep` 不再“睡剩余时间后报告成功”，两条重试循环在退避后重新检查预算；
 四个确定性测试（无墙钟）在修复前全红。这是 v3.9.57 CI 唯一的失败点。
