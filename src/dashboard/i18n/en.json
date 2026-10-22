@@ -101,7 +101,8 @@
     "billingInvalid": "Billing invalid",
     "billingMethod": "Billing method",
     "availableCredits": "Available credits",
-    "overageCredits": "Overage credits",
+    "overageBalance": "Overage balance",
+    "overdrawn": "overdrawn",
     "dailyQuota": "Daily quota remaining",
     "weeklyQuota": "Weekly quota remaining",
     "dailyReset": "Daily reset",
@@ -955,7 +956,7 @@
       "tokenCache": "Token cache read ratio: share of prompt tokens served from the upstream context cache instead of re-uploaded. Higher is cheaper and faster; reuse depends on cascade reuse and stable sessions.",
       "promptCredits": "Prompt credits are your plan's included monthly quota for prompt-model requests, shown as remaining / limit. Once exhausted, requests either stop or spill to on-demand (overage) depending on the plan.",
       "flowCredits": "Flow credits (a.k.a. flex credits) are the included monthly quota for agentic/flow actions, separate from prompt credits, shown as remaining / limit.",
-      "overage": "On-demand (overage) balance: usage-based spend billed beyond your included quota, in USD. Accrues only after included credits run out.",
+      "overage": "On-demand (overage) balance: usage-based spend billed beyond your included quota, in USD. Accrues only after included credits run out. A negative balance means the prepaid amount is overdrawn; it is shown with its minus sign and marked overdrawn, never clamped to zero.",
       "weeklyQuota": "Weekly quota %: portion of the account's rolling weekly allowance still remaining. Low values across all accounts trigger drought mode.",
       "poolHealthView": "Glow grid: one breathing core per account, tinted by health — cores catch fire when RPM saturates and flash when a request flows through. Status bars: one dense row per account showing RPM / in-flight / success·fail / last-used. Hover any account for details.",
       "trendRange": "Switch the request-trend window: 24 hours (hourly), 7 days or 30 days (aggregated per day). Data is local telemetry, no upstream call."

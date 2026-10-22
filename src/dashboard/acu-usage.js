@@ -55,6 +55,10 @@ export { orgRefOf };
  * - an absent `cycle.total` is unknown (`—`), never a fabricated zero.
  * - `remaining` is DERIVED (limit − used) and says so; it is not an
  *   upstream-reported balance. Unlimited limit ⇒ unlimited remaining.
+ * - `overageCredits` is a SIGNED USD balance. A negative value is an overdrawn
+ *   on-demand balance (a real debt state, not a rounding error), so it is
+ *   passed through unchanged and the panel renders the sign rather than
+ *   clamping it to zero.
  */
 export function deriveAcuCells({ limits, cycle } = {}) {
   const rawLimit = limits?.maxAcuLimit;

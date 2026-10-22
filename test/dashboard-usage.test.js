@@ -63,6 +63,16 @@ describe('dashboard usage normalizer', () => {
     assert.deepEqual(out.days, [{ date: '2026-10-18', amount: 2, cumulative: null }]);
   });
 
+  it('passes a signed overage balance through instead of clamping it', () => {
+    // `overage_credits` is a USD balance: negative means overdrawn. Clamping it
+    // to zero here would make the panel assert a zero balance the upstream
+    // never reported; the renderer owns the sign/overdrawn presentation.
+    assert.equal(normalizeUsage({ status: { overage_credits: -0.1 } }).overageCredits, -0.1);
+    assert.equal(normalizeUsage({ status: { overage_credits: 12.34 } }).overageCredits, 12.34);
+    assert.equal(normalizeUsage({ status: { overage_credits: 0 } }).overageCredits, 0);
+    assert.equal(normalizeUsage({ status: { overage_credits: '-0.1' } }).overageCredits, null);
+  });
+
   it('caps daily rows at 366', () => {
     const days = Array.from({ length: 400 }, (_, i) => ({ date: `d${i}`, amount: 1, cumulative: 1 }));
     const out = normalizeUsage({ dailyUsage: { days } });

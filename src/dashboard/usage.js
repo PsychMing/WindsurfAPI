@@ -75,6 +75,10 @@ export function normalizeUsage({ quota, status, limits, dailyUsage, now = Date.n
     billingValid: bool(s.is_subscription_valid),
     billingMethod: str(s.billing_method),
     availableCredits: num(s.available_credits),
+    // Signed on-demand (overage) balance in USD, passed through verbatim. A
+    // negative value is a real overdraft (usage posted beyond the prepaid
+    // amount), not a rounding error and not an "unknown" sentinel; the panel
+    // renders it with its sign instead of clamping it to zero.
     overageCredits: num(s.overage_credits),
     quota: {
       isQuotaPlan: bool(q.is_quota_plan),
