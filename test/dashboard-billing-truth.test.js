@@ -118,6 +118,31 @@ describe('overview usage card — available credits', () => {
   });
 });
 
+describe('overview usage card — plan label', () => {
+  // `plan` is upstream billing text (`plan_slug`), not operator input: a hostile or
+  // compromised upstream response must not be able to inject markup into the
+  // dashboard. The ACU org panel escapes its copy of the same field
+  // (renderAcuOrg → this.esc(plan)); this card is the other sink.
+  const hostile = '<img src=x onerror="alert(1)">';
+
+  it('escapes the upstream plan instead of interpolating it raw', () => {
+    const html = renderUsageCard(I18n, self, {
+      ok: true,
+      plan: hostile,
+      quota: { dailyPercentage: 3, weeklyPercentage: 1 },
+      availableCredits: 5,
+    });
+    assert.doesNotMatch(html, /<img/i, 'hostile plan text must never reach the markup as a tag');
+    assert.match(html, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/,
+      'the plan must render escaped, exactly like the ACU panel copy');
+  });
+
+  it('keeps the em-dash fallback for an absent plan', () => {
+    const html = renderUsageCard(I18n, self, { ok: true, quota: {}, availableCredits: 0 });
+    assert.match(html, /<div class="card-sub">- · daily/);
+  });
+});
+
 describe('account drawer — plan card labels', () => {
   const PERIOD_START = Date.UTC(2026, 9, 21, 8, 0, 0);
   const PERIOD_END = Date.UTC(2026, 9, 25, 8, 0, 0);
