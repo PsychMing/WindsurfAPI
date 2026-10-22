@@ -1190,6 +1190,7 @@
       "active": "Healthy",
       "disabled": "Disabled",
       "banned": "Banned",
+      "reauth": "Needs re-auth",
       "error": "Error",
       "quotaCooled": "Quota exhausted",
       "rateLimited": "Rate limited",
@@ -1219,7 +1220,19 @@
       "probe": "Probe tier / models",
       "refreshBalance": "Refresh balance",
       "blockedModels": "Block models",
-      "relogin": "Log in again"
+      "relogin": "Log in again",
+      "reauth": "Re-authenticate"
+    },
+    "reauth": {
+      "bannerTitle": "Re-authentication required",
+      "banner": "Re-authenticating {{email}} — this replaces that account's session token. No new account row is added.",
+      "cancelBinding": "Cancel binding",
+      "checkToken": "Check token",
+      "detail": "The upstream retired this session token (confirmed by GetUserStatus at {{time}}, {{code}}). The key cannot be refreshed — re-authenticate to mint a new one.",
+      "probeAlive": "The token answered upstream — the account is back in rotation",
+      "probeDead": "Upstream still rejects this token — re-authenticate to mint a new one",
+      "probeCooldown": "Checked moments ago — try again in a minute",
+      "success": "Account re-authenticated"
     },
     "batch": {
       "selectPage": "Select {{count}} on this page",
@@ -1723,6 +1736,9 @@
     "ERR_HTTP_REFERRER_BLOCKED": "Upstream rejected the request: the server's referrer is restricted for this Firebase API key. Check the login proxy / egress IP, or allow it in the Firebase console.",
     "ERR_AUTH1_TOKEN_MISSING": "Auth1 response missing token",
     "ERR_AUTH1_NOT_A_POOL_KEY": "auth1_ is a PostAuth intermediate ticket, not a pool key. Finish login or paste a show-auth-token / session token instead.",
+    "ERR_REAUTH_TOKEN_UNCHANGED": "This account's token was retired upstream. Re-authenticate to mint a new one, or force the re-enable if you are certain.",
+    "ERR_REAUTH_NOT_APPLICABLE": "This action does not apply to a disabled or banned account.",
+    "ERR_REAUTH_TOKEN_INVALID": "That is not a session token. Paste the devin-session-token / show-auth-token value, or use the email-code login.",
     "ERR_NO_TOKEN_IN_INPUT": "No token in that paste. Use a session token, an API key, or a show-auth-token URL that includes token=.",
     "ERR_IMPORT_TEXT_EMPTY": "Paste is empty.",
     "ERR_POSTAUTH_FAILED": "Windsurf accepted the login but the session exchange failed. Retry the same code — it stays valid for 2 minutes.",
@@ -1842,6 +1858,10 @@
       "transientReplays": "Transient replays",
       "livenessRecovered": "Liveness recovered",
       "credDecryptFail": "Cred decrypt fail",
+      "reauthRequired": "Re-auth required",
+      "reauthCleared": "Re-auth cleared",
+      "reauthOk": "Re-auth OK",
+      "reauthFail": "Re-auth fail",
       "silentOk": "Nominal",
       "empty": "No connection metrics"
     },

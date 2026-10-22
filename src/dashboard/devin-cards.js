@@ -344,10 +344,13 @@ export function buildKeyInfo({
   entitlementFetchedAt = null,
   hasRefreshToken = false,
   method = null,
+  state = 'ok',
+  reauth = null,
   now = Date.now(),
 } = {}) {
   const created = num(createdAt);
   const rotated = num(rotatedAt);
+  const reauthRequired = state === 'reauth';
   return {
     accountRef,
     fetchedAt: now,
@@ -358,6 +361,17 @@ export function buildKeyInfo({
       known: false,
       at: null,
       reason: KEY_EXPIRY_REASON,
+    },
+    // SessionReauth: whether upstream still accepts the token. This is NOT an
+    // expiry — a session token has no readable lifetime — so `expires` stays
+    // exactly as it was and this block answers the only question the operator
+    // can act on: does this key work, and if not, when was that confirmed?
+    state: reauthRequired ? 'reauth' : (state === 'unknown' ? 'unknown' : 'ok'),
+    reauth: {
+      required: reauthRequired,
+      at: reauthRequired ? (num(reauth?.at) || null) : null,
+      source: reauthRequired ? str(reauth?.source, 24) : null,
+      code: reauthRequired ? str(reauth?.code, 64) : null,
     },
     lastProbed: num(lastProbed) || null,
     entitlementFetchedAt: num(entitlementFetchedAt) || null,
@@ -643,6 +657,8 @@ export function buildAccountCards(id, { now = Date.now() } = {}) {
       entitlementFetchedAt: account.userStatusLastFetched || null,
       hasRefreshToken: !!account.refreshToken,
       method: account.method,
+      state: account.status === 'reauth' ? 'reauth' : 'ok',
+      reauth: account.reauth || null,
       now,
     }),
   };

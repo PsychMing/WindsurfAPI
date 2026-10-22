@@ -21,6 +21,7 @@ import {
   getAccountList, getAccountCount, getAccountListStats, getAccountPublic, addAccountByKey, addAccountByPastedSecret,
   countAccountList, ACCOUNT_STATE_VALUES, ACCOUNT_SORT_VALUES,
   removeAccount, setAccountStatus, resetAccountErrors, updateAccountLabel,
+  markAccountReauthenticated, requestReauthCheck,
   isAuthenticated, probeAccount, ensureLsForAccount,
   refreshCredits, refreshAllCredits, searchWebForAccount,
   setAccountBlockedModels, setAccountTokens, setAccountTier, setAccountSpendPolicy,
@@ -484,7 +485,7 @@ function credStoreGateOpen(wantStore, req) {
   return process.env.DEVIN_CONNECT_ALLOW_REMOTE_CRED_STORE === '1';
 }
 
-async function processWindsurfLogin({ email, password, loginProxy, autoAdd, storeCredential: wantStore, req }) {
+async function processWindsurfLogin({ email, password, loginProxy, autoAdd, storeCredential: wantStore, req, accountId = null }) {
   if (!email || !password) {
     const err = new Error('ERR_EMAIL_PASSWORD_REQUIRED');
     err.statusCode = 400;
@@ -495,23 +496,47 @@ async function processWindsurfLogin({ email, password, loginProxy, autoAdd, stor
   // Use provided proxy, or global proxy
   const proxy = loginProxy?.host ? loginProxy : getProxyConfig().global;
   const result = await windsurfLogin(email, password, proxy);
-  return finalizeWindsurfLogin(result, { password, loginProxy, autoAdd, storeCredential: wantStore, req });
+  return finalizeWindsurfLogin(result, { password, loginProxy, autoAdd, storeCredential: wantStore, req, accountId });
 }
 
-// Shared tail of every successful login (password or email code): add the
-// account to the pool, persist the per-account proxy, optionally persist the
-// password for auto-relogin, and shape the response. `password` is null for
-// the email-code flow — there is nothing to store.
-async function finalizeWindsurfLogin(result, { password, loginProxy, autoAdd, storeCredential: wantStore, req }) {
+// Shared tail of every successful login (password, email code, pasted token):
+// add the account to the pool — or, when `accountId` is set, REPLACE that
+// account's token — persist the per-account proxy, optionally persist the
+// password for auto-relogin, and shape the response. `password` is null for the
+// email-code flow — there is nothing to store.
+//
+// `accountId` is the re-auth binding (SessionReauth): the operator proved
+// control of an existing account by logging in, so the fresh token lands on
+// that row. Adding it again would create a duplicate for the same person and
+// leave the dead one in the list.
+async function finalizeWindsurfLogin(result, { password, loginProxy, autoAdd, storeCredential: wantStore, req, accountId = null }) {
   const email = result.email || '';
-  // Auto-add to account pool if requested
   let account = null;
+  let reauthenticated = false;
   // Whether the password the caller asked to store actually landed. null = not
   // asked / store unavailable, true = encrypted and persisted, false = the save
   // failed (busy store, missing key, record loss) and auto-relogin stays disarmed.
   let credentialStored = null;
-  if (autoAdd !== false) {
+
+  if (accountId) {
+    const existing = getAccountInternal(accountId);
+    if (!existing) throw Object.assign(new Error('ERR_ACCOUNT_NOT_FOUND'), { code: 'ERR_ACCOUNT_NOT_FOUND', statusCode: 404 });
+    if (!result.apiKey) throw Object.assign(new Error('ERR_LOGIN_FAILED'), { code: 'ERR_LOGIN_FAILED', statusCode: 502 });
+    // A successful login IS the proof that the new key works, so a same-key
+    // re-login is legitimate (`allowSameKey`). The refusal exists for the
+    // operator asserting an UNCHANGED key without logging in.
+    markAccountReauthenticated(accountId, {
+      apiKey: result.apiKey,
+      via: result.viaEmailCode ? 'email_code' : 'password',
+      allowSameKey: true,
+    });
+    account = existing;
+    reauthenticated = true;
+  } else if (autoAdd !== false) {
     account = addAccountByKey(result.apiKey, result.name || email);
+  }
+
+  if (account) {
     // Persist refresh token via the setter so it survives restart and
     // the background Firebase-renewal loop can find it.
     if (result.refreshToken) {
@@ -555,11 +580,12 @@ async function finalizeWindsurfLogin(result, { password, loginProxy, autoAdd, st
     success: true,
     // When autoAdd:false, the caller is doing a one-time login to retrieve the
     // upstream key without storing it (e.g. external tooling that wants the
-    // raw key) — they need the full apiKey. When autoAdd is true, the key is
-    // already persisted in the pool and the response only echoes a masked
-    // form (the dashboard never needs the raw key in the listing path; the
-    // explicit reveal-key endpoint covers the rare per-account export case).
-    ...(autoAdd === false
+    // raw key) — they need the full apiKey. When the key is in the pool the
+    // response only echoes a masked form (the dashboard never needs the raw key
+    // in the listing path; the explicit reveal-key endpoint covers the rare
+    // per-account export case). A bound re-auth always masks: the row already
+    // holds the key.
+    ...(autoAdd === false && !reauthenticated
       ? { apiKey: result.apiKey }
       : { apiKey_masked: maskApiKey(result.apiKey) }),
     name: result.name,
@@ -569,8 +595,43 @@ async function finalizeWindsurfLogin(result, { password, loginProxy, autoAdd, st
     // How the session was obtained, so the UI can show it instead of making
     // the operator guess which path ran.
     method: result.viaEmailCode ? 'email_code' : 'password',
+    // The login replaced an existing account's token instead of adding a row.
+    ...(reauthenticated ? { reauthenticated: true } : {}),
     ...(result.viaHost ? { viaHost: result.viaHost } : {}),
     ...(wantStore ? { credentialStored: credentialStored === true } : {}),
+  };
+}
+
+/**
+ * Install a pasted token on an EXISTING account (SessionReauth).
+ *
+ * The only accepted shape is a `devin-session-token$…` session token — that is
+ * what the upstream login mints, and it is the only thing this pool routes with.
+ * An `auth1_` value is a PostAuth intermediate and is rejected with its own
+ * code; anything else is not a pool credential.
+ *
+ * Errors are thrown with `statusCode` so both routes answer with the same
+ * contract: 404 unknown id, 409 wrong state, 400 unusable token.
+ */
+function applyReauthToken(id, rawToken, { via = 'token' } = {}) {
+  const account = getAccountInternal(id);
+  if (!account) throw Object.assign(new Error('ERR_ACCOUNT_NOT_FOUND'), { code: 'ERR_ACCOUNT_NOT_FOUND', statusCode: 404 });
+  if (account.status === 'disabled' || account.status === 'banned') {
+    throw Object.assign(new Error('ERR_REAUTH_NOT_APPLICABLE'), { code: 'ERR_REAUTH_NOT_APPLICABLE', statusCode: 409 });
+  }
+  const token = extractOAuthToken(String(rawToken ?? ''));
+  if (!token) throw Object.assign(new Error('ERR_NO_TOKEN_IN_INPUT'), { code: 'ERR_NO_TOKEN_IN_INPUT', statusCode: 400 });
+  const kind = classifyToken(token);
+  if (kind === 'auth1') throw Object.assign(new Error('ERR_AUTH1_NOT_A_POOL_KEY'), { code: 'ERR_AUTH1_NOT_A_POOL_KEY', statusCode: 400 });
+  if (kind !== 'session') throw Object.assign(new Error('ERR_REAUTH_TOKEN_INVALID'), { code: 'ERR_REAUTH_TOKEN_INVALID', statusCode: 400 });
+  // The pasted token was minted by a real login, so a same-key install is
+  // legitimate evidence (allowSameKey) — unlike a bare "enable" click.
+  markAccountReauthenticated(id, { apiKey: token, via, allowSameKey: true });
+  return {
+    success: true,
+    reauthenticated: true,
+    account: { id: account.id, email: account.email, method: account.method, status: account.status },
+    apiKey_masked: maskApiKey(account.apiKey),
   };
 }
 
@@ -1551,6 +1612,13 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         return json(res, 400, { error: 'Provide api_key or token' });
       }
 
+      // SessionReauth: a bound paste replaces an existing account's token. Same
+      // helper as POST /accounts/:id/reauth {action:'token'} so the two entry
+      // points cannot drift into different validation.
+      if (body.accountId) {
+        return json(res, 200, applyReauthToken(body.accountId, body.api_key || body.token, { via: 'token' }));
+      }
+
       let parsedProxy = null;
       if (body.proxy) {
         parsedProxy = parseProxyUrl(body.proxy);
@@ -1581,7 +1649,9 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         ...getAccountCount(),
       });
     } catch (err) {
-      return json(res, 400, { error: err.message });
+      // A bound re-auth can fail with 404/409/400; the unbound add path only
+      // ever produced 400. Keep the code so the UI can react to it.
+      return json(res, err.statusCode || 400, { error: err.code || err.message });
     }
   }
 
@@ -1726,6 +1796,32 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     return json(res, 200, { success: true, total: list.length, ...summarizeProbeResults(results), results });
   }
 
+  // POST /accounts/:id/reauth — SessionReauth actions (never returns the key).
+  //   {action:'probe'} → one free GetUserStatus probe. alive clears the state,
+  //     UNAUTHORIZED keeps it, anything else (CAPACITY/UPSTREAM_INTERNAL) is
+  //     transient and changes nothing. The operator-facing "Check token" button
+  //     forces past the 60 s de-dupe.
+  //   {action:'token'} → install a pasted session token on THIS account.
+  const accountReauth = subpath.match(/^\/accounts\/([^/]+)\/reauth$/);
+  if (accountReauth && method === 'POST') {
+    const id = accountReauth[1];
+    const action = String(body?.action || 'probe');
+    try {
+      if (action === 'probe') {
+        if (!getAccountInternal(id)) return json(res, 404, { error: 'ERR_ACCOUNT_NOT_FOUND' });
+        const result = await requestReauthCheck(id, { source: 'manual', force: body?.force !== false });
+        if (result.reason === 'NOT_ELIGIBLE') return json(res, 409, { error: 'ERR_REAUTH_NOT_APPLICABLE' });
+        return json(res, 200, result);
+      }
+      if (action === 'token') {
+        return json(res, 200, applyReauthToken(id, body?.token ?? body?.api_key, { via: 'manual' }));
+      }
+      return json(res, 400, { error: 'ERR_REAUTH_ACTION_INVALID' });
+    } catch (err) {
+      return json(res, err.statusCode || 400, { error: err.code || err.message });
+    }
+  }
+
   // POST /accounts/:id/probe — manually trigger capability probe
   const accountProbe = subpath.match(/^\/accounts\/([^/]+)\/probe$/);
   if (accountProbe && method === 'POST') {
@@ -1786,19 +1882,27 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   const accountPatch = subpath.match(/^\/accounts\/([^/]+)$/);
   if (accountPatch && method === 'PATCH') {
     const id = accountPatch[1];
-    if (body.status) setAccountStatus(id, body.status);
-    if (body.label) updateAccountLabel(id, body.label);
-    if (body.resetErrors) resetAccountErrors(id);
-    if (Array.isArray(body.blockedModels)) setAccountBlockedModels(id, body.blockedModels);
-    if (body.tier) setAccountTier(id, body.tier);
-    // v3.0.3: per-account on-demand spend policy. Only the keys present are
-    // touched (each can be set alone). spendOnDemand: true | false | null(inherit);
-    // onDemandReserve: number | null/''(inherit).
-    if ('spendOnDemand' in body || 'onDemandReserve' in body) {
-      const patch = {};
-      if ('spendOnDemand' in body) patch.spendOnDemand = body.spendOnDemand;
-      if ('onDemandReserve' in body) patch.reserve = body.onDemandReserve;
-      setAccountSpendPolicy(id, patch);
+    try {
+      // `force:true` is the operator's explicit override of the reauth guard
+      // (they replaced the token out-of-band); without it the refusal is a 409
+      // so the UI can point at the re-authenticate action instead of silently
+      // putting a retired key back in rotation.
+      if (body.status) setAccountStatus(id, body.status, { force: body.force === true });
+      if (body.label) updateAccountLabel(id, body.label);
+      if (body.resetErrors) resetAccountErrors(id);
+      if (Array.isArray(body.blockedModels)) setAccountBlockedModels(id, body.blockedModels);
+      if (body.tier) setAccountTier(id, body.tier);
+      // v3.0.3: per-account on-demand spend policy. Only the keys present are
+      // touched (each can be set alone). spendOnDemand: true | false | null(inherit);
+      // onDemandReserve: number | null/''(inherit).
+      if ('spendOnDemand' in body || 'onDemandReserve' in body) {
+        const patch = {};
+        if ('spendOnDemand' in body) patch.spendOnDemand = body.spendOnDemand;
+        if ('onDemandReserve' in body) patch.reserve = body.onDemandReserve;
+        setAccountSpendPolicy(id, patch);
+      }
+    } catch (err) {
+      return json(res, err.statusCode || 400, { error: err.code || err.message });
     }
     return json(res, 200, { success: true });
   }
@@ -2657,7 +2761,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   if (subpath === '/windsurf-login' && method === 'POST') {
     try {
       const { email, password, proxy: loginProxy, autoAdd, storeCredential } = body || {};
-      return json(res, 200, await processWindsurfLogin({ email, password, loginProxy, autoAdd, storeCredential, req }));
+      return json(res, 200, await processWindsurfLogin({ email, password, loginProxy, autoAdd, storeCredential, req, accountId: body?.accountId || null }));
     } catch (err) {
       // The UI needs `method` to switch the form (email code vs OAuth-only)
       // without a second probe, and `probeUnknown` to offer the alternatives
@@ -2756,6 +2860,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       // store to persist — pass storeCredential:false regardless of the request.
       return json(res, 200, await finalizeWindsurfLogin(result, {
         password: null, loginProxy, autoAdd, storeCredential: false, req,
+        accountId: body?.accountId || null,
       }));
     } catch (err) {
       return json(res, err.statusCode || 400, {
@@ -2791,6 +2896,12 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       // ERR_INTERMEDIATE_CALLBACK) and returns a bare token unchanged.
       const token = extractOAuthToken(raw);
       if (!token) return json(res, 400, { error: 'ERR_NO_TOKEN_IN_INPUT' });
+      // SessionReauth: a bound paste replaces the account's token instead of
+      // adding a second row for the same person.
+      if (body?.accountId) {
+        const applied = applyReauthToken(body.accountId, token, { via: 'token' });
+        return json(res, 200, { ...applied, method: 'token' }, NO_STORE);
+      }
       const account = await addAccountByPastedSecret(token, label);
       scheduleAccountWarmup(account.id);
       return json(res, 200, {
@@ -2799,7 +2910,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         account: { id: account.id, email: account.email, status: account.status },
       }, NO_STORE);
     } catch (err) {
-      return json(res, 400, { error: err.code || err.message });
+      return json(res, err.statusCode || 400, { error: err.code || err.message });
     }
   }
 

@@ -21,12 +21,13 @@
  */
 
 // Derive the coarse pool-state of one account from its snapshot flags. Order
-// matters: disabled > quota > rate-limit(account) > capacity(model) > active.
+// matters: disabled > banned > reauth > quota > rate-limit(account) > capacity > active.
 // This is the state we diff transitions against.
 export function accountState(a) {
   if (!a) return 'unknown';
   if (a.status === 'disabled') return 'disabled';
   if (a.status === 'banned') return 'banned';
+  if (a.status === 'reauth') return 'reauth';
   if (a.status === 'error') return 'error';
   if (a.quotaCooled) return 'quota';
   if (a.rateLimited) return 'rate_limited';
@@ -63,10 +64,12 @@ export function cooldownState({ rateLimitedUntil = 0, quotaResetAt = 0, capacity
 
 // A state transition worth notifying about, with a severity for styling.
 // 'recovered' (→active from a bad state) is informational; the rest warn.
+// `reauth` is error severity, like `banned`: it never self-heals, so a warn
+// toast would promise a recovery that only a new token can deliver.
 export function classifyTransition(from, to) {
   if (from === to) return null;
   if (to === 'active') return { kind: 'recovered', severity: 'success' };
-  const sev = (to === 'disabled' || to === 'quota' || to === 'banned') ? 'error' : 'warn';
+  const sev = (to === 'disabled' || to === 'quota' || to === 'banned' || to === 'reauth') ? 'error' : 'warn';
   return { kind: to, severity: sev };
 }
 

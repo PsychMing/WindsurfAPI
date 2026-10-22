@@ -12,11 +12,17 @@ describe('accountState', () => {
     assert.equal(accountState(acc('a', { quotaCooled: true })), 'quota');
     assert.equal(accountState(acc('a', { status: 'disabled' })), 'disabled');
     assert.equal(accountState(acc('a', { status: 'error' })), 'error');
+    assert.equal(accountState(acc('a', { status: 'reauth' })), 'reauth');
   });
   it('rate-limit outranks capacity; quota outranks rate-limit; disabled wins all', () => {
     assert.equal(accountState(acc('a', { rateLimited: true, capacityThrottled: true })), 'rate_limited');
     assert.equal(accountState(acc('a', { quotaCooled: true, rateLimited: true })), 'quota');
     assert.equal(accountState(acc('a', { status: 'disabled', quotaCooled: true })), 'disabled');
+  });
+  it('reauth is terminal: it outranks every self-healing cooldown', () => {
+    assert.equal(accountState(acc('a', { status: 'reauth', quotaCooled: true, rateLimited: true, capacityThrottled: true })), 'reauth');
+    assert.equal(accountState(acc('a', { status: 'banned' })), 'banned');
+    assert.equal(accountState(acc('a', { status: 'disabled' })), 'disabled');
   });
 });
 
@@ -32,6 +38,10 @@ describe('classifyTransition', () => {
     assert.equal(classifyTransition('active', 'quota').severity, 'error');
     assert.equal(classifyTransition('active', 'capacity').severity, 'warn');
     assert.equal(classifyTransition('active', 'rate_limited').severity, 'warn');
+  });
+  it('→reauth is an error (it never self-heals), and →active from it is a recovery', () => {
+    assert.deepEqual(classifyTransition('active', 'reauth'), { kind: 'reauth', severity: 'error' });
+    assert.deepEqual(classifyTransition('reauth', 'active'), { kind: 'recovered', severity: 'success' });
   });
 });
 
