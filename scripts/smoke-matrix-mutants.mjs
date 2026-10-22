@@ -35,8 +35,9 @@ const RUN_TIMEOUT_MS = 180_000;
 const BACKUP_SUFFIX = '.smoke-mutant-backup';
 
 /**
- * One break per family. Anchors are verified unique at run time.
- * `expect` is the family that must report the FAIL line.
+ * At least one break per family; `login` carries a second for the wave-3
+ * non-auth1 probe. Anchors are verified unique at run time.
+ * `family` is the family that must report the FAIL line.
  */
 const MUTANTS = [
   {
@@ -136,6 +137,56 @@ const MUTANTS = [
     file: 'test/helpers/smoke-matrix-upstream.mjs',
     anchor: "    yield { type: 'content', text: MATRIX.text };",
     replacement: "    yield { type: 'content', text: MATRIX.text + MATRIX.sessionTokenPassword };",
+  },
+  // ─── wave 6 families ──────────────────────────────────────────────────
+  {
+    family: 'login',
+    name: 'non-auth1 probe method discarded (wave 3)',
+    file: 'src/dashboard/windsurf-login.js',
+    anchor: "          || (interpreted.method && interpreted.method !== 'auth1')) {",
+    replacement: "          || (false && interpreted.method && interpreted.method !== 'auth1')) {",
+  },
+  {
+    family: 'reauth',
+    name: 'same token silently clears the reauth state',
+    file: 'src/auth.js',
+    anchor: "  if (apiKey != null && account.status === 'reauth' && apiKey === account.apiKey && !allowSameKey) {",
+    replacement: '  if (false) {',
+  },
+  {
+    family: 'acu',
+    name: 'org handle is the raw upstream id',
+    file: 'src/dashboard/acu-usage.js',
+    anchor: "  return `orgref-${createHash('sha256').update(String(orgId || '')).digest('hex').slice(0, 12)}`;",
+    replacement: "  return String(orgId || '');",
+  },
+  {
+    family: 'request-history',
+    name: 'billed-request history is always empty',
+    file: 'src/auth.js',
+    anchor: '  return { items: ring.slice(-n).reverse(), total: ring.length, capacity: ACCOUNT_REQUEST_CAP, summary };',
+    replacement: '  return { items: [], total: 0, capacity: ACCOUNT_REQUEST_CAP, summary };',
+  },
+  {
+    family: 'devin-cards',
+    name: 'key card returns the raw credential',
+    file: 'src/dashboard/devin-cards.js',
+    anchor: '      apiKeyMasked: maskApiKey(account.apiKey),',
+    replacement: '      apiKeyMasked: account.apiKey,',
+  },
+  {
+    family: 'engines',
+    name: 'declared Node floor lowered to 20',
+    file: 'package.json',
+    anchor: '    "node": ">=22.13.0"',
+    replacement: '    "node": ">=20.0.0"',
+  },
+  {
+    family: 'docker',
+    name: 'healthcheck probes a path the server does not serve',
+    file: 'Dockerfile',
+    anchor: "+ '/health').then((r) => process.exit(r.ok ? 0 : 1))",
+    replacement: "+ '/healthz').then((r) => process.exit(r.ok ? 0 : 1))",
   },
 ];
 

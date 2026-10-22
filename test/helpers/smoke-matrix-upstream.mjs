@@ -34,9 +34,32 @@ export const MATRIX = Object.freeze({
   emailPassword: 'smoke-password@example.test',
   emailUnknown: 'smoke-unknown@example.test',
   emailBrokenProbe: 'smoke-broken-probe@example.test',
+  // Login wave 3 (3.9.50/3.9.51): a known NON-auth1 method, an address that
+  // only app.devin.ai can answer, and the email-code-form identity.
+  emailFirebase: 'smoke-firebase@example.test',
+  emailDevinOnly: 'smoke-devin-only@example.test',
+  emailCodeForm: 'smoke-code-form@example.test',
   password: 'smoke-upstream-' + 'password-8c1f4a',
   auth1Password: 'auth1_smoke_password_9d2f6b4a1c8e',
   sessionTokenPassword: 'devin-session-token$smoke-password-2f7c4a9e1d6b',
+
+  // app.devin.ai login host (wave 3 host choice) mints its own Auth1 + session
+  // pair so a response that crossed hosts cannot be mistaken for windsurf.com.
+  verifyTokenDevin: 'smoke-devin-verify-4c8b1e6d9a3f',
+  auth1TokenDevin: 'auth1_smoke_devin_7b2e4c9d1a5f',
+  sessionTokenDevin: 'devin-session-token$smoke-devin-3a7c9e1d5b2f',
+
+  // POST /windsurf-login/token imports: a bare paste and a desktop deep link.
+  loginImportToken: 'devin-session-token$smoke-login-import-8e2f4a6c1d9b',
+  loginImportTokenDeep: 'devin-session-token$smoke-login-deep-5a9c3e7b2d4f',
+
+  // SessionReauth (3.9.52): the token that dies, its replacement, and the
+  // throwaway accounts the state machine's 409/404 edges need.
+  reauthToken: 'devin-session-token$smoke-reauth-2b6d8f4a1c7e',
+  reauthTokenNext: 'devin-session-token$smoke-reauth-next-9d3f5b7c2e8a',
+  reauthTokenAlive: 'devin-session-token$smoke-reauth-alive-4e8a2c6b9d1f',
+  reauthTokenForce: 'devin-session-token$smoke-reauth-force-7c1e5a3f8b2d',
+  reauthTokenDisabled: 'devin-session-token$smoke-reauth-disabled-6f2a8c4e1b9d',
 
   // DEVIN_CONNECT_TOKEN. A deployment token makes /v1/models and the chat
   // entitlement gate fail open, which is the documented single-token deploy
@@ -94,6 +117,16 @@ export const MATRIX_SECRETS = Object.freeze([
   { label: 'password-login upstream password', value: MATRIX.password },
   { label: 'import-text session token', value: MATRIX.importToken },
   { label: 'email-OTP api key', value: MATRIX.otpKey },
+  { label: 'app.devin.ai email verification token', value: MATRIX.verifyTokenDevin },
+  { label: 'app.devin.ai Auth1 token', value: MATRIX.auth1TokenDevin },
+  { label: 'app.devin.ai session token', value: MATRIX.sessionTokenDevin },
+  { label: 'login-token import (bare)', value: MATRIX.loginImportToken },
+  { label: 'login-token import (deep link)', value: MATRIX.loginImportTokenDeep },
+  { label: 'reauth dead session token', value: MATRIX.reauthToken },
+  { label: 'reauth replacement session token', value: MATRIX.reauthTokenNext },
+  { label: 'reauth alive-probe session token', value: MATRIX.reauthTokenAlive },
+  { label: 'reauth force-override session token', value: MATRIX.reauthTokenForce },
+  { label: 'reauth disabled-account session token', value: MATRIX.reauthTokenDisabled },
 ]);
 
 /** Flatten a connect message's content into searchable text. */
@@ -221,4 +254,12 @@ export const MATRIX_FAMILIES = Object.freeze([
   'acp',
   'i18n',
   'hygiene',
+  // Wave 6 additions: each of these is a user-visible surface that had no
+  // smoke family before 3.9.52.
+  'reauth',
+  'acu',
+  'request-history',
+  'devin-cards',
+  'engines',
+  'docker',
 ]);
