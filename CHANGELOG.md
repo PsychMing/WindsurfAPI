@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 204 份发布说明</a> ·
+  <a href="docs/releases/">全部 205 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **204** 份,v2.0.6 → v3.9.53 |
+| 发布说明 | **205** 份,v2.0.6 → v3.9.54 |
 | git tag | 214 个（2026-10-23 实测；以 `git tag \| wc -l` 为准） |
-| 当前 | **v3.9.53**(2026-10-23) |
+| 当前 | **v3.9.54**(2026-10-23) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -41,6 +41,11 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.9.54](docs/releases/RELEASE_NOTES_3.9.54.md) · 2026-10-23
+
+账号页 P0（KPI 划分、共享余额去重、人话、可取消的车队任务 + 结果面板）；文档漂移守卫（版本/tag/
+banner/notes 链接）；3.9.53 审查修正（#236 检测顺序、Docker exec 超时、notes 勘误）。
 
 ### [v3.9.53](docs/releases/RELEASE_NOTES_3.9.53.md) · 2026-10-23
 
