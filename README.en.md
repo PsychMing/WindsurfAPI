@@ -177,6 +177,22 @@ Default mounts:
 
 If you want a different persistence location, set `DATA_DIR` in `.env`. The Docker setup defaults it to `/data`.
 
+### One-Command Docker Update
+
+Docker deployments use `deploy/update.sh`: pull the new image → recreate only `windsurf-api` → wait for `/health` → roll back to the previous image automatically on failure. Data volumes are never touched, and no `docker.sock` mount or Watchtower is required.
+
+```bash
+bash deploy/update.sh              # pull :latest and update
+bash deploy/update.sh --tag 3.9.52 # pin a release
+bash deploy/update.sh --build      # rebuild from this checkout (local/fork images)
+bash deploy/update.sh --dry-run    # print the plan; change nothing
+bash deploy/update.sh --rollback   # restore the image from before the last update
+```
+
+Full walkthrough, health gate, rollback and troubleshooting: **[docs/DOCKER-UPDATE.md](docs/DOCKER-UPDATE.md)**.
+
+> The `update.sh` below is for git/PM2 deployments. Docker deployments use `deploy/update.sh`.
+
 ### One-Click Update
 
 To pull the latest fixes after deployment, just run one command:
