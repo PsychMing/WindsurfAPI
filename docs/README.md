@@ -120,8 +120,9 @@ silently stopped guarding. These are the tools that close that gap:
   well-formedness, no test execution. Catches a PR that edited a pinned line (the mutation
   becomes a no-op that reports SURVIVED). Exit 2 on failure.
 - `scripts/spec-baseline-audit.mjs [filter]` — **re-measures every spec's `expectBaselinePass`
-  by actually running its test files** (slow; ~40 min for all 25 back when it was written — the
-  corpus is 85 specs today). Run after merges, not per-PR.
+  by actually running its test files** (slow; the only measured number is ~40 min for the 25
+  specs that existed when it was written — the corpus is 85 specs today, and no timing for the
+  85-spec corpus has been measured). Run after merges, not per-PR.
   Baseline drift is a merge product: each PR measures its own spec right alone, and is wrong
   once stacked (#241 anchors, retry-rescue 82/87→88, reasoning-continuity 289→300).
 - `test/default-on-switch-registry.test.js` — ledger of every default-on behaviour switch;
@@ -129,9 +130,9 @@ silently stopped guarding. These are the tools that close that gap:
   ledger entry fails CI. Added after #247 shipped as the sole default-on change in a batch with
   no kill switch and a content-loss failure shape.
 - `scripts/secret-scan.mjs` — now scans `test/` too (fixtures exempt by SHAPE, not path).
-  Round 10 measured ~1100 of ~2333 new lines were never scanned — that is the ledger's round-10
-  close (`AUDIT-LEDGER.md:1021`, commit `02c4858`). `scripts/secret-scan.mjs:104` attributes the
-  same numbers to "round 12", which no round-12 entry supports.
+  Round 10 measured ~1100 of ~2333 new lines were never scanned — that is the ledger's
+  「第十轮收尾」 section (commit `02c4858`); the comment introducing the scanner's `test/`
+  rules in `scripts/secret-scan.mjs` cites the same round.
 
 ## Protocol and product notes
 

@@ -47,6 +47,20 @@ function handoffFiles() {
     .map((n) => join(DOCS, n));
 }
 
+// D-07: the banner's visible text and its href were allowed to disagree. Nine archived
+// handoffs said `当前一份是 [HANDOFF-2026-08-20.md](HANDOFF-2026-10-15.md)` — the href was
+// right, so every existing assertion passed, while the sentence a reader actually sees named
+// a superseded file. A link is a claim in two places; both have to resolve to the same file.
+function handoffLinkMismatches(body) {
+  const out = [];
+  for (const m of body.matchAll(/\[(HANDOFF-[^\]\s]+\.md)\]\(([^)\s#]+)(?:#[^)]*)?\)/g)) {
+    const text = m[1];
+    const href = m[2].split('/').pop();
+    if (href !== text) out.push(`${text} -> ${m[2]}`);
+  }
+  return out;
+}
+
 describe('docs: relative links resolve', () => {
   it('every relative .md link in every tracked markdown file points at a file that exists', () => {
     const broken = [];
@@ -118,6 +132,58 @@ describe('docs: the handoff chain has exactly one live head', () => {
       stale, [],
       `archived handoffs whose banner does not link the live head (${rel(head)}). `
       + 'Nine of them once all named a handoff that had been closed, leaving the chain with no live head.',
+    );
+  });
+
+  it('a link whose visible text is a handoff filename points at that same file', () => {
+    // The old guard read only the href. A banner could therefore say "当前一份是
+    // HANDOFF-2026-08-20" while linking 10-15, and pass every assertion in this file.
+    const problems = [];
+    for (const f of mdFiles()) {
+      for (const mismatch of handoffLinkMismatches(read(f))) problems.push(`${rel(f)}: ${mismatch}`);
+    }
+    assert.deepEqual(
+      problems, [],
+      `handoff links whose visible text names a different file than the href:\n  ${problems.join('\n  ')}`,
+    );
+  });
+
+  it('the banner text after 当前一份是 names the live head, not a superseded one', () => {
+    // The forward pointer is the one link a reader follows from an archived handoff. It has
+    // to name the live head in the visible text, not merely link to it: D-07 survived twelve
+    // releases because the href was correct and the sentence was not.
+    const files = handoffFiles();
+    const head = files.find((f) => !isArchived(f));
+    assert.ok(head, 'precondition: a live head exists');
+    const headName = rel(head).replace('docs/', '');
+    const bad = [];
+    for (const f of files.filter((x) => x !== head)) {
+      const b = banner(f);
+      const at = b.indexOf(ARCHIVED_MARK);
+      assert.notEqual(at, -1, `${rel(f)} must carry the archived banner`);
+      const link = b.slice(at).match(/\[([^\]]+)\]\(([^)]+)\)/);
+      assert.ok(link, `${rel(f)}: the archived banner must link the live head after "${ARCHIVED_MARK}"`);
+      const [, text, href] = link;
+      if (text !== headName || href.split('/').pop() !== headName) {
+        bad.push(`${rel(f)}: [${text}](${href}) — expected [${headName}](${headName})`);
+      }
+    }
+    assert.deepEqual(bad, [], `archived banners naming the wrong live head:\n  ${bad.join('\n  ')}`);
+  });
+
+  it('self-test: the text/href detector rejects the banner shape the old guard missed', () => {
+    assert.deepEqual(
+      handoffLinkMismatches('> 当前一份是 [HANDOFF-2026-08-20.md](HANDOFF-2026-10-15.md)。'),
+      ['HANDOFF-2026-08-20.md -> HANDOFF-2026-10-15.md'],
+    );
+    assert.deepEqual(
+      handoffLinkMismatches('> 当前一份是 [HANDOFF-2026-10-15.md](HANDOFF-2026-10-15.md)。'),
+      [],
+    );
+    assert.deepEqual(
+      handoffLinkMismatches('[HANDOFF-2026-08-03.md](../HANDOFF-2026-08-03.md)'),
+      [],
+      'a path prefix is fine as long as the basename matches',
     );
   });
 
@@ -262,13 +328,109 @@ describe('docs: version claims match the repository', () => {
   //      The probe guard (`known.size > 0`) did not help: the tag under construction was
   //      present, so it never tripped.
   //
-  // So the invariant is restated without git and without history:
+  // The invariant that survived:
   //   - only files that describe the CURRENT state are checked (the index and the live
   //     handoff). Archived handoffs and the ledger are append-only records whose past claims
   //     are SUPPOSED to be stale.
-  //   - the comparison is against `package.json`, which is present in every checkout and is
-  //     what `src/version.js` actually serves. A live doc naming a version other than the
-  //     packaged one is wrong regardless of what tags exist.
+  //   - the primary comparison is against `package.json`, which is present in every checkout
+  //     and is what `src/version.js` actually serves.
+  //   - the tag claim is resolved by git, but fail-closed: a checkout with no tags is an
+  //     error, not a pass, and the release runbook's pre-tag window (push master, then tag)
+  //     is handled explicitly by allowing the packaged version or the newest reachable tag.
+  //     The old version of this guard avoided git entirely after a shallow release checkout
+  //     made every older tag look absent; release.yml now checks out with fetch-depth: 0.
+  //
+  // A version claim is a LABELLED current-state statement. Matching every `vX.Y.Z` would flag
+  // history: the live handoff legitimately says "v3.9.40 之后 = 23 提交" and "wire 基线选到
+  // v3.9.39". The three labels below are the spellings the live docs actually use, and the old
+  // guard saw none of them: D-08 recorded a live head that said "产品 tag v3.9.40" and
+  // "package.json 3.9.40" while `master == vX` matched neither, so it survived twelve releases.
+  const VERSION_CLAIM_PATTERNS = [
+    { label: 'master', re: /master\s*(?:==|=|is)\s*`?v?(\d+\.\d+\.\d+)`?/gi },
+    { label: '产品 tag', re: /产品\s*tag\s+`?v(\d+\.\d+\.\d+)`?/gi },
+    { label: 'package.json', re: /package\.json\s+`?v?(\d+\.\d+\.\d+)`?/gi },
+  ];
+
+  const versionClaims = (body) => {
+    // A blockquote is a citation of a past claim (the ledger's errata do this), not a claim.
+    const stripped = body.split('\n').filter((l) => !l.trimStart().startsWith('>')).join('\n');
+    const out = [];
+    for (const { label, re } of VERSION_CLAIM_PATTERNS) {
+      for (const m of stripped.matchAll(re)) out.push({ label, version: m[1] });
+    }
+    return out;
+  };
+
+  // The live handoff's §0 carries the current facts in its FIRST fenced block. Everything
+  // below that block is history, including the 2026-10-15 snapshot retained under <details>.
+  const currentStateBlock = (body) => {
+    const start = body.search(/^##\s*0\.[^\n]*$/m);
+    assert.notEqual(start, -1, 'the live handoff must carry a "## 0." current-state section');
+    const fence = body.slice(start).match(/^```[^\n]*\n([\s\S]*?)\n```/m);
+    assert.ok(fence, 'the live handoff §0 must carry a fenced status block');
+    return fence[1];
+  };
+
+  const notesFor = (version) => [
+    join(DOCS, 'releases', `RELEASE_NOTES_${version}.md`),
+    join(DOCS, 'releases', `RELEASE_NOTES_v${version}.md`),
+  ].find(existsSync);
+
+  const git = (args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
+
+  // The release runbook pushes master BEFORE it creates the tag (docs/releases/README.md §7).
+  // During that window the live handoff's tag line may legitimately name the previous release,
+  // while its package.json line already names the version being prepared. So the tag claim is
+  // allowed to be either the packaged version or the newest release tag reachable from HEAD —
+  // and nothing older. That is what catches a head that sat twelve releases behind.
+  const latestTagVersion = () => {
+    const tags = git(['tag', '--merged', 'HEAD', '-l', 'v[0-9]*'])
+      .split(/\r?\n/)
+      .filter((t) => /^v\d+\.\d+\.\d+$/.test(t)); // skip v3.2.6-rc4-style prereleases
+    const latest = tags
+      .map((t) => t.replace(/^v/, ''))
+      .sort((a, b) => {
+        const pa = a.split('.').map(Number);
+        const pb = b.split('.').map(Number);
+        return pa[0] - pb[0] || pa[1] - pb[1] || pa[2] - pb[2];
+      })
+      .pop();
+    assert.ok(latest, 'no release tags reachable from HEAD — run `git fetch --tags`');
+    return latest;
+  };
+
+  const staleClaimReason = (claim, pkgVersion, latestTag) => {
+    if (claim.label === '产品 tag') {
+      if (claim.version === pkgVersion || claim.version === latestTag) return null;
+      return `says v${claim.version}; packaged is ${pkgVersion}, latest reachable tag is v${latestTag}`;
+    }
+    if (claim.version !== pkgVersion) return `says ${claim.version}; package.json is ${pkgVersion}`;
+    return null;
+  };
+
+  // A version link is a claim about a specific version in two places: the text and the target.
+  // The relative-link guard above proves the target exists; this proves it is the notes file
+  // for the version the text names. Tag URLs resolve offline through the same notes-file
+  // check; the live handoff's §0 is where the real annotated tag is resolved by git.
+  const versionLinkProblem = (version, target, fromFile) => {
+    const selfTag = target.match(
+      /^https?:\/\/github\.com\/dwgx\/WindsurfAPI\/releases\/tag\/v?(\d+\.\d+\.\d+)\/?$/i,
+    );
+    if (selfTag) {
+      if (selfTag[1] !== version) return `[v${version}] -> ${target} names v${selfTag[1]}`;
+      if (!notesFor(version)) return `[v${version}] -> ${target} has no release-notes file`;
+      return null;
+    }
+    if (/^https?:/i.test(target)) return null; // someone else's document
+    const notes = target.split('/').pop().match(/^RELEASE_NOTES_v?(\d+\.\d+\.\d+)\.md$/);
+    if (!notes) return `[v${version}] -> ${target} is not a release-notes file`;
+    if (notes[1] !== version) return `[v${version}] -> ${target} is the notes file for v${notes[1]}`;
+    if (!existsSync(resolve(dirname(fromFile), target))) {
+      return `[v${version}] -> ${target} does not exist`;
+    }
+    return null;
+  };
+
   it('the packaged version is a plain semver string', () => {
     const pkg = JSON.parse(read(join(ROOT, 'package.json')));
     assert.match(pkg.version, /^\d+\.\d+\.\d+$/, 'package.json version must be bare semver');
@@ -430,9 +592,9 @@ describe('docs: version claims match the repository', () => {
   // harmless (which is the anti-pattern this repo rejects in review). Instead, drive the
   // detection logic on synthetic inputs where the answer is known.
   //
-  // Both detectors are duplicated here deliberately rather than exported: what is being pinned
-  // is that a checker of THIS SHAPE rejects THESE inputs. If the assertions above are ever
-  // rewritten to a different mechanism, these fixtures should be rewritten with them.
+  // The fixtures drive the same helpers the real assertions use. What is being pinned is that
+  // a checker of THIS SHAPE rejects THESE inputs; if the assertions above are rewritten to a
+  // different mechanism, these fixtures must be rewritten with them.
   describe('self-test: the detectors reject known-bad inputs', () => {
     const declaredIn = (envExample) =>
       new Set([...envExample.matchAll(/^[ \t]*#?[ \t]*([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]));
@@ -463,28 +625,67 @@ describe('docs: version claims match the repository', () => {
       assert.deepEqual(found, [], 'no false positive when the switch IS documented');
     });
 
-    const staleClaims = (body, pkgVersion) => {
-      const stripped = body.split('\n').filter((l) => !l.trimStart().startsWith('>')).join('\n');
-      return [...stripped.matchAll(/master\s*(?:==|=|is)\s*`?v(\d+\.\d+\.\d+)`?/gi)]
-        .map((m) => m[1]).filter((v) => v !== pkgVersion);
-    };
+    it('the claim scanner sees every labelled current-state spelling', () => {
+      assert.deepEqual(versionClaims('master == `v3.9.17`.').map((c) => c.version), ['3.9.17']);
+      assert.deepEqual(versionClaims('master is v1.0.0').map((c) => c.version), ['1.0.0'], 'the `is` spelling');
+      assert.deepEqual(versionClaims('产品 tag     v3.9.40 —— annotated').map((c) => c.version), ['3.9.40']);
+      assert.deepEqual(versionClaims('package.json 3.9.40（= tag）').map((c) => c.version), ['3.9.40']);
+    });
 
-    it('a stale version claim is detected, and a current one is not', () => {
-      assert.deepEqual(staleClaims('right now master == `v3.9.17`.', '3.9.20'), ['3.9.17']);
-      assert.deepEqual(staleClaims('right now master == `v3.9.20`.', '3.9.20'), []);
-      assert.deepEqual(staleClaims('master is v1.0.0', '3.9.20'), ['1.0.0'], 'the `is` spelling too');
+    it('the tag claim may name the packaged version or the latest tag, never an older one', () => {
+      // Pre-tag window: package.json is 3.9.54 while the newest reachable tag is still v3.9.53.
+      assert.equal(staleClaimReason({ label: '产品 tag', version: '3.9.53' }, '3.9.54', '3.9.53'), null);
+      assert.equal(staleClaimReason({ label: '产品 tag', version: '3.9.54' }, '3.9.54', '3.9.53'), null);
+      assert.match(
+        staleClaimReason({ label: '产品 tag', version: '3.9.40' }, '3.9.54', '3.9.53'),
+        /latest reachable tag is v3\.9\.53/,
+      );
+      assert.match(
+        staleClaimReason({ label: 'package.json', version: '3.9.53' }, '3.9.54', '3.9.53'),
+        /package\.json is 3\.9\.54/,
+      );
+      assert.equal(staleClaimReason({ label: 'package.json', version: '3.9.54' }, '3.9.54', '3.9.53'), null);
+    });
+
+    it('a bare historical mention is NOT a claim', () => {
+      // The live handoff's own §0 has sentences like this; matching every vX.Y.Z would make
+      // the guard fail on history rather than on a stale current-state statement.
+      assert.deepEqual(versionClaims('v3.9.40 之后 = 23 提交；wire 基线选到 v3.9.39 严格祖先。'), []);
     });
 
     it('a quoted claim inside a blockquote is NOT treated as a claim', () => {
       // This is what broke the first two versions of the version assertion: an erratum
       // correcting a bad claim had to restate it, and the guard flagged the correction.
-      const body = '> The old row said master == `v3.9.17`, which was never a tag.\n\nmaster == `v3.9.20` today.';
-      assert.deepEqual(staleClaims(body, '3.9.20'), [],
+      const body = '> 产品 tag v3.9.17 是旧值\n\n产品 tag v3.9.20 是现状';
+      assert.deepEqual(versionClaims(body).map((c) => c.version), ['3.9.20'],
         'a citation of a wrong claim must not be read as making it');
+    });
+
+    it('the current-state extractor reads the first fenced block, not the retained history', () => {
+      const body = '## 0. 当前状态\n\n```\n产品 tag v9.9.9\n```\n\n### 历史快照\n\n```\n产品 tag v1.0.0\n```\n';
+      assert.deepEqual(versionClaims(currentStateBlock(body)).map((c) => c.version), ['9.9.9']);
+    });
+
+    it('a version link to the wrong notes file is detected', () => {
+      const from = join(ROOT, 'CHANGELOG.md');
+      assert.equal(versionLinkProblem('3.9.17', 'docs/releases/RELEASE_NOTES_3.9.17.md', from), null);
+      assert.match(
+        versionLinkProblem('3.9.17', 'docs/releases/RELEASE_NOTES_3.9.18.md', from),
+        /notes file for v3\.9\.18/,
+      );
+      assert.match(versionLinkProblem('3.9.17', 'docs/README.md', from), /not a release-notes file/);
+      assert.equal(
+        versionLinkProblem('3.9.17', 'https://github.com/dwgx/WindsurfAPI/releases/tag/v3.9.17', from),
+        null,
+      );
+      assert.match(
+        versionLinkProblem('3.9.17', 'https://github.com/dwgx/WindsurfAPI/releases/tag/v3.9.18', from),
+        /names v3\.9\.18/,
+      );
     });
   });
 
-  it('a doc describing the current state names the packaged version, not another one', () => {
+  it('the live handoff §0 and the docs index agree with the packaged version', () => {
     const pkgVersion = JSON.parse(read(join(ROOT, 'package.json'))).version;
     // The live handoff is whichever one the index's first row points at — reuse the same
     // resolution the chain assertions above rely on, so this cannot drift from them.
@@ -493,18 +694,122 @@ describe('docs: version claims match the repository', () => {
     const liveHead = (firstRow.match(/\((HANDOFF-[^)]+\.md)\)/) || [])[1];
     assert.ok(liveHead, 'the index first row must link the live handoff (see the chain assertions)');
 
-    const live = [join(DOCS, 'README.md'), join(DOCS, liveHead)];
+    const block = currentStateBlock(read(join(DOCS, liveHead)));
+    // Probes: a rewrite that drops the labelled lines must not turn the comparison vacuous.
+    assert.match(block, /产品\s*tag\s+`?v\d+\.\d+\.\d+/, '§0 must carry a 产品 tag line');
+    assert.match(block, /package\.json\s+`?v?\d+\.\d+\.\d+/, '§0 must carry a package.json line');
+    // The index's first row promises "its §0 names the live product tag and SHA". Keep both.
+    const master = block.match(/master\s+`([0-9a-f]{7,40})`/);
+    assert.ok(master, '§0 must name master’s SHA');
+    const masterSha = git(['rev-parse', `${master[1]}^{commit}`]);
+    assert.ok(masterSha.startsWith(master[1]), `§0 master SHA ${master[1]} is not a commit`);
+    try {
+      execFileSync('git', ['merge-base', '--is-ancestor', masterSha, 'HEAD'], { cwd: ROOT, stdio: 'pipe' });
+    } catch {
+      assert.fail(`§0 master SHA ${master[1]} is not an ancestor of HEAD`);
+    }
+
+    const claims = [
+      ...versionClaims(block).map((c) => ({ ...c, where: `${rel(join(DOCS, liveHead))} §0` })),
+      ...versionClaims(index).map((c) => ({ ...c, where: 'docs/README.md' })),
+    ];
+    assert.ok(claims.length >= 2, `probe check: expected at least 2 labelled version claims, found ${claims.length}`);
+    const latestTag = latestTagVersion();
+    const stale = claims
+      .map((c) => ({ ...c, reason: staleClaimReason(c, pkgVersion, latestTag) }))
+      .filter((c) => c.reason)
+      .map((c) => `${c.where} ${c.label} ${c.reason}`);
+    assert.deepEqual(stale, [], `stale version claims in live docs:\n  ${stale.join('\n  ')}`);
+  });
+
+  it('the live handoff §0 names a real annotated tag and that tag’s real commit', () => {
+    const pkgVersion = JSON.parse(read(join(ROOT, 'package.json'))).version;
+    const index = read(join(DOCS, 'README.md'));
+    const liveHead = (index.split('\n').find((l) => l.startsWith('| 1 |')) || '')
+      .match(/\((HANDOFF-[^)]+\.md)\)/)?.[1];
+    assert.ok(liveHead, 'the index first row must link the live handoff');
+    const block = currentStateBlock(read(join(DOCS, liveHead)));
+
+    const line = block.match(
+      /产品\s*tag\s+`?v(\d+\.\d+\.\d+)`?[^\n]*?→\s*commit\s+`?([0-9a-f]{7,40})`?/,
+    );
+    assert.ok(line, '§0 must state `产品 tag vX.Y.Z — … → commit <sha>`');
+    const [, version, commit] = line;
+    const latestTag = latestTagVersion();
+    assert.ok(
+      version === pkgVersion || version === latestTag,
+      `§0 names v${version}; packaged is ${pkgVersion}, latest reachable tag is v${latestTag}`,
+    );
+
+    const fullCommit = git(['rev-parse', `${commit}^{commit}`]);
+    assert.ok(fullCommit.startsWith(commit), `§0 commit ${commit} is not a commit`);
+    try {
+      execFileSync('git', ['merge-base', '--is-ancestor', fullCommit, 'HEAD'], { cwd: ROOT, stdio: 'pipe' });
+    } catch {
+      assert.fail(`§0 commit ${commit} is not an ancestor of HEAD`);
+    }
+
+    // Fail closed. A checkout with no tags cannot verify the claim; reporting "nothing to
+    // compare" would be the same skip-read-as-green that let the stale head survive twelve
+    // releases. Release CI checks out with fetch-depth: 0 (.github/workflows/release.yml), so
+    // the tags are present where this gate actually runs.
+    const tags = git(['tag']).split(/\r?\n/).filter(Boolean);
+    assert.ok(tags.length > 0, 'no tags in this checkout — run `git fetch --tags`; an unresolvable tag claim must not pass');
+    const tagName = `v${version}`;
+    if (!tags.includes(tagName)) {
+      // The runbook pushes master before it creates the tag (docs/releases/README.md §7).
+      // A forward-looking claim is allowed only when it names the packaged version; anything
+      // else is a stale or invented tag. In a shallow checkout the tag may simply be missing,
+      // so that case still fails closed with the fetch instruction above.
+      assert.ok(
+        git(['rev-parse', '--is-shallow-repository']) !== 'true',
+        `${tagName} is not visible in this shallow checkout — run \`git fetch --tags\``,
+      );
+      assert.equal(
+        version,
+        pkgVersion,
+        `§0 names ${tagName}, which is not a tag; only the packaged version may be forward-looking`,
+      );
+      return; // pre-tag window; release.yml verifies the tag once it exists
+    }
+    assert.equal(git(['cat-file', '-t', tagName]), 'tag', `${tagName} must be annotated, not lightweight`);
+    const tagCommit = git(['rev-parse', `${tagName}^{commit}`]);
+    assert.ok(tagCommit.startsWith(commit), `§0 commit ${commit} is not ${tagName}'s commit ${tagCommit}`);
+    const object = block.match(/对象\s+`?([0-9a-f]{7,40})`?/);
+    if (object) {
+      const tagObject = git(['rev-parse', tagName]);
+      assert.ok(tagObject.startsWith(object[1]), `§0 tag object ${object[1]} is not ${tagObject}`);
+    }
+  });
+
+  it('every version link resolves to that version’s release notes (or its tag)', () => {
     const problems = [];
-    for (const f of live) {
-      // Strip blockquotes: an erratum quoting an old claim is a citation, not a claim.
-      const body = read(f).split('\n').filter((l) => !l.trimStart().startsWith('>')).join('\n');
-      for (const m of body.matchAll(/master\s*(?:==|=|is)\s*`?v(\d+\.\d+\.\d+)`?/gi)) {
-        if (m[1] !== pkgVersion) {
-          problems.push(`${rel(f)} says master == v${m[1]} but package.json is ${pkgVersion}`);
-        }
+    let local = 0;
+    for (const f of mdFiles()) {
+      for (const m of read(f).matchAll(/\[v?(\d+\.\d+\.\d+)\]\(([^)\s#]+)(?:#[^)]*)?\)/g)) {
+        const problem = versionLinkProblem(m[1], m[2], f);
+        if (problem) problems.push(`${rel(f)}: ${problem}`);
+        if (!/^https?:/i.test(m[2])) local++;
       }
     }
-    assert.deepEqual(problems, [], `stale version claims in live docs:\n  ${problems.join('\n  ')}`);
+    assert.ok(local >= 50, `probe check: only ${local} local version links found — the scan is broken`);
+    assert.deepEqual(problems, [], `version links that do not resolve:\n  ${problems.join('\n  ')}`);
+  });
+
+  it('the CHANGELOG current row names the packaged version', () => {
+    const pkgVersion = JSON.parse(read(join(ROOT, 'package.json'))).version;
+    const row = read(join(ROOT, 'CHANGELOG.md')).match(/^\|\s*当前\s*\|\s*\*\*v?(\d+\.\d+\.\d+)\*\*/m);
+    assert.ok(row, 'CHANGELOG.md must carry a `| 当前 | **vX.Y.Z**` row');
+    assert.equal(row[1], pkgVersion, `CHANGELOG's 当前 row says ${row[1]}, package.json is ${pkgVersion}`);
+  });
+
+  it('the CHANGELOG banner count and table count agree', () => {
+    const changelog = read(join(ROOT, 'CHANGELOG.md'));
+    const banner = changelog.match(/全部\s+(\d+)\s+份发布说明/);
+    const table = changelog.match(/发布说明\s*\|\s*\*\*(\d+)\*\*\s*份/);
+    assert.ok(banner, 'CHANGELOG.md banner must state 全部 N 份发布说明');
+    assert.ok(table, 'CHANGELOG.md table must state 发布说明 | **N** 份');
+    assert.equal(banner[1], table[1], `banner says ${banner[1]} notes, table says ${table[1]}`);
   });
 
   it('the packaged version has a CHANGELOG index row and a release-notes file', () => {

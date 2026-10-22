@@ -15,7 +15,7 @@
 
 <br/>
 
-JavaScript · MIT · ★3,046
+JavaScript · MIT · ★3,104
 
 [docs](https://dwgx.github.io/WindsurfAPI/) · [releases](https://github.com/dwgx/WindsurfAPI/releases) · [issues](https://github.com/dwgx/WindsurfAPI/issues)
 
