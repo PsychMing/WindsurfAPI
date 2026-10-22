@@ -10,7 +10,10 @@ README 的表格列常用变量，[.env.example](../.env.example) 是完整清�
 2026-10-22 在有界队列分支（base `e2c8547`）重测：**164**；新增
 `DEVIN_CONNECT_MAX_QUEUE_FRAMES`、`DEVIN_CONNECT_MAX_QUEUE_BYTES` 与
 `DEVIN_CONNECT_RELOGIN_QUEUE_TIMEOUT_MS` 三个读取点，同时收录进 `.env.example`
-（故上句覆盖数 78→81）。）
+（故上句覆盖数 78→81）。
+2026-10-23 在 `feat/cascade-turn`（base `432aee3`）重测：**165**；新增
+`WINDSURFAPI_CASCADE_TURN` 一个读取点（`src/cascade-turn.js`），只开生产者
+`CascadeTurn`，默认关。
 
 数开关**别用裸 `grep 'env\.'`**，有两个坑：一是 `WINDSURFAPI_TRACE` 这类名字是
 `WINDSURFAPI_TRACE_DIR` 的前缀，正则不加边界会重复计数；二是**相当一部分读取点
@@ -132,6 +135,19 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | `WINDSURFAPI_NATIVE_TOOL_BRIDGE_ALLOWLIST_NAMES` | 空 | 覆盖工具白名单的名字，逗号分隔（`cascade-native-bridge.js` 的 `csvListEnv`）。留空用内置名单。 |
 | `WINDSURFAPI_NATIVE_BRIDGE_STATS_KEY_LIMIT` | `200` | 统计里最多保留多少个 key（`native-bridge-stats.js`，非有限值或 ≤0 时回落 200）。 |
 | `WINDSURFAPI_NATIVE_BRIDGE_DECISION_RING_SIZE` | `25` | 决策环形缓冲保留多少条（同上，回落 25）。调大能看更长的决策历史。 |
+
+## Cascade 可恢复 turn（默认关）
+
+`WINDSURFAPI_CASCADE_TURN=1` 时，`cascadeChat` 的轮询核心走 `src/cascade-turn.js`
+的生产者对象：它拥有 `stepOffset` / `pollFloor` / `yieldedByStep` / `thinkingByStep`
+和重叠窗口，并在返回的 chunks 上附带 `turnSnapshot`。**默认关**，关时走原有内联
+轮询，行为与返回形状都不变。快照缺逐 step 游标会被 `CascadeTurnCursorError` 拒绝
+—— 只凭 `stepOffset` 恢复会读到 0 个 step（Q10 E2b：596 → 16,632 字符发生在同
+三个 step 内）。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `WINDSURFAPI_CASCADE_TURN` | 关 | 启用生产者级 `CascadeTurn`（`src/cascade-turn.js`，`=== '1'`）。P1 阶段只做状态抽取与懒恢复快照，不启用 detach / 注册表 / 后台泵；默认关，开它只改变内部轮询状态的所有者，不改变输出。 |
 
 ## 默认开的功能开关
 

@@ -16,6 +16,7 @@ import { extractImages } from './image.js';
 import { closeSessionForPort, grpcFrame, grpcUnary, grpcStream } from './grpc.js';
 import { beginLsUse, endLsUse, getLsEntryByPort } from './langserver.js';
 import { CC_CONTENT_MARKERS } from './handlers/cc-compat.js';
+import { CascadeTurn, CASCADE_STEP_OVERLAP, cascadeTurnEnabled } from './cascade-turn.js';
 import {
   buildRawGetChatMessageRequest, parseRawResponse,
   buildInitializePanelStateRequest,
@@ -342,13 +343,6 @@ const CASCADE_TIMEOUTS = {
   idleGraceMs:      positiveIntEnv('CASCADE_IDLE_GRACE_MS', 8_000),
   stallRetryMinText: positiveIntEnv('CASCADE_STALL_RETRY_MIN_TEXT', 300),
 };
-
-// Cascade steps are append-only while ACTIVE: a step's responseText/thinking
-// grows in place across polls. Polling strictly after the last consumed step
-// would strand that growth until the final sweep, so each poll re-reads this
-// many already-seen steps. Bounded (not the whole trajectory) and floored at
-// the turn's resume offset so pre-turn steps are never replayed.
-const CASCADE_STEP_OVERLAP = 8;
 
 export function shouldColdStall({ elapsed, coldStallMs, sawActive, sawText, totalThinking, toolCallCount }) {
   return elapsed > coldStallMs && sawActive && !sawText && (totalThinking || 0) === 0 && (toolCallCount || 0) === 0;
@@ -1020,6 +1014,19 @@ export class WindsurfClient {
       // Window start of the most recent poll. The final IDLE sweep re-reads
       // the same bounded window for modifiedText polish.
       let lastWindowStart = stepOffset;
+      // Q10 P1: the producer-level turn is opt-in. When the flag is off the
+      // loop below is the pre-existing inline implementation, byte-for-byte;
+      // when it is on, the same window/cursor work runs through CascadeTurn
+      // so a detach can snapshot one object instead of scavenging locals.
+      const turn = cascadeTurnEnabled()
+        ? new CascadeTurn({
+            cascadeId,
+            stepOffset,
+            pollFloor,
+            chunks,
+            emit: chunk => onChunk?.(chunk),
+          })
+        : null;
       // Tool calls that were ACTIVE when last seen and have not reported a
       // result since, keyed by name+arguments. Persisted across polls because
       // a step can fall out of the overlap window while its tool is still
@@ -1039,18 +1046,37 @@ export class WindsurfClient {
         // steps is O(overlap + new), never O(trajectory), and never reaches
         // behind pollFloor. Per-step cursors below are keyed by ABSOLUTE
         // index (`windowStart + i`), so re-reads only emit real deltas.
-        const windowStart = Math.max(pollFloor, stepOffset - CASCADE_STEP_OVERLAP);
-        const stepsProto = buildGetTrajectoryStepsRequest(cascadeId, windowStart);
-        const stepsResp = await grpcUnary(
-          this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto)
-        );
-        const steps = parseTrajectorySteps(stepsResp);
-        lastWindowStart = windowStart;
-        const totalSteps = windowStart + steps.length;
-        stepOffset = Math.max(stepOffset, totalSteps);
-        if (totalSteps > lastStepCount) {
-          lastStepCount = totalSteps;
-          lastGrowthAt = Date.now();
+        let windowStart;
+        let steps;
+        if (turn) {
+          const read = await turn.readWindow(async (start) => {
+            const stepsResp = await grpcUnary(
+              this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`,
+              grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, start))
+            );
+            return parseTrajectorySteps(stepsResp);
+          });
+          ({ windowStart, steps } = read);
+          lastWindowStart = read.windowStart;
+          stepOffset = turn.stepOffset;
+          if (turn.stepOffset > lastStepCount) {
+            lastStepCount = turn.stepOffset;
+            lastGrowthAt = Date.now();
+          }
+        } else {
+          windowStart = Math.max(pollFloor, stepOffset - CASCADE_STEP_OVERLAP);
+          const stepsProto = buildGetTrajectoryStepsRequest(cascadeId, windowStart);
+          const stepsResp = await grpcUnary(
+            this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto)
+          );
+          steps = parseTrajectorySteps(stepsResp);
+          lastWindowStart = windowStart;
+          const totalSteps = windowStart + steps.length;
+          stepOffset = Math.max(stepOffset, totalSteps);
+          if (totalSteps > lastStepCount) {
+            lastStepCount = totalSteps;
+            lastGrowthAt = Date.now();
+          }
         }
         const hasNativeProposalInBatch = nativeMode && !nativeBridgePollAfterTool
           && steps.some(step => Array.isArray(step?.toolCalls)
@@ -1237,6 +1263,23 @@ export class WindsurfClient {
             }
           }
 
+          if (turn) {
+            // Same per-step order as the inline path: tool calls above, then
+            // thinking, then text. The turn owns the cursors and the producer
+            // buffer; the loop mirrors its counters for stall/summary logic.
+            const consumed = await turn.consumeStep(step, stepIndex);
+            if (consumed.thinkingDelta) {
+              totalThinking += consumed.thinkingDelta.length;
+              lastGrowthAt = Date.now();
+            }
+            if (consumed.textDelta) {
+              totalYielded += consumed.textDelta.length;
+              lastGrowthAt = Date.now();
+              sawText = true;
+            }
+            continue;
+          }
+
           // Thinking delta: the LS keeps `thinking` as the cumulative
           // reasoning text for the step. Track a per-step cursor and emit
           // only the tail as reasoning_content. Crucially, thinking growth
@@ -1314,7 +1357,7 @@ export class WindsurfClient {
           hasActiveStep,
         });
         if (sawText && lastStatus !== 1 && msSinceGrowth > effectiveWarmStallMs) {
-          const diag = { msSinceGrowth, textLen: totalYielded, thinkingLen: totalThinking, stepCount: yieldedByStep.size, toolCalls: seenToolCallIds.size, lastStatus, ceilingMs: effectiveWarmStallMs, hasActiveStep };
+          const diag = { msSinceGrowth, textLen: totalYielded, thinkingLen: totalThinking, stepCount: turn ? turn.yieldedByStep.size : yieldedByStep.size, toolCalls: seenToolCallIds.size, lastStatus, ceilingMs: effectiveWarmStallMs, hasActiveStep };
           if (totalYielded < STALL_RETRY_MIN_TEXT) {
             log.warn('Cascade warm stall (short, retrying on next account)', diag);
             endReason = 'stall_warm_retry';
@@ -1367,38 +1410,47 @@ export class WindsurfClient {
               grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, lastWindowStart))
             );
             const finalSteps = parseTrajectorySteps(finalResp);
-            stepOffset = Math.max(stepOffset, lastWindowStart + finalSteps.length);
-            for (let i = 0; i < finalSteps.length; i++) {
-              const step = finalSteps[i];
-              const stepIndex = lastWindowStart + i;
-              const responseText = step.responseText || '';
-              const modifiedText = step.modifiedText || '';
-              const prev = yieldedByStep.get(stepIndex) || 0;
-
-              // Normal top-up: responseText grew past what we streamed.
-              if (responseText.length > prev) {
-                const delta = responseText.slice(prev);
-                yieldedByStep.set(stepIndex, responseText.length);
-                totalYielded += delta.length;
-                chunks.push({ text: delta, thinking: '', isError: false });
-                // C2: the end-of-turn top-ups are producer frames like any
-                // other; a pressured writer must hold them (and the terminal
-                // DONE that follows this loop) rather than let them overtake.
-                await onChunk?.({ text: delta, thinking: '', isError: false });
+            if (turn) {
+              turn.advanceTo(lastWindowStart + finalSteps.length);
+              stepOffset = turn.stepOffset;
+              for (let i = 0; i < finalSteps.length; i++) {
+                const consumed = await turn.consumeFinalStep(finalSteps[i], lastWindowStart + i);
+                if (consumed.textDelta) totalYielded += consumed.textDelta.length;
               }
+            } else {
+              stepOffset = Math.max(stepOffset, lastWindowStart + finalSteps.length);
+              for (let i = 0; i < finalSteps.length; i++) {
+                const step = finalSteps[i];
+                const stepIndex = lastWindowStart + i;
+                const responseText = step.responseText || '';
+                const modifiedText = step.modifiedText || '';
+                const prev = yieldedByStep.get(stepIndex) || 0;
 
-              // Modified-response top-up: only if it's a strict extension of
-              // what we already emitted. If modifiedText rewrites the prefix
-              // (common when LS polishes), emitting the tail would splice
-              // wrong content onto the stream, so we skip it and keep the
-              // raw responseText we already showed.
-              const cursor = yieldedByStep.get(stepIndex) || 0;
-              if (modifiedText.length > cursor && modifiedText.startsWith(responseText)) {
-                const delta = modifiedText.slice(cursor);
-                yieldedByStep.set(stepIndex, modifiedText.length);
-                totalYielded += delta.length;
-                chunks.push({ text: delta, thinking: '', isError: false });
-                await onChunk?.({ text: delta, thinking: '', isError: false });
+                // Normal top-up: responseText grew past what we streamed.
+                if (responseText.length > prev) {
+                  const delta = responseText.slice(prev);
+                  yieldedByStep.set(stepIndex, responseText.length);
+                  totalYielded += delta.length;
+                  chunks.push({ text: delta, thinking: '', isError: false });
+                  // C2: the end-of-turn top-ups are producer frames like any
+                  // other; a pressured writer must hold them (and the terminal
+                  // DONE that follows this loop) rather than let them overtake.
+                  await onChunk?.({ text: delta, thinking: '', isError: false });
+                }
+
+                // Modified-response top-up: only if it's a strict extension of
+                // what we already emitted. If modifiedText rewrites the prefix
+                // (common when LS polishes), emitting the tail would splice
+                // wrong content onto the stream, so we skip it and keep the
+                // raw responseText we already showed.
+                const cursor = yieldedByStep.get(stepIndex) || 0;
+                if (modifiedText.length > cursor && modifiedText.startsWith(responseText)) {
+                  const delta = modifiedText.slice(cursor);
+                  yieldedByStep.set(stepIndex, modifiedText.length);
+                  totalYielded += delta.length;
+                  chunks.push({ text: delta, thinking: '', isError: false });
+                  await onChunk?.({ text: delta, thinking: '', isError: false });
+                }
               }
             }
             endReason = sawText ? 'idle_done' : 'idle_empty';
@@ -1517,7 +1569,12 @@ export class WindsurfClient {
       // that iterate over it keep working.
       chunks.cascadeId = cascadeId;
       chunks.sessionId = sessionId;
-      chunks.stepOffset = stepOffset;
+      chunks.stepOffset = turn ? turn.stepOffset : stepOffset;
+      // Q10 P1: the producer state a detach would store. Only present when
+      // the flag is on; the default return shape is unchanged. A completed
+      // turn's snapshot is not a resume point (the registry serves its
+      // chunks); a mid-turn detach calls turn.snapshot() at the same seam.
+      if (turn) chunks.turnSnapshot = turn.snapshot();
       chunks.generatorOffset = serverUsage?.entryCount != null
         ? generatorOffset + serverUsage.entryCount
         : null;
