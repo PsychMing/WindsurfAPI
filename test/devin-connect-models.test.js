@@ -150,8 +150,14 @@ describe('resolveConnectSelector — live catalog (audit 2026-07-12 snapshot sta
     assert.equal(m.resolveConnectSelector('claude-opus-4.8').mapped, true,
       'precondition: an alias targeting a live selector remains valid');
     const retired = m.resolveConnectSelector('gpt-5.5', { warnOnFallback: false });
-    assert.deepEqual(retired, { selector: m.FREE_TIER_SELECTOR, mapped: false },
-      'chat preflight must not keep a snapshot-only alias routable after complete live sync');
+    // #258 residual: this used to degrade to FREE_TIER_SELECTOR. On a complete
+    // live sync that selector is not callable either (it is absent from the live
+    // catalog and 502s as "quota exhausted"), so "retired" must mean RETIRED —
+    // null forces the handler to answer model_not_found instead of routing the
+    // caller to a dead model and reporting its quota error as if it were theirs.
+    assert.deepEqual(retired, { selector: null, mapped: false },
+      'chat preflight must not keep a snapshot-only alias routable after complete live sync, '
+      + 'and must not redirect it to a selector the live catalog proved absent');
   });
 
   it('keeps snapshot aliases during an explicitly incomplete mixed-pool sync', async () => {
@@ -230,5 +236,75 @@ describe('resolveConnectSelector — live catalog (audit 2026-07-12 snapshot sta
     const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-e`);
     m.setLiveCatalogSelectors([{ selector: 'qwen-3' }]);
     assert.equal(m.resolveConnectSelector('totally-fake-model-xyz').mapped, false);
+  });
+});
+
+describe('resolveConnectSelector — live free fallback (#258 residual)', () => {
+  // #258 residual: the static `swe-1-6-slow` degrade target is absent from a
+  // synced catalog and answers with "Your daily usage quota has been exhausted",
+  // so an unmapped name surfaced as a FAKE QUOTA ERROR. A degrade target has to
+  // be callable, and the caller that holds live pricing data says which are.
+
+  it('refuses the frozen fallback once a live catalog proves it absent', async () => {
+    const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-fb1`);
+    m.setLiveCatalogSelectors([{ selector: 'swe-1-7' }, { selector: 'glm-5-2' }]);
+    assert.deepEqual(
+      m.resolveConnectSelector('totally-fake-model-xyz', { warnOnFallback: false }),
+      { selector: null, mapped: false },
+      'no callable target: the caller must answer model_not_found, not route to a dead selector',
+    );
+    assert.deepEqual(
+      m.resolveConnectSelector('', { warnOnFallback: false }),
+      { selector: null, mapped: false },
+      'the omitted-model path has the same constraint',
+    );
+  });
+
+  it('degrades to a live free selector supplied by the caller', async () => {
+    const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-fb2`);
+    m.setLiveCatalogSelectors([{ selector: 'swe-1-7' }, { selector: 'glm-5-2' }]);
+    assert.deepEqual(
+      m.resolveConnectSelector('totally-fake-model-xyz', {
+        warnOnFallback: false,
+        freeFallback: ['glm-5-2', 'swe-1-7'],
+      }),
+      { selector: 'glm-5-2', mapped: false },
+      'caller order is the preference order',
+    );
+  });
+
+  it('skips a free selector the catalog does not expose and takes the next', async () => {
+    const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-fb3`);
+    m.setLiveCatalogSelectors([{ selector: 'swe-1-7' }]);
+    assert.deepEqual(
+      m.resolveConnectSelector('totally-fake-model-xyz', {
+        warnOnFallback: false,
+        // swe-2-medium is free on a promo deployment but this catalog does not
+        // carry it — routing there would be the same dead-target defect.
+        freeFallback: ['swe-2-medium', 'swe-1-7'],
+      }),
+      { selector: 'swe-1-7', mapped: false },
+    );
+  });
+
+  it('a live free selector outranks the static floor on cold start', async () => {
+    const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-fb4`);
+    assert.equal(m.hasLiveCatalog(), false);
+    assert.deepEqual(
+      m.resolveConnectSelector('totally-fake-model-xyz', {
+        warnOnFallback: false,
+        freeFallback: ['swe-1-7'],
+      }),
+      { selector: 'swe-1-7', mapped: false },
+    );
+  });
+
+  it('keeps the static floor while no live catalog has arrived', async () => {
+    const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-fb5`);
+    assert.deepEqual(
+      m.resolveConnectSelector('totally-fake-model-xyz', { warnOnFallback: false }),
+      { selector: 'swe-1-6-slow', mapped: false },
+      'cold start: nothing has contradicted the documented floor yet, so it applies',
+    );
   });
 });

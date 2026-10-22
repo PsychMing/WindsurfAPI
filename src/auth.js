@@ -342,6 +342,51 @@ export function getCurrentlyFreeConnectSelectors() {
 }
 
 /**
+ * Ordered degrade targets for an UNMAPPED DEVIN_CONNECT model name (#258 residual).
+ *
+ * `resolveConnectSelector` used to send every unmapped name to the frozen
+ * `swe-1-6-slow`. On a deployment with a live catalog that selector does not
+ * exist (measured 2026-10-22: absent from the 240-selector Connect catalog and
+ * from availableModels, and answered with "Your daily usage quota has been
+ * exhausted"), so a typo or a stale alias surfaced as a FAKE QUOTA ERROR that
+ * pointed at the account instead of at the model name.
+ *
+ * The replacement is the live free set, in the order the chat path should try:
+ *   1. selectors the account's `modelCostTier`/`promoStatus` marks free now
+ *      (models.js — the only source that can express a plan-scoped promotion);
+ *   2. selectors the paired rate table prices at exactly 0 (#235 rolling promo).
+ * Both are then restricted to selectors a live catalog actually exposes: free
+ * on paper and absent from the catalog is precisely the dead target this exists
+ * to stop choosing. When no live catalog has arrived (cold start) nothing is
+ * filtered, and `resolveConnectSelector` re-validates against its own snapshot.
+ *
+ * Ordering: unpaid-entitlement selectors first, because any account may run
+ * them, then alphabetical so every replica in a fleet degrades to the same
+ * model. Empty array = nothing is known to be free AND callable; the caller
+ * must answer model_not_found rather than guess.
+ */
+export function getConnectFreeFallbackSelectors() {
+  // `getConnectFreeSelectors` already merges the two live sources (cost tier,
+  // then rate table) and applies the pricing projection. Its COLD-START answer
+  // is the static whitelist, which `resolveConnectSelector` applies as its own
+  // floor anyway — reporting it here would mislabel a frozen name as
+  // live-derived, so that case returns "nothing live to say".
+  if (!hasCloudCostTierData() && getCurrentlyFreeConnectSelectors() === null) return [];
+  return getConnectFreeSelectors()
+    // Free on paper and absent from the live catalog is exactly the dead target
+    // this exists to stop choosing (`swe-1-6-slow`). Null membership (no live
+    // catalog anywhere) is KEPT: the resolver re-validates against its own
+    // authoritative set, which owns that decision.
+    .filter((selector) => selector && connectSelectorCatalogMembership(selector) !== false)
+    // Unpaid-entitlement selectors first — any account may run them — then
+    // alphabetical, so every replica in a fleet degrades to the same model.
+    .sort((a, b) => (
+      (FREE_REACHABLE_SELECTORS.has(b) ? 1 : 0) - (FREE_REACHABLE_SELECTORS.has(a) ? 1 : 0)
+      || a.localeCompare(b)
+    ));
+}
+
+/**
  * Is this selector present in the accounts' live Connect catalogs?
  *
  * Tri-state on purpose: true (some account's live catalog has it), false (at least

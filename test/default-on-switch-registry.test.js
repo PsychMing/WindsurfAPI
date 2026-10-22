@@ -52,6 +52,12 @@ const HAND_REGISTERED = new Set(['DEVIN_CONNECT_RETRY_ON_EMPTY']);
 
 const LEDGER = {
   DEVIN_CLI_USE_ACCOUNT_POOL: { tested: true },
+  // Log-only detector for the #236 prose tool-intent stall. Default ON because a
+  // detector that must be armed before it can capture the shape it exists to
+  // capture captures nothing; it changes no wire bytes, so the off path is purely
+  // "stop emitting the line and the counter". Driven in
+  // test/issue-236-prose-tool-intent.test.js.
+  DEVIN_CONNECT_PROSE_INTENT_DETECT: { tested: true },
   DROUGHT_RESTRICT_PREMIUM: { tested: true },
   LS_AUTO_RESTART: {
     waived: 'supervisor restart policy — exercising off means asserting a crashed LS is '
