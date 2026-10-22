@@ -27,7 +27,9 @@
 - 合入 2 条分支（均基于 `2d1e183`）：`chore/engines-22` `307384f`、`feat/reauth-state` `abf76c6`（审查后补 `827eef6`）。
 - Windows `npm run test:release`：**5,992 pass / 0 fail / 82 skip（492 文件，6,074 tests）**，exit 0。
 - Windows `npm run gate`：**PASS exit=0** —— 全部子门绿。
-- Linux/mutation/wire：见发布提交与 CI。
+- Linux `npm run test:release`（HMC，Node v24.21.0，492 文件）：**6,073 pass / 0 fail / 1 skip（6,074 tests）**，exit 0。
+- mutation：`dashboard-connect-parity`、`gap-dashboard-loopback-proxy`、`sticky-queue-on-pin` 三个受影响规格 exit 0（1 条 documented survivor 未变）。
+- wire：对 `v3.9.51`（`2d1e183`）**270/270 比较相同**，exit 0。
 
 ## 尚未验证
 
