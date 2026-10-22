@@ -46,6 +46,7 @@ flowchart TD
 |---|---|
 | Tune behaviour without touching code | **[ENV-SWITCHES.md](ENV-SWITCHES.md)** — the 82 switches that exist only in source. Read its header first: it explains how to count them correctly, because the obvious `grep` undercounts by 45 |
 | Take `DEVIN_CONNECT` to production | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** — production runs with this ON while the code default is OFF, so this is not optional reading |
+| Log in / add an account (password, email code, token, Devin) | **[login-flows.md](login-flows.md)** — the probe-first rules, the exact click path for each account shape, and the CDP token capture |
 | Localise the dashboard | [dashboard-i18n.md](dashboard-i18n.md) |
 | See what changed in a version | [releases/](releases/) — one file per version, v2.0.6 → present |
 

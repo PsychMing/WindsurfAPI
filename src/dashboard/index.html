@@ -2869,14 +2869,24 @@ tbody tr:hover td { background: var(--surface-2); }
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.08-.73.08-.73 1.2.08 1.84 1.23 1.84 1.23 1.07 1.83 2.81 1.3 3.5 1 .1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 016.02 0c2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.8 5.63-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.21.7.82.58C20.56 21.8 24 17.3 24 12 24 5.37 18.63 0 12 0z"/></svg>
                   <span data-i18n="oauth.github">GitHub 登录</span>
                 </button>
+                <button class="btn btn-outline" onclick="App.fetchWindsurfToken()" id="oauth-fetch-token-btn" style="padding:10px 20px;font-weight:600">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                  <span data-i18n="oauth.fetchToken">从 windsurf.com 获取 Token</span>
+                </button>
               </div>
-              <div id="oauth-status" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
+              <div id="oauth-status" aria-live="polite" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
               <div id="oauth-token-step" class="hidden" style="margin-top:14px;padding:14px;background:var(--surface-2);border-radius:var(--radius);border-left:3px solid var(--accent)">
                 <div style="font-weight:600;margin-bottom:6px" data-i18n="oauth.step2Title">② 粘贴 Windsurf 返回的 Token</div>
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px" data-i18n="oauth.step2Desc">在新标签完成登录后 复制整条回调地址栏 URL(或页面显示的 Token)粘到这里点添加</div>
+                <ol style="font-size:12px;color:var(--text-muted);margin:0 0 10px 18px;line-height:1.7">
+                  <li data-i18n="oauth.step1">在新标签页完成登录（Google / GitHub / 邮箱验证码均可）。</li>
+                  <li data-i18n="oauth.step2">登录完成后页面会显示 Token；点“复制”或直接全选地址栏。</li>
+                  <li data-i18n="oauth.step3">回到这里点“从剪贴板粘贴并导入”，Token 会立即写入账号池。</li>
+                </ol>
                 <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
                   <input id="oauth-token-input" type="text" class="input" style="flex:1;min-width:260px" data-i18n-placeholder="oauth.urlOrTokenPlaceholder" placeholder="粘贴回调 URL 或 Auth Token...">
-                  <button class="btn btn-primary" onclick="App.submitOAuthToken()" data-i18n="oauth.addWithToken">用 Token 添加</button>
+                  <button class="btn btn-outline" onclick="App.pasteOAuthTokenFromClipboard()" id="oauth-paste-btn" data-i18n="oauth.pasteFromClipboard">从剪贴板粘贴</button>
+                  <button class="btn btn-primary" onclick="App.submitOAuthToken()" id="oauth-import-btn" data-i18n="oauth.addWithToken">用 Token 添加</button>
                 </div>
                 <a id="oauth-manual-link" href="#" class="hidden" onclick="return App.openWindsurfSignin(event)" style="display:inline-block;margin-top:8px;font-size:12px;color:var(--accent)" data-i18n="oauth.openManually">登录页没弹出来？点这里手动打开</a>
               </div>
@@ -2894,8 +2904,8 @@ tbody tr:hover td { background: var(--surface-2); }
               <div class="field-row">
                 <div class="field">
                   <label class="field-label" data-i18n="field.email.label">邮箱</label>
-                  <input id="wl-email" class="input" data-i18n-placeholder="field.email.placeholder" placeholder="your-email@example.com" autocomplete="off" onblur="App.windsurfProbeFromInput()">
-                  <div class="field-hint" id="wl-probe-status"></div>
+                  <input id="wl-email" class="input" data-i18n-placeholder="field.email.placeholder" placeholder="your-email@example.com" autocomplete="off" onblur="App.windsurfProbeFromInput()" oninput="App.onWindsurfEmailInput()">
+                  <div class="field-hint" id="wl-probe-status" aria-live="polite"></div>
                 </div>
                 <div class="field" id="wl-password-field">
                   <label class="field-label" data-i18n="field.password.label">密码</label>
@@ -2913,8 +2923,9 @@ tbody tr:hover td { background: var(--surface-2); }
                   <span data-i18n="field.autoAdd">登录成功自动加入账号池</span>
                 </label>
               </div>
-              <!-- Email-code path: shown when the probe reports has_password:false.
-                   The code is requested explicitly by the operator, never auto-sent. -->
+              <!-- Email-code path: shown the moment the probe reports
+                   has_password:false. The code is requested by the operator
+                   (the Login / Send-code buttons), never auto-sent on blur. -->
               <div id="wl-email-code-field" class="hidden" style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">
                 <div class="field-row">
                   <div class="field">
@@ -2925,17 +2936,18 @@ tbody tr:hover td { background: var(--surface-2); }
                   <div class="field" style="align-self:flex-end">
                     <button class="btn btn-outline" onclick="App.windsurfSendEmailCode()" id="wl-send-code-btn">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
-                      <span data-i18n="action.sendCode">发送验证码</span>
+                      <span id="wl-send-code-label" data-i18n="action.sendCode">发送验证码</span>
                     </button>
                   </div>
                 </div>
                 <div class="field-row-actions">
-                  <button class="btn btn-primary" onclick="App.windsurfCompleteEmailCode()" id="wl-code-login-btn">
+                  <button class="btn btn-primary" onclick="App.windsurfCompleteEmailCode()" id="wl-code-login-btn" disabled>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
                     <span data-i18n="action.verifyAndLogin">验证并登录</span>
                   </button>
+                  <button class="btn btn-ghost btn-sm" onclick="App.windsurfSendEmailCode({host:'devin'})" id="wl-devin-code-btn" data-i18n="emailLogin.tryDevinHost">没收到邮件？改用 app.devin.ai 发送</button>
                 </div>
-                <div id="wl-code-status" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
+                <div id="wl-code-status" aria-live="polite" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
               </div>
               <!-- OAuth-only path: has_password:false and no email connection. -->
               <div id="wl-oauth-hint" class="hidden" style="margin-top:14px;padding:12px;background:var(--surface-2);border-radius:var(--radius);border-left:3px solid var(--accent)">
@@ -6410,38 +6422,44 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const input = document.getElementById('oauth-token-input');
     const status = document.getElementById('oauth-status');
     const pasted = input?.value.trim();
-    const label = this._oauthProvider || 'OAuth';
+    // 'windsurf.com' / 'OAuth' are UI labels, not account names — only a real
+    // provider label is passed through as the optional account label.
+    const label = (this._oauthProvider && this._oauthProvider !== 'windsurf.com' && this._oauthProvider !== 'OAuth')
+      ? this._oauthProvider : '';
     if (!pasted) return this.toast(I18n.t('toast.enterKeyOrToken'), 'error');
     status.style.color = 'var(--text-muted)';
     status.textContent = I18n.t('oauth.status.adding');
+    const btn = document.getElementById('oauth-import-btn');
+    if (btn) btn.disabled = true;
     try {
-      // Preferred path: hand the whole pasted value (full redirect URL OR a bare
-      // token) to the session callback — the server extracts the token and
-      // correlates via state. Fall back to the direct /accounts path for a bare
-      // token if no session was started (old backend).
-      const r = this._oauthState
-        ? await this.api('POST', '/oauth/callback', { state: this._oauthState, redirect_url: pasted })
-        : await this.api('POST', '/accounts', { token: pasted, label: '' });
+      // ONE stateless endpoint for every token shape: a bare token, the
+      // show-auth-token value, a windsurf:// deep link, or the whole callback
+      // URL. It does not depend on a pending /oauth/start session, so a valid
+      // token can never fail with ERR_INVALID_STATE again.
+      const r = await this.api('POST', '/windsurf-login/token', { token: pasted, label });
       if (r.success) {
-        const email = r.account?.email || label;
+        const email = r.account?.email || label || '';
         status.style.color = '#22c55e';
-        status.textContent = I18n.t('oauth.status.loginSuccess', { email });
+        status.textContent = I18n.t('oauth.tokenImported', { email });
         this.toast(I18n.t('account.addSuccess'), 'success');
         if (input) input.value = '';
+        this._oauthState = '';
         document.getElementById('oauth-token-step')?.classList.add('hidden');
         this.loadAccounts();
-        this.pushLoginHistory({ time: new Date().toISOString(), email, proxy: I18n.t('proxy.direct'), status: 'success', method: label });
+        this.pushLoginHistory({ time: new Date().toISOString(), email, proxy: I18n.t('proxy.direct'), status: 'success', method: label || 'token' });
       } else {
         const translatedErr = this.translateError(r.error, 'toast.addFailed');
         status.style.color = '#ef4444';
-        status.textContent = I18n.t('oauth.status.loginFailed', { label, error: translatedErr });
+        status.textContent = I18n.t('oauth.status.loginFailed', { label: label || 'Token', error: translatedErr });
         this.toast(translatedErr, 'error');
       }
     } catch (err) {
       const translatedErr = this.translateError(err.message, 'error.unknown');
       status.style.color = '#ef4444';
-      status.textContent = I18n.t('oauth.status.loginFailed', { label, error: translatedErr });
+      status.textContent = I18n.t('oauth.status.loginFailed', { label: label || 'Token', error: translatedErr });
       this.toast(translatedErr, 'error');
+    } finally {
+      if (btn) btn.disabled = false;
     }
   },
 
@@ -6479,14 +6497,30 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     rd.innerHTML = html;
   },
 
+  // Switch the form to the email-code path without another probe. Used both by
+  // the fail-action button and by an explicit "use a code instead" click.
+  useEmailCodeInstead() {
+    const email = document.getElementById('wl-email').value.trim();
+    this._wlProbe = { hasPassword: false, emailCode: true, userExists: true, oauth: [] };
+    this._wlProbeEmail = email || null;
+    this.applyWindsurfLoginMethod(this._wlProbe);
+    document.getElementById('wl-send-code-btn')?.focus();
+  },
+
   getWindsurfLoginFailActions(r) {
     if (!r.isAuthFail) return '';
     const inlineId = 'inline-token-' + Math.random().toString(36).slice(2, 8);
     const emailAttr = this.esc(r.email || '');
+    // A rejected password on an account whose method was never confirmed is
+    // exactly the case that used to dead-end at "wrong password". Offer the
+    // code path next to OAuth and the token.
+    const offerCode = r.error === 'ERR_NO_PASSWORD_OAUTH_ACCOUNT'
+      || (Array.isArray(r.alternatives) && r.alternatives.includes('email_code'));
     return `
       <div style="margin-top:12px;padding:12px;background:var(--surface-2);border-radius:var(--radius);border-left:3px solid var(--accent)">
         <div style="font-weight:600;margin-bottom:8px">${I18n.t('oauth.tryAnotherWay')}</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+          ${offerCode ? `<button class="btn btn-sm btn-primary" onclick="App.useEmailCodeInstead()">${I18n.t('emailLogin.useCode')}</button>` : ''}
           <button class="btn btn-sm" style="background:#4285F4;color:#fff" onclick="App.oauthLogin('google')">${I18n.t('oauth.google')}</button>
           <button class="btn btn-sm" style="background:#24292e;color:#fff" onclick="App.oauthLogin('github')">${I18n.t('oauth.github')}</button>
         </div>
@@ -6685,6 +6719,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
             <tr><td style="color:var(--text-muted);width:120px">${I18n.t('loginResult.fields.email')}</td><td>${this.esc(r.email)}</td></tr>
             <tr><td style="color:var(--text-muted)">${I18n.t('loginResult.fields.name')}</td><td>${this.esc(r.name || '-')}</td></tr>
             <tr><td style="color:var(--text-muted)">${I18n.t('loginResult.fields.apiKey')}</td><td><code class="break-all">${this.esc(r.apiKey_masked || r.apiKey || '')}</code></td></tr>
+            ${r.method ? `<tr><td style="color:var(--text-muted)">${I18n.t('loginResult.fields.method')}</td><td>${this.esc(r.method === 'email_code' ? I18n.t('loginResult.methodEmailCode') : (r.method === 'password' ? I18n.t('loginResult.methodPassword') : r.method))}</td></tr>` : ''}
+            ${r.viaHost ? `<tr><td style="color:var(--text-muted)">${I18n.t('loginResult.fields.host')}</td><td><code>${this.esc(r.viaHost)}</code></td></tr>` : ''}
             ${r.account ? `<tr><td style="color:var(--text-muted)">${I18n.t('loginResult.fields.accountId')}</td><td><code>${this.esc(r.account.id)}</code> <span class="badge active">${this.esc(r.account.status)}</span></td></tr>` : ''}
           </table>
         </div>`);
@@ -6836,6 +6872,25 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     await this.windsurfProbe(email);
   },
 
+  // The cached probe is per-address. Editing the email invalidates it, and an
+  // outstanding code flow belongs to the OLD address — verifying it would
+  // submit a code for a different account than the one on screen.
+  onWindsurfEmailInput() {
+    const email = document.getElementById('wl-email').value.trim();
+    if (this._wlProbeEmail && email !== this._wlProbeEmail) {
+      this._wlProbe = null;
+      this._wlProbeEmail = null;
+    }
+    // The flow is bound to the address it was sent to, whether or not a probe
+    // was cached for it.
+    if (this._wlFlow && email !== this._wlFlow.email) {
+      this._wlFlow = null;
+      const st = document.getElementById('wl-code-status');
+      if (st) st.textContent = I18n.t('emailLogin.emailChanged');
+      document.getElementById('wl-code-login-btn')?.setAttribute('disabled', '');
+    }
+  },
+
   // Show only the controls the probed method can actually use.
   applyWindsurfLoginMethod(probe) {
     const status = document.getElementById('wl-probe-status');
@@ -6844,6 +6899,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const codeField = document.getElementById('wl-email-code-field');
     const oauthHint = document.getElementById('wl-oauth-hint');
     const storeCred = document.getElementById('wl-store-cred');
+    const verifyBtn = document.getElementById('wl-code-login-btn');
     const noPassword = probe.hasPassword === false;
     const emailCode = probe.emailCode === true;
     // `method:"not_found"`: no account at all, so neither the code form nor
@@ -6867,6 +6923,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       // The password we just hid must not linger in memory or get submitted.
       const pw = document.getElementById('wl-password');
       if (pw) pw.value = '';
+      // Verifying is only meaningful once a flow exists; the send button is
+      // the single primary action until then.
+      if (verifyBtn && !this._wlFlow) verifyBtn.setAttribute('disabled', '');
     }
   },
 
@@ -6878,41 +6937,112 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     step.scrollIntoView({ behavior: 'smooth', block: 'center' });
   },
 
-  startEmailCodeCooldown(btn) {
-    const status = document.getElementById('wl-code-status');
+  // "从 windsurf.com 获取 Token": open the official sign-in page in a new tab
+  // (the same state-bound URL the Windsurf editor uses) and reveal the paste
+  // step. The token is rendered on windsurf.com AFTER the operator signs in —
+  // it never travels to this dashboard until they paste it, so no server-side
+  // browser or CDP session is needed (and none is possible when the gateway
+  // runs on a different machine). One click to paste, one to import.
+  async fetchWindsurfToken() {
+    const status = document.getElementById('oauth-status');
+    const step = document.getElementById('oauth-token-step');
+    this._oauthProvider = 'windsurf.com';
+    try {
+      const s = await this.api('POST', '/oauth/start', { provider: 'windsurf' });
+      this._oauthUrl = s.url || this.buildWindsurfSigninUrl();
+      this._oauthState = s.state || '';
+    } catch {
+      this._oauthUrl = this.buildWindsurfSigninUrl();
+      this._oauthState = '';
+    }
+    const win = window.open(this._oauthUrl, '_blank');
+    step?.classList.remove('hidden');
+    const manual = document.getElementById('oauth-manual-link');
+    if (win) {
+      manual?.classList.add('hidden');
+      if (status) { status.style.color = 'var(--text-muted)'; status.textContent = I18n.t('oauth.status.tokenOpened'); }
+    } else {
+      // Popup blocked — surface the manual link so the flow can still finish.
+      manual?.classList.remove('hidden');
+      if (status) { status.style.color = '#f59e0b'; status.textContent = I18n.t('oauth.status.popupBlocked'); }
+    }
+    setTimeout(() => document.getElementById('oauth-token-input')?.focus(), 120);
+  },
+
+  // Read the clipboard, put it in the box, and import — one click. Falls back
+  // to a focus + hint when the page is not a secure context (clipboard API is
+  // unavailable on plain http://LAN).
+  async pasteOAuthTokenFromClipboard() {
+    const input = document.getElementById('oauth-token-input');
+    if (!navigator.clipboard || !window.isSecureContext) {
+      input?.focus();
+      return this.toast(I18n.t('toast.clipboardUnsupported'), 'info');
+    }
+    try {
+      const text = String(await navigator.clipboard.readText() || '').trim();
+      if (!text) return this.toast(I18n.t('toast.clipboardEmpty'), 'info');
+      if (input) input.value = text;
+      return this.submitOAuthToken();
+    } catch (err) {
+      this.toast(I18n.t('toast.clipboardError', { error: err.message }), 'error');
+    }
+  },
+
+  // Resend countdown lives on the SEND button itself: one control, one state.
+  // The status line carries the "code sent to <address>" sentence; the button
+  // carries the seconds left until another send is allowed.
+  startEmailCodeCooldown(btn, seconds = 30) {
+    const label = document.getElementById('wl-send-code-label');
     if (this._wlCooldownTimer) clearInterval(this._wlCooldownTimer);
-    let left = 30;
+    let left = seconds;
     if (btn) btn.disabled = true;
+    if (label) label.textContent = I18n.t('emailLogin.resendInShort', { seconds: left });
     this._wlCooldownTimer = setInterval(() => {
       left -= 1;
       if (left <= 0) {
         clearInterval(this._wlCooldownTimer);
         this._wlCooldownTimer = null;
         if (btn) btn.disabled = false;
-        if (status) status.textContent = I18n.t('emailLogin.codeSent');
+        if (label) label.textContent = I18n.t('action.sendCode');
         return;
       }
-      if (status) status.textContent = I18n.t('emailLogin.resendIn', { seconds: left });
+      if (label) label.textContent = I18n.t('emailLogin.resendInShort', { seconds: left });
     }, 1000);
   },
 
-  async windsurfSendEmailCode() {
+  async windsurfSendEmailCode(opts = {}) {
     const email = document.getElementById('wl-email').value.trim();
     if (!email) return this.toast(I18n.t('toast.enterEmailPassword'), 'error');
     const btn = document.getElementById('wl-send-code-btn');
     const status = document.getElementById('wl-code-status');
+    const verifyBtn = document.getElementById('wl-code-login-btn');
+    const host = opts.host === 'devin' ? 'devin' : undefined;
     if (btn) btn.disabled = true;
     if (status) status.textContent = I18n.t('emailLogin.sendingCode');
     try {
-      const r = await this.api('POST', '/windsurf-login/email/start', { email, proxy: this.getWindsurfLoginProxy() });
+      const payload = { email, proxy: this.getWindsurfLoginProxy() };
+      if (host) payload.host = host;
+      const r = await this.api('POST', '/windsurf-login/email/start', payload);
       if (r && r.sent && r.flowId) {
-        this._wlFlow = { flowId: r.flowId, email };
-        if (status) status.textContent = I18n.t('emailLogin.codeSent');
+        this._wlFlow = { flowId: r.flowId, email, host: r.host || host || 'windsurf' };
+        if (status) {
+          status.textContent = this._wlFlow.host === 'devin'
+            ? I18n.t('emailLogin.codeSentToDevin', { email })
+            : I18n.t('emailLogin.codeSentTo', { email });
+        }
         this.toast(I18n.t('emailLogin.codeSent'), 'success');
+        if (verifyBtn) verifyBtn.removeAttribute('disabled');
         document.getElementById('wl-email-code')?.focus();
         this.startEmailCodeCooldown(btn);
+      } else if (r && r.error === 'ERR_EMAIL_CODE_COOLDOWN') {
+        // A code is already out: that is not a failure, it is the countdown.
+        // Show the remaining seconds on the button instead of a red toast.
+        const secs = Math.max(1, Math.ceil((r.retryAfterMs || 30000) / 1000));
+        if (status) status.textContent = I18n.t('emailLogin.codeSentTo', { email });
+        this.startEmailCodeCooldown(btn, secs);
       } else {
         this._wlFlow = null;
+        if (verifyBtn) verifyBtn.setAttribute('disabled', '');
         const msg = this.loginErrorMessage(r);
         if (status) status.textContent = msg;
         this.toast(msg, 'error');
@@ -6930,7 +7060,15 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const codeEl = document.getElementById('wl-email-code');
     const code = codeEl ? codeEl.value.trim() : '';
     const flow = this._wlFlow;
+    const typedEmail = document.getElementById('wl-email').value.trim();
     if (!flow) return this.toast(I18n.t('emailLogin.requestCodeFirst'), 'error');
+    // A code is bound to the address it was sent to; a changed address must
+    // request a new one instead of failing upstream with "invalid token".
+    if (typedEmail && typedEmail !== flow.email) {
+      this._wlFlow = null;
+      document.getElementById('wl-code-login-btn')?.setAttribute('disabled', '');
+      return this.toast(I18n.t('emailLogin.emailChanged'), 'error');
+    }
     if (!code) return this.toast(I18n.t('emailLogin.enterCode'), 'error');
 
     const autoAdd = document.getElementById('wl-auto-add').checked;
@@ -6999,7 +7137,19 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       return this.toast(I18n.t('emailLogin.oauthOnlyHint'), 'info');
     }
 
-    if (!password) return this.toast(I18n.t('toast.enterEmailPassword'), 'error');
+    if (!password) {
+      // The probe could not classify this address (upstream outage) and there
+      // is no password to try. Do not dead-end on "enter email and password":
+      // offer the code form, which is the only path that can still work.
+      if (!probe) {
+        document.getElementById('wl-email-code-field')?.classList.remove('hidden');
+        document.getElementById('wl-probe-status').textContent = I18n.t('emailLogin.probeFailedHint');
+        document.getElementById('wl-code-login-btn')?.setAttribute('disabled', '');
+        document.getElementById('wl-send-code-btn')?.focus();
+        return this.toast(I18n.t('emailLogin.probeFailedHint'), 'info');
+      }
+      return this.toast(I18n.t('toast.enterEmailPassword'), 'error');
+    }
 
     const proxy = this.getWindsurfLoginProxy();
     const autoAdd = document.getElementById('wl-auto-add').checked;
@@ -7023,11 +7173,23 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         entry.status = 'error: ' + (r.error || 'unknown');
         this.renderSingleWindsurfLoginResult(r, autoAdd);
         this.toast(this.loginErrorMessage(r), 'error');
-        // The backend says this account has no password after all (probe raced
-        // an account change): switch the form instead of letting the operator
-        // retype a password that cannot work.
+        // The backend says this account has no password after all (the probe
+        // was unavailable on the first pass, or raced an account change).
+        // Switch the form immediately from the answer we already have instead
+        // of asking for another probe, then confirm in the background.
         if (r.error === 'ERR_NO_PASSWORD_OAUTH_ACCOUNT') {
-          await this.windsurfProbe(email, { force: true });
+          this._wlProbe = { hasPassword: false, emailCode: r.method === 'email_code', userExists: true, oauth: r.oauthProviders || [] };
+          this._wlProbeEmail = email;
+          this.applyWindsurfLoginMethod(this._wlProbe);
+          if (r.method === 'email_code') document.getElementById('wl-send-code-btn')?.focus();
+          else this.showOAuthTokenStep();
+        } else if (r.probeUnknown) {
+          // Password rejected, but the login method was never confirmed. The
+          // operator gets the alternatives (code / OAuth / token) instead of
+          // being told their password is wrong for an account that may have
+          // none.
+          document.getElementById('wl-email-code-field')?.classList.remove('hidden');
+          document.getElementById('wl-probe-status').textContent = I18n.t('emailLogin.probeFailedHint');
         }
       }
     } catch (err) {

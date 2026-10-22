@@ -961,6 +961,12 @@
     "openWindsurfToken": "Open windsurf.com for Token",
     "tokenPlaceholder": "Paste Auth Token...",
     "urlOrTokenPlaceholder": "Paste callback URL or Auth Token...",
+    "fetchToken": "Get a token from windsurf.com",
+    "pasteFromClipboard": "Paste from clipboard",
+    "step1": "Finish signing in on the new tab (Google, GitHub or an email code).",
+    "step2": "The page then shows the token — click copy, or select the address bar.",
+    "step3": "Back here, click “Paste from clipboard” — the token is imported immediately.",
+    "tokenImported": "Token imported: {{email}}",
     "addWithToken": "Add via Token",
     "step2Title": "② Paste the token Windsurf gives you",
     "step2Desc": "After signing in on the new tab, the page shows a token string — copy it here and click Add.",
@@ -974,6 +980,7 @@
       "codeiumRegistering": "{{label}} auth success, registering Codeium...",
       "loginSuccess": "Login successful {{email}} added to pool",
       "loginFailed": "{{label}} login failed: {{error}}",
+      "tokenOpened": "Sign in on the opened page, then copy the token it shows (or the whole address bar).",
       "opened": "Opened Windsurf {{label}} sign-in in a new tab — finish there, then copy the token below",
       "popupBlocked": "Popup blocked by the browser — use the link below to open the sign-in page manually",
       "copied": "Login URL copied — open it in a browser signed in to your {{label}} account, then paste the callback URL below",
@@ -1634,6 +1641,8 @@
     "noProxy": "No proxy"
   },
   "loginResult": {
+    "methodPassword": "Password",
+    "methodEmailCode": "Email code",
     "success": "✓ Login Successful",
     "apiKeyGenerated": "API Key generated{{autoAdd}}",
     "fail": "✗ Login Failed",
@@ -1645,6 +1654,8 @@
       "email": "Email",
       "name": "Name",
       "apiKey": "API Key",
+      "method": "Method",
+      "host": "Host",
       "accountId": "Account ID"
     },
     "successTitle": "Login Success",
@@ -1847,6 +1858,13 @@
     "resendIn": "Code sent. You can resend in {{seconds}}s.",
     "requestCodeFirst": "Request a verification code first.",
     "enterCode": "Enter the verification code from the email.",
+    "codeSentTo": "Code sent to {{email}} — valid for 10 minutes.",
+    "codeSentToDevin": "Code sent to {{email}} via app.devin.ai — valid for 10 minutes.",
+    "resendInShort": "Resend in {{seconds}}s",
+    "emailChanged": "Email changed — request a new code for this address.",
+    "probeFailedHint": "Could not detect this account's login method. If it has no password (Google/GitHub or email-code signup), request a code below.",
+    "tryDevinHost": "Mail not received? Send via app.devin.ai",
+    "useCode": "Use an email code instead",
     "methodNotFound": "No Windsurf account uses this email. Check the address."
   }
 }

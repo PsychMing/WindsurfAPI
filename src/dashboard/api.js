@@ -564,7 +564,10 @@ async function finalizeWindsurfLogin(result, { password, loginProxy, autoAdd, st
     email: result.email,
     apiServerUrl: result.apiServerUrl,
     account: account ? { id: account.id, email: account.email, status: account.status } : null,
-    ...(result.viaEmailCode ? { method: 'email_code' } : {}),
+    // How the session was obtained, so the UI can show it instead of making
+    // the operator guess which path ran.
+    method: result.viaEmailCode ? 'email_code' : 'password',
+    ...(result.viaHost ? { viaHost: result.viaHost } : {}),
     ...(wantStore ? { credentialStored: credentialStored === true } : {}),
   };
 }
@@ -2634,7 +2637,21 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       const { email, password, proxy: loginProxy, autoAdd, storeCredential } = body || {};
       return json(res, 200, await processWindsurfLogin({ email, password, loginProxy, autoAdd, storeCredential, req }));
     } catch (err) {
-      return json(res, err.statusCode || 400, { error: err.message, isAuthFail: !!err.isAuthFail, firebaseCode: err.firebaseCode });
+      // The UI needs `method` to switch the form (email code vs OAuth-only)
+      // without a second probe, and `probeUnknown` to offer the alternatives
+      // when the password was rejected but the login method was never
+      // confirmed — the exact shape that made a passwordless account read as
+      // "wrong password" on 3.9.42.
+      return json(res, err.statusCode || 400, {
+        error: err.code || err.message,
+        isAuthFail: !!err.isAuthFail,
+        firebaseCode: err.firebaseCode,
+        ...(err.method ? { method: err.method } : {}),
+        ...(err.oauthProviders?.length ? { oauthProviders: err.oauthProviders } : {}),
+        ...(err.detail ? { detail: err.detail } : {}),
+        ...(err.probeUnknown ? { probeUnknown: true } : {}),
+        ...(err.alternatives ? { alternatives: err.alternatives } : {}),
+      });
     }
   }
 
@@ -2662,21 +2679,36 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         emailCode: probe.emailCode,
         oauth: probe.oauth,
         source: probe.source,
+        // Which login host answered (`windsurf` | `devin` | null). The email
+        // flow starts on the same host instead of guessing.
+        host: probe.host || null,
       }, NO_STORE);
     } catch (err) {
-      return json(res, 502, { ok: false, error: err.code || 'ERR_LOGIN_PROBE_FAILED' }, NO_STORE);
+      // A malformed address is the caller's error (400); anything else is an
+      // upstream availability failure (502).
+      return json(res, err.statusCode || 502, {
+        ok: false,
+        error: err.code || 'ERR_LOGIN_PROBE_FAILED',
+        ...(err.detail ? { detail: err.detail } : {}),
+      }, NO_STORE);
     }
   }
 
   // Ask Windsurf to email a login code. The upstream verification token stays
   // server-side, keyed by the returned opaque flowId — only {flowId, sent} is
   // returned, and neither the token nor the code is ever logged.
+  //
+  // `host:'devin'` is an explicit operator choice ("the windsurf.com mail never
+  // arrived — retry on app.devin.ai"). It is allowlisted, never free text, and
+  // it is not the automatic cross-host fallback (that stays behind
+  // DEVIN_CONNECT_LOGIN_HOST_FALLBACK).
   if (subpath === '/windsurf-login/email/start' && method === 'POST') {
     const email = String(body?.email || '').trim();
     if (!email) return json(res, 400, { error: 'ERR_EMAIL_REQUIRED' });
+    const host = body?.host === 'devin' ? 'devin' : (body?.host === 'windsurf' ? 'windsurf' : undefined);
     try {
       const loginProxy = body?.proxy?.host ? body.proxy : getProxyConfig().global;
-      return json(res, 200, await emailLoginStart(email, loginProxy), NO_STORE);
+      return json(res, 200, await emailLoginStart(email, loginProxy, { host }), NO_STORE);
     } catch (err) {
       // Stable code + machine-readable detail (F8). A transport failure used to
       // escape as a raw English message with no code; the UI then printed the
@@ -2712,6 +2744,40 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         ...(err.retryable ? { retryable: true } : {}),
         isAuthFail: !!err.isAuthFail,
       });
+    }
+  }
+
+  // Import a token captured from the official sign-in page
+  // (windsurf.com/editor/show-auth-token) or from any OAuth / deep-link
+  // redirect, in ONE step.
+  //
+  // Stateless on purpose. `/oauth/callback` is the state-bound flow for CLI and
+  // remote-onboarding clients; requiring a pending session here meant a valid
+  // token failed with ERR_INVALID_STATE whenever the page had been opened by a
+  // different button (or the session had expired). The token itself is the
+  // credential — the state adds nothing to this path.
+  //
+  // `devin-session-token$…` is stored as the pool key; a Firebase idToken /
+  // show-auth-token value goes through RegisterUser. `auth1_` is an
+  // intermediate and is rejected. The raw input is NEVER echoed or logged.
+  if (subpath === '/windsurf-login/token' && method === 'POST') {
+    const raw = body?.token ?? body?.redirect_url ?? '';
+    const label = String(body?.label || '').trim();
+    if (!raw) return json(res, 400, { error: 'ERR_NO_TOKEN_IN_INPUT' });
+    try {
+      // extractOAuthToken keeps the actionable diagnostics (ERR_OAUTH_UPSTREAM,
+      // ERR_INTERMEDIATE_CALLBACK) and returns a bare token unchanged.
+      const token = extractOAuthToken(raw);
+      if (!token) return json(res, 400, { error: 'ERR_NO_TOKEN_IN_INPUT' });
+      const account = await addAccountByPastedSecret(token, label);
+      scheduleAccountWarmup(account.id);
+      return json(res, 200, {
+        success: true,
+        method: 'token',
+        account: { id: account.id, email: account.email, status: account.status },
+      }, NO_STORE);
+    } catch (err) {
+      return json(res, 400, { error: err.code || err.message });
     }
   }
 

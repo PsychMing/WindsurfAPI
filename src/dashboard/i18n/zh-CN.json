@@ -961,6 +961,12 @@
     "openWindsurfToken": "打开 windsurf.com 拿 Token",
     "tokenPlaceholder": "粘贴 Auth Token...",
     "urlOrTokenPlaceholder": "粘贴回调 URL 或 Auth Token...",
+    "fetchToken": "从 windsurf.com 获取 Token",
+    "pasteFromClipboard": "从剪贴板粘贴",
+    "step1": "在新标签页完成登录（Google / GitHub / 邮箱验证码均可）。",
+    "step2": "登录完成后页面会显示 Token；点“复制”或直接全选地址栏。",
+    "step3": "回到这里点“从剪贴板粘贴”即可导入，无需修改任何配置。",
+    "tokenImported": "Token 已导入：{{email}}",
     "addWithToken": "用 Token 添加",
     "step2Title": "② 粘贴 Windsurf 返回的 Token",
     "step2Desc": "在新标签完成登录后 页面会显示一串 Token 复制粘到这里点添加",
@@ -974,6 +980,7 @@
       "codeiumRegistering": "{{label}} 认证成功 正在注册 Codeium...",
       "loginSuccess": "登录成功 {{email}} 已加入账号池",
       "loginFailed": "{{label}} 登录失败: {{error}}",
+      "tokenOpened": "在打开的页面完成登录，然后复制页面显示的 Token（或整条地址栏）。",
       "opened": "已在新标签打开 Windsurf {{label}} 登录页 完成登录后复制 Token 粘到下方",
       "popupBlocked": "浏览器拦截了弹窗 请用下方链接手动打开登录页",
       "copied": "登录 URL 已复制 — 在已登录你 {{label}} 账号的浏览器里打开它 完成后把回调 URL 粘到下方",
@@ -1634,6 +1641,8 @@
     "noProxy": "无代理"
   },
   "loginResult": {
+    "methodPassword": "密码登录",
+    "methodEmailCode": "邮箱验证码",
     "success": "✓ 登录成功",
     "apiKeyGenerated": "API Key 已生成{{autoAdd}}",
     "fail": "✗ 登录失败",
@@ -1645,6 +1654,8 @@
       "email": "邮箱",
       "name": "姓名",
       "apiKey": "API Key",
+      "method": "登录方式",
+      "host": "登录主机",
       "accountId": "账号 ID"
     },
     "successTitle": "登录成功",
@@ -1847,6 +1858,13 @@
     "resendIn": "验证码已发送，{{seconds}} 秒后可重新发送。",
     "requestCodeFirst": "请先发送验证码。",
     "enterCode": "请输入邮箱收到的验证码。",
+    "codeSentTo": "验证码已发送到 {{email}}，10 分钟内有效。",
+    "codeSentToDevin": "验证码已通过 app.devin.ai 发送到 {{email}}，10 分钟内有效。",
+    "resendInShort": "{{seconds}} 秒后重发",
+    "emailChanged": "邮箱已更改，请为新地址重新获取验证码。",
+    "probeFailedHint": "无法检测该账号的登录方式。若该账号没有密码（Google/GitHub 或验证码注册），请在下方获取验证码。",
+    "tryDevinHost": "没收到邮件？改用 app.devin.ai 发送",
+    "useCode": "改用邮箱验证码",
     "methodNotFound": "该邮箱没有对应的 Windsurf 账号，请检查地址。"
   }
 }
