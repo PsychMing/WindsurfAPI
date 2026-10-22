@@ -26,7 +26,7 @@
 - Windows `npm run gate`：**PASS**；`npm run test:release` **6,150 pass / 0 fail / 95 skip（506 文件）**。
 - Linux `npm run test:release`（HMC，Node v24.21.0，506 文件）：**6,242 pass / 0 fail / 3 skip**。
 - wire：对 `v3.9.55`（`fa882f7`）比较 **270/270**。
-- mutation：全量 sweep 结果见发布提交。
+- mutation：全部 **85 个规格 exit 0**（无 survivor）。
 
 ## 尚未验证
 
