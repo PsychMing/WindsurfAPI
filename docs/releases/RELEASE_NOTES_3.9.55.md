@@ -15,7 +15,10 @@
 
 - 合入 `fix/ui-polish` `7b23aa0`（9 文件，+1203/−250）。
 - 18 文件回归 236/236；`check-dashboard-copy`/`check-i18n`/`check-inline-sync` 绿；截图 40/40（20 张 1440/390，zh+en），KPI `20/14/1/5`，行高 44px。
-- Windows/Linux/gate/mutation/wire：见发布提交与 CI。
+- Windows `npm run gate`：**PASS**；`npm run test:release` **6,144 pass / 0 fail / 95 skip（506 文件）**。
+- Linux `npm run test:release`（HMC，Node v24.21.0，506 文件）：**6,236 pass / 0 fail / 3 skip**。
+- wire：对 `v3.9.54`（`b8b667b`）比较 **270/270**，`tag_ref_verified:true`。
+- mutation：全量 sweep 结果见发布提交。
 
 ## 尚未验证
 
