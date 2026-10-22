@@ -755,6 +755,10 @@ function _serializeAccounts() {
     // `status === 'reauth'` is the bit; this only explains it. Written solely by
     // markNeedsReauth and dropped the moment the account re-enters rotation.
     ...(a.status === 'reauth' && a.reauth ? { reauth: a.reauth } : {}),
+    // Which email the stored re-login credential is keyed by. The display email
+    // is renameable (updateAccountLabel), so re-login and account removal must
+    // not look the credential up by it.
+    ...(a.credentialEmail ? { credentialEmail: a.credentialEmail } : {}),
     // AP-RISK-1: half-open recovery clock. Without persisting this an account
     // flipped to 'error' loses its since-timestamp on restart, so
     // maybeRecoverErrorAccount computes since=0 and bails forever — the pool
@@ -954,6 +958,7 @@ function _deserializeAccount(a, now = Date.now()) {
     // well-formed record survives; the STATUS is the bit, so a corrupt record
     // loses the explanation but never puts the account back in rotation.
     ...(reauth ? { reauth } : {}),
+    credentialEmail: typeof a.credentialEmail === 'string' ? a.credentialEmail : '',
     lastUsed: 0, errorCount: 0,
     refreshToken: a.refreshToken || '', expiresAt: 0, refreshTimer: null,
     addedAt: a.addedAt || now,
@@ -2009,6 +2014,13 @@ export function clearNeedsReauth(id, { reason = 'alive' } = {}) {
 export function markAccountReauthenticated(id, { apiKey = null, via = 'manual', allowSameKey = false } = {}) {
   const account = accounts.find(a => a.id === id);
   if (!account) return false;
+  // Operator intent (disabled) and an upstream ban outrank a token install: a
+  // successful login does not un-ban an account, and it must not silently
+  // re-enable one the operator parked. Both routes answer 409 for this, so a
+  // bound password/email login and a pasted token cannot disagree.
+  if (account.status === 'disabled' || account.status === 'banned') {
+    throw Object.assign(new Error('ERR_REAUTH_NOT_APPLICABLE'), { code: 'ERR_REAUTH_NOT_APPLICABLE', statusCode: 409 });
+  }
   if (apiKey != null && account.status === 'reauth' && apiKey === account.apiKey && !allowSameKey) {
     throw reauthRefusal();
   }
@@ -2026,6 +2038,11 @@ export function markAccountReauthenticated(id, { apiKey = null, via = 'manual', 
   account._errorAt = 0;
   account._reloginAt = Date.now();
   delete account.reauth;
+  // A real login proves the credential is fine, so a stale ban-signal streak
+  // must not re-ban it on the next single hit. The ban FIELDS are only cleared
+  // here because a banned account was refused above — this cannot erase an
+  // active ban.
+  clearBanState(account);
   saveAccounts();
   trySyncModelCatalog();
   if (wasReauth) {
@@ -2146,11 +2163,29 @@ export function resetAccountErrors(id) {
 
 /**
  * Update account label.
+ *
+ * The label IS the display email (the dashboard renames a row by editing it), so
+ * it moves `email` — but NOT `credentialEmail`: the encrypted password record is
+ * keyed by the address it was stored under, and re-login / removal must keep
+ * finding it after a rename.
  */
 export function updateAccountLabel(id, label) {
   const account = accounts.find(a => a.id === id);
   if (!account) return false;
   account.email = label;
+  saveAccounts();
+  return true;
+}
+
+/**
+ * Record which email the stored re-login credential is keyed by (set right after
+ * a successful `storeCredential`). Separate from `email` so a later rename
+ * cannot orphan the secret.
+ */
+export function setAccountCredentialEmail(id, email) {
+  const account = accounts.find(a => a.id === id);
+  if (!account) return false;
+  account.credentialEmail = String(email || '');
   saveAccounts();
   return true;
 }
@@ -2373,7 +2408,7 @@ export async function reLoginAccount(id, { force = false, signal } = {}) {
   const attempt = (async () => {
     let password;
     try {
-      password = getCredential(account.email);
+      password = getCredential(account.credentialEmail || account.email);
     } catch (e) {
       // Wrong key / tampered record — credential unusable, not absent.
       log.warn(`re-login ${safeAccountRef(account)}: credential unusable (${e.message})`);
@@ -2524,7 +2559,7 @@ export function removeAccount(id) {
   // Best-effort: a store that is disabled, locked or corrupt must not stop the
   // removal — the account is already out of the pool.
   try {
-    if (deleteCredential(account.email)) log.info(`Stored credential removed for ${safeAccountRef(account)}`);
+    if (deleteCredential(account.credentialEmail || account.email)) log.info(`Stored credential removed for ${safeAccountRef(account)}`);
   } catch (e) {
     log.warn(`Could not remove stored credential for ${safeAccountRef(account)}: ${e.code || e.message}`);
   }
@@ -3696,6 +3731,11 @@ function isRateLimitedForModel(account, modelKey, now) {
 export function reportError(apiKey, { windowMs = getBreakerTunable('errorWindowMs') } = {}) {
   const account = accounts.find(a => a.apiKey === apiKey);
   if (!account) return;
+  // SessionReauth: the token is retired upstream and out of rotation. Counting
+  // errors here would only walk it toward 'error' — a SELF-HEALING state — and
+  // maybeRecoverErrorAccount would then hand the dead key back to selection.
+  // Only a fresh token (or an alive probe) leaves 'reauth'.
+  if (account.status === 'reauth') return;
   const now = Date.now();
   recordHealthEvent(account, 'e', now);
   const last = account._errorAt || 0;
@@ -3755,7 +3795,10 @@ export function reportSuccess(apiKey) {
   recordHealthEvent(account, 'o');
   if (account.errorCount > 0) {
     account.errorCount = 0;
-    account.status = 'active';
+    // SessionReauth: a success clears the error budget but must NOT promote a
+    // retired token to active — that would re-create the 401 loop from the
+    // other direction. The status leaves 'reauth' only with a fresh token.
+    if (account.status !== 'reauth') account.status = 'active';
     trySyncModelCatalog();
   }
   account.internalErrorStreak = 0;
