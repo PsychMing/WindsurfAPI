@@ -26,7 +26,7 @@
 - Windows `npm run gate`：**PASS**；`npm run test:release` **6,154 pass / 0 fail / 95 skip（506 文件）**。
 - Linux `npm run test:release`（HMC，Node v24.21.0，506 文件）：**6,246 pass / 0 fail / 3 skip**。
 - wire：对 `v3.9.57`（`fd7d3ee`）比较 **270/270**。
-- mutation：全量 sweep 结果见发布提交。
+- mutation：全部 **85 个规格 exit 0**（无 survivor）。
 - 本版之后请用 `gh release view v3.9.58` 确认 Release 与 5 个资产（含 `SHA256SUMS`）真实发布；v3.9.54–57 的 Release 因守卫/竞态未发布，内容均已包含在本版。
 
 ## 尚未验证
