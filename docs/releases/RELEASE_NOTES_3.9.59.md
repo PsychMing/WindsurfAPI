@@ -14,7 +14,9 @@
 ## 工程与门禁
 
 - 合入 `fix/release-timeout` `9749530`。
-- `release-workflow.test.js` 绿；Windows gate / Linux 单文件 / wire / mutation 的影响面见发布提交。
+- `release-workflow.test.js` 绿；Linux 上同两文件 44/44。
+- Windows `npm run gate`：**PASS**；`npm run test:release` **6,154 pass / 0 fail / 95 skip（506 文件）**。
+- 产品代码零改动（工作流 + 一个测试），wire 与 mutation 不受影响。
 - 本版之后请用 `gh release view v3.9.59` 确认 Release 与 5 个资产（含 `SHA256SUMS`）真实发布；v3.9.54–58 的 Release 因守卫/竞态/超时未发布，内容均已包含在本版。
 
 ## 尚未验证
