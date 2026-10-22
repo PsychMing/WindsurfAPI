@@ -1181,6 +1181,36 @@ tbody tr:hover td { background: var(--surface-2); }
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* Request-history rows: time · model · tokens · credit. The model column is the
+   only flexible one, so a 60-char selector ellipsizes instead of widening the
+   drawer; the three numeric columns are tabular and never wrap. */
+.dm-req-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 58px 46px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 8px;
+  background: var(--surface-2);
+  border-radius: 6px;
+  font-size: 11.5px;
+}
+.dm-req-model {
+  font-family: var(--mono);
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dm-req-num {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  text-align: right;
+  white-space: nowrap;
+}
+.dm-req-num.is-credit { color: var(--text); }
 .dm-model-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2280,6 +2310,13 @@ tbody tr:hover td { background: var(--surface-2); }
 .acct-kpi-sub { font-size: 11px; color: var(--text-dim); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .acct-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+/* The three credential verbs are one group, sized like the toolbar clusters so
+   the header stays one line at 1440 and wraps as a unit at 390. */
+.acct-add-group { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.acct-load-status { font-size: 12px; color: var(--text-muted); margin: -4px 0 10px; }
+.acct-load-status[hidden] { display: none; }
+.acct-skeleton-row td { padding: 10px 16px !important; }
+.acct-skeleton-row .skeleton { height: 12px; border-radius: 4px; }
 .tb-group {
   display: inline-flex; align-items: center; gap: 4px; padding: 3px;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
@@ -2323,6 +2360,15 @@ tbody tr:hover td { background: var(--surface-2); }
 #accounts-table.accounts-compact .acct-line2 { font-size: 10px; }
 
 .acct-line1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* Tier cell is the one cell allowed two lines. It is budgeted so the row still
+   lands on the 44 px comfortable target: pill (17.2) + 1 px gap + 11 px subline
+   + 10 px cell padding ≈ 40 px. Before this rule the subline inherited 1.5
+   line-height and pushed rows with a reported plan to 49 px. */
+.acct-tier-stack { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.acct-tier-sub {
+  font-size: 10px; line-height: 1.1; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .acct-name { font-size: 13.5px; font-weight: 600; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-open { border: 0; background: none; padding: 0; color: var(--text); font-family: inherit; text-align: left; cursor: pointer; }
 .acct-open:hover { color: var(--accent); text-decoration: underline; }
@@ -2723,10 +2769,14 @@ tbody tr:hover td { background: var(--surface-2); }
         <h1 class="page-title" data-i18n="page.accounts">账号管理</h1>
         <div class="page-subtitle" id="accounts-subtitle" data-i18n="pageSubtitle.accounts">维护账号池，探测各账号订阅层级与可用模型</div>
       </div>
-      <button class="btn btn-primary" onclick="App.openAddAccountModal('login')" id="accounts-add-btn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        <span data-i18n="accounts.add.button">添加账号</span>
-      </button>
+      <!-- One credential-entry surface (the add modal), three inline entry verbs.
+           The old standalone add-account box and the separate login page are gone,
+           so this group is the only place on the page that opens a credential form. -->
+      <div class="acct-add-group" role="group" data-i18n-aria-label="accounts.add.groupLabel">
+        <button class="btn btn-primary" id="accounts-login-btn" onclick="App.openAddAccountModal('login')" data-i18n="accounts.add.login">登录</button>
+        <button class="btn btn-outline" id="accounts-import-btn" onclick="App.openAddAccountModal('import')" data-i18n="accounts.add.import">导入</button>
+        <button class="btn btn-outline" id="accounts-add-btn" onclick="App.openAddAccountModal('paste')" data-i18n="accounts.add.paste">添加</button>
+      </div>
     </div>
     <!-- v2.0.57 Fix 5 — drought mode banner: shown only when every active
          account has weekly% < 5. Hidden by default; loadDrought() flips it. -->
@@ -2735,6 +2785,15 @@ tbody tr:hover td { background: var(--surface-2); }
       <span id="drought-message" data-i18n="drought.body">所有账号本周配额都低于阈值，建议补账号或等待重置</span><span data-i18n-tip="drought"></span>
       <span id="drought-detail" class="text-sm text-muted" style="margin-left:8px"></span>
     </div>
+
+    <!-- A failed GET is its own state: the last valid table stays painted (never
+         replace a real pool with an empty one) and this banner explains the
+         staleness with a retry. Hidden unless a load actually fails. -->
+    <div id="accounts-error" class="banner banner-error" style="display:none;margin:0 0 16px;padding:12px 16px;border-radius:var(--radius);background:var(--error-soft);border:1px solid var(--error);color:var(--text)" role="alert">
+      <span id="accounts-error-text"></span>
+      <button class="btn btn-outline btn-xs" style="margin-left:10px" onclick="App.loadAccounts()" data-i18n="accounts.retry">重试</button>
+    </div>
+    <div class="acct-load-status" id="accounts-load-status" role="status" aria-live="polite" hidden></div>
 
     <!-- KPI strip — six cells, one panel, zero extra requests (stats rides the list response). -->
     <div class="acct-kpis" id="accounts-kpis" aria-live="polite"></div>
@@ -2844,11 +2903,11 @@ tbody tr:hover td { background: var(--surface-2); }
         </div>
         <button class="btn btn-ghost btn-sm" onclick="App.closeAddAccountModal()" aria-label="关闭" data-i18n-aria-label="action.close">×</button>
       </div>
-      <div class="add-tabs" role="tablist" data-i18n-aria-label="accounts.add.tabsLabel">
+      <div class="add-tabs" role="tablist" data-i18n-aria-label="accounts.add.tabsLabel" onkeydown="App.onAddTabKeydown(event)">
         <button class="add-tab active" role="tab" id="add-tab-login" aria-selected="true" aria-controls="add-panel-login" onclick="App.switchAddTab('login')" data-i18n="accounts.add.tab.login">登录</button>
-        <button class="add-tab" role="tab" id="add-tab-paste" aria-selected="false" aria-controls="add-panel-paste" onclick="App.switchAddTab('paste')" data-i18n="accounts.add.tab.paste">粘贴凭证</button>
-        <button class="add-tab" role="tab" id="add-tab-import" aria-selected="false" aria-controls="add-panel-import" onclick="App.switchAddTab('import')" data-i18n="accounts.add.tab.import">批量导入</button>
-        <button class="add-tab" role="tab" id="add-tab-local" aria-selected="false" aria-controls="add-panel-local" onclick="App.switchAddTab('local')" data-i18n="accounts.add.tab.local">本机扫描</button>
+        <button class="add-tab" role="tab" id="add-tab-paste" aria-selected="false" aria-controls="add-panel-paste" tabindex="-1" onclick="App.switchAddTab('paste')" data-i18n="accounts.add.tab.paste">粘贴凭证</button>
+        <button class="add-tab" role="tab" id="add-tab-import" aria-selected="false" aria-controls="add-panel-import" tabindex="-1" onclick="App.switchAddTab('import')" data-i18n="accounts.add.tab.import">批量导入</button>
+        <button class="add-tab" role="tab" id="add-tab-local" aria-selected="false" aria-controls="add-panel-local" tabindex="-1" onclick="App.switchAddTab('local')" data-i18n="accounts.add.tab.local">本机扫描</button>
       </div>
       <div class="add-modal-body">
         <div class="add-panel active" id="add-panel-login" role="tabpanel" aria-labelledby="add-tab-login">
@@ -7449,6 +7508,36 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     return Number.isFinite(total) ? `$${total.toFixed(2)}` : '—';
   },
 
+  // First-paint skeleton: only before the first successful list response, so a
+  // later reload (filter change, post-mutation refresh) never replaces a real
+  // table with placeholders. `data-loaded` is the one-shot latch.
+  renderAccountsSkeleton() {
+    const tbody = document.querySelector('#accounts-table tbody');
+    if (!tbody || tbody.dataset.loaded === '1') return;
+    const widths = ['72%', '48%', '62%', '84%', '56%', '40%', '66%', '52%', '30%'];
+    tbody.innerHTML = Array.from({ length: 4 }, () => `<tr class="acct-skeleton-row" aria-hidden="true">${widths.map((w) => `<td><div class="skeleton" style="height:12px;width:${w}"></div></td>`).join('')}</tr>`).join('');
+  },
+
+  // 'loading' paints the status line; 'error' also reveals the banner with the
+  // server's reason. 'ok' clears both — the table itself is the success signal.
+  setAccountsLoadStatus(mode, detail = '') {
+    const line = document.getElementById('accounts-load-status');
+    const banner = document.getElementById('accounts-error');
+    const text = document.getElementById('accounts-error-text');
+    if (line) {
+      line.hidden = mode !== 'loading';
+      line.textContent = mode === 'loading' ? I18n.t('accounts.loading') : '';
+    }
+    if (banner) banner.style.display = mode === 'error' ? '' : 'none';
+    if (mode === 'error' && text) {
+      // api() error envelopes carry either a string or {message}; String() on
+      // the object form prints "[object Object]" and hides the actual reason.
+      const raw = detail && typeof detail === 'object' ? (detail.message || detail.error || '') : detail;
+      const reason = raw ? String(raw).slice(0, 160) : '—';
+      text.textContent = I18n.t('accounts.loadFailed', { detail: reason });
+    }
+  },
+
   renderAccountsKpis(stats = {}, total = 0) {
     const el = document.getElementById('accounts-kpis');
     if (!el) return;
@@ -7475,6 +7564,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this._dropStaleSelection();
     // Drought banner is pool-level and lives on this page (v2.0.57 Fix 5).
     this.loadDrought();
+    this.renderAccountsSkeleton();
+    this.setAccountsLoadStatus('loading');
     const d = await this.api('GET', this.accountsListUrl({
       page: this.accountsPage,
       pageSize: this.accountsPageSize,
@@ -7484,8 +7575,13 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       status: this.accountsStatus,
     }));
     // A failed GET (401 / lockout / network) must leave the last valid table
-    // painted — never replace a real pool with an empty one (#257).
-    if (!Array.isArray(d?.accounts)) return;
+    // painted — never replace a real pool with an empty one (#257). It must also
+    // say so: a stale table with no explanation reads as "the page is broken".
+    if (!Array.isArray(d?.accounts)) {
+      this.setAccountsLoadStatus('error', d?.error);
+      return;
+    }
+    this.setAccountsLoadStatus('ok');
     this._accountsStats = d.stats || {};
     this.renderAccountsPagination(d);
     this.renderAccountsKpis(d.stats || {}, d.total);
@@ -7498,6 +7594,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   renderAccountsTable(d = {}) {
     const tbody = document.querySelector('#accounts-table tbody');
     if (!tbody) return;
+    tbody.dataset.loaded = '1';
     const accounts = d.accounts || [];
     this._accountsById = new Map(accounts.map((a) => [a.id, a]));
     if (!accounts.length) {
@@ -7567,9 +7664,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           </div>
         </td>
         <td class="acct-tier-cell" data-label="${this.esc(I18n.t('table.header.tier'))}">
-          <div style="display:flex;flex-direction:column;gap:2px">
+          <div class="acct-tier-stack">
             <span class="tier ${this.esc(tier)}" role="button" tabindex="0" aria-label="${I18n.t('status.clickToEditTier')}" style="cursor:pointer" title="${this.esc(tierTooltip)}" onclick="App.overrideTier('${this.escJsAttr(a.id)}','${this.escJsAttr(tier)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.overrideTier('${this.escJsAttr(a.id)}','${this.escJsAttr(tier)}')}">${tierLabel[tier] || this.esc(tier)}${a.tierManual ? ' ✎' : ''}</span>
-            ${tierSubline ? `<span class="text-xs text-dim" style="font-size:10px">${this.esc(tierSubline)}</span>` : ''}
+            ${tierSubline ? `<span class="acct-tier-sub" title="${this.esc(tierSubline)}">${this.esc(tierSubline)}</span>` : ''}
           </div>
         </td>
         <td class="acct-state-cell" data-label="${this.esc(I18n.t('table.header.status'))}">${this.renderStatusCell(a, state, meta, batchChip)}</td>
@@ -7667,13 +7764,28 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     </div>`;
   },
 
+  // The single definition of the credential-entry verbs. The page header and the
+  // pool-empty state both render THIS group, so there is one add surface (the
+  // modal) and one place its three entry points are declared.
+  renderAddActionGroup(size = 'btn-sm') {
+    // Dynamic HTML does not pass through applyTranslations(), so each label is
+    // resolved through I18n.t here; the data-i18n attributes stay so a later
+    // locale switch re-translates the same nodes instead of leaving stale copy.
+    const label = (key) => this.esc(I18n.t(key));
+    return `<div class="acct-add-group" role="group" aria-label="${this.esc(I18n.t('accounts.add.groupLabel'))}" data-i18n-aria-label="accounts.add.groupLabel">
+      <button class="btn btn-primary ${size}" onclick="App.openAddAccountModal('login')" data-i18n="accounts.add.login">${label('accounts.add.login')}</button>
+      <button class="btn btn-outline ${size}" onclick="App.openAddAccountModal('import')" data-i18n="accounts.add.import">${label('accounts.add.import')}</button>
+      <button class="btn btn-outline ${size}" onclick="App.openAddAccountModal('paste')" data-i18n="accounts.add.paste">${label('accounts.add.paste')}</button>
+    </div>`;
+  },
+
   renderAccountsEmpty(d = {}) {
     const poolTotal = Number(d?.stats?.total ?? d?.total ?? 0);
     if (poolTotal === 0) {
       return `<tr><td colspan="9"><div class="acct-empty">
         <div class="acct-empty-title">${I18n.t('accounts.empty.poolTitle')}</div>
         <div class="acct-empty-sub">${I18n.t('accounts.empty.poolSub')}</div>
-        <div class="acct-empty-actions"><button class="btn btn-primary" onclick="App.openAddAccountModal('login')">${I18n.t('accounts.add.button')}</button></div>
+        <div class="acct-empty-actions">${this.renderAddActionGroup()}</div>
       </div></td></tr>`;
     }
     return `<tr><td colspan="9"><div class="acct-empty">
@@ -7850,7 +7962,12 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this._drawerKeyHandler = (e) => this._onDrawerKeydown(e);
     document.addEventListener('keydown', this._drawerKeyHandler, true);
     try {
-      await Promise.all([this._ensureModelsCatalog(), this.getAccountDetail(id), this.getAccountCards(id)]);
+      await Promise.all([
+        this._ensureModelsCatalog(),
+        this.getAccountDetail(id),
+        this.getAccountCards(id),
+        this.getAccountRequests(id, { force: true }),
+      ]);
     } catch (e) {
       this.toast(e.message || I18n.t('error.openFailed'), 'error');
     }
@@ -7924,9 +8041,17 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this.loadWindsurfLogin();
     this.checkLocalImportAvailability();
     this._addModalKeyHandler = (e) => {
-      if (e.key === 'Escape' && !document.getElementById('add-account-overlay')?.classList.contains('hidden')) {
+      if (document.getElementById('add-account-overlay')?.classList.contains('hidden')) return;
+      if (e.key === 'Escape') {
         e.preventDefault();
         this.closeAddAccountModal();
+        return;
+      }
+      // Same Tab trap the confirm/prompt dialogs use. Without it focus walks out
+      // of the modal into the page behind the overlay, which is still visible.
+      if (e.key === 'Tab') {
+        const dialog = overlay.querySelector('.modal');
+        if (dialog) this._trapFocus(e, dialog);
       }
     };
     document.addEventListener('keydown', this._addModalKeyHandler, true);
@@ -7962,6 +8087,22 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       if (panel) panel.classList.toggle('active', t === next);
     }
     if (next === 'local') this.checkLocalImportAvailability();
+  },
+
+  // WAI-ARIA tabs: arrows move selection (automatic activation), Home/End jump
+  // to the ends. Enter/Space are unnecessary because activation follows focus.
+  onAddTabKeydown(e) {
+    const order = ['login', 'paste', 'import', 'local'];
+    const cur = Math.max(0, order.indexOf(this._addTab || 'login'));
+    let next = null;
+    if (e.key === 'ArrowRight') next = (cur + 1) % order.length;
+    else if (e.key === 'ArrowLeft') next = (cur - 1 + order.length) % order.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = order.length - 1;
+    if (next == null) return;
+    e.preventDefault();
+    this.switchAddTab(order[next]);
+    document.getElementById(`add-tab-${order[next]}`)?.focus();
   },
 
   _modelsCatalog: null,
@@ -8138,6 +8279,65 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     </div>`;
   },
 
+  // Card — per-account request history. Fed by GET /accounts/:id/requests, which
+  // reads the process-local ring written by recordAccountSpend. The card states
+  // both limits on its face (billed successes only, process-local) because a
+  // short list must never read as "this account has served nothing".
+  renderRequestHistoryCard(history, accountId) {
+    const T = (k, v) => I18n.t('account.detail.requests.' + k, v);
+    const head = (badge) => `<div class="detail-card-head">
+        <span class="dot" style="background:var(--info)"></span>${T('title')}${badge || ''}
+      </div>`;
+    if (!history) {
+      return `<div class="detail-card" data-dm-card="requests" style="grid-column:1/-1">
+        ${head()}<div class="dm-empty">${I18n.t('account.detail.cardsUnavailable')}</div>
+      </div>`;
+    }
+    if (history.ok === false) {
+      return `<div class="detail-card" data-dm-card="requests" style="grid-column:1/-1">
+        ${head()}
+        <div class="dm-empty" style="color:var(--error)">${this.esc(T('loadFailed'))}</div>
+        <div class="dm-controls" style="margin:8px 0 0">
+          <button class="btn btn-outline btn-sm" onclick="App.refreshAccountRequests('${this.escJsAttr(accountId)}')">${this.esc(T('retry'))}</button>
+        </div>
+      </div>`;
+    }
+    const items = Array.isArray(history.items) ? history.items : [];
+    const sum = history.summary || {};
+    const total = Number(history.total) || 0;
+    const cap = Number(history.capacity) || 0;
+    const num = (n) => (n == null || !Number.isFinite(Number(n)) ? '—' : Number(n).toLocaleString());
+    const frac = (n) => (n == null || !Number.isFinite(Number(n)) ? '—' : (Math.round(Number(n) * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 }));
+    const acuFmt = (n) => (n == null ? '—' : (n > 0 && n < 0.01 ? Number(n).toLocaleString(undefined, { maximumSignificantDigits: 4 }) : frac(n)));
+    const badge = `<span class="badge muted no-dot" style="margin-left:auto" title="${this.esc(T('windowTip', { cap }))}">${this.esc(T('window', { total, cap }))}</span>`;
+    const rows = items.map((r) => {
+      const when = r.ts ? new Date(r.ts).toLocaleString() : '—';
+      return `<div class="dm-req-row" title="${this.esc(when)}">
+        <span class="dm-row-time">${this.esc(this.dmAgo(r.ts))}</span>
+        <span class="dm-req-model" title="${this.esc(r.model || '')}">${this.esc(r.model || '—')}</span>
+        <span class="dm-req-num">${this.esc(num(r.totalTokens))} ${this.esc(T('tokenUnit'))}</span>
+        <span class="dm-req-num is-credit">${this.esc(frac(r.credit))}</span>
+      </div>`;
+    }).join('');
+    return `<div class="detail-card" data-dm-card="requests" style="grid-column:1/-1">
+      ${head(badge)}
+      <div class="dm-grid">
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(num(sum.requests))}</span><span class="dm-stat-label">${this.esc(T('requests'))}</span></div>
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(num(sum.totalTokens))}</span><span class="dm-stat-label">${this.esc(T('tokens'))}</span></div>
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(frac(sum.credit))}</span><span class="dm-stat-label">${this.esc(T('credit'))}</span></div>
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(acuFmt(sum.acu))}</span><span class="dm-stat-label">${this.esc(T('acu'))}</span></div>
+      </div>
+      <div class="dm-subhead">${this.esc(T('recent'))}<span class="dm-subhead-count">${this.esc(T('shown', { shown: items.length, total }))}</span></div>
+      ${items.length
+        ? `<div class="dm-rows">${rows}</div>`
+        : `<div class="dm-empty">${this.esc(T('empty'))}</div>`}
+      <div class="dm-note">${this.esc(T('note'))}</div>
+      <div class="dm-controls" style="margin:10px 0 0">
+        <button class="btn btn-outline btn-sm" onclick="App.refreshAccountRequests('${this.escJsAttr(accountId)}')">${this.esc(T('refresh'))}</button>
+      </div>
+    </div>`;
+  },
+
   // Card 2 — model entitlement. `unknown` is a first-class state: a model that
   // was never probed must not read as available.
   renderModelStatusCard(status) {
@@ -8222,9 +8422,6 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         <span class="k">${T('autoRefresh')}</span><span class="v">${K.hasRefreshToken ? T('autoRefreshOn') : T('autoRefreshOff')}</span>
       </div>
       <div class="dm-note">${T('expiryNote')}</div>
-      <div class="dm-controls" style="margin:10px 0 0">
-        <button class="btn btn-outline btn-sm" onclick="App.reloginAccount('${this.escJsAttr(accountId)}')">${T('relogin')}</button>
-      </div>
     </div>`;
   },
 
@@ -8286,6 +8483,48 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       </div>
       ${result}
     </div>`;
+  },
+
+  // Process-local, no upstream cost, so the drawer always re-reads it on open
+  // instead of trusting a cache that a probe/refresh may have invalidated.
+  async getAccountRequests(id, { force = false } = {}) {
+    if (!this._requestsByAccount) this._requestsByAccount = new Map();
+    if (!force && this._requestsByAccount.has(id)) return this._requestsByAccount.get(id);
+    try {
+      const r = await this.api('GET', `/accounts/${encodeURIComponent(id)}/requests?limit=50`);
+      const payload = (r && typeof r === 'object') ? r : { ok: false, error: 'empty' };
+      // api() returns an error envelope (success:false, no items) for 4xx/5xx.
+      // Normalise it to ok:false so the card renders its retry state instead of
+      // a zeroed table that would read as "no requests".
+      if (!Array.isArray(payload.items)) payload.ok = false;
+      this._requestsByAccount.set(id, payload);
+      return payload;
+    } catch (e) {
+      const payload = { ok: false, error: e.message || 'failed' };
+      this._requestsByAccount.set(id, payload);
+      return payload;
+    }
+  },
+
+  async refreshAccountRequests(id) {
+    await this.getAccountRequests(id, { force: true });
+    if (this._drawerAccountId === id) this.renderAccountDrawer(id);
+  },
+
+  // Re-read every drawer source for one account and repaint in place. Used after
+  // an action whose whole point is to change what the drawer shows (probe, credit
+  // refresh): the old code reloaded the list but left the open drawer stale, so a
+  // successful probe looked like it had done nothing.
+  async refreshOpenDrawer(id) {
+    if (this._drawerAccountId !== id) return;
+    this._accountDetails?.delete(id);
+    this._cardsByAccount?.delete(id);
+    await Promise.all([
+      this.getAccountDetail(id, { force: true }),
+      this.getAccountCards(id, { force: true }),
+      this.getAccountRequests(id, { force: true }),
+    ]);
+    if (this._drawerAccountId === id) this.renderAccountDrawer(id);
   },
 
   async getAccountCards(id, { force = false } = {}) {
@@ -8437,6 +8676,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
 
         ${this.renderLedgerCard(cards?.ledger)}
 
+        ${this.renderRequestHistoryCard(this._requestsByAccount?.get(a.id), a.id)}
+
         <div class="detail-card" style="grid-column:1/-1">
           <div class="detail-card-head">
             <span class="dot" style="background:var(--success)"></span>
@@ -8492,6 +8733,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         this._cardsByAccount?.delete(id);
         this.toast(I18n.t('toast.credits.refreshed'));
         this.loadAccounts();
+        this.refreshOpenDrawer(id);
       } else {
         this.toast(this.translateError(r.error, 'toast.credits.refreshFailed'), 'error');
       }
@@ -8582,6 +8824,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         this._cardsByAccount?.delete(id);
         this.toast(I18n.t('toast.probeComplete', { tier: tierLabel[r.tier] || r.tier }));
         this.loadAccounts();
+        this.refreshOpenDrawer(id);
       } else {
         this.toast(this.translateError(r.error, 'error.probeFailed'), 'error');
       }
@@ -9186,6 +9429,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     if (!ok) return;
     await this.api('DELETE', `/accounts/${id}`);
     this._accountDetails?.delete(id);
+    this._cardsByAccount?.delete(id);
+    this._requestsByAccount?.delete(id);
     this._selectedAccounts?.delete(id);
     this._batchResults?.delete(id);
     if (this._drawerAccountId === id) this.closeAccountDrawer();

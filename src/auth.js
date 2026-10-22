@@ -2298,6 +2298,7 @@ export function removeAccount(id) {
   if (idx === -1) return false;
   const account = accounts[idx];
   accounts.splice(idx, 1);
+  forgetAccountRequests(id);
   invalidateModelCatalogForAccount(id);
   bumpUserJwtEpoch();
   // The account itself is gone — drop the "had a filter" marker too, unlike a key
@@ -3597,7 +3598,78 @@ export function fullBillableTokens(usage) {
   return Math.max(total, prompt + completion + cacheWrite);
 }
 
-export function recordAccountSpend(apiKey, usage, { creditCost = 0, acuCost = 0 } = {}) {
+// ─── Per-account request history ─────────────────────────────────────────
+// Neither existing request log can answer "what has THIS account served":
+//   • stats.recentRequests is fed the upstream KEY at most chat call sites, so
+//     its `account` field is a credential prefix, not an account id;
+//   • request-ring rows are keyed by a caller hash, with no account attribution.
+// This ring is written from recordAccountSpend, which already holds the account
+// record, so a row can only exist for a request actually billed to that account.
+// The consequences are stated on the drawer card, not just here:
+//   • billed successes only (a 429 / abort never reaches spend accounting);
+//   • process-local and bounded (ACCOUNT_REQUEST_CAP rows per account);
+//   • never persisted — accounts.json stays free of request history;
+//   • no key material: model name, token counts and cost figures only.
+export const ACCOUNT_REQUEST_CAP = 100;
+const _accountRequests = new Map();
+
+export function recordAccountRequest(account, { model = '', usage = null, creditCost = 0, acuCost = 0, now = Date.now() } = {}) {
+  const id = account?.id;
+  if (!id) return null;
+  const entry = {
+    ts: now,
+    model: typeof model === 'string' ? model.slice(0, 120) : '',
+    promptTokens: Math.max(0, Number(usage?.prompt_tokens) || 0),
+    completionTokens: Math.max(0, Number(usage?.completion_tokens) || 0),
+    totalTokens: fullBillableTokens(usage),
+    credit: Math.max(0, Number(creditCost) || 0),
+    acu: Math.max(0, Number(acuCost) || 0),
+  };
+  let ring = _accountRequests.get(id);
+  if (!ring) { ring = []; _accountRequests.set(id, ring); }
+  ring.push(entry);
+  if (ring.length > ACCOUNT_REQUEST_CAP) ring.splice(0, ring.length - ACCOUNT_REQUEST_CAP);
+  return entry;
+}
+
+/**
+ * Newest-first page of an account's billed requests plus totals over the whole
+ * retained window. `total` is the ring size, never the page size, so a caller
+ * can tell "50 of 50" from "50 of 3".
+ */
+export function getAccountRequests(id, { limit = 50 } = {}) {
+  const ring = _accountRequests.get(String(id || '')) || [];
+  const n = Math.max(1, Math.min(ACCOUNT_REQUEST_CAP, Number(limit) || 50));
+  const summary = {
+    requests: ring.length,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    credit: 0,
+    acu: 0,
+    lastTs: ring.length ? ring[ring.length - 1].ts : 0,
+  };
+  for (const r of ring) {
+    summary.promptTokens += r.promptTokens;
+    summary.completionTokens += r.completionTokens;
+    summary.totalTokens += r.totalTokens;
+    summary.credit += r.credit;
+    summary.acu += r.acu;
+  }
+  return { items: ring.slice(-n).reverse(), total: ring.length, capacity: ACCOUNT_REQUEST_CAP, summary };
+}
+
+/** Drop an account's ring when the account itself is gone. */
+export function forgetAccountRequests(id) {
+  _accountRequests.delete(String(id || ''));
+}
+
+/** Test seam: empty every ring without touching production state. */
+export function __resetAccountRequestsForTest() {
+  _accountRequests.clear();
+}
+
+export function recordAccountSpend(apiKey, usage, { creditCost = 0, acuCost = 0, model = '' } = {}) {
   if (!apiKey) return;
   const account = accounts.find(a => a.apiKey === apiKey);
   if (!account) return;
@@ -3628,6 +3700,7 @@ export function recordAccountSpend(apiKey, usage, { creditCost = 0, acuCost = 0 
   s.totalTokens += total;
   s.creditCost += Math.max(0, Number(creditCost) || 0);
   s.acuCost = (Number(s.acuCost) || 0) + Math.max(0, Number(acuCost) || 0);
+  recordAccountRequest(account, { model, usage, creditCost, acuCost });
   markDirty();
 }
 
