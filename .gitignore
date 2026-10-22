@@ -23,6 +23,7 @@ scripts/*
 !scripts/lsp-capacity-matrix.mjs
 !scripts/web-search-direct-probe.mjs
 !scripts/sync-docs-contributors.mjs
+!scripts/check-dashboard-copy.mjs
 !scripts/secret-scan.mjs
 !scripts/run-test-shard.mjs
 !scripts/run-tests.mjs
