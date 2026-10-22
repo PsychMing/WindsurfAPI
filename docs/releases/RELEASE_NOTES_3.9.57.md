@@ -30,7 +30,9 @@
 ## 工程与门禁
 
 - 合入 `fix/release-guard` `5b000ec`（单文件 +33/−10）。
-- Windows gate / Linux 全量 / wire：见发布提交；生产代码零改动，mutation 规格不覆盖该守卫。
+- Windows `npm run gate`：**PASS**；`npm run test:release` **6,150 pass / 0 fail / 95 skip（506 文件）**。
+- Linux `npm run test:release`（HMC，Node v24.21.0，506 文件）：**6,242 pass / 0 fail / 3 skip**。
+- 生产代码零改动（单文件测试），mutation 规格不覆盖该守卫；wire 与 3.9.56 相同。
 - 本版之后请用 `gh release view v3.9.57` 确认 Release 与 5 个资产（含 `SHA256SUMS`）真实发布。
 
 ## 尚未验证
