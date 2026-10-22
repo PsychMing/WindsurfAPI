@@ -772,12 +772,31 @@ describe('docs: version claims match the repository', () => {
       );
       return; // pre-tag window; release.yml verifies the tag once it exists
     }
-    assert.equal(git(['cat-file', '-t', tagName]), 'tag', `${tagName} must be annotated, not lightweight`);
-    const tagCommit = git(['rev-parse', `${tagName}^{commit}`]);
+    // Two checkout shapes reach this gate, and only one carries the tag object:
+    //   - local/annotated: refs/tags/<name> is the tag object, so annotatedness and the
+    //     object identity in §0 are checkable.
+    //   - GitHub Actions: actions/checkout force-fetches the pushed tag as
+    //     `+<commit>:refs/tags/<name>`, so the same ref points straight at the commit and
+    //     the tag object is never fetched. Requiring `tag` unconditionally failed every
+    //     release run (v3.9.54–56) even though the remote tag is annotated.
+    // Both shapes must still prove the ref resolves to a commit and that §0 names that
+    // commit or an ancestor of it; only the object-identity assertions are shape-dependent.
+    const tagRef = `refs/tags/${tagName}`;
+    const tagType = git(['cat-file', '-t', tagRef]);
+    assert.ok(
+      tagType === 'tag' || tagType === 'commit',
+      `${tagRef} must resolve to an annotated tag object or a commit, found ${tagType}`,
+    );
+    let tagCommit;
+    try {
+      tagCommit = git(['rev-parse', '--verify', `${tagRef}^{commit}`]);
+    } catch {
+      assert.fail(`${tagRef} does not resolve to a commit`);
+    }
     // The release commit is written BEFORE the tag exists, so it cannot name the tag's own
-    // commit without self-reference. Accept any ancestor of the tag commit: the claim still
-    // has to be a real commit on the released history, and a stale/moved tag still fails
-    // because the named commit would no longer be an ancestor.
+    // commit without self-reference. Accept the tag commit itself or any ancestor of it: the
+    // claim still has to be a real commit on the released history, and a stale/moved tag
+    // still fails because the named commit would no longer be an ancestor.
     let ancestor = false;
     try {
       execFileSync('git', ['merge-base', '--is-ancestor', commit, tagCommit], { cwd: ROOT, stdio: 'pipe' });
@@ -787,12 +806,16 @@ describe('docs: version claims match the repository', () => {
     }
     assert.ok(
       ancestor,
-      `§0 commit ${commit} is not an ancestor of ${tagName}'s commit ${tagCommit}`,
+      `§0 commit ${commit} is not an ancestor of (or equal to) ${tagName}'s commit ${tagCommit}`,
     );
-    const object = block.match(/对象\s+`?([0-9a-f]{7,40})`?/);
-    if (object) {
-      const tagObject = git(['rev-parse', tagName]);
-      assert.ok(tagObject.startsWith(object[1]), `§0 tag object ${object[1]} is not ${tagObject}`);
+    // A forced ref has no tag object to compare against; the `对象` line is an annotated-tag
+    // fact, so it is only checked when the checkout actually carries the tag object.
+    if (tagType === 'tag') {
+      const object = block.match(/对象\s+`?([0-9a-f]{7,40})`?/);
+      if (object) {
+        const tagObject = git(['rev-parse', tagRef]);
+        assert.ok(tagObject.startsWith(object[1]), `§0 tag object ${object[1]} is not ${tagObject}`);
+      }
     }
   });
 
