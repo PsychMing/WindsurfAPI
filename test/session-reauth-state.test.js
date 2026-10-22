@@ -29,6 +29,7 @@ import {
   removeAccount,
   reportDeadToken,
   reportError,
+  reportSuccess,
   requestReauthCheck,
   resetAccountErrors,
   resolveAccountState,
@@ -210,6 +211,35 @@ describe('two-signal detection', () => {
   });
 });
 
+describe('reauth is terminal (P1)', () => {
+  it('reportError cannot walk it into error and the TTL cannot revive it', () => {
+    const a = newAccount('terminal-error');
+    markNeedsReauth(a.id, { source: 'request', code: 'UNAUTHORIZED' });
+    // The chat path reports errors on every 401; enough of them used to flip a
+    // healthy account to 'error', whose 900 s half-open arm then put the dead
+    // key back in rotation.
+    for (let i = 0; i < 6; i++) reportError(a.apiKey);
+    assert.equal(getAccountInternal(a.id).status, 'reauth');
+    assert.equal(getAccountInternal(a.id).errorCount, 0, 'a benched account must not accumulate an error budget');
+    a.erroredAt = Date.now() - 901_000;
+    __maybeRecoverErrorAccount(a, Date.now());
+    assert.equal(getAccountInternal(a.id).status, 'reauth');
+    assert.equal(getApiKey(), null);
+  });
+
+  it('reportSuccess clears the error budget but does not promote it to active', () => {
+    const a = newAccount('terminal-success');
+    a.errorCount = 3;
+    a._errorAt = Date.now();
+    markNeedsReauth(a.id, { source: 'request', code: 'UNAUTHORIZED' });
+    reportSuccess(a.apiKey);
+    const live = getAccountInternal(a.id);
+    assert.equal(live.errorCount, 0);
+    assert.equal(live.status, 'reauth', 'only a fresh token (or an alive probe) leaves reauth');
+    assert.equal(getApiKey(), null);
+  });
+});
+
 describe('liveness sweep records the state', () => {
   it('marks reauth when the probe says UNAUTHORIZED and no re-login is available', async () => {
     const a = newAccount('sweep');
@@ -278,6 +308,28 @@ describe('the operator cannot lie to the pool (I2)', () => {
     assert.equal(live.reauth, undefined);
     assert.ok(live.keyRotatedAt > 0, 'the key rotation must be recorded');
     assert.equal(getConnectMetrics().reauth_ok, 1);
+  });
+
+  it('refuses to install a token on a disabled or banned account', () => {
+    for (const status of ['disabled', 'banned']) {
+      const a = newAccount(`no-install-${status}`, { status });
+      assert.throws(
+        () => markAccountReauthenticated(a.id, { apiKey: 'devin-session-token$new', via: 'password', allowSameKey: true }),
+        /ERR_REAUTH_NOT_APPLICABLE/,
+      );
+      assert.equal(getAccountInternal(a.id).status, status, 'a login must not un-ban or re-enable');
+      assert.equal(getAccountInternal(a.id).apiKey, a.apiKey, 'the refused token must not be installed');
+    }
+  });
+
+  it('a successful login clears a stale ban-signal streak', () => {
+    const a = newAccount('streak');
+    a._banSignalCount = 2;
+    a._banSignalAt = Date.now();
+    markAccountReauthenticated(a.id, { apiKey: 'devin-session-token$fresh', via: 'email_code' });
+    const live = getAccountInternal(a.id);
+    assert.equal(live._banSignalCount, 0);
+    assert.equal(live._banSignalAt, 0);
   });
 
   it('a successful login may install the SAME key (the login is the proof)', () => {

@@ -21,7 +21,7 @@ import {
   getAccountList, getAccountCount, getAccountListStats, getAccountPublic, addAccountByKey, addAccountByPastedSecret,
   countAccountList, ACCOUNT_STATE_VALUES, ACCOUNT_SORT_VALUES,
   removeAccount, setAccountStatus, resetAccountErrors, updateAccountLabel,
-  markAccountReauthenticated, requestReauthCheck,
+  markAccountReauthenticated, requestReauthCheck, setAccountCredentialEmail,
   isAuthenticated, probeAccount, ensureLsForAccount,
   refreshCredits, refreshAllCredits, searchWebForAccount,
   setAccountBlockedModels, setAccountTokens, setAccountTier, setAccountSpendPolicy,
@@ -562,6 +562,9 @@ async function finalizeWindsurfLogin(result, { password, loginProxy, autoAdd, st
         const { storeCredential, isCredStoreEnabled } = await import('../devin-connect-credentials.js');
         if (isCredStoreEnabled()) {
           credentialStored = storeCredential(email, password) === true;
+          // Remember WHICH address the record is keyed by: the row can be
+          // renamed, and re-login / removal must still find the secret.
+          if (credentialStored) setAccountCredentialEmail(account.id, email);
           if (credentialStored) log.info(`Credential stored for auto-relogin: ${maskEmail(email)}`);
           else log.warn(`Credential NOT stored for ${maskEmail(email)} — auto-relogin stays disarmed for this account`);
         } else {
@@ -624,9 +627,11 @@ function applyReauthToken(id, rawToken, { via = 'token' } = {}) {
   const kind = classifyToken(token);
   if (kind === 'auth1') throw Object.assign(new Error('ERR_AUTH1_NOT_A_POOL_KEY'), { code: 'ERR_AUTH1_NOT_A_POOL_KEY', statusCode: 400 });
   if (kind !== 'session') throw Object.assign(new Error('ERR_REAUTH_TOKEN_INVALID'), { code: 'ERR_REAUTH_TOKEN_INVALID', statusCode: 400 });
-  // The pasted token was minted by a real login, so a same-key install is
-  // legitimate evidence (allowSameKey) — unlike a bare "enable" click.
-  markAccountReauthenticated(id, { apiKey: token, via, allowSameKey: true });
+  // A PASTED token is not proof of anything — unlike a completed login, the
+  // operator can paste the very token upstream just retired. Installing the
+  // same key on a reauth account is refused (409) so the state cannot be
+  // "cleared" without a new credential; a different key is a real rotation.
+  markAccountReauthenticated(id, { apiKey: token, via });
   return {
     success: true,
     reauthenticated: true,

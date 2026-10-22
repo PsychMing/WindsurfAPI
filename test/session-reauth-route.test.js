@@ -167,6 +167,24 @@ describe('POST /accounts/:id/reauth {action:"token"}', () => {
     assert.equal(getAccountInternal(account.id).apiKey, FRESH_TOKEN);
   });
 
+  it('refuses to "re-authenticate" with the SAME retired key', async () => {
+    const account = benched('same-key-paste');
+    const deadKey = getAccountInternal(account.id).apiKey;
+    for (const [route, body] of [
+      [`/accounts/${account.id}/reauth`, { action: 'token', token: deadKey }],
+      ['/accounts', { token: deadKey, accountId: account.id }],
+      ['/windsurf-login/token', { token: deadKey, accountId: account.id }],
+    ]) {
+      const { status, body: res } = await call('POST', route, body);
+      assert.equal(status, 409, `${route} must refuse the unchanged key`);
+      assert.equal(res.error, 'ERR_REAUTH_TOKEN_UNCHANGED');
+      const live = getAccountInternal(account.id);
+      assert.equal(live.status, 'reauth', `${route} must not clear the state`);
+      assert.ok(live.reauth, `${route} must keep the evidence`);
+      assert.equal(live.apiKey, deadKey);
+    }
+  });
+
   it('404s an unknown id', async () => {
     const { status, body } = await call('POST', '/accounts/nope/reauth', { action: 'token', token: FRESH_TOKEN });
     assert.equal(status, 404);
@@ -289,6 +307,28 @@ describe('bound add/re-login paths', () => {
     assert.equal(getAccountInternal(account.id).apiKey, FRESH_TOKEN);
     assert.equal(getAccountInternal(account.id).status, 'active');
     assert.equal('apiKey' in body, false, 'a bound re-auth never echoes the raw key');
+  });
+
+  it('email/complete {accountId} refuses a banned account (409) and changes nothing', async () => {
+    const account = benched('email-banned');
+    account.email = EMAIL;
+    account.status = 'banned';
+    account.bannedAt = Date.now();
+    account.bannedReason = 'account suspended';
+    const deadKey = account.apiKey;
+    __setLoginTransportForTests(makeTransport([CONNECTIONS_OAUTH_ONLY, EMAIL_START_OK, EMAIL_COMPLETE_OK, POSTAUTH_OK]));
+
+    const start = await call('POST', '/windsurf-login/email/start', { email: EMAIL });
+    const { status, body } = await call('POST', '/windsurf-login/email/complete', {
+      flowId: start.body.flowId, code: CODE, accountId: account.id,
+    });
+
+    assert.equal(status, 409);
+    assert.equal(body.error, 'ERR_REAUTH_NOT_APPLICABLE');
+    const live = getAccountInternal(account.id);
+    assert.equal(live.status, 'banned', 'a login must not un-ban an account');
+    assert.equal(live.apiKey, deadKey, 'the refused token must not be installed');
+    assert.equal(live.bannedReason, 'account suspended', 'the ban evidence survives the refusal');
   });
 
   it('email/complete {accountId} 404s an unknown account and adds nothing', async () => {
