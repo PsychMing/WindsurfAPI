@@ -55,6 +55,10 @@ import { registerCoreFlows } from './smoke-matrix/flows-core.mjs';
 import { registerLoginFlows } from './smoke-matrix/flows-login.mjs';
 import { registerProtocolFlows } from './smoke-matrix/flows-protocol.mjs';
 import { registerLiveFlows } from './smoke-matrix/flows-live.mjs';
+import { registerReauthFlows } from './smoke-matrix/flows-reauth.mjs';
+import { registerAcuFlows } from './smoke-matrix/flows-acu.mjs';
+import { registerAccountDrawerFlows } from './smoke-matrix/flows-account-drawer.mjs';
+import { registerRuntimeFlows } from './smoke-matrix/flows-runtime.mjs';
 
 const DATA_DIR = mkdtempSync(join(tmpdir(), 'windsurfapi-smoke-matrix-'));
 const ACP_DIR = mkdtempSync(join(tmpdir(), 'windsurfapi-smoke-matrix-acp-'));
@@ -230,6 +234,7 @@ const ctx = {
   waitFor,
   requireThat,
   addFlow,
+  base: '',
   deps: {},
 };
 
@@ -257,7 +262,17 @@ function buildCatalogResponse(writeStringField, writeVarintField, writeMessageFi
     writeVarintField(10, 2), // provider: OpenAI
     writeMessageField(23, writeStringField(23, SMOKE.liveAlias)),
   ]);
-  return writeMessageField(1, row);
+  // The pooled-account entitlement filter only admits a FREE_REACHABLE
+  // selector when the account's own live catalog lists it. Without this row a
+  // pooled chat for `swe-1-6-slow` queues for 30 s and falls back to the env
+  // token, which would make the billed-request history permanently empty.
+  const freeRow = Buffer.concat([
+    writeStringField(1, 'Free Smoke'),
+    writeStringField(22, MATRIX.models.chat),
+    writeVarintField(10, 2),
+    writeMessageField(23, writeStringField(23, 'free.smoke')),
+  ]);
+  return Buffer.concat([writeMessageField(1, row), writeMessageField(1, freeRow)]);
 }
 
 function buildStatusResponse(writeStringField, writeVarintField, writeMessageField) {
@@ -321,6 +336,7 @@ async function main() {
 
   const { startServer } = await import('../src/server.js');
   const { initAuth } = await import('../src/auth.js');
+  const authModule = await import('../src/auth.js');
   const loginModule = await import('../src/dashboard/windsurf-login.js');
   const otpModule = await import('../src/dashboard/email-otp-login.js');
   const windsurfApiModule = await import('../src/windsurf-api.js');
@@ -340,20 +356,73 @@ async function main() {
     fetch: devinReadModule.__setFetchImplForTest,
     streamChat: connectOpenAi.__setStreamChatForTest,
     preflight: cardsModule.__setPreflightDepsForTest,
+    reloginDeps: authModule.__setReloginDeps,
+    resetReauthChecks: authModule.__resetReauthChecks,
     resetEmailFlows: loginModule._resetEmailFlowsForTests,
     resetEmailLockout: loginModule._resetEmailLockoutForTests,
     resetReadCache: devinReadModule.__resetReadCache,
   };
 
+  // SessionReauth's confirmation probe is a free GetUserStatus call. The
+  // matrix needs to choose the verdict per token (dead / alive), so it injects
+  // the same seam the unit suite uses. Unlisted tokens are alive.
+  const liveness = new Map();
+  const checkSessionLiveness = async ({ token }) => (
+    liveness.get(String(token || '')) || { alive: true, code: 'OK' }
+  );
+
   const catalogBytes = buildCatalogResponse(writeStringField, writeVarintField, writeMessageField);
   const statusBytes = buildStatusResponse(writeStringField, writeVarintField, writeMessageField);
 
   const loginTransport = scriptedLoginTransport([
+    // app.devin.ai is the wave-3 fallback/explicit login host. It uses the
+    // /api/auth1/* paths (not windsurf.com's /_devin-auth/*), so these routes
+    // can only be reached when the product actually chose that host.
+    {
+      match: (url) => url.includes('app.devin.ai/api/auth1/connections'),
+      reply: (_url, body) => {
+        if (body?.email === MATRIX.emailDevinOnly) {
+          return {
+            json: {
+              connections: [{ id: 'email', type: 'email', enabled: true }],
+              auth_method: { method: 'auth1', has_password: true },
+            },
+          };
+        }
+        return { status: 500, json: { error: 'devin_host_unrouted' } };
+      },
+    },
+    {
+      match: (url) => url.includes('app.devin.ai/api/auth1/email/start'),
+      reply: { json: { email_verification_token: MATRIX.verifyTokenDevin } },
+    },
+    {
+      match: (url) => url.includes('app.devin.ai/api/auth1/email/complete'),
+      reply: (_url, body) => (body?.code === SMOKE.emailCode
+        ? { json: { token: MATRIX.auth1TokenDevin } }
+        : { status: 400, json: { detail: 'invalid verification code' } }),
+    },
     {
       match: (url) => url.includes('/_devin-auth/connections'),
       reply: (_url, body) => {
         const email = body?.email;
         if (email === MATRIX.emailBrokenProbe) return { status: 500, json: { error: 'probe_down' } };
+        // Host-fallback fixture: windsurf.com cannot answer this address, so
+        // only the app.devin.ai route above can.
+        if (email === MATRIX.emailDevinOnly) return { status: 500, json: { error: 'probe_down' } };
+        // Known non-auth1 method with NO has_password field: the only reason a
+        // probe can return it is the wave-3 "honor a non-auth1 method" clause.
+        if (email === MATRIX.emailFirebase) {
+          return {
+            json: {
+              connections: [
+                { id: 'email', type: 'email', enabled: true },
+                { id: 'google', type: 'google', enabled: true },
+              ],
+              auth_method: { method: 'firebase' },
+            },
+          };
+        }
         if (email === MATRIX.emailUnknown) {
           return { json: { auth_method: { method: 'not_found', has_password: false } } };
         }
@@ -409,10 +478,15 @@ async function main() {
         const auth1 = Object.entries(headers)
           .find(([key]) => key.toLowerCase() === 'x-devin-auth1-token')?.[1] || '';
         const passwordFlow = String(auth1).includes(MATRIX.auth1Password);
+        const devinFlow = String(auth1).includes(MATRIX.auth1TokenDevin);
         return {
           buffer: Buffer.from(JSON.stringify({
-            sessionToken: passwordFlow ? MATRIX.sessionTokenPassword : SMOKE.sessionTokenEmail,
-            accountId: passwordFlow ? 'account-smoke-password' : 'account-smoke-email',
+            sessionToken: passwordFlow
+              ? MATRIX.sessionTokenPassword
+              : (devinFlow ? MATRIX.sessionTokenDevin : SMOKE.sessionTokenEmail),
+            accountId: passwordFlow
+              ? 'account-smoke-password'
+              : (devinFlow ? 'account-smoke-devin' : 'account-smoke-email'),
           })),
         };
       },
@@ -476,6 +550,8 @@ async function main() {
   seams.preflight({
     rateLimit: async () => ({ hasCapacity: true, messagesRemaining: 42, maxMessages: 100, retryAfterMs: null }),
   });
+  seams.reloginDeps({ checkSessionLiveness });
+  seams.resetReauthChecks();
   seams.resetReadCache();
   seams.resetEmailFlows();
   seams.resetEmailLockout();
@@ -485,6 +561,7 @@ async function main() {
   server = startServer();
   if (!server.listening) await once(server, 'listening');
   base = `http://127.0.0.1:${server.address().port}`;
+  ctx.base = base;
 
   Object.assign(ctx.deps, {
     loginTransport,
@@ -494,6 +571,9 @@ async function main() {
     connectStream,
     otpTransport,
     getLiveCatalog,
+    liveness,
+    installFetch: seams.fetch,
+    resetReadCache: seams.resetReadCache,
     resetEmailFlows: seams.resetEmailFlows,
     resetEmailLockout: seams.resetEmailLockout,
   });
@@ -506,13 +586,19 @@ async function main() {
   registerCoreFlows(ctx);
   registerProtocolFlows(ctx);
   registerLoginFlows(ctx);
+  // Pooled-account surfaces. The history flow drives one real chat through the
+  // pool, so it must run before any family that parks an account (reauth).
+  registerAccountDrawerFlows(ctx);
+  registerAcuFlows(ctx);
+  registerReauthFlows(ctx);
   registerLiveFlows(ctx);
+  registerRuntimeFlows(ctx);
 
   // Hygiene flows are ordinary members of the flow list so the family census
   // sees them. The leak scan is last on purpose: it must run even when an
   // earlier family failed, because a leak must never be hidden by a red line.
   addFlow('hygiene', 'hygiene.flow-manifest', async () => {
-    requireThat(flows.length >= 40, `only ${flows.length} flows registered`);
+    requireThat(flows.length >= 120, `only ${flows.length} flows registered`);
     const declared = new Set(MATRIX_FAMILIES);
     for (const flow of flows) requireThat(declared.has(flow.family), `flow ${flow.name} has an undeclared family`);
     for (const family of MATRIX_FAMILIES) {
@@ -558,6 +644,7 @@ async function cleanup() {
   try { seams.fetch?.(null); } catch { /* best-effort */ }
   try { seams.streamChat?.(null); } catch { /* best-effort */ }
   try { seams.preflight?.({}); } catch { /* best-effort */ }
+  try { seams.reloginDeps?.(null); } catch { /* best-effort */ }
   if (server) {
     await new Promise((resolve) => {
       let settled = false;

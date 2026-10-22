@@ -8,7 +8,7 @@
  */
 
 export function registerLoginFlows(ctx) {
-  const { http, requireThat, addFlow, state, SMOKE, MATRIX } = ctx;
+  const { http, requireThat, addFlow, state, SMOKE, MATRIX, deps } = ctx;
 
   // ─── login ───────────────────────────────────────────────────────────
   addFlow('login', 'login.probe-email-code', async () => {
@@ -212,6 +212,147 @@ export function registerLoginFlows(ctx) {
     requireThat(complete.status === 400, `complete status ${complete.status}`);
     requireThat(complete.json?.error === 'ERR_EMAIL_OTP_TURNSTILE_REQUIRED', `error ${complete.json?.error}`);
     return 'both OTP steps reject missing turnstile/fields';
+  });
+
+  // ─── login wave 3 (3.9.50 / 3.9.51) ──────────────────────────────────
+  addFlow('login', 'login.probe-non-auth1', async () => {
+    // Upstream can answer a known non-auth1 method (firebase/oauth) with NO
+    // has_password field. Guessing Auth1 from that answer sent a passwordless
+    // account to a guaranteed 401, so the probe must report the method.
+    const r = await http('POST', '/dashboard/api/windsurf-login/probe', {
+      body: { email: MATRIX.emailFirebase },
+    });
+    requireThat(r.status === 200 && r.json?.ok === true, `status ${r.status} error ${r.json?.error || '?'}`);
+    requireThat(r.json.method === 'firebase', `method ${r.json.method}`);
+    requireThat(r.json.source === 'connections', `source ${r.json.source}`);
+    requireThat(r.json.host === 'windsurf', `host ${r.json.host}`);
+    requireThat(r.json.hasPassword === null, `hasPassword ${r.json.hasPassword}`);
+    requireThat(r.json.userExists === true, `userExists ${r.json.userExists}`);
+    requireThat(r.json.emailCode === true, `emailCode ${r.json.emailCode}`);
+    requireThat(Array.isArray(r.json.oauth) && r.json.oauth.includes('google'), `oauth ${JSON.stringify(r.json.oauth)}`);
+    requireThat(!r.text.includes(SMOKE.verifyToken), 'verification token echoed by the non-auth1 probe');
+    return 'firebase method honored instead of guessing Auth1';
+  });
+
+  addFlow('login', 'login.probe-host-fallback', async () => {
+    const before = await http('GET', '/dashboard/api/runtime-env-status');
+    requireThat(before.status === 200, `runtime status ${before.status}`);
+    requireThat(before.json?.switches?.loginHostFallback?.value === false, 'loginHostFallback is on by default');
+
+    const on = await http('PUT', '/dashboard/api/runtime-env-status', { body: { loginHostFallback: true } });
+    requireThat(on.status === 200 && on.json?.success === true, `switch-on status ${on.status}`);
+    requireThat(on.json?.switches?.loginHostFallback?.value === true, 'loginHostFallback did not flip on');
+    requireThat(on.json?.switches?.loginHostFallback?.source === 'config', 'override source not reported');
+
+    const viaDevin = await http('POST', '/dashboard/api/windsurf-login/probe', {
+      body: { email: MATRIX.emailDevinOnly },
+    });
+    requireThat(viaDevin.status === 200 && viaDevin.json?.ok === true, `devin probe status ${viaDevin.status}`);
+    requireThat(viaDevin.json.method === 'auth1' && viaDevin.json.hasPassword === true, `devin probe payload ${JSON.stringify(viaDevin.json)}`);
+    requireThat(viaDevin.json.source === 'connections', `devin probe source ${viaDevin.json.source}`);
+    requireThat(viaDevin.json.host === 'devin', `devin probe host ${viaDevin.json.host}`);
+
+    const off = await http('PUT', '/dashboard/api/runtime-env-status', { body: { loginHostFallback: null } });
+    requireThat(off.status === 200, `switch-off status ${off.status}`);
+    requireThat(off.json?.switches?.loginHostFallback?.value === false, 'loginHostFallback did not clear');
+
+    // With the fallback off the same address is answered by the secondary
+    // probe: a different source, and no host claim.
+    const viaSecondary = await http('POST', '/dashboard/api/windsurf-login/probe', {
+      body: { email: MATRIX.emailDevinOnly },
+    });
+    requireThat(viaSecondary.status === 200, `secondary probe status ${viaSecondary.status}`);
+    requireThat(viaSecondary.json.source === 'check_user_login_method', `secondary source ${viaSecondary.json.source}`);
+    requireThat(viaSecondary.json.host === null, `secondary host ${viaSecondary.json.host}`);
+    requireThat(viaSecondary.json.method === 'auth1', `secondary method ${viaSecondary.json.method}`);
+    return 'host fallback answers from app.devin.ai; off falls to the secondary probe';
+  });
+
+  addFlow('login', 'login.token-import', async () => {
+    const bare = await http('POST', '/dashboard/api/windsurf-login/token', {
+      body: { token: MATRIX.loginImportToken, label: 'login-import' },
+    });
+    requireThat(bare.status === 200 && bare.json?.success === true, `bare status ${bare.status} error ${bare.json?.error || '?'}`);
+    requireThat(bare.json.method === 'token', `bare method ${bare.json.method}`);
+    requireThat(typeof bare.json.account?.id === 'string' && bare.json.account.id, 'bare import did not add an account');
+    requireThat(!bare.text.includes(MATRIX.loginImportToken), 'bare import echoed the token');
+    state.loginImportAccountId = bare.json.account.id;
+
+    // The desktop app's sign-in callback is a custom-scheme deep link; the
+    // token is in the query string, not the path.
+    const deep = await http('POST', '/dashboard/api/windsurf-login/token', {
+      body: {
+        token: `windsurf://codeium.windsurf?access_token=${MATRIX.loginImportTokenDeep}`,
+        label: 'login-deep-link',
+      },
+    });
+    requireThat(deep.status === 200 && deep.json?.success === true, `deep status ${deep.status} error ${deep.json?.error || '?'}`);
+    requireThat(deep.json.method === 'token', `deep method ${deep.json.method}`);
+    requireThat(deep.json.account?.id !== state.loginImportAccountId, 'deep link imported into the same row');
+    requireThat(!deep.text.includes(MATRIX.loginImportTokenDeep), 'deep import echoed the token');
+    state.loginImportDeepAccountId = deep.json.account.id;
+
+    const empty = await http('POST', '/dashboard/api/windsurf-login/token', { body: {} });
+    requireThat(empty.status === 400 && empty.json?.error === 'ERR_NO_TOKEN_IN_INPUT', `empty status ${empty.status} error ${empty.json?.error}`);
+
+    const auth1 = await http('POST', '/dashboard/api/windsurf-login/token', { body: { token: SMOKE.auth1Token } });
+    requireThat(auth1.status === 400 && auth1.json?.error === 'ERR_AUTH1_NOT_A_POOL_KEY', `auth1 status ${auth1.status} error ${auth1.json?.error}`);
+
+    const unknownAccount = await http('POST', '/dashboard/api/windsurf-login/token', {
+      body: { accountId: 'deadbeef', token: MATRIX.loginImportToken },
+    });
+    requireThat(unknownAccount.status === 404 && unknownAccount.json?.error === 'ERR_ACCOUNT_NOT_FOUND', `unknown status ${unknownAccount.status} error ${unknownAccount.json?.error}`);
+
+    const listed = await http('GET', '/dashboard/api/accounts');
+    const ids = (listed.json?.accounts || []).map((a) => a.id);
+    requireThat(ids.includes(state.loginImportAccountId) && ids.includes(state.loginImportDeepAccountId), 'imported accounts missing from the pool');
+    requireThat(!listed.text.includes(MATRIX.loginImportToken) && !listed.text.includes(MATRIX.loginImportTokenDeep), 'imported token in the account list');
+    return 'bare + deep-link import; auth1/empty/unknown-account edges';
+  });
+
+  addFlow('login', 'login.code-form-devin-host', async () => {
+    const start = await http('POST', '/dashboard/api/windsurf-login/email/start', {
+      body: { email: MATRIX.emailCodeForm, host: 'devin' },
+    });
+    requireThat(start.status === 200 && start.json?.sent === true, `start status ${start.status} error ${start.json?.error || '?'}`);
+    requireThat(start.json.host === 'devin', `start host ${start.json.host}`);
+    requireThat(/^[0-9a-f]{32}$/.test(String(start.json.flowId)), `flowId ${start.json.flowId}`);
+    requireThat(typeof start.json.expiresInMs === 'number' && start.json.expiresInMs > 0, `expiresInMs ${start.json.expiresInMs}`);
+    requireThat(!start.text.includes(MATRIX.verifyTokenDevin), 'devin verification token echoed by start');
+    const seenStart = deps.loginTransport.seen.some((url) => url.includes('app.devin.ai/api/auth1/email/start'));
+    requireThat(seenStart, 'email/start did not reach app.devin.ai');
+
+    const wrong = await http('POST', '/dashboard/api/windsurf-login/email/complete', {
+      body: { flowId: start.json.flowId, code: '000000' },
+    });
+    requireThat(wrong.status === 400 && wrong.json?.error === 'ERR_EMAIL_CODE_REJECTED', `wrong status ${wrong.status} error ${wrong.json?.error}`);
+    requireThat(wrong.json.isAuthFail === true && wrong.json.attemptsRemaining === 4, `wrong payload ${JSON.stringify(wrong.json)}`);
+
+    const done = await http('POST', '/dashboard/api/windsurf-login/email/complete', {
+      body: { flowId: start.json.flowId, code: SMOKE.emailCode },
+    });
+    requireThat(done.status === 200 && done.json?.success === true, `complete status ${done.status} error ${done.json?.error || '?'}`);
+    requireThat(done.json.method === 'email_code', `method ${done.json.method}`);
+    requireThat(done.json.viaHost === 'app.devin.ai', `viaHost ${done.json.viaHost}`);
+    requireThat(typeof done.json.account?.id === 'string', 'code-form login did not add an account');
+    requireThat(!done.text.includes(MATRIX.auth1TokenDevin), 'Auth1 token echoed by complete');
+    requireThat(!done.text.includes(MATRIX.sessionTokenDevin), 'session token echoed by complete');
+    const seenComplete = deps.loginTransport.seen.some((url) => url.includes('app.devin.ai/api/auth1/email/complete'));
+    requireThat(seenComplete, 'email/complete did not reach app.devin.ai');
+    state.codeFormAccountId = done.json.account.id;
+
+    // An unknown host token is ignored (allowlist), not passed through.
+    const invalidHost = await http('POST', '/dashboard/api/windsurf-login/email/start', {
+      body: { email: MATRIX.emailUnknown, host: 'evil.example' },
+    });
+    requireThat(invalidHost.status === 200 && invalidHost.json?.host === 'windsurf', `invalid host status ${invalidHost.status} host ${invalidHost.json?.host}`);
+
+    // The form the operator types the code into is wired in the dashboard.
+    const html = await http('GET', '/dashboard', { auth: 'none' });
+    requireThat(html.status === 200, `dashboard status ${html.status}`);
+    requireThat(html.text.includes('id="wl-email-code-field"'), 'email-code form field marker missing');
+    requireThat(html.text.includes('id="wl-email-code"'), 'email-code input marker missing');
+    return 'code form runs on app.devin.ai and reports viaHost';
   });
 
   // ─── accounts ────────────────────────────────────────────────────────
