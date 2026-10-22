@@ -27,7 +27,10 @@
 ## 工程与门禁
 
 - 合入 3 条分支（均基于 `693b375`）：`fix/doc-drift` `df4f915`、`fix/ui-p0` `bb45dce`、`fix/review353` `6e6f955`。
-- Windows/Linux/gate/mutation/wire：见发布提交与 CI。
+- Windows `npm run gate`：**PASS**；`npm run test:release` **6,120 pass / 0 fail / 95 skip（505 文件）**；`spec-static-check`/`spec-baseline-check`/`secret-scan`/`git diff --check` 全 PASS。
+- Linux `npm run test:release`（HMC，Node v24.21.0，505 文件）：**6,210 pass / 2 fail / 3 skip**；两条失败都是 `docs-consistency-guard` 在无 tag 的 bundle clone 里 fail-closed（"no release tags reachable"），`git fetch --tags` 后该文件 44/44，全量即 **6,212 pass / 0 fail / 3 skip**。
+- wire：对 `v3.9.53`（`693b375`）比较 **270/270**，`tag_ref_verified:true`。
+- mutation：全量 sweep 见发布提交。
 
 ## 尚未验证
 
