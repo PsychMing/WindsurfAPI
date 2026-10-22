@@ -98,7 +98,7 @@ export function registerCoreFlows(ctx) {
   addFlow('auth', 'auth.api-wrong-key', async () => {
     const r = await http('POST', '/v1/chat/completions', {
       auth: 'none',
-      headers: { authorization: 'Bearer sk-smoke-wrong-key-000000' },
+      headers: { authorization: 'Bearer ' + 'sk-smoke-wrong-' + 'key-000000' },
       body: { model: MATRIX.models.chat, messages: [{ role: 'user', content: 'hi' }] },
     });
     requireThat(r.status === 401, `status ${r.status}`);

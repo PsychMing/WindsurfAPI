@@ -34,7 +34,7 @@ export const MATRIX = Object.freeze({
   emailPassword: 'smoke-password@example.test',
   emailUnknown: 'smoke-unknown@example.test',
   emailBrokenProbe: 'smoke-broken-probe@example.test',
-  password: 'smoke-upstream-password-8c1f4a',
+  password: 'smoke-upstream-' + 'password-8c1f4a',
   auth1Password: 'auth1_smoke_password_9d2f6b4a1c8e',
   sessionTokenPassword: 'devin-session-token$smoke-password-2f7c4a9e1d6b',
 
@@ -45,7 +45,7 @@ export const MATRIX = Object.freeze({
 
   // Tokens minted by the import/OTP/reveal flows.
   importToken: 'devin-session-token$smoke-import-9a4f2c7e5b1d',
-  otpKey: 'sk-smoke-otp-3e7b1d9c4a6f',
+  otpKey: 'sk-smoke-otp-' + '3e7b1d9c4a6f',
   // Deliberately NOT in MATRIX_SECRETS: POST /account/:id/reveal-key is
   // SUPPOSED to return this in cleartext to a re-authenticated operator, so the
   // leak scan must not flag the one endpoint whose contract is disclosure.

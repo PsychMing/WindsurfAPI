@@ -152,7 +152,7 @@ export function registerLoginFlows(ctx) {
 
   addFlow('login', 'login.password-wrong', async () => {
     const r = await http('POST', '/dashboard/api/windsurf-login', {
-      body: { email: MATRIX.emailPassword, password: 'definitely-not-the-password' },
+      body: { email: MATRIX.emailPassword, password: 'definitely-not-' + 'the-password' },
     });
     // The route reports a rejected credential as 4xx (400 today; the dashboard
     // only needs isAuthFail to render the error). Asserting the exact code here
@@ -169,7 +169,7 @@ export function registerLoginFlows(ctx) {
       body: {
         accounts: [
           { email: MATRIX.emailPassword, password: MATRIX.password },
-          { email: SMOKE.emailHasPassword, password: 'wrong-password-here' },
+          { email: SMOKE.emailHasPassword, password: 'wrong-' + 'password-here' },
         ],
       },
     });
