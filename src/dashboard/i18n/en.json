@@ -1051,6 +1051,10 @@
     },
     "add": {
       "button": "Add account",
+      "groupLabel": "Add or sign in to an account",
+      "login": "Login",
+      "import": "Import",
+      "paste": "Add",
       "title": "Add account",
       "desc": "Log in, paste a credential, bulk import, or scan this machine",
       "tabsLabel": "Add account methods",
@@ -1139,7 +1143,10 @@
       "poolSub": "Log in or import an account to start the pool.",
       "filterTitle": "No accounts match these filters",
       "filterSub": "Clear a filter to see the rest of the pool."
-    }
+    },
+    "loading": "Loading accounts…",
+    "loadFailed": "Could not load the account list: {{detail}}. The table below is the last successful load.",
+    "retry": "Retry"
   },
   "account": {
     "tierManualBadge": "manual",
@@ -1273,6 +1280,23 @@
           "balance": "balance",
           "mixed": "quota + balance"
         }
+      },
+      "requests": {
+        "title": "Request history",
+        "window": "{{total}} / {{cap}}",
+        "windowTip": "This account's ring keeps the newest {{cap}} billed requests in process memory; a restart clears it.",
+        "requests": "Requests",
+        "tokens": "Tokens",
+        "credit": "Credits",
+        "acu": "ACU",
+        "recent": "Recent requests",
+        "shown": "{{shown}} of {{total}}",
+        "tokenUnit": "tok",
+        "empty": "No billed request recorded for this account in this process yet.",
+        "note": "Only requests billed to this account appear here, and only for the life of this process. Failed or aborted calls are not attributed to an account and are not listed.",
+        "refresh": "Refresh history",
+        "retry": "Retry",
+        "loadFailed": "Request history could not be read."
       },
       "modelStatus": {
         "title": "Model entitlement",

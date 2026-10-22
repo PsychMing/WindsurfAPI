@@ -1051,6 +1051,10 @@
     },
     "add": {
       "button": "添加账号",
+      "groupLabel": "登录、导入或添加账号",
+      "login": "登录",
+      "import": "导入",
+      "paste": "添加",
       "title": "添加账号",
       "desc": "登录、粘贴凭证、批量导入或从本机导入",
       "tabsLabel": "添加账号方式",
@@ -1139,7 +1143,10 @@
       "poolSub": "先登录或导入一个账号。",
       "filterTitle": "没有符合筛选的账号",
       "filterSub": "清除筛选以查看账号池的其余部分。"
-    }
+    },
+    "loading": "正在加载账号…",
+    "loadFailed": "账号列表加载失败：{{detail}}。下方表格是上一次成功加载的结果。",
+    "retry": "重试"
   },
   "account": {
     "tierManualBadge": "手动",
@@ -1273,6 +1280,23 @@
           "balance": "余额",
           "mixed": "额度 + 余额"
         }
+      },
+      "requests": {
+        "title": "请求历史",
+        "window": "{{total}} / {{cap}}",
+        "windowTip": "该账号的环形缓冲在进程内保留最近 {{cap}} 条计费请求，重启即清空。",
+        "requests": "请求数",
+        "tokens": "Token 合计",
+        "credit": "Credits",
+        "acu": "ACU",
+        "recent": "最近请求",
+        "shown": "{{shown}} / {{total}}",
+        "tokenUnit": "tok",
+        "empty": "本进程内还没有该账号的计费请求。",
+        "note": "这里只显示计入该账号的请求，且仅限本次进程运行期间。失败或中断的调用没有账号归属，不会出现在列表里。",
+        "refresh": "刷新历史",
+        "retry": "重试",
+        "loadFailed": "请求历史读取失败。"
       },
       "modelStatus": {
         "title": "模型授权",

@@ -27,6 +27,7 @@ import {
   getAccountInternal, isLocalBindHost, maskApiKey, safeEqualString,
   checkLockout, failedAuthAttempt, successfulAuthAttempt,
   getDroughtSummary, getPoolHealthWindow, getRateLimitHistory,
+  getAccountRequests,
   getConnectSelectorPricing, isConnectSelectorBlockedByDrought,
 } from '../auth.js';
 import { restartLsForProxy } from '../langserver.js';
@@ -3029,6 +3030,19 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   if (devinCards && method === 'GET') {
     const payload = buildAccountCards(devinCards[1]);
     return json(res, payload.ok ? 200 : (payload.httpStatus || 404), payload);
+  }
+
+  // GET /accounts/:id/requests — the account's own billed-request history.
+  // Read-only, process-local, no upstream call and no key material: rows carry
+  // model + token counts + cost. `total` is the ring size, so the drawer can
+  // print "50 of 100" instead of implying the page is the whole history.
+  const accountRequests = subpath.match(/^\/accounts\/([^/]+)\/requests$/);
+  if (accountRequests && method === 'GET') {
+    const acct = getAccountPublic(accountRequests[1], { view: 'summary' });
+    if (!acct) return json(res, 404, { error: 'Account not found' });
+    const u = new URL(req?.url || '/', 'http://localhost');
+    const payload = getAccountRequests(acct.id, { limit: u.searchParams.get('limit') });
+    return json(res, 200, { ok: true, accountRef: accountRef(acct.id), ...payload });
   }
 
   // POST /accounts/:id/capacity-preflight — on-demand selector capacity check

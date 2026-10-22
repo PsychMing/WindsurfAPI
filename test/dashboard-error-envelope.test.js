@@ -332,6 +332,8 @@ describe('#257 panel loaders keep the last good state on a failed read', () => {
     let painted = 0;
     const stub = (result) => appStub(result, {
       loadDrought: () => {},
+      renderAccountsSkeleton: () => {},
+      setAccountsLoadStatus: () => {},
       renderAccountsPagination: () => {},
       renderAccountsKpis: () => {},
       renderAccountsFilterState: () => {},

@@ -62,11 +62,13 @@ let renderLedgerCard;
 let renderModelStatusCard;
 let renderKeyCard;
 let renderPreflightCard;
+let renderRequestHistoryCard;
 before(() => {
   renderLedgerCard = renderer('renderLedgerCard');
   renderModelStatusCard = renderer('renderModelStatusCard');
   renderKeyCard = renderer('renderKeyCard');
   renderPreflightCard = renderer('renderPreflightCard');
+  renderRequestHistoryCard = renderer('renderRequestHistoryCard');
 });
 
 describe('ledger card', () => {
@@ -183,7 +185,7 @@ describe('model status card', () => {
 });
 
 describe('key card', () => {
-  it('renders the masked key, the never-rotated state, and the re-login action', () => {
+  it('renders the masked key, the never-rotated state, and auto-refresh state', () => {
     const html = renderKeyCard(I18n, self, {
       masked: 'abcd1234...wxyz',
       createdAt: 1_700_000_000_000,
@@ -196,18 +198,18 @@ describe('key card', () => {
     assert.match(html, /i18n:account\.detail\.key\.neverRotated/);
     assert.match(html, /i18n:account\.detail\.key\.notObservable/);
     assert.match(html, /i18n:account\.detail\.key\.autoRefreshOn/);
-    assert.match(html, /App\.reloginAccount\('acct-id-1'\)/);
+  });
+
+  it('does not duplicate the re-login action the drawer footer owns', () => {
+    // The card used to carry its own 重新登录 button while the drawer footer had
+    // one too — two entry points for the same modal. The footer is the only one.
+    const html = renderKeyCard(I18n, self, { masked: 'a...z' }, 'acct-id-1');
+    assert.doesNotMatch(html, /App\.reloginAccount\(/);
   });
 
   it('renders a stamped rotation time', () => {
     const html = renderKeyCard(I18n, self, { masked: 'a...z', rotatedAt: 1_700_000_000_000 }, 'id');
     assert.doesNotMatch(html, /neverRotated/);
-  });
-
-  it('escapes the account id in the action attribute', () => {
-    const html = renderKeyCard(I18n, self, { masked: 'a...z' }, "x'); alert(1); //");
-    assert.equal(html.includes("x');"), false, 'the raw quote must never close the onclick string');
-    assert.equal(html.includes("x\\');"), true, 'the quote must be backslash-escaped');
   });
 });
 
@@ -287,12 +289,65 @@ describe('preflight card', () => {
   });
 });
 
+describe('request history card', () => {
+  const payload = {
+    ok: true,
+    total: 2,
+    capacity: 100,
+    summary: { requests: 2, promptTokens: 14, completionTokens: 26, totalTokens: 40, credit: 1.5, acu: 0.5, lastTs: 1_700_000_100_000 },
+    items: [
+      { ts: 1_700_000_100_000, model: 'gemini-2.5-flash', promptTokens: 10, completionTokens: 20, totalTokens: 30, credit: 1, acu: 0.25 },
+      { ts: 1_700_000_000_000, model: 'claude-sonnet-4', promptTokens: 4, completionTokens: 6, totalTokens: 10, credit: 0.5, acu: 0.25 },
+    ],
+  };
+
+  it('renders window totals and one row per request, newest first', () => {
+    const html = renderRequestHistoryCard(I18n, self, payload, 'acct-1');
+    assert.match(html, /i18n:account\.detail\.requests\.title/);
+    assert.match(html, /i18n:account\.detail\.requests\.window\|2/, 'the window badge must name the ring total');
+    assert.match(html, /i18n:account\.detail\.requests\.shown\|2/);
+    assert.equal((html.match(/class="dm-req-row"/g) || []).length, 2);
+    assert.ok(html.indexOf('gemini-2.5-flash') < html.indexOf('claude-sonnet-4'),
+      'rows must be newest-first as served');
+    assert.match(html, /1,?\.?5|1\.5/, 'the credit total must render');
+  });
+
+  it('escapes a hostile model name from the upstream', () => {
+    const html = renderRequestHistoryCard(I18n, self, {
+      ...payload,
+      items: [{ ts: 1, model: '<img src=x onerror=alert(1)>', totalTokens: 1, credit: 0 }],
+    }, 'acct-1');
+    assert.equal(html.includes('<img src=x'), false, 'the model name must never become markup');
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  });
+
+  it('renders the empty state rather than a zeroed table', () => {
+    const html = renderRequestHistoryCard(I18n, self, { ok: true, total: 0, capacity: 100, summary: { requests: 0 }, items: [] }, 'acct-1');
+    assert.match(html, /i18n:account\.detail\.requests\.empty/);
+    assert.equal((html.match(/class="dm-req-row"/g) || []).length, 0);
+  });
+
+  it('renders a retry state when the read failed', () => {
+    const html = renderRequestHistoryCard(I18n, self, { ok: false, error: 'boom' }, 'acct-1');
+    assert.match(html, /i18n:account\.detail\.requests\.loadFailed/);
+    assert.match(html, /App\.refreshAccountRequests\('acct-1'\)/);
+    assert.doesNotMatch(html, /dm-req-row/);
+  });
+
+  it('escapes the account id in the refresh action', () => {
+    const html = renderRequestHistoryCard(I18n, self, payload, "x'); alert(1); //");
+    assert.equal(html.includes("x');"), false, 'the raw quote must never close the onclick string');
+    assert.equal(html.includes("x\\');"), true, 'the quote must be backslash-escaped');
+  });
+});
+
 describe('missing card payload', () => {
   it('renders an explicit unavailable note instead of fabricated zeros', () => {
     for (const [fn, args] of [
       [renderLedgerCard, []],
       [renderModelStatusCard, []],
       [renderKeyCard, [undefined, 'id']],
+      [renderRequestHistoryCard, [undefined, 'id']],
     ]) {
       const html = fn(I18n, self, ...args);
       assert.match(html, /i18n:account\.detail\.cardsUnavailable/);
@@ -302,9 +357,10 @@ describe('missing card payload', () => {
 });
 
 describe('the cards are wired into the drawer, not merely defined', () => {
-  it('renderAccountDetail renders all four cards', () => {
+  it('renderAccountDetail renders all five cards', () => {
     const body = methodBody('renderAccountDetail');
     assert.match(body, /this\.renderLedgerCard\(cards\?\.ledger\)/);
+    assert.match(body, /this\.renderRequestHistoryCard\(this\._requestsByAccount\?\.get\(a\.id\), a\.id\)/);
     assert.match(body, /this\.renderModelStatusCard\(cards\?\.modelStatus\)/);
     assert.match(body, /this\.renderKeyCard\(cards\?\.key, a\.id\)/);
     assert.match(body, /this\.renderPreflightCard\(a, this\._preflightByAccount\?\.get\(a\.id\)\)/);
@@ -313,8 +369,18 @@ describe('the cards are wired into the drawer, not merely defined', () => {
   it('the drawer fetches the card payload and passes it to the renderer', () => {
     const open = methodBody('openAccountDrawer');
     assert.match(open, /this\.getAccountCards\(id\)/);
+    assert.match(open, /this\.getAccountRequests\(id, \{ force: true \}\)/);
     const render = methodBody('renderAccountDrawer');
     assert.match(render, /this\.renderAccountDetail\(a, this\._cardsByAccount\?\.get\(id\) \|\| null\)/);
+  });
+
+  it('a probe re-reads every open-drawer source instead of leaving it stale', () => {
+    const body = methodBody('probeAccount');
+    assert.match(body, /this\.refreshOpenDrawer\(id\)/);
+    const refresh = methodBody('refreshOpenDrawer');
+    assert.match(refresh, /this\.getAccountDetail\(id, \{ force: true \}\)/);
+    assert.match(refresh, /this\.getAccountCards\(id, \{ force: true \}\)/);
+    assert.match(refresh, /this\.getAccountRequests\(id, \{ force: true \}\)/);
   });
 
   it('the preflight button posts to the new route and stores the result', () => {
