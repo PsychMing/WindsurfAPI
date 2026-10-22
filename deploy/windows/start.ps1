@@ -11,7 +11,7 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $Root
 $EnvPath = Join-Path $Root '.env'
 
-# ── 1. 预检 Node ≥ 20 ──────────────────────────────────────
+# ── 1. 预检 Node ≥ 22.13 ───────────────────────────────────
 function Stop-WithError([string]$msg, [string]$hint) {
   Write-Host ''
   Write-Host '============================================================' -ForegroundColor Red
@@ -25,12 +25,12 @@ function Stop-WithError([string]$msg, [string]$hint) {
 
 $node = Get-Command node -ErrorAction SilentlyContinue
 if (-not $node) {
-  Stop-WithError 'Node.js 未安装或不在 PATH。' '请从 https://nodejs.org 安装 Node 20+ 后重试。'
+  Stop-WithError 'Node.js 未安装或不在 PATH。' '请从 https://nodejs.org 安装 Node 22.13+ 后重试。'
 }
 $verRaw = (& node -v) -replace '^v', ''
-$major = [int]($verRaw.Split('.')[0])
-if ($major -lt 20) {
-  Stop-WithError "Node 版本过低(当前 v$verRaw,需 ≥ 20)。" '请升级 Node.js 到 20 或更高。'
+$nodeVer = [version]$verRaw
+if ($nodeVer -lt [version]'22.13.0') {
+  Stop-WithError "Node 版本过低(当前 v$verRaw,需 ≥ 22.13)。" '请升级 Node.js 到 22.13 或更高。'
 }
 
 # ── 2. 强随机密钥(RandomNumberGenerator,非 Get-Random)──────

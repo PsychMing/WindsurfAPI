@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim
+FROM node:24-bookworm-slim
 
 ARG BUILD_VERSION=""
 ARG BUILD_COMMIT=""

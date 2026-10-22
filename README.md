@@ -186,6 +186,9 @@ flowchart LR
 
 ## 快速开始
 
+> **运行时要求**：Node.js **22.13+**（24.x 为发布门禁版本）。Node 20 已于 2026-04-30 EOL，不再支持；
+> 本地 Windsurf 账号导入需要 22.13+ 免 flag 的 `node:sqlite`，更早的 22.x 会返回 `sqlite_unavailable`。
+
 ### 一键部署
 
 ```bash

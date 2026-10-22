@@ -290,7 +290,8 @@ not that shape: it fails the file (`tests 1 / fail 1`, exit 1), which the `fail`
 caught; a file that declares nothing at all is no evidence either. Entries that match nothing are
 reported as `unused` — a stale entry is a claim about the host that has stopped being true.
 
-**Full gate on Linux/POSIX** (Node, npm, Git and Bash installed; clean committed checkout):
+**Full gate on Linux/POSIX** (Node >= 22.13 — the release gate runs Node 24 — plus npm, Git and
+Bash; clean committed checkout):
 
 ```bash
 set -eu
