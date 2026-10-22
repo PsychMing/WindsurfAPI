@@ -57,6 +57,7 @@ import { buildCatalogDiff } from './catalog-diff.js';
 import { accountState, cooldownState } from './pool-events.js';
 import { peekBillingFacts } from './devin-read.js';
 import { readQuotaBurnDown } from './quota-burn-down.js';
+import { readAcuUsageByOrg } from './acu-usage.js';
 import { readBillingHealth } from './billing-health.js';
 import { readModelReconciliation } from './model-reconcile.js';
 import { buildAccountCards, preflightCapacity } from './devin-cards.js';
@@ -1848,6 +1849,26 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     } catch (err) {
       log.warn(`Dashboard usage read failed: ${err?.kind || err?.name || 'unexpected'}`);
       return json(res, 502, { ok: false, error: 'upstream' }, NO_STORE);
+    }
+  }
+
+  // GET /usage/orgs — org-scoped ACU & usage (Q3). Resolves every active
+  // Devin session-token account to its org, reads the ledger ONCE per org, and
+  // returns a hash-only org handle. Accounts that share an org are grouped, so
+  // the same ACUs are never counted twice. Per-org failures stay per-org; the
+  // panel renders the orgs that answered.
+  if (subpath === '/usage/orgs' && method === 'GET') {
+    const u = dashboardUrl(req);
+    try {
+      const result = await readAcuUsageByOrg({
+        force: u.searchParams.get('refresh') === '1',
+      });
+      const { httpStatus, ...payload } = result;
+      if (!result.ok) payload.httpStatus = httpStatus || 502;
+      return json(res, result.ok ? 200 : (httpStatus || 502), payload, NO_STORE);
+    } catch (err) {
+      log.warn(`Dashboard ACU usage read failed: ${err?.kind || err?.name || 'unexpected'}`);
+      return json(res, 502, { ok: false, error: 'upstream', orgs: [] }, NO_STORE);
     }
   }
 

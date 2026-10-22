@@ -49,8 +49,10 @@ function normalizeDays(days) {
   if (!Array.isArray(days)) return [];
   return days.slice(0, 366).map((day) => ({
     date: str(day?.date),
-    amount: num(day?.amount, 0),
-    cumulative: num(day?.cumulative, 0),
+    // A row exists only when the upstream sent a date. `amount`/`cumulative`
+    // may still be absent on that row: unknown is null, never a fabricated 0.
+    amount: num(day?.amount),
+    cumulative: num(day?.cumulative),
   })).filter((day) => day.date);
 }
 
@@ -63,7 +65,7 @@ export function normalizeUsage({ quota, status, limits, dailyUsage, now = Date.n
   const products = Array.isArray(d.products)
     ? d.products.slice(0, 12).map((product) => ({
       view: str(product?.view),
-      total: num(product?.total, 0),
+      total: num(product?.total),
       days: normalizeDays(product?.days),
     })).filter((product) => product.view)
     : [];

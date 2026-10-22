@@ -2574,6 +2574,10 @@ tbody tr:hover td { background: var(--surface-2); }
     </div>
     <div class="nav-group">
       <div class="nav-group-label" data-i18n="nav.group.usage">用量</div>
+      <a href="#usage" data-panel="usage">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
+        <span data-i18n="nav.usage">ACU 用量</span>
+      </a>
       <a href="#stats" data-panel="stats">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
         <span data-i18n="nav.stats">统计分析</span>
@@ -3517,6 +3521,24 @@ tbody tr:hover td { background: var(--surface-2); }
     <div class="log-container" id="log-container"></div>
   </section>
 
+  <!-- ACU & usage (Q3) -->
+  <section class="panel" id="p-usage">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title" data-i18n="page.usage">ACU 用量</h1>
+        <div class="page-subtitle" data-i18n="pageSubtitle.usage">按组织读取 ACU 限额、周期用量、每日消耗与产品拆分；同一组织下的多个账号只显示一次。</div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-ghost btn-sm" onclick="App.loadUsage(true)" data-i18n-title="action.refresh" title="刷新">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.24-2.52L3 21"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.24 2.52L21 3"/><path d="M21 3v6h-6"/><path d="M3 21v-6h6"/></svg>
+          <span data-i18n="action.refresh">刷新</span>
+        </button>
+      </div>
+    </div>
+    <div id="usage-org-bar" class="section hidden" style="padding:12px 16px"></div>
+    <div id="usage-content"></div>
+  </section>
+
   <!-- Stats -->
   <section class="panel" id="p-stats">
     <div class="page-header">
@@ -4213,7 +4235,7 @@ const App = {
     const loaders = {
       overview: 'loadOverview',
       accounts: 'loadAccounts', models: 'loadModels', proxy: 'loadProxy',
-      logs: 'loadLogs', stats: 'loadStats',
+      logs: 'loadLogs', stats: 'loadStats', usage: 'loadUsage',
       experimental: 'loadExperimental', credits: 'loadCredits', settings: 'loadSettings',
     };
     const loader = loaders[activePanelId];
@@ -4610,7 +4632,7 @@ docker compose up -d --force-recreate</pre>
     const loaders = {
       overview: 'loadOverview',
       accounts: 'loadAccounts', models: 'loadModels', proxy: 'loadProxy',
-      logs: 'loadLogs', stats: 'loadStats',
+      logs: 'loadLogs', stats: 'loadStats', usage: 'loadUsage',
       experimental: 'loadExperimental',
       credits: 'loadCredits', settings: 'loadSettings',
     };
@@ -6089,6 +6111,315 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       if (m) { const p = m[1].split(',').map(s => parseFloat(s)); r = p[0]; g = p[1]; b = p[2]; }
     }
     return `rgba(${r},${g},${b},${a})`;
+  },
+
+  // ─── ACU & usage (Q3) ────────────────────────────────────────────────
+  // GET /usage/orgs resolves every active Devin session-token account to its
+  // org and reads the org-scoped ledger ONCE per org. Accounts that share an org
+  // are grouped, so the same ACUs are never counted (or rendered) twice.
+
+  _usagePayload: null,
+  _usageOrgIndex: 0,
+
+  async loadUsage(force = false) {
+    const box = document.getElementById('usage-content');
+    if (box && !this._usagePayload) {
+      box.innerHTML = `<div class="section"><div class="section-body">
+        <div class="skeleton skeleton-line" style="width:35%"></div>
+        <div class="skeleton skeleton-line" style="width:70%"></div>
+        <div class="skeleton skeleton-line" style="width:55%"></div>
+      </div></div>`;
+    }
+    try {
+      const payload = await this.api('GET', '/usage/orgs' + (force ? '?refresh=1' : ''));
+      this._usagePayload = payload && typeof payload === 'object'
+        ? payload
+        : { ok: false, error: 'upstream', orgs: [] };
+    } catch (err) {
+      this._usagePayload = { ok: false, error: err?.message || 'network_error', orgs: [] };
+    }
+    this.renderUsage();
+  },
+
+  selectUsageOrg(index) {
+    this._usageOrgIndex = Number(index) || 0;
+    this.renderUsage();
+  },
+
+  renderUsage() {
+    const box = document.getElementById('usage-content');
+    const bar = document.getElementById('usage-org-bar');
+    if (!box) return;
+    const payload = this._usagePayload;
+    if (!payload) return;
+    const orgs = Array.isArray(payload.orgs) ? payload.orgs : [];
+    if (!orgs.length) {
+      if (bar) { bar.classList.add('hidden'); bar.innerHTML = ''; }
+      box.innerHTML = this.renderUsageEmpty(payload);
+      return;
+    }
+    if (!Number.isInteger(this._usageOrgIndex) || this._usageOrgIndex < 0) this._usageOrgIndex = 0;
+    if (this._usageOrgIndex >= orgs.length) this._usageOrgIndex = 0;
+    if (bar) {
+      bar.classList.remove('hidden');
+      bar.innerHTML = this.renderUsageOrgBar(orgs);
+    }
+    box.innerHTML = this.renderAcuOrg(orgs[this._usageOrgIndex], payload);
+  },
+
+  renderUsageEmpty(payload) {
+    const T = (k, v) => I18n.t('usage.' + k, v);
+    const noAccounts = payload?.error === 'no_account' || payload?.accountsScanned === 0;
+    if ((payload?.ok === false || payload?.success === false) && !noAccounts) {
+      return `<div class="section"><div class="section-body">
+        <div class="section-title">${this.esc(T('errorTitle'))}</div>
+        <div class="section-desc">${this.esc(this.usageReason(payload.error || 'upstream'))}</div>
+        <button class="btn btn-primary btn-sm" style="margin-top:12px" onclick="App.loadUsage(true)">${this.esc(T('retry'))}</button>
+      </div></div>`;
+    }
+    return `<div class="section"><div class="section-body">
+      <div class="section-title">${this.esc(T(noAccounts ? 'noAccountsTitle' : 'emptyTitle'))}</div>
+      <div class="section-desc">${this.esc(T(noAccounts ? 'noAccountsDesc' : 'emptyDesc'))}</div>
+    </div></div>`;
+  },
+
+  renderUsageOrgBar(orgs) {
+    const T = (k, v) => I18n.t('usage.' + k, v);
+    if (orgs.length === 1) {
+      const org = orgs[0] || {};
+      const plan = org.plan || T('notReported');
+      const count = Array.isArray(org.accounts) ? org.accounts.length : 0;
+      return `<div class="section-desc" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span class="badge info no-dot">${this.esc(T('org'))}</span>
+        <span>${this.esc(T('singleOrg', { plan, count }))}</span>
+      </div>`;
+    }
+    const buttons = orgs.map((org, index) => {
+      const plan = org?.plan || T('notReported');
+      const count = Array.isArray(org?.accounts) ? org.accounts.length : 0;
+      const label = plan === T('notReported')
+        ? T('orgOptionUnknownPlan', { index: index + 1, count })
+        : T('orgOption', { index: index + 1, plan, count });
+      const active = index === this._usageOrgIndex;
+      return `<button class="btn btn-sm btn-outline ${active ? 'active' : ''}" role="radio" aria-checked="${active}" onclick="App.selectUsageOrg(${index})">${this.esc(label)}</button>`;
+    }).join('');
+    return `<div class="btn-group" role="radiogroup" aria-label="${this.esc(T('org'))}" style="flex-wrap:wrap">${buttons}</div>`;
+  },
+
+  usageReason(reason) {
+    const raw = String(reason || 'upstream');
+    const key = 'usage.reason.' + raw;
+    const text = I18n.t(key);
+    return text === key ? raw : text;
+  },
+
+  fmtAcu(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    return value.toLocaleString(I18n.locale === 'zh-CN' ? 'zh-CN' : 'en-US', {
+      maximumFractionDigits: 2,
+    });
+  },
+
+  fmtUsageDate(value) {
+    if (!value) return '—';
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      const [year, month, day] = value.split('-').map(Number);
+      return new Date(year, month - 1, day).toLocaleDateString(
+        I18n.locale === 'zh-CN' ? 'zh-CN' : 'en-US',
+        { year: 'numeric', month: 'short', day: 'numeric' },
+      );
+    }
+    const at = typeof value === 'number' ? value : Date.parse(value);
+    if (!Number.isFinite(at)) return '—';
+    return new Date(at).toLocaleDateString(
+      I18n.locale === 'zh-CN' ? 'zh-CN' : 'en-US',
+      { year: 'numeric', month: 'short', day: 'numeric' },
+    );
+  },
+
+  fmtUsageDateTime(value) {
+    if (!value) return '—';
+    const at = typeof value === 'number' ? value : Date.parse(value);
+    if (!Number.isFinite(at)) return '—';
+    return new Date(at).toLocaleString(
+      I18n.locale === 'zh-CN' ? 'zh-CN' : 'en-US',
+      { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' },
+    );
+  },
+
+  renderAcuOrg(org, payload) {
+    const T = (k, v) => I18n.t('usage.' + k, v);
+    if (!org || org.ok !== true) return this.renderAcuOrgError(org, payload);
+
+    const derived = org.derived || {};
+    const limit = derived.acuLimit || {};
+    const used = derived.used || {};
+    const remaining = derived.remaining || {};
+    const latest = derived.latestDay || null;
+
+    const limitText = limit.unlimited ? T('unlimited') : (limit.known ? this.fmtAcu(limit.value) : '—');
+    const usedText = used.known ? this.fmtAcu(used.value) : '—';
+    const remainingText = remaining.unlimited ? T('unlimited') : (remaining.known ? this.fmtAcu(remaining.value) : '—');
+    const latestText = latest && latest.amount != null ? this.fmtAcu(latest.amount) : '—';
+
+    const card = (title, value, sub, cls = '', tip = '') => `<div class="card ${cls}">
+        <div class="card-header"><div class="card-title">${this.esc(title)}</div></div>
+        <div class="card-value" style="font-size:24px"${tip ? ` title="${this.esc(tip)}"` : ''}>${this.esc(value)}</div>
+        <div class="card-sub">${this.esc(sub)}</div>
+      </div>`;
+
+    const cards = `<div class="metrics-grid" style="margin-bottom:18px">
+      ${card(T('cards.limit'), limitText, T('limitSub'), 'accent', T('limitTip'))}
+      ${card(T('cards.used'), usedText, T('usedSub'))}
+      ${card(T('cards.remaining'), remainingText, T('remainingSub'), '', T('derivedTip'))}
+      ${card(T('cards.today'), latestText, latest?.date ? this.fmtUsageDate(latest.date) : T('todaySub'))}
+    </div>`;
+
+    const accountCount = Array.isArray(org.accounts) ? org.accounts.length : 0;
+    const accountLabel = accountCount === 1 ? T('accountsOne') : T('accounts', { count: accountCount });
+    const plan = org.plan || T('notReported');
+    const badges = [];
+    if (org.cached) badges.push(`<span class="badge muted no-dot">${this.esc(T('cached'))}</span>`);
+    if (org.stale) badges.push(`<span class="badge warn no-dot">${this.esc(T('stale'))}</span>`);
+    if (org.partial) badges.push(`<span class="badge warn no-dot">${this.esc(T('partial'))}</span>`);
+    if (org.billingValid === true) badges.push(`<span class="badge success no-dot">${this.esc(T('billingValid'))}</span>`);
+    else if (org.billingValid === false) badges.push(`<span class="badge error no-dot">${this.esc(T('billingInvalid'))}</span>`);
+
+    const head = `<div class="section-header" style="border-bottom:none;padding-bottom:0">
+      <div>
+        <div class="section-title">${this.esc(plan)}</div>
+        <div class="section-desc">${this.esc(accountLabel)} · ${this.esc(T('updated', { when: this.dmAgo(payload?.generatedAt) }))}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${badges.join('')}</div>
+    </div>`;
+
+    const notices = [];
+    if (payload?.truncated) notices.push(T('truncated', { count: payload.accountsScanned }));
+    if (payload?.unresolvedAccounts) notices.push(T('unresolved', { count: payload.unresolvedAccounts }));
+    const failedSources = Object.entries(org.sources || {})
+      .filter(([, source]) => source && source.ok === false)
+      .map(([sourceName, source]) => `${sourceName}: ${this.usageReason(source.error || 'upstream')}`);
+    if (failedSources.length) notices.push(`${T('partial')} — ${failedSources.join(' · ')}`);
+    const noticeHtml = notices.length
+      ? `<div class="section-body" style="padding:0 20px 10px"><div class="section-desc" style="color:var(--warn)">${this.esc(notices.join(' · '))}</div></div>`
+      : '';
+
+    const cycle = org.cycle || {};
+    const quota = org.quota || {};
+    const limits = org.limits || {};
+    const rows = [
+      [T('plan'), plan],
+      [T('billingMethod'), org.billingMethod || '—'],
+      [T('cycleStart'), this.fmtUsageDate(cycle.start)],
+      [T('cycleEnd'), this.fmtUsageDate(cycle.end)],
+      [T('cycleTotal'), cycle.total == null ? '—' : this.fmtAcu(cycle.total)],
+      [T('maxSession'), limits.maxTotalSessionAcuLimit == null ? T('unlimitedLabel') : this.fmtAcu(limits.maxTotalSessionAcuLimit)],
+      [T('availableCredits'), org.availableCredits == null ? '—' : this.fmtAcu(org.availableCredits)],
+      [T('overageCredits'), org.overageCredits == null ? '—' : this.fmtAcu(org.overageCredits)],
+    ].map(([key, value]) => `<span class="k">${this.esc(key)}</span><span class="v">${this.esc(value)}</span>`).join('');
+
+    const quotaBar = (label, pct, resetAt, resetLabel) => {
+      const missing = pct == null;
+      const value = missing ? 0 : Math.max(0, Math.min(100, pct));
+      const color = missing ? 'var(--text-dim)' : (value <= 20 ? 'var(--error)' : value <= 40 ? 'var(--warn)' : 'var(--success)');
+      return `<div class="detail-bar">
+        <span class="bar-label">${this.esc(label)}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${value}%;background:${color}"></div></div>
+        <span class="bar-pct" style="color:${color}">${missing ? '—' : value.toFixed(0) + '%'}</span>
+        ${resetAt ? `<div class="bar-reset">⟳ ${this.esc(resetLabel)} ${this.esc(this.fmtUsageDateTime(resetAt))}</div>` : ''}
+      </div>`;
+    };
+
+    const cycleSection = `<div class="section">
+      <div class="section-header"><div>
+        <div class="section-title">${this.esc(T('cycleTitle'))}</div>
+        <div class="section-desc">${this.esc(T('cycleTotal'))} · ${this.esc(T('dailyQuota'))} · ${this.esc(T('weeklyQuota'))}</div>
+      </div></div>
+      <div class="section-body">
+        <div class="detail-kv">${rows}</div>
+        <div style="margin-top:12px">
+          ${quotaBar(T('dailyQuota'), quota.dailyPercentage, quota.dailyResetAt, T('dailyReset'))}
+          ${quotaBar(T('weeklyQuota'), quota.weeklyPercentage, quota.weeklyResetAt, T('weeklyReset'))}
+        </div>
+      </div>
+    </div>`;
+
+    const days = Array.isArray(org.days) ? org.days : [];
+    const shownDays = days.slice(-31).reverse();
+    const dayRows = shownDays.map((day) => `<tr>
+      <td>${this.esc(this.fmtUsageDate(day.date))}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${this.esc(this.fmtAcu(day.amount))}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${this.esc(this.fmtAcu(day.cumulative))}</td>
+    </tr>`).join('');
+    const daysSection = `<div class="section">
+      <div class="section-header"><div>
+        <div class="section-title">${this.esc(T('daysTitle'))}</div>
+        <div class="section-desc">${this.esc(T('daysDesc'))}</div>
+      </div></div>
+      ${dayRows
+        ? `<div class="section-body tight"><div class="table-wrap" style="max-height:340px;overflow-y:auto">
+            <table>
+              <thead><tr>
+                <th>${this.esc(T('date'))}</th>
+                <th style="text-align:right">${this.esc(T('amount'))}</th>
+                <th style="text-align:right">${this.esc(T('cumulative'))}</th>
+              </tr></thead>
+              <tbody>${dayRows}</tbody>
+            </table>
+          </div></div>
+          <div class="section-body" style="padding-top:8px"><div class="section-desc">${this.esc(T('showing', { shown: shownDays.length, total: days.length }))}</div></div>`
+        : `<div class="section-body"><div class="section-desc">${this.esc(T('daysEmpty'))}</div></div>`}
+    </div>`;
+
+    const products = Array.isArray(org.products) ? org.products : [];
+    const cycleTotal = typeof cycle.total === 'number' && Number.isFinite(cycle.total) ? cycle.total : null;
+    const productRows = products.map((product) => {
+      const rawView = String(product?.view || '');
+      const key = 'usage.product.' + rawView;
+      const localized = I18n.t(key);
+      const label = localized === key ? (rawView || T('productUnknown')) : localized;
+      const share = cycleTotal && cycleTotal > 0 && typeof product.total === 'number'
+        ? ((product.total / cycleTotal) * 100).toFixed(1) + '%'
+        : '—';
+      const dayCount = Array.isArray(product.days) ? product.days.length : 0;
+      return `<tr>
+        <td>${this.esc(label)}</td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums">${this.esc(this.fmtAcu(product.total))}</td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums">${this.esc(share)}</td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums">${dayCount}</td>
+      </tr>`;
+    }).join('');
+    const productsSection = `<div class="section">
+      <div class="section-header"><div>
+        <div class="section-title">${this.esc(T('productsTitle'))}</div>
+        <div class="section-desc">${this.esc(T('productsDesc'))}</div>
+      </div></div>
+      ${productRows
+        ? `<div class="section-body tight"><div class="table-wrap"><table>
+            <thead><tr>
+              <th>${this.esc(T('product'))}</th>
+              <th style="text-align:right">${this.esc(T('productTotal'))}</th>
+              <th style="text-align:right">${this.esc(T('share'))}</th>
+              <th style="text-align:right">${this.esc(T('productDays'))}</th>
+            </tr></thead>
+            <tbody>${productRows}</tbody>
+          </table></div></div>`
+        : `<div class="section-body"><div class="section-desc">${this.esc(T('productsEmpty'))}</div></div>`}
+    </div>`;
+
+    return `${head}${noticeHtml}${cards}${cycleSection}${daysSection}${productsSection}`;
+  },
+
+  renderAcuOrgError(org, payload) {
+    const T = (k, v) => I18n.t('usage.' + k, v);
+    const reason = org?.error || payload?.error || 'upstream';
+    const count = Array.isArray(org?.accounts) ? org.accounts.length : 0;
+    return `<div class="section"><div class="section-body">
+      <div class="section-title">${this.esc(T('errorTitle'))}</div>
+      <div class="section-desc">${this.esc(this.usageReason(reason))}</div>
+      <div class="section-desc" style="margin-top:6px">${this.esc(count === 1 ? T('accountsOne') : T('accounts', { count }))}</div>
+      <button class="btn btn-primary btn-sm" style="margin-top:12px" onclick="App.loadUsage(true)">${this.esc(T('retry'))}</button>
+    </div></div>`;
   },
 
   // Overview usage card. `availableCredits` is null when the upstream billing

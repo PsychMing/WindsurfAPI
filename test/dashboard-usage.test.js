@@ -60,7 +60,7 @@ describe('dashboard usage normalizer', () => {
     assert.equal(out.cycle.total, null);
     assert.equal(out.quota.dailyPercentage, null);
     assert.equal(out.quota.overageBalance, null);
-    assert.deepEqual(out.days, [{ date: '2026-10-18', amount: 2, cumulative: 0 }]);
+    assert.deepEqual(out.days, [{ date: '2026-10-18', amount: 2, cumulative: null }]);
   });
 
   it('caps daily rows at 366', () => {
