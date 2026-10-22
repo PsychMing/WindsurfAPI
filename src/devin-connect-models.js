@@ -202,17 +202,24 @@ const CATALOG_SELECTORS = new Set(
   ).models.map((m) => m.selector),
 );
 
-// The safe default when DEVIN_CONNECT is enabled but the requested model isn't
-// mapped. Catalog-independent unpaid fallback. Live GetCliModelConfigs may omit
-// it (#258: reporter's catalog had no swe-1-6-slow). Do NOT retarget this to
-// swe-1-7 / glm-5-2 — those are drought-safe on Pro, not unpaid entitlement.
-// STRICT_MODEL=1 already 400s unmapped names instead of silent-degrading here.
+// The static last-resort fallback for an unmapped model name. It is the
+// COLD-START answer — the one used while no live catalog has arrived — and it is
+// never chosen once a synced catalog is authoritative. Live GetCliModelConfigs
+// may omit it (#258: reporter's catalog had no swe-1-6-slow).
+// Do NOT retarget this to swe-1-7 / glm-5-2 — those are drought-safe on Pro, not
+// unpaid entitlement. STRICT_MODEL=1 already 400s unmapped names instead of
+// silent-degrading here.
 //
 // Live evidence 2026-10-22 (Pro account): `swe-1-6-slow` is absent from the
 // 240-selector Connect catalog AND from the account's 374 availableModels, and
 // the upstream answers it with "Your daily usage quota has been exhausted".
-// It is therefore a DEGRADE TARGET for unmapped names, not a claim that it is
-// callable — a caller that can pick a model should prefer the live free set.
+// It is therefore only a DEGRADE TARGET, never a claim that it is callable.
+//
+// #258 residual: because it is dead on a live-catalog deployment, using it
+// unconditionally turned every unmapped name into a fake quota 502. Resolution
+// now takes a live free selector from the caller and falls back to this constant
+// ONLY while no live catalog exists — see pickDegradeTarget. It is still exported
+// because discovery/dashboard synthesize the row from it.
 export const FREE_TIER_SELECTOR = 'swe-1-6-slow';
 // Canonical selectors an UNPAID account is entitled to. This is ENTITLEMENT, not
 // pricing: it is what the connect-namespace filter uses so a paid selector (e.g.
@@ -382,10 +389,45 @@ export function isConnectSelectorCatalogIndependent(name) {
 }
 
 /**
+ * Pick the selector an unmapped name degrades to, or null when there is none.
+ *
+ * The rule is EVIDENCE, not a fixed name:
+ *
+ *   - A synced catalog (with no snapshot fallback in play) is authoritative:
+ *     only a selector it lists can be called, so only a live free selector from
+ *     `freeFallback` is eligible. `swe-1-6-slow` is the proof this matters — it
+ *     stayed the degrade target after the live catalog dropped it, and every
+ *     unmapped name then surfaced as a fake "daily usage quota has been
+ *     exhausted" 502 (#258 residual). Nothing eligible → null, and the caller
+ *     answers `model_not_found` instead of routing.
+ *   - With no live evidence (cold start, or a pool where some contributor still
+ *     lacks a catalog) the documented static floor applies, because nothing has
+ *     contradicted it yet. A caller-supplied free selector still outranks it —
+ *     the caller already restricted its list to what the pool can reach.
+ *
+ * Note this deliberately does NOT consult `isKnownConnectSelector`: that
+ * predicate answers true for every CATALOG_INDEPENDENT selector (which includes
+ * FREE_REACHABLE_SELECTORS) because a CALLER may legitimately name one. That is
+ * the right answer for "did the client name a real model" and the wrong one for
+ * "should we CHOOSE this as a degrade target".
+ */
+function pickDegradeTarget({ freeFallback } = {}) {
+  const liveAuthoritative = _liveSelectors.size > 0 && !_snapshotFallbackEnabled;
+  for (const candidate of freeFallback || []) {
+    const name = typeof candidate === 'string' ? candidate.trim() : '';
+    if (!name) continue;
+    if (!liveAuthoritative || _liveSelectors.has(name)) return name;
+  }
+  return liveAuthoritative ? null : FREE_TIER_SELECTOR;
+}
+
+/**
  * Resolve a client-supplied model name to an upstream DEVIN_CONNECT selector.
- * Normalizes case and dot/dash variations. Returns the free-tier default for
- * unknown names so an enabled DEVIN_CONNECT deploy never hard-fails on an
- * unmapped alias — it degrades to the one selector that always works.
+ * Normalizes case and dot/dash variations. An unmapped name degrades to a free
+ * selector so an enabled DEVIN_CONNECT deploy does not hard-fail on a stale
+ * alias — but ONLY to one that is callable (see pickDegradeTarget); when no
+ * such selector exists the result carries `selector: null` and the request must
+ * be answered with `model_not_found` rather than routed to a dead name.
  *
  * @param {string} model
  * @param {object} [opts]
@@ -393,21 +435,38 @@ export function isConnectSelectorCatalogIndependent(name) {
  *   probes; a later real request will still emit the one-time downgrade warning
  * @param {boolean} [opts.allowSnapshotFallback=false] keep frozen selectors
  *   resolvable for an explicit env-token/empty-pool fallback contributor
- * @returns {{ selector: string, mapped: boolean }}
+ * @param {string[]} [opts.freeFallback=[]] live free selectors, most preferred
+ *   first. Callers that hold live pricing data (auth.js) pass it so the degrade
+ *   target tracks what the upstream actually serves; omitted, the static floor
+ *   is used.
+ * @returns {{ selector: string|null, mapped: boolean }} `selector` is null only
+ *   when the name is unmapped AND no callable degrade target exists — the caller
+ *   must then answer model_not_found instead of routing.
  */
 export function resolveConnectSelector(model, {
   warnOnFallback = true,
   allowSnapshotFallback = false,
+  freeFallback = [],
 } = {}) {
   const raw = String(model || '').trim();
-  if (!raw) return { selector: FREE_TIER_SELECTOR, mapped: false };
+  // `warnName` is null for an omitted model: that is the documented default-model
+  // path, not a caller naming a model we could not find, so it does not warn.
+  const degrade = (warnName) => {
+    const target = pickDegradeTarget({ freeFallback });
+    if (!target) return { selector: null, mapped: false };
+    if (warnOnFallback && warnName) warnDegradeOnce(warnName, target);
+    return { selector: target, mapped: false };
+  };
+  const hit = (selector) => ({ selector, mapped: true });
+
+  if (!raw) return degrade(null);
 
   // A hand-maintained alias is valid only while its TARGET exists in the
   // authoritative catalog. Otherwise a stale map entry can keep a removed model
   // routable forever even after the live sync proved it is gone.
   const directTarget = SELECTOR_MAP.get(raw);
   if (directTarget && isKnownConnectSelector(directTarget, { allowSnapshotFallback })) {
-    return { selector: directTarget, mapped: true };
+    return hit(directTarget);
   }
 
   // Normalize: lowercase, collapse dots to dashes, strip a leading provider
@@ -415,7 +474,7 @@ export function resolveConnectSelector(model, {
   const norm = raw.toLowerCase().replace(/^[a-z]+\//, '').replace(/\./g, '-');
   const normalizedTarget = SELECTOR_MAP.get(norm);
   if (normalizedTarget && isKnownConnectSelector(normalizedTarget, { allowSnapshotFallback })) {
-    return { selector: normalizedTarget, mapped: true };
+    return hit(normalizedTarget);
   }
   // A normalized dash-form that IS a real catalog selector (e.g. client sent the
   // dotted "gpt-5.5-medium" → norm "gpt-5-5-medium" which the catalog exposes but
@@ -423,7 +482,7 @@ export function resolveConnectSelector(model, {
   // silently degraded to the free tier. Checked after the map so an alias still
   // wins, before the free-tier fallback.
   if (isKnownConnectSelector(norm, { allowSnapshotFallback })) {
-    return { selector: norm, mapped: true };
+    return hit(norm);
   }
 
   // Enum-form passthrough — ONLY when the catalog actually exposes it. A blind
@@ -431,7 +490,7 @@ export function resolveConnectSelector(model, {
   // bogus MODEL_DOES_NOT_EXIST would otherwise be written raw to #21.
   if (/^MODEL_[A-Z0-9_]+$/.test(raw)
     && isKnownConnectSelector(raw, { allowSnapshotFallback })) {
-    return { selector: raw, mapped: true };
+    return hit(raw);
   }
 
   // A verbatim dash-form selector that IS in the authoritative catalog but is
@@ -439,14 +498,15 @@ export function resolveConnectSelector(model, {
   // frozen snapshot — qwen-3/glm-5/etc.) should still go through rather than
   // silently degrade a paid request to free.
   if (isKnownConnectSelector(raw, { allowSnapshotFallback })) {
-    return { selector: raw, mapped: true };
+    return hit(raw);
   }
 
-  // Unmapped: degrade to the always-available free selector, but make it
-  // OBSERVABLE (one-time per distinct model) so a caller ignoring mapped:false
-  // still gets an operator signal that a paid model was downgraded to free.
-  if (warnOnFallback) warnDegradeOnce(raw);
-  return { selector: FREE_TIER_SELECTOR, mapped: false };
+  // Unmapped: degrade to a callable free selector, and make it OBSERVABLE
+  // (one-time per distinct model) so a caller ignoring mapped:false still gets
+  // an operator signal that a paid model was downgraded to free. `selector: null`
+  // is the distinct "there is nothing to downgrade to" answer, which the handler
+  // must report as model_not_found (#258 residual).
+  return degrade(raw);
 }
 
 // Tracks model names we've already warned about so the degrade signal fires
@@ -466,7 +526,7 @@ const DEGRADE_WARNED_MAX = 1024;
 const degradeWarned = new Set();
 
 /** Emit the one-time unmapped-model warning, keeping its record bounded (FIFO). */
-function warnDegradeOnce(raw) {
+function warnDegradeOnce(raw, target) {
   const key = createHash('sha256').update(raw).digest('hex');
   if (degradeWarned.has(key)) return;
   degradeWarned.add(key);
@@ -474,9 +534,12 @@ function warnDegradeOnce(raw) {
   if (degradeWarned.size > DEGRADE_WARNED_MAX) {
     degradeWarned.delete(degradeWarned.values().next().value);
   }
+  // Name the selector the request ACTUALLY runs on: it is live-derived whenever
+  // the caller passed freeFallback, so hardcoding FREE_TIER_SELECTOR here would
+  // point the operator at a selector this request never used (#258 residual).
   log.warn(
     `[devin-connect] unmapped model "${raw}" not in catalog — degrading to `
-    + `${FREE_TIER_SELECTOR} (paid request downgraded to free tier)`,
+    + `${target} (paid request downgraded to free tier)`,
   );
 }
 

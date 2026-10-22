@@ -43,6 +43,9 @@ import { wrapRequest, wrapEnvelope, StreamingFrameParser, connectHeaders, tryGun
 // recordArgRepair from cline-compat). cc-compat is a zero-I/O, zero-pipeline-
 // import pure module, so this cannot create a cycle or perturb the wire path.
 import { recordSchemaNormalized } from './handlers/cc-compat.js';
+// Observability only, same rationale as recordSchemaNormalized above: the
+// metrics module has no imports of its own, so it cannot create a cycle.
+import { bumpConnect } from './devin-connect-metrics.js';
 
 const HOST = 'server.codeium.com';
 const PATH = '/exa.api_server_pb.ApiServerService/GetChatMessage';
@@ -1214,6 +1217,24 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
   let pendingSystemParts = [];
   const chatMessages = [];
 
+  // Images on an ASSISTANT turn never reach the model: role=2 #10 is accepted on
+  // the wire but ignored upstream (measured 2026-10-21, issue #272 — the same
+  // image on a user turn answers "Checkerboard", on an assistant turn the model
+  // reports no image, on Anthropic and Gemini alike). Two paths therefore
+  // DISCARD such images: the empty-turn filter below (image-only turn → dropped
+  // whole) and the native tool-call branch (only #6 calls are encoded). Both call
+  // this, because issue #272 is about the drop being SILENT, not about the drop.
+  // The wire itself is unchanged: admitting an image-only turn would ship bytes
+  // the upstream throws away.
+  const noteDroppedAssistantImages = (msg) => {
+    if (!imageTag) return 0;
+    const dropped = extractInlineImages(msg.content);
+    if (!dropped.length) return 0;
+    bumpConnect('assistant_images_dropped', dropped.length);
+    log.warn(`DEVIN_CONNECT: dropped ${dropped.length} inline image(s) from an assistant turn (#272) — the upstream ignores image fields on role=assistant, so they are not encoded; put the image on a user turn to have the model see it`);
+    return dropped.length;
+  };
+
   const consumeCollapsedSystem = (text = '') => {
     if (!collapseSystem) return text;
     if (!continuityCollapsed && continuityTrail) {
@@ -1280,10 +1301,24 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
     // The Kimi workaround records 10/10 empty retries for empty assistant turns.
     // Preserve that exclusion unless enabled replay supplies a non-blank payload;
     // otherwise a disabled probe would reintroduce a text-empty wire frame.
-    // Image-only assistants retain the legacy exclusion: image emission is on
-    // by default, so admitting them needs approval to change default wire.
+    //
+    // IMAGE-ONLY ASSISTANT TURNS (#272): messageText() reads `text` parts only, so
+    // a turn whose whole payload is an inline image arrives here with empty text
+    // and is dropped — BEFORE the `images:` extraction at the two encode sites
+    // below, which is why the loss used to leave no trace anywhere.
+    //
+    // The drop itself is DELIBERATE and stays. Measured 2026-10-21 on a paid
+    // account: the same image on a role=user turn answers "Checkerboard", while
+    // on role=assistant the model reports no image (Anthropic and Gemini alike)
+    // even though #10 arrives intact on the wire. Admitting the turn would ship
+    // bytes the upstream discards and change the default wire for no capability.
+    // What was actually wrong is the SILENCE — issue #272 is filed as "silently
+    // dropped" — so the drop is named in the log and counted. If a future
+    // upstream starts honouring assistant-role images, this is the single place
+    // to change (plus test/wire-h1-empty-assistant.test.js T4 and mutation M5).
     if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length
       && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())) {
+      noteDroppedAssistantImages(msg);
       continue;
     }
     const source = msg.role === 'assistant' ? SOURCE.ASSISTANT : SOURCE.USER;
@@ -1302,6 +1337,9 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
       // Unlike the fallback branch, native replay retains whitespace verbatim.
       const preText = messageText(msg.content);
       const reasoningText = reasoningTagNum && (msg.reasoning || msg.reasoning_content) ? String(msg.reasoning || msg.reasoning_content) : '';
+      // This branch encodes text and #6 tool calls only — no image slot exists —
+      // so any image riding this turn is discarded. Say so (#272).
+      noteDroppedAssistantImages(msg);
       if (preText) {
         const parts = [
           writeStringField(1, randomUUID()),

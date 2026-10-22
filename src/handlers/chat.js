@@ -5,7 +5,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { WindsurfClient, contentToString, isCascadeTransportError } from '../client.js';
-import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
+import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
 import { isStickyEnabled, setStickyBinding, peekStickyBinding } from '../account/sticky-session.js';
 import { resolveModel, getModelInfo, pickRateLimitFallback, isModelDisabledUpstream, getModelCaps } from '../models.js';
 import { getLsFor, ensureLs } from '../langserver.js';
@@ -3350,10 +3350,33 @@ async function _handleChatCompletionsInner(body, context = {}) {
         callerKey,
       }, context.specialAgent || {});
     }
-    const { selector, mapped } = resolveConnectSelector(reqModelName);
+    // Live free selectors are the ONLY sound degrade targets (#258 residual): the
+    // frozen `swe-1-6-slow` is absent from a synced catalog and 502s as a fake
+    // "daily usage quota has been exhausted", so an unmapped name used to look
+    // like an account fault. `freeFallback` lets the resolver prefer a selector
+    // the upstream actually serves free right now; when none exists it returns
+    // selector:null and we say so instead of routing to a dead name.
+    const { selector, mapped } = resolveConnectSelector(reqModelName, {
+      freeFallback: getConnectFreeFallbackSelectors(),
+    });
+    // No callable selector at all — not even a degrade target. Applies whatever
+    // STRICT_MODEL says: the legacy opt-out only permits degrading to a WORKING
+    // free model, never to one the live catalog proved absent.
+    if (!selector) {
+      log.warn(`Chat[${reqId}]: DEVIN_CONNECT cannot resolve "${safeLogValue(reqModelName)}" to any callable selector and no live free fallback exists — 400 model_not_found`);
+      return {
+        status: 400,
+        body: { error: {
+          message: `The model \`${reqModelName}\` is not a valid model for this endpoint, and no free-tier fallback is currently callable. Call GET /v1/models for the list of available models.`,
+          type: 'invalid_request_error',
+          param: 'model',
+          code: 'model_not_found',
+        } },
+      };
+    }
     // P1 whitelist guard: an unmapped model name (mapped:false) means the request
     // does NOT resolve to any real DEVIN_CONNECT selector and would otherwise
-    // silently degrade to the free-tier fallback (swe-1-6-slow) — the client
+    // silently degrade to the free-tier fallback — the client
     // asked for opus/gpt/etc. and unknowingly runs a different, free model
     // (wrong output, wrong billing, and a junk name can trip UPSTREAM_INTERNAL
     // and burn the account's health). Reject early with 400 instead of guessing.

@@ -65,6 +65,16 @@ const _counters = {
   // A spike means DEVIN_CONNECT_MAX_QUEUE_FRAMES/BYTES or a downstream writer is
   // the bottleneck, not the pool.
   queue_overflow: 0,
+  // Inline images dropped with an image-only ASSISTANT turn (#272). The drop is
+  // deliberate — the upstream ignores #10 on role=assistant (measured 2026-10-21)
+  // — but it used to be silent. A non-zero value means a client is replaying
+  // images on assistant turns and those images will not reach the model.
+  assistant_images_dropped: 0,
+  // Turns where the model NARRATED a tool call in visible text, then finished
+  // with `stop` and zero tool calls (#236 "form A"). Log-only detector: nothing
+  // is retried or rewritten, because the shape cannot be told apart from a
+  // legitimate prose answer without a real capture. A spike here is that capture.
+  prose_tool_intent: 0,
   // liveness probe pre-emptively recovered a dying token
   liveness_recovered: 0,
   // SessionReauth: accounts benched because a free GetUserStatus probe confirmed

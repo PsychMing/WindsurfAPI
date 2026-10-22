@@ -76,6 +76,15 @@ requested paid model, so it fails loudly instead. Setting
 `WINDSURFAPI_STRICT_MODEL=0` restores the legacy silent degrade — see the env
 reference for why that is a footgun rather than a workaround.
 
+That opt-out degrades **only to a selector that is callable**: the live free
+selectors above, restricted to what the account's catalog actually exposes. It
+used to target the frozen `swe-1-6-slow` unconditionally, which on a live-catalog
+deployment is absent and answers with "Your daily usage quota has been
+exhausted" — so a typo came back as a quota error that looked like an account
+fault. When no live free selector qualifies, the request is answered
+`400 model_not_found` even with the opt-out set; the static `swe-1-6-slow` floor
+now applies only while no live catalog has arrived (cold start).
+
 ## 2. Recommended hardening adds (optional, all default-off)
 
 ```sh
@@ -179,6 +188,11 @@ free-tier behavior; a sustained spike means the upstream is genuinely saturated
 - **Vision/images**: native `ChatMessagePrompt.images #10` is verified by the
   extracted Devin schema and a successful SWE-1.7 image request. It is enabled
   by default; set `DEVIN_CONNECT_IMAGE_TAG=0` only for an emergency rollback.
+  Images only reach the model on **user** turns: measured 2026-10-21, the same
+  image on an assistant turn is accepted on the wire but ignored upstream (the
+  model reports no image), so an image-only assistant turn is dropped before
+  encoding. That drop is logged and counted (`assistant_images_dropped` on
+  `/dashboard/api/connect-metrics`); move the image to a user turn.
 - **Router models** (`adaptive`, `arena-*`): resolution via AssignModel is built
   but gated OFF (`DEVIN_CONNECT_ASSIGN_MODEL` unset) because the wire tags are
   inferred, not yet calibrated on a paid round-trip. §8 has the enable path.

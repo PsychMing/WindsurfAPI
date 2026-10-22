@@ -22,6 +22,7 @@ import { filterToolCallsByAllowlist } from './handlers/chat.js';
 import { streamChat as realStreamChat, isRetryable, messageText } from './devin-connect.js';
 import { ToolCallStreamParser, parseToolCallsFromText, isWeakEmulationModel } from './handlers/tool-emulation.js';
 import { log } from './config.js';
+import { safeLogValue } from './log-safety.js';
 import { leakTraceEnabled, thinkMarkersIn, leakSample } from './leak-trace.js';
 import { systemFingerprint } from './system-fingerprint.js';
 import { applyStop, StopSequenceGate } from './stop-sequences.js';
@@ -120,6 +121,89 @@ function isEmptyCompletion(finishEv, sawContent) {
   // (sawContent === false with a clean stop) is the real signature; ct only rides
   // the log line below for diagnostics.
   return true;
+}
+
+// ── #236 prose tool-intent detector (log-only) ─────────────────────────────
+// The rescue gate below requires `sawReasoning && !sawText`. A reasoning-effort
+// `-none` selector (glm-5-2-none and its siblings) can NEVER satisfy it: the
+// upstream emits no reasoning events at all, so a stalled turn in that family
+// arrives as TEXT or as nothing, never as reasoning. The reported shape is the
+// same trap one channel over — the model narrates the tool call in visible text,
+// finishes with `stop` and zero tool calls, and the client waits for a call that
+// never comes.
+//
+// We deliberately do NOT retry on it. "The model answered in prose" and "the
+// model stalled mid-intent" are indistinguishable without a capture of a real
+// stall, and a false-positive nudge would rewrite a legitimate answer (#236
+// thread, 2026-08-03: 60+ direct turns, zero stalls, so the trigger is not even
+// established). What that thread is missing is the capture — so this detector
+// produces one. It logs and counts; it never alters the wire.
+//
+// The criterion is narrow on purpose, and its last two conditions are what keep
+// ordinary final answers out of the log:
+//   - the request declared tools (a request without tools has nothing to stall on);
+//   - finish is `stop`/null with ZERO tool calls (a real call, or a `length` /
+//     `content_filter` terminal state, is not this shape);
+//   - the turn does not END like a finished sentence. A completed answer ends in
+//     `.`/`!`/`?` (or the CJK equivalents); a turn that stops mid-intent ends in
+//     `:`, an ellipsis, or nothing at all. This is what separates
+//     "Let me read the file:" (stall) from "I used read_file to inspect it."
+//     (a normal summary) — the latter names a tool too, and would otherwise
+//     dominate the signal;
+//   - and the tail then names one of THIS request's tools, or carries an intent
+//     phrase. Tool names are matched with explicit ASCII boundaries so `bash`
+//     does not match inside `bashful`, and `read_file` does not match inside
+//     `read_files`.
+//
+// Accepted false negatives: a stall whose text happens to end in a period is not
+// detected. Keeping the counter clean matters more than covering every phrasing,
+// because the counter is what an operator will alarm on.
+const PROSE_INTENT_TAIL_MAX = 400;
+// Sentence-final punctuation, optionally followed by closing quotes/brackets.
+const SENTENCE_FINAL = /[.!?。！？]["'”’`)\]]*\s*$/;
+// Future/present intent markers. `let me` is excluded when followed by "know" —
+// "Let me know if you need anything else" is a closing, not an intent.
+const PROSE_INTENT_VERB = /\b(?:let me(?!\s+know\b)|i(?:'ll| will| am going to|'m going to| need to| should)|next,? i|now,? i)\b|(?:让我|我来|我先|接下来我|我将|我需要|正在)/i;
+
+function proseIntentDetectEnabled(env = process.env) {
+  // Log-only, so it is on by default: a detector that has to be switched on
+  // before it can capture the shape it exists to capture captures nothing.
+  return String(env.DEVIN_CONNECT_PROSE_INTENT_DETECT ?? '1') !== '0';
+}
+
+/** Tool names declared by the request, in declaration order. */
+function requestToolNames(tools) {
+  if (!Array.isArray(tools)) return [];
+  const names = [];
+  for (const tool of tools) {
+    const name = tool?.function?.name || tool?.name;
+    if (typeof name === 'string' && name.trim()) names.push(name.trim());
+  }
+  return names;
+}
+
+/**
+ * Judge a FINISHED turn for the #236 "narrated a tool call, emitted none" shape.
+ * Returns a signal string (`tool_name:<name>` or `intent_verb:<phrase>`) or null.
+ * Pure and synchronous — the caller only logs/counts the result.
+ */
+export function detectProseToolIntent({ text, toolNames = [], finishEv } = {}) {
+  if (!finishEv) return null;
+  if (finishEv.reason != null && finishEv.reason !== 'stop') return null;
+  if (finishEv.toolCalls && finishEv.toolCalls.length) return null;
+  const full = String(text || '');
+  if (!full.trim()) return null;
+  const tail = full.slice(-PROSE_INTENT_TAIL_MAX);
+  if (SENTENCE_FINAL.test(tail)) return null;
+  for (const name of toolNames) {
+    if (!name || name.length < 3) continue;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`, 'i').test(tail)) {
+      return `tool_name:${name}`;
+    }
+  }
+  const verb = tail.match(PROSE_INTENT_VERB);
+  return verb ? `intent_verb:${verb[0].trim().toLowerCase()}` : null;
 }
 
 /**
@@ -223,6 +307,13 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
   // retries that never heal only triple upstream load into a rate limit), and it was
   // already reachable before this change in the empty-first order. Splitting the counters
   // makes the empty budget independent of ORDER; it does not raise what may be spent.
+  // #236 detector inputs, hoisted out of the attempt loop: `params` is the
+  // client's original request and never mutated (rescue builds a fresh
+  // attemptParams), and the rescue only rewrites MESSAGES, never tools. So the
+  // tool set is identical for every attempt and need not be recomputed.
+  const detectProse = proseIntentDetectEnabled(env);
+  const toolNames = requestToolNames(params?.tools);
+  const hasTools = Boolean(params?.tools?.length);
   let rescueAttempt = 0;
   let emptyAttempt = 0;
   for (;;) {
@@ -230,6 +321,14 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
     let sawText = false;
     let sawReasoning = false;
     let sawReasoningText = '';
+    // Bounded tail of visible text for the #236 prose tool-intent detector.
+    // Only accumulated when that detector is active AND the request declared
+    // tools, so the default path pays nothing; the 400-char cap keeps the
+    // per-delta copy constant even for a very long answer.
+    let textTail = '';
+    const keepTextTail = (chunk) => {
+      if (detectProse && hasTools && chunk) textTail = (textTail + chunk).slice(-PROSE_INTENT_TAIL_MAX);
+    };
     let finishEv = null;
     // Item 1 (loop break): leading think-tagged CONTENT is reclassified into the
     // reasoning channel HERE, at the stream-event level, BEFORE the rescue
@@ -293,12 +392,14 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
         if (routed.text) {
           sawContent = true;
           sawText = true;
+          keepTextTail(routed.text);
           yield { type: 'content', text: routed.text };
         }
       } else if (ev.type === 'content' || ev.type === 'reasoning') {
         if (ev.text) {
           sawContent = true;
           if (ev.type === 'content') sawText = true;
+          if (ev.type === 'content') keepTextTail(ev.text);
           if (ev.type === 'reasoning') {
             sawReasoning = true;
             sawReasoningText += ev.text;
@@ -319,6 +420,7 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
       if (rest) {
         sawContent = true;
         sawText = true;
+        keepTextTail(rest);
         yield { type: 'content', text: rest };
       }
     }
@@ -330,7 +432,6 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
     // Plain chat requests without tools legitimately end in reasoning/text, so rescue is skipped.
     const isStopOrNull = finishEv && (finishEv.reason == null || finishEv.reason === 'stop');
     const hasNoToolCalls = !finishEv?.toolCalls || finishEv.toolCalls.length === 0;
-    const hasTools = Boolean(params?.tools?.length);
     if (hasTools && rescueAttempt < rescueMax && isStopOrNull && hasNoToolCalls && sawReasoning && !sawText) {
       rescueAttempt++;
       log.warn(`DEVIN_CONNECT: thinking-only completion (reasoning-only, finish=${finishEv?.reason ?? 'null'}) — rescue retry ${rescueAttempt}/${rescueMax} (nudge appended)`);
@@ -371,6 +472,25 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
       // rescue loop lives in here, so they never saw an attempt boundary.
       yield { type: 'attempt_reset' };
       continue;
+    }
+
+    // ── #236 log-only detector ────────────────────────────────────────────
+    // AFTER the rescue branch, which `continue`s, so only a turn that is about
+    // to be delivered is judged. Nothing here retries or rewrites: the whole
+    // point is to capture the shape the issue thread could not reproduce. See
+    // the block comment on detectProseToolIntent for the criterion and for why
+    // a nudge on this signal is not justified.
+    if (detectProse && hasTools) {
+      const signal = detectProseToolIntent({ text: textTail, toolNames, finishEv });
+      if (signal) {
+        bumpConnect('prose_tool_intent');
+        log.info(
+          `DEVIN_CONNECT: prose tool intent without a call (#236) — `
+          + `model=${safeLogValue(params?.model)}, finish=${finishEv?.reason ?? 'null'}, `
+          + `signal=${signal}, reasoning=${sawReasoning}, tools=${toolNames.length}, `
+          + `sample=${JSON.stringify(leakSample(textTail))}`,
+        );
+      }
     }
 
     if (emptyAttempt < max && isEmptyCompletion(finishEv, sawContent)) {
