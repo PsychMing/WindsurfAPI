@@ -90,7 +90,7 @@
   **PASS exit=0** —— 全部子门绿。
 - `npm run secret-scan`：exit 0。`git diff --check`：clean。
 - Linux `npm run test:release`（HMC，Node v24.21.0，502 文件）：**6,174 pass / 0 fail / 3 skip（6,177 tests）**，exit 0。
-- mutation：`connect-catalog-hotfix`（pin 41→46）、`dashboard-connect-parity`、`sticky-queue-on-pin`、`retry-rescue-budget-split` 四个受影响规格 exit 0。
+- mutation：`connect-catalog-hotfix`（pin 41→46）、`dashboard-connect-parity`（pin 48→49，新增“发现不消耗降级警告”用例）、`sticky-queue-on-pin`、`retry-rescue-budget-split` 四个受影响规格 exit 0。
 - wire：对 `v3.9.52`（`432aee3`）基线比较（见发布提交）。
 
 ## 尚未验证

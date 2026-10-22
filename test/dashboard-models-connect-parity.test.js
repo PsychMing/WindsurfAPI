@@ -37,8 +37,8 @@ import {
   removeAccount,
 } from '../src/auth.js';
 import { handleDashboardApi } from '../src/dashboard/api.js';
-import { handleModels } from '../src/handlers/models.js';
-import { setLiveCatalogSelectors, clearLiveCatalogSelectors } from '../src/devin-connect-models.js';
+import { handleModels, buildConnectReachability } from '../src/handlers/models.js';
+import { setLiveCatalogSelectors, clearLiveCatalogSelectors, resolveConnectSelector, __testing as connectModelsTesting } from '../src/devin-connect-models.js';
 import { mergeCloudModels } from '../src/models.js';
 import { _resetRuntimeConfigForTests } from '../src/runtime-config.js';
 
@@ -503,5 +503,27 @@ describe('dashboard /models agrees with /v1/models on the Connect namespace (#23
       rows.every((r) => r.connectSelector === null),
       'connectSelector must be null off the Connect transport, not a stale resolution',
     );
+  });
+});
+
+describe('read-only discovery does not consume the one-time degrade warning', () => {
+  it('discovery is silent; the next real request warns exactly once', () => {
+    const name = 'zzscale-parity-discovery-ghost';
+    const warns = [];
+    const originalWarn = console.warn;
+    connectModelsTesting.degradeWarned.clear();
+    console.warn = (...args) => { warns.push(args.join(' ')); };
+    try {
+      const reach = buildConnectReachability({ ...process.env, DEVIN_CONNECT: '1' });
+      reach(name);
+      assert.equal(warns.filter((l) => l.includes(name)).length, 0,
+        'catalog discovery is not a paid request and must not spend the warning');
+      resolveConnectSelector(name);
+      assert.equal(warns.filter((l) => l.includes(name)).length, 1,
+        'the first real request after discovery must still warn');
+    } finally {
+      console.warn = originalWarn;
+      connectModelsTesting.degradeWarned.clear();
+    }
   });
 });
