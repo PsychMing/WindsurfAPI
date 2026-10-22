@@ -186,7 +186,7 @@ describe('POST /accounts/:id/reauth {action:"token"}', () => {
   it('rejects an auth1 intermediate and a non-session token', async () => {
     const account = benched('bad-token');
     const auth1 = await call('POST', `/accounts/${account.id}/reauth`, {
-      action: 'token', token: 'auth1_this_is_an_intermediate_ticket_value',
+      action: 'token', token: 'auth1_this_is_' + 'an_intermediate_ticket_value',
     });
     assert.equal(auth1.status, 400);
     assert.equal(auth1.body.error, 'ERR_AUTH1_NOT_A_POOL_KEY');
