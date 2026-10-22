@@ -207,6 +207,31 @@ export function detectProseToolIntent({ text, toolNames = [], finishEv } = {}) {
 }
 
 /**
+ * Log/count the #236 signal for a turn that has ALREADY been delivered.
+ *
+ * MUST run at the adapter layer, after tool-call emulation: before the parser
+ * strips `<tool_call>` markup, a normal emulated call looks like prose that
+ * stops mid-intent, so every emulated call was counted as a stall (the exact
+ * traffic the counter exists to measure). The caller passes the DELIVERED text
+ * and the calls it actually emitted, so a delivered call can never be reported
+ * as "narrated one, emitted none".
+ */
+function reportProseToolIntent({ params, text, finishEv, reasoning }) {
+  if (!proseIntentDetectEnabled()) return;
+  if (!Array.isArray(params?.tools) || params.tools.length === 0) return;
+  const toolNames = requestToolNames(params.tools);
+  const signal = detectProseToolIntent({ text, toolNames, finishEv });
+  if (!signal) return;
+  bumpConnect('prose_tool_intent');
+  log.info(
+    `DEVIN_CONNECT: prose tool intent without a call (#236) — `
+    + `model=${safeLogValue(params?.model)}, finish=${finishEv?.reason ?? 'null'}, `
+    + `signal=${signal}, reasoning=${Boolean(reasoning)}, tools=${toolNames.length}, `
+    + `sample=${JSON.stringify(leakSample(text))}`,
+  );
+}
+
+/**
  * Transparent wrapper around streamChatImpl that heals probabilistic empty
  * completions by re-issuing the identical request, and rescues thinking-only
  * traps (swe-1-7 declaring tool intent in reasoning without emitting the call)
@@ -307,12 +332,10 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
   // retries that never heal only triple upstream load into a rate limit), and it was
   // already reachable before this change in the empty-first order. Splitting the counters
   // makes the empty budget independent of ORDER; it does not raise what may be spent.
-  // #236 detector inputs, hoisted out of the attempt loop: `params` is the
-  // client's original request and never mutated (rescue builds a fresh
-  // attemptParams), and the rescue only rewrites MESSAGES, never tools. So the
-  // tool set is identical for every attempt and need not be recomputed.
-  const detectProse = proseIntentDetectEnabled(env);
-  const toolNames = requestToolNames(params?.tools);
+  // #236's detector is NOT here: it runs in the adapters, after emulation, on
+  // the text and calls the client actually received. Judging the raw upstream
+  // tail here counted every normal emulated `<tool_call>` turn as a stall
+  // (the markup is stripped only downstream).
   const hasTools = Boolean(params?.tools?.length);
   let rescueAttempt = 0;
   let emptyAttempt = 0;
@@ -321,14 +344,6 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
     let sawText = false;
     let sawReasoning = false;
     let sawReasoningText = '';
-    // Bounded tail of visible text for the #236 prose tool-intent detector.
-    // Only accumulated when that detector is active AND the request declared
-    // tools, so the default path pays nothing; the 400-char cap keeps the
-    // per-delta copy constant even for a very long answer.
-    let textTail = '';
-    const keepTextTail = (chunk) => {
-      if (detectProse && hasTools && chunk) textTail = (textTail + chunk).slice(-PROSE_INTENT_TAIL_MAX);
-    };
     let finishEv = null;
     // Item 1 (loop break): leading think-tagged CONTENT is reclassified into the
     // reasoning channel HERE, at the stream-event level, BEFORE the rescue
@@ -392,14 +407,12 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
         if (routed.text) {
           sawContent = true;
           sawText = true;
-          keepTextTail(routed.text);
           yield { type: 'content', text: routed.text };
         }
       } else if (ev.type === 'content' || ev.type === 'reasoning') {
         if (ev.text) {
           sawContent = true;
           if (ev.type === 'content') sawText = true;
-          if (ev.type === 'content') keepTextTail(ev.text);
           if (ev.type === 'reasoning') {
             sawReasoning = true;
             sawReasoningText += ev.text;
@@ -420,7 +433,6 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
       if (rest) {
         sawContent = true;
         sawText = true;
-        keepTextTail(rest);
         yield { type: 'content', text: rest };
       }
     }
@@ -472,25 +484,6 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
       // rescue loop lives in here, so they never saw an attempt boundary.
       yield { type: 'attempt_reset' };
       continue;
-    }
-
-    // ── #236 log-only detector ────────────────────────────────────────────
-    // AFTER the rescue branch, which `continue`s, so only a turn that is about
-    // to be delivered is judged. Nothing here retries or rewrites: the whole
-    // point is to capture the shape the issue thread could not reproduce. See
-    // the block comment on detectProseToolIntent for the criterion and for why
-    // a nudge on this signal is not justified.
-    if (detectProse && hasTools) {
-      const signal = detectProseToolIntent({ text: textTail, toolNames, finishEv });
-      if (signal) {
-        bumpConnect('prose_tool_intent');
-        log.info(
-          `DEVIN_CONNECT: prose tool intent without a call (#236) — `
-          + `model=${safeLogValue(params?.model)}, finish=${finishEv?.reason ?? 'null'}, `
-          + `signal=${signal}, reasoning=${sawReasoning}, tools=${toolNames.length}, `
-          + `sample=${JSON.stringify(leakSample(textTail))}`,
-        );
-      }
     }
 
     if (emptyAttempt < max && isEmptyCompletion(finishEv, sawContent)) {
@@ -716,6 +709,18 @@ export async function toChatCompletion(params, opts = {}) {
     // a hallucinated preview the caller shouldn't show).
     message.content = null;
     finishReason = 'tool_calls';
+  }
+
+  // #236 log-only detector — AFTER emulation and the stop gate, on the text and
+  // calls the client actually receives. `stopHit` means a local stop sequence
+  // cut the answer, which is not a model stall.
+  if (!stopHit) {
+    reportProseToolIntent({
+      params,
+      text: content,
+      finishEv: { reason: finishReason, toolCalls },
+      reasoning,
+    });
   }
 
   const choice = { index: 0, message, finish_reason: finishReason };
@@ -997,6 +1002,19 @@ export async function streamChatCompletion(params, send, opts = {}) {
       send({ ...base, choices: [{ index: 0, delta: { content: tail }, finish_reason: null }] });
       delivered += tail;
     }
+  }
+
+  // #236 log-only detector — AFTER emulation and the stop gate, on what the
+  // client actually received. A delivered call (emulated or native) sets
+  // finish_reason='tool_calls', so it can never be counted as prose intent;
+  // `stopHit` is a local cut, not a stall.
+  if (!stopHit) {
+    reportProseToolIntent({
+      params,
+      text: delivered,
+      finishEv: { reason: finishReason, toolCalls: collectedToolCalls },
+      reasoning,
+    });
   }
 
   // 4. Terminal finish chunk. Reaching here means streamChat drained cleanly

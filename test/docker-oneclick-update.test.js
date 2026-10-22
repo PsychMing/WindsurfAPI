@@ -84,11 +84,17 @@ if [ "$cmd" = "compose" ]; then
     *" config --images"*) printf 'ghcr.io/dwgx/windsurf-api:latest\\nnginx:alpine\\n'; exit 0 ;;
     *" config"*) printf 'services:\\n  windsurf-api:\\n    image: ghcr.io/dwgx/windsurf-api:latest\\n  nginx:\\n    image: nginx:alpine\\n'; exit 0 ;;
     *" ps -q "*) printf '%s\\n' "\${FAKE_CID:-}" ; exit 0 ;;
-    *" port "*) printf '0.0.0.0:3999\\n'; exit 0 ;;
+    *" port "*) if [ "\${FAKE_NO_PORT:-0}" = "1" ]; then exit 0; fi; printf '0.0.0.0:3999\\n'; exit 0 ;;
     *" pull "*) if [ "\${FAKE_PULL_FAIL:-0}" = "1" ]; then echo "pull denied" >&2; exit 1; fi; exit 0 ;;
     *" build "*) if [ "\${FAKE_BUILD_FAIL:-0}" = "1" ]; then echo "build denied" >&2; exit 1; fi; exit 0 ;;
     *" up "*) if [ "\${FAKE_UP_FAIL:-0}" = "1" ]; then echo "up denied" >&2; exit 1; fi; exit 0 ;;
-    *" exec "*) printf '%s\\n' '{"status":"ok","version":"3.9.53","commit":"deadbeef"}'; exit 0 ;;
+    *" exec "*)
+      # First exec hangs like a wedged container; the rollback probe succeeds.
+      if [ "\${FAKE_EXEC_HANG:-0}" = "1" ] && [ ! -f "\${FAKE_EXEC_HANG_FILE:?}" ]; then
+        : > "\${FAKE_EXEC_HANG_FILE}"
+        sleep 60
+      fi
+      printf '%s\\n' '{"status":"ok","version":"3.9.53","commit":"deadbeef"}'; exit 0 ;;
   esac
   exit 0
 fi
@@ -160,6 +166,7 @@ function run(fixture, args = [], overrides = {}) {
     ...process.env,
     PATH: [fixture.bin, dirname(process.execPath), '/usr/local/bin', '/usr/bin', '/bin'].join(delimiter),
     FAKE_DOCKER_LOG: fixture.log,
+    FAKE_EXEC_HANG_FILE: join(fixture.root, 'exec.hang'),
     FAKE_HEALTH_COUNTER: fixture.counter,
     FAKE_HEALTH_SEQ: '200',
     FAKE_CID: CID,
@@ -293,6 +300,28 @@ describe('deploy/update.sh pull → health → rollback', () => {
       lines.some(line => line === `tag ${OLD_ID} ghcr.io/dwgx/windsurf-api:latest`),
       'rollback must retag the previous image back to the deployment ref',
     );
+    assertNoDestructiveDockerCalls(fixture);
+  });
+
+  it('bounds a hanging in-container health probe and still rolls back', () => {
+    const fixture = makeFixture();
+    const started = Date.now();
+    // No published port forces the `compose exec` fallback. Its first call
+    // hangs like a container that is `running` but wedged — the exact failure
+    // the health gate exists for. Without a bound the script never reaches the
+    // rollback; the fixture's later probes succeed so the rollback gate can
+    // prove the old image healthy.
+    const result = run(fixture, [], {
+      FAKE_NO_PORT: '1',
+      FAKE_EXEC_HANG: '1',
+      WINDSURFAPI_PROBE_TIMEOUT: '1',
+    });
+    const elapsed = Date.now() - started;
+
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stdout, /UPDATE FAILED/);
+    assert.match(result.stdout, /ROLLED BACK/);
+    assert.ok(elapsed < 15_000, `a wedged health probe must be bounded (took ${elapsed}ms)`);
     assertNoDestructiveDockerCalls(fixture);
   });
 

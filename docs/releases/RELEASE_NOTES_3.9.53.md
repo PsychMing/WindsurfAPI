@@ -2,7 +2,21 @@
 
 本版六条：**CascadeTurn 生产者（默认关）**、**Docker 一条命令更新 + 自动回滚**、**五项安全审计修复
 （SEC-01..SEC-05）**、**GitHub backlog（#272 / #258 / #236）**、**出站历史预算与 PR #274 孤儿守卫**、
-**124 条 smoke 矩阵扩到 20 族**。没有协议兼容性破坏；唯一新增的默认开启行为是两条只记日志的计数器。
+**124 条 smoke 矩阵扩到 20 族**。没有协议兼容性破坏；默认开启的行为变更不只有两条只记日志的计数器
+（见下方「勘误」）。
+
+## 勘误（2026-10-23）
+
+首段「唯一新增的默认开启行为是两条只记日志的计数器」不准确。除 `assistant_images_dropped` 与
+`prose_tool_intent` 这两条只记日志、不改 wire 的计数器外，v3.9.53 还有两项**默认开启**的行为改变：
+
+- **出站历史预算**：不设环境变量时即生效——`WINDSURFAPI_HISTORY_BUDGET_TURNS` 默认 100、
+  `WINDSURFAPI_HISTORY_BUDGET_BYTES` 默认 8 MB。超过任一维度的请求在到达任何上游之前返回
+  413 `payload_too_large`（`code: history_budget_exceeded`）。升级后长会话客户端可能第一次看到
+  该 413；把对应维度设为 `0` 可关闭（见「GitHub backlog」的 #136 / #191 条）。
+- **PATCH 状态白名单**：`PATCH /accounts/:id` 的 `status` 只接受 `active` / `disabled` / `error`；
+  `banned`、`reauth` 及其他拼写错误的值返回 400 `ERR_ACCOUNT_STATUS_INVALID`，不再原样落盘。
+  这是 dashboard API 的收紧，不影响聊天 wire。
 
 ## 用户可感知
 

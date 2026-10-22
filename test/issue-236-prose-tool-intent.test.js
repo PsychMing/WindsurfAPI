@@ -200,6 +200,79 @@ describe('#236 detector — end to end through the connect adapter', () => {
     assert.equal(result.finish_reason, 'stop');
   });
 
+  // #236 P2: the detector used to run inside streamChatWithEmptyRetry, i.e.
+  // BEFORE the emulation parser strips <tool_call> markup. Every normal
+  // emulated call therefore looked like prose that stops mid-intent. The
+  // detector must judge the DELIVERED turn, so a call that the adapter emitted
+  // can never be counted as "narrated a call, emitted none".
+  const EMULATED_CALL = 'I will inspect the file.\n'
+    + '<tool_call>{"name":"read_file","arguments":{"path":"/tmp/x"}}</tool_call>';
+
+  it('streaming path: a normal emulated <tool_call> is not reported', async () => {
+    resetConnectMetrics();
+    __setStreamChatForTest(fakeStream([
+      { type: 'content', text: EMULATED_CALL },
+      { type: 'finish', reason: 'stop', usage: null },
+    ]));
+
+    const frames = [];
+    const { result, lines } = await captureDetectorLogs(() => streamChatCompletion(
+      { model: 'glm-5-2-none', messages: [{ role: 'user', content: 'read /tmp/x' }], tools: TOOLS },
+      (frame) => frames.push(frame),
+      { emulateTools: true },
+    ));
+
+    assert.deepEqual(lines, [], `an emulated call must not be logged as prose intent: ${JSON.stringify(lines)}`);
+    assert.equal(getConnectMetrics().prose_tool_intent, 0);
+    assert.equal(result.finish_reason, 'tool_calls');
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].name, 'read_file');
+    assert.equal(
+      frames.filter((f) => f?.choices?.[0]?.delta?.tool_calls).length,
+      1,
+      'the adapter must still deliver the emulated tool call',
+    );
+  });
+
+  it('non-stream path: a normal emulated <tool_call> is not reported', async () => {
+    resetConnectMetrics();
+    __setStreamChatForTest(fakeStream([
+      { type: 'content', text: EMULATED_CALL },
+      { type: 'finish', reason: 'stop', usage: null },
+    ]));
+
+    const { result, lines } = await captureDetectorLogs(() => toChatCompletion(
+      { model: 'glm-5-2-none', messages: [{ role: 'user', content: 'read /tmp/x' }], tools: TOOLS },
+      { emulateTools: true },
+    ));
+
+    assert.deepEqual(lines, [], `an emulated call must not be logged as prose intent: ${JSON.stringify(lines)}`);
+    assert.equal(getConnectMetrics().prose_tool_intent, 0);
+    assert.equal(result.body.choices[0].finish_reason, 'tool_calls');
+    assert.equal(result.body.choices[0].message.tool_calls.length, 1);
+    assert.equal(result.body.choices[0].message.tool_calls[0].function.name, 'read_file');
+  });
+
+  it('does not flag prose truncated by a local stop sequence', async () => {
+    resetConnectMetrics();
+    __setStreamChatForTest(fakeStream([
+      { type: 'content', text: 'I will call read_file:' },
+      { type: 'finish', reason: 'stop', usage: null },
+    ]));
+
+    const { result, lines } = await captureDetectorLogs(() => toChatCompletion(
+      { model: 'glm-5-2-none', messages: [{ role: 'user', content: 'read /tmp/x' }], tools: TOOLS },
+      { stop: ['read_file:'] },
+    ));
+
+    // The cut is ours, not the model stalling: without the stopHit guard the
+    // remaining "I will call " would match the intent-verb criterion.
+    assert.deepEqual(lines, []);
+    assert.equal(getConnectMetrics().prose_tool_intent, 0);
+    assert.equal(result.body.choices[0].message.content, 'I will call ');
+    assert.equal(result.body.choices[0].finish_reason, 'stop');
+  });
+
   it('a normal prose answer with tools present is not reported', async () => {
     resetConnectMetrics();
     __setStreamChatForTest(fakeStream([

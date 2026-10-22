@@ -93,8 +93,12 @@ log() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
 
+# One definition of the compose invocation, shared by `compose` and the
+# exec-fallback probe (which must run it under a timeout).
+COMPOSE_CMD=("$DOCKER_BIN" compose --project-directory "$PROJECT_DIR" -f "$COMPOSE_FILE")
+
 compose() {
-  "$DOCKER_BIN" compose --project-directory "$PROJECT_DIR" -f "$COMPOSE_FILE" "$@"
+  "${COMPOSE_CMD[@]}" "$@"
 }
 
 compose_display() {
@@ -356,9 +360,59 @@ json_field() {
   printf '%s' "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"
 }
 
+# Run a command with a hard wall-clock limit. Uses timeout(1) when present
+# (Linux, busybox); macOS has no timeout in the base system, so fall back to a
+# background watchdog. Returns 124 when the limit is hit, matching timeout(1).
+# A zero limit disables the bound (same convention as curl --max-time).
+run_with_timeout() {
+  local seconds="$1" pid ticks limit out status
+  shift
+  if [ "$seconds" -eq 0 ] 2>/dev/null; then
+    "$@"
+    return $?
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+    return $?
+  fi
+  # Watchdog fallback. Capture into a file, not the caller's pipe: a killed
+  # child may leave a grandchild holding stdout, and the command substitution
+  # would then wait for that fd even though the bound already fired.
+  out="$(mktemp "${TMPDIR:-/tmp}/windsurfapi-probe.XXXXXX")" || return 1
+  "$@" >"$out" 2>/dev/null &
+  pid=$!
+  ticks=0
+  limit=$((seconds * 10))
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$ticks" -ge "$limit" ]; then
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 0.2
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      rm -f "$out"
+      return 124
+    fi
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
+  wait "$pid"
+  status=$?
+  cat "$out"
+  rm -f "$out"
+  return "$status"
+}
+
 probe_exec() {
-  PROBE_BODY="$(compose exec -T "$SERVICE" \
-    node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3003)+'/health').then(async r=>{const t=await r.text();if(!r.ok)process.exit(1);process.stdout.write(t)}).catch(()=>process.exit(1))" \
+  local fetch_signal=""
+  # The shell-level bound below is what saves us when `compose exec` itself is
+  # wedged (daemon/CLI hang). The AbortSignal bounds the in-container fetch when
+  # the app's event loop is wedged but the exec still starts. Both are needed:
+  # the gate exists precisely for a container that is running but unresponsive.
+  if [ "$PROBE_TIMEOUT" -gt 0 ]; then
+    fetch_signal=",{signal:AbortSignal.timeout($((PROBE_TIMEOUT * 1000)))}"
+  fi
+  PROBE_BODY="$(run_with_timeout "$PROBE_TIMEOUT" "${COMPOSE_CMD[@]}" exec -T "$SERVICE" \
+    node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3003)+'/health'${fetch_signal}).then(async r=>{const t=await r.text();if(!r.ok)process.exit(1);process.stdout.write(t)}).catch(()=>process.exit(1))" \
     2>/dev/null)" || return 1
   body_is_ok
 }
@@ -378,7 +432,7 @@ probe_once() {
       return 1
     fi
     if command -v node >/dev/null 2>&1; then
-      PROBE_BODY="$(node -e "fetch(process.argv[1]).then(async r=>{const t=await r.text();if(!r.ok)process.exit(1);process.stdout.write(t)}).catch(()=>process.exit(1))" "$url" 2>/dev/null)" || return 1
+      PROBE_BODY="$(run_with_timeout "$PROBE_TIMEOUT" node -e "fetch(process.argv[1]).then(async r=>{const t=await r.text();if(!r.ok)process.exit(1);process.stdout.write(t)}).catch(()=>process.exit(1))" "$url" 2>/dev/null)" || return 1
       body_is_ok && return 0
       return 1
     fi
