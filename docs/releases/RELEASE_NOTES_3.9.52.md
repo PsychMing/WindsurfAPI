@@ -24,8 +24,10 @@
 
 ## 工程与门禁
 
-- 合入 2 条分支（均基于 `2d1e183`）：`chore/engines-22` `307384f`、`feat/reauth-state` `abf76c6`。
-- Windows/Linux/gate/mutation/wire：见发布提交与 CI。
+- 合入 2 条分支（均基于 `2d1e183`）：`chore/engines-22` `307384f`、`feat/reauth-state` `abf76c6`（审查后补 `827eef6`）。
+- Windows `npm run test:release`：**5,992 pass / 0 fail / 82 skip（492 文件，6,074 tests）**，exit 0。
+- Windows `npm run gate`：**PASS exit=0** —— 全部子门绿。
+- Linux/mutation/wire：见发布提交与 CI。
 
 ## 尚未验证
 
