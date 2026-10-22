@@ -113,7 +113,7 @@ const IGNORED_PATHS = new Set([
   'test/secret-scan.test.js',
 ]);
 
-// `test/` was skipped wholesale until 2026-08. Audit round 12 measured the cost:
+// `test/` was skipped wholesale until 2026-08. Audit round 10 measured the cost:
 // of ~2333 added lines in a typical round, ~1100 were never scanned — and a real key
 // pasted into a fixture is exactly as leaked as one in src/. So test/ IS scanned now.
 //

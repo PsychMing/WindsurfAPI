@@ -54,6 +54,11 @@ while it runs.
 **twice** (top level and `packages.""`). `src/version.js` reads from `package.json`,
 so that is the single source — do not hardcode a version anywhere else.
 
+The live handoff's §0 (the `HANDOFF-*.md` the index's first row links) carries the version
+twice as well: `产品 tag` and `package.json`. Update both in the release commit.
+`test/docs-consistency-guard.test.js` compares them against the packaged version and the
+newest reachable tag; before the tag exists, the tag line may still name the previous release.
+
 **5. Write `RELEASE_NOTES_<new-version>.md`** in this folder. House style below.
 
 **6. Branch, then merge — you cannot commit on `master`.** `.githooks/pre-commit`
