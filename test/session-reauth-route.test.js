@@ -382,6 +382,51 @@ describe('PATCH cannot put a retired key back in rotation (I2)', () => {
   });
 });
 
+describe('PATCH status allowlist (only the three operator statuses)', () => {
+  // `banned` and `reauth` are evidence-gated: they enter through the ban detector
+  // and the UNAUTHORIZED probe, never through a hand-written string. A typo used to
+  // be persisted verbatim, and resolveAccountState maps unknown statuses to 'active'
+  // while selection filters on `status === 'active'` — an invisible, unroutable
+  // account that survives restart.
+  it('400s every status outside active/disabled/error and persists nothing', async () => {
+    const account = newAccount('status-garbage');
+    assert.equal(getAccountInternal(account.id).status, 'active');
+    for (const garbage of ['reauth', 'banned', 'garbage', 'ACTIVE', 'Active', '', null]) {
+      const r = await call('PATCH', `/accounts/${account.id}`, { status: garbage });
+      assert.equal(r.status, 400, `${JSON.stringify(garbage)} must be refused`);
+      assert.equal(r.body.error, 'ERR_ACCOUNT_STATUS_INVALID');
+      assert.equal(getAccountInternal(account.id).status, 'active',
+        `${JSON.stringify(garbage)} must not be written to the account`);
+    }
+  });
+
+  it('accepts the three operator statuses', async () => {
+    const account = newAccount('status-allowed');
+    for (const ok of ['disabled', 'error', 'active']) {
+      const r = await call('PATCH', `/accounts/${account.id}`, { status: ok });
+      assert.equal(r.status, 200, `${ok} must be accepted`);
+      assert.equal(getAccountInternal(account.id).status, ok);
+    }
+  });
+
+  it('rejects the whole PATCH: a garbage status does not let a label through', async () => {
+    const account = newAccount('status-atomic');
+    const originalLabel = getAccountInternal(account.id).email;
+    const r = await call('PATCH', `/accounts/${account.id}`, { status: 'garbage', label: 'renamed' });
+    assert.equal(r.status, 400);
+    assert.equal(r.body.error, 'ERR_ACCOUNT_STATUS_INVALID');
+    assert.equal(getAccountInternal(account.id).email, originalLabel);
+  });
+
+  it('does not preempt the reauth refusal: active is allowlisted, the token is not', async () => {
+    const account = benched('status-reauth');
+    const r = await call('PATCH', `/accounts/${account.id}`, { status: 'active' });
+    assert.equal(r.status, 409);
+    assert.equal(r.body.error, 'ERR_REAUTH_TOKEN_UNCHANGED');
+    assert.equal(getAccountInternal(account.id).status, 'reauth');
+  });
+});
+
 describe('pool-events surface', () => {
   it('reports the coarse state as reauth, not a self-healing cooldown', async () => {
     const account = benched('pool-event');

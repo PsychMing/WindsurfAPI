@@ -6460,7 +6460,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
         </div>
         <div class="card-value" style="font-size:20px">${usage.quota?.dailyPercentage ?? '-'}%</div>
-        <div class="card-sub">${usage.plan || '-'} · daily · weekly ${usage.quota?.weeklyPercentage ?? '-'}% · ${credits} credits</div>
+        <div class="card-sub">${this.esc(usage.plan || '-')} · daily · weekly ${usage.quota?.weeklyPercentage ?? '-'}% · ${credits} credits</div>
       </div>`;
   },
 

@@ -79,6 +79,11 @@ import { getActiveServer } from '../server-registry.js';
 import { abortActiveSse } from '../sse-registry.js';
 import { renameSyncWithRetry, writeJsonAtomic } from '../fs-atomic.js';
 
+// Statuses an operator may write through PATCH /accounts/:id. Deliberately NOT
+// ACCOUNT_STATE_VALUES (the read-side vocabulary): that list also carries the
+// derived/evidence-gated states, and only these three are operator intent.
+const PATCHABLE_ACCOUNT_STATUSES = Object.freeze(['active', 'disabled', 'error']);
+
 function shouldPrewarmLsOnAccountAdd() {
   return process.env.LS_PREWARM_ON_ACCOUNT_ADD === '1' || process.env.LS_PREWARM_PROXIES === '1';
 }
@@ -1887,12 +1892,23 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   const accountPatch = subpath.match(/^\/accounts\/([^/]+)$/);
   if (accountPatch && method === 'PATCH') {
     const id = accountPatch[1];
+    // The operator may only write the three statuses they can act on. `banned`
+    // and `reauth` are evidence-gated states — the ban detector and the
+    // UNAUTHORIZED probe put an account there, and letting a hand-written string
+    // forge that evidence would bypass the two-signal rule (a `banned` written
+    // this way also skips bannedReason/bannedAt). Any other value is a typo that
+    // used to be persisted verbatim: selection filters on `status === 'active'`
+    // while resolveAccountState maps unknown statuses to 'active', so the account
+    // became invisible-but-unroutable and the value survived restart.
+    if (body.status !== undefined && !PATCHABLE_ACCOUNT_STATUSES.includes(body.status)) {
+      return json(res, 400, { error: 'ERR_ACCOUNT_STATUS_INVALID' });
+    }
     try {
       // `force:true` is the operator's explicit override of the reauth guard
       // (they replaced the token out-of-band); without it the refusal is a 409
       // so the UI can point at the re-authenticate action instead of silently
       // putting a retired key back in rotation.
-      if (body.status) setAccountStatus(id, body.status, { force: body.force === true });
+      if (body.status !== undefined) setAccountStatus(id, body.status, { force: body.force === true });
       if (body.label) updateAccountLabel(id, body.label);
       if (body.resetErrors) resetAccountErrors(id);
       if (Array.isArray(body.blockedModels)) setAccountBlockedModels(id, body.blockedModels);
