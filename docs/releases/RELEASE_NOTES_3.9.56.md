@@ -19,7 +19,10 @@
 - 合入 `fix/acu-edge` `83f6b63`、`fix/sec-docs` `0b624c9`。
 - ACU 相关 42/42；`dashboard-*` + i18n 488/488；copy/i18n 检查绿。
 - `release-workflow.test.js` 覆盖平铺名清单；manifest 模拟 `sha256sum -c` 四个 OK。
-- Windows/Linux/gate/mutation/wire：见发布提交与 CI。
+- Windows `npm run gate`：**PASS**；`npm run test:release` **6,150 pass / 0 fail / 95 skip（506 文件）**。
+- Linux `npm run test:release`（HMC，Node v24.21.0，506 文件）：**6,242 pass / 0 fail / 3 skip**。
+- wire：对 `v3.9.55`（`fa882f7`）比较 **270/270**。
+- mutation：全量 sweep 结果见发布提交。
 
 ## 尚未验证
 

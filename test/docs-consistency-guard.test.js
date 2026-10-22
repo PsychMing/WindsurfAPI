@@ -774,7 +774,21 @@ describe('docs: version claims match the repository', () => {
     }
     assert.equal(git(['cat-file', '-t', tagName]), 'tag', `${tagName} must be annotated, not lightweight`);
     const tagCommit = git(['rev-parse', `${tagName}^{commit}`]);
-    assert.ok(tagCommit.startsWith(commit), `§0 commit ${commit} is not ${tagName}'s commit ${tagCommit}`);
+    // The release commit is written BEFORE the tag exists, so it cannot name the tag's own
+    // commit without self-reference. Accept any ancestor of the tag commit: the claim still
+    // has to be a real commit on the released history, and a stale/moved tag still fails
+    // because the named commit would no longer be an ancestor.
+    let ancestor = false;
+    try {
+      execFileSync('git', ['merge-base', '--is-ancestor', commit, tagCommit], { cwd: ROOT, stdio: 'pipe' });
+      ancestor = true;
+    } catch {
+      ancestor = false;
+    }
+    assert.ok(
+      ancestor,
+      `§0 commit ${commit} is not an ancestor of ${tagName}'s commit ${tagCommit}`,
+    );
     const object = block.match(/对象\s+`?([0-9a-f]{7,40})`?/);
     if (object) {
       const tagObject = git(['rev-parse', tagName]);
