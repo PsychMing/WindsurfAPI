@@ -294,7 +294,10 @@ describe('#257 the client fetch wrappers force success:false on non-2xx', () => 
     // eslint-disable-next-line no-new-func -- executing the shipped source is the point
     const fn = new Function('document', 'I18n', 'localStorage', 'fetch',
       `return async function ${name}(method, path, body) ${body};`)(dom.doc, I18nStub, localStorageStub, fetchImpl);
-    const self = { _authEpoch: 0, toasts: [], toast(m, t) { self.toasts.push([m, t]); }, password: null, ...extraSelf };
+    // The shipped _apiRaw routes the toast text through translateError so an
+    // unmapped ERR_* code never reaches the user; the stub keeps the raw text
+    // so the assertions below still see the server's message.
+    const self = { _authEpoch: 0, toasts: [], toast(m, t) { self.toasts.push([m, t]); }, password: null, translateError(code, fallback) { return code || fallback; }, ...extraSelf };
     return { out: await fn.call(self, 'GET', '/x', null), self };
   }
 

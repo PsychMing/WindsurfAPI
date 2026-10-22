@@ -16,6 +16,7 @@ import { isExperimentalEnabled, getDroughtThresholdPercent, getIpLockThreshold, 
 import { readFileSync, existsSync, unlinkSync, readdirSync } from 'fs';
 import { config, log } from './config.js';
 import { safeAccountRef } from './log-safety.js';
+import { balanceGroupOf } from './org-identity.js';
 import { renameSyncWithRetry, writeFileSyncDurable, restrictFileToOwnerSync } from './fs-atomic.js';
 import { getEffectiveProxy } from './dashboard/proxy-config.js';
 import {
@@ -4428,9 +4429,12 @@ export const ACCOUNT_SORT_VALUES = Object.freeze(['quota_weekly', 'balance', 'la
 // to count byTier[tier] while rows honoured both).
 function accountMatchesQuery(a, { filter = '', tier = '', q = '', status = '', now = Date.now() }) {
   if (filter === 'flagged') {
-    const flagged = a.status === 'error' || a.status === 'banned' || a.status === 'reauth'
-      || (a.errorCount || 0) > 0 || (a.rateLimitedUntil && a.rateLimitedUntil > now);
-    if (!flagged) return false;
+    // "Needs attention" is one predicate, shared with the KPI strip: every
+    // state except 正常 and 手动停用. It used to be a hand-written OR that
+    // missed quota-cooled/capacity/near-limit accounts while the KPI counted a
+    // different set — the two numbers then disagreed on the same page.
+    const state = resolveAccountState(a, now);
+    if (state === 'active' || state === 'disabled') return false;
   }
   if (tier && tierBucket(a.tier) !== tier) return false;
   if (status && resolveAccountState(a, now) !== status) return false;
@@ -4489,42 +4493,65 @@ export function getAccountPublic(id, { view = 'full' } = {}) {
 
 export function getAccountListStats() {
   const now = Date.now();
-  let flagged = 0;
   let rateLimited = 0;
-  let disabled = 0;
   let banned = 0;
   let reauth = 0;
   const byTier = { pro: 0, free: 0, unknown: 0, expired: 0 };
-  let balanceTotal = 0;
+  // One bucket per resolveAccountState() value. The KPI strip is a PARTITION
+  // over these (正常 / 已停用 / 需处理), not a pile of overlapping predicates:
+  // 3.9.53 counted banned/reauth/error accounts as "停用" AND again as
+  // "需关注", so the six cells looked additive and were not.
+  const stateCounts = Object.fromEntries(ACCOUNT_STATE_VALUES.map((state) => [state, 0]));
+  // Billing owner → the one balance that owner reports. Teams share a single
+  // on-demand balance across every member; summing per account multiplied it.
+  const balanceByOwner = new Map();
   let balanceAccounts = 0;
   for (const account of accounts) {
     const isRateLimited = !!(account.rateLimitedUntil && account.rateLimitedUntil > now);
     if (isRateLimited) rateLimited++;
-    if (account.status !== 'active') disabled++;
     if (account.status === 'banned') banned++;
     if (account.status === 'reauth') reauth++;
-    if (account.status === 'error' || account.status === 'banned' || account.status === 'reauth' || (account.errorCount || 0) > 0 || isRateLimited) flagged++;
+    stateCounts[resolveAccountState(account, now)]++;
     byTier[tierBucket(account.tier)]++;
-    // On-demand prepaid balance ($) — only Teams/paid accounts carry it. Sum for
-    // a pool total. NOTE: Teams share one balance, so multiple accounts in the
-    // same team over-count; surfaced with a caveat until we have a team id to dedupe.
+    // On-demand prepaid balance ($) — only Teams/paid accounts carry it.
     const bal = account?.credits?.balance;
     // Negative values are "no billing snapshot" sentinels; uint64 -1 decodes to
     // ~1.8e13 USD. Only a plausible on-demand balance counts toward the pool.
     if (typeof bal === 'number' && Number.isFinite(bal) && bal >= 0 && bal <= 1_000_000) {
-      balanceTotal += bal; balanceAccounts++;
+      balanceAccounts++;
+      // Identity comes from the ACU org reader when it has run, else the
+      // GetUserStatus team id, else the account itself (org-identity.js).
+      // Two members of one team collapse to one entry; the freshest snapshot
+      // wins so a stale sibling can't overwrite a newer read.
+      const owner = balanceGroupOf(account);
+      const at = Number(account?.credits?.fetchedAt || 0);
+      const prev = balanceByOwner.get(owner.key);
+      if (!prev || at > prev.at || (at === prev.at && String(account.id) < prev.id)) {
+        balanceByOwner.set(owner.key, { balance: bal, at, id: String(account.id) });
+      }
     }
   }
+  let balanceTotal = 0;
+  for (const entry of balanceByOwner.values()) balanceTotal += entry.balance;
+  const total = accounts.length;
+  // 需处理 = every state except 正常 and 手动停用. The same predicate as
+  // `filter=flagged`, so the KPI and the "仅异常" filter cannot disagree.
+  const attention = total - stateCounts.active - stateCounts.disabled;
   return {
     ...getAccountCount(),
-    flagged,
+    stateCounts,
+    attention,
+    flagged: attention,
     rateLimited,
-    disabled,
+    // 已停用 means the operator disabled it — nothing else.
+    disabled: stateCounts.disabled,
     banned,
     reauth,
     byTier,
     balanceTotal,
     balanceAccounts,
+    balanceOwners: balanceByOwner.size,
+    balanceSharedAccounts: balanceAccounts - balanceByOwner.size,
   };
 }
 

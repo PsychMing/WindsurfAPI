@@ -179,15 +179,17 @@ describe('language server resource policy', () => {
 
   test('dashboard probes are resident-only unless explicitly forced', () => {
     const src = readFileSync(join(__dirname, '..', 'src/dashboard/api.js'), 'utf8');
+    const fleet = readFileSync(join(__dirname, '..', 'src/dashboard/fleet-jobs.js'), 'utf8');
     assert.match(src, /const force = body\?\.force === true \|\| body\?\.allowLsStart === true/);
-    assert.match(src, /probeAccount\(a\.id, \{ allowLsStart: force \}\)/);
+    // The pool-wide loop moved to fleet-jobs.js so the browser can poll it; the
+    // single-account route still forces through the same flag.
+    assert.match(fleet, /probeAccount\(account\.id, \{ allowLsStart: force \}\)/);
     assert.match(src, /probeAccount\(accountProbe\[1\], \{ allowLsStart: force, canary \}\)/);
     // A skipped probe must remain visible as skipped (never `ok: true`); the
-    // classification lives in probeOutcomeEntry so both fleet and batch routes
-    // share it.
-    assert.match(src, /const entry = probeOutcomeEntry\(a\.id, r\)/);
-    assert.match(src, /if \(result\.skipped\)/);
-    assert.match(src, /ok: false, skipped: true, reason:/);
+    // classification lives in probeOutcomeEntry so every route shares it.
+    assert.match(fleet, /const entry = probeOutcomeEntry\(account\.id, result\)/);
+    assert.match(fleet, /if \(result\.skipped\)/);
+    assert.match(fleet, /ok: false, skipped: true, reason:/);
   });
 
   test('LS admission is serialized and never evicts starting instances', () => {

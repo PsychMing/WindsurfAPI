@@ -2304,7 +2304,7 @@ tbody tr:hover td { background: var(--surface-2); }
    the token blocks above. Row target 44 px comfortable / 36 px compact. */
 .acct-kpis {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -2335,7 +2335,22 @@ tbody tr:hover td { background: var(--surface-2); }
 }
 .tb-group .btn { border-color: transparent; background: transparent; }
 .tb-group .btn:hover:not(:disabled) { background: var(--surface); border-color: var(--border); }
+/* `.btn` sets display:inline-flex, which beats the UA `[hidden]` rule. Every
+   hidden-by-state button (fleet cancel, fleet details, filter clear) needs this
+   or it stays visible while `hidden` is set. */
+.btn[hidden] { display: none; }
 .acct-op-status { font-size: 12px; color: var(--text-muted); min-height: 18px; }
+
+/* Last fleet run. Lives outside the selection bar so a probe-all (no selected
+   rows) still has a readable failure list after the run. */
+.fleet-panel {
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+  padding: 8px 12px; margin-bottom: 12px; font-size: 12px;
+}
+.fleet-panel-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fleet-panel-head #accounts-fleet-summary { color: var(--text-muted); }
+.fleet-list { margin: 6px 0 0; padding-left: 18px; max-height: 200px; overflow: auto; }
+.fleet-list li { margin: 2px 0; color: var(--text-muted); word-break: break-all; }
 
 .acct-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .acct-filters .input, .acct-filters .select { width: auto; height: 32px; padding-top: 4px; padding-bottom: 4px; }
@@ -2817,14 +2832,27 @@ tbody tr:hover td { background: var(--surface-2); }
     <!-- Fleet toolbar: long-running pool operations live here, not in the page header. -->
     <div class="acct-toolbar">
       <div class="tb-group" role="group" data-i18n-aria-label="accounts.toolbar.fleet">
-        <button class="btn btn-outline btn-sm" onclick="App.probeAll()" data-i18n="accounts.toolbar.probeAll">全部探测</button>
-        <button class="btn btn-outline btn-sm" onclick="App.refreshAllCredits()" data-i18n="accounts.toolbar.refreshAll">刷新全部余额</button>
+        <button class="btn btn-outline btn-sm" onclick="App.startFleetRun('probe')" data-i18n="accounts.toolbar.probeAll">全部探测</button>
+        <button class="btn btn-outline btn-sm" onclick="App.startFleetRun('refresh')" data-i18n="accounts.toolbar.refreshAll">刷新全部余额</button>
+        <button class="btn btn-outline btn-sm" id="accounts-fleet-cancel" onclick="App.cancelFleetRun()" hidden data-i18n="accounts.fleet.cancel">取消</button>
         <button class="btn btn-outline btn-sm" onclick="App.exportAccounts()" data-i18n="accounts.export.label">导出</button>
       </div>
       <div class="tb-group" role="group" data-i18n-aria-label="accounts.toolbar.view">
         <button class="btn btn-ghost btn-sm" id="accounts-density-btn" onclick="App.toggleAccountsDensity()" aria-pressed="false" data-i18n-title="accounts.density.title" title="切换紧凑/宽松密度"><span data-i18n="accounts.density.label">紧凑</span></button>
       </div>
       <span class="acct-op-status" id="accounts-op-status" aria-live="polite"></span>
+    </div>
+
+    <!-- Result panel for the last fleet run. Independent of the batch bar on
+         purpose: a probe-all has no selected rows, and the failures must stay
+         readable after the run (and after the bar closes). -->
+    <div id="accounts-fleet-panel" class="fleet-panel" hidden>
+      <div class="fleet-panel-head">
+        <span id="accounts-fleet-summary"></span>
+        <button class="btn btn-ghost btn-xs" id="accounts-fleet-toggle" aria-expanded="false" hidden onclick="App.toggleFleetDetails()" data-i18n="accounts.fleet.details">查看明细</button>
+        <button class="btn btn-ghost btn-xs" id="accounts-fleet-dismiss" onclick="App.dismissFleetPanel()" data-i18n="accounts.fleet.dismiss">关闭</button>
+      </div>
+      <ul id="accounts-fleet-list" class="fleet-list" hidden></ul>
     </div>
 
     <!-- Filter bar: search / tier / status / flagged / count / clear. Every control
@@ -4116,7 +4144,14 @@ const App = {
       const baseKey = `error.${errorCode.slice(0, errorCode.indexOf(':'))}`;
       if (I18n.t(baseKey) !== baseKey) return I18n.t(baseKey);
     }
-    return errorCode || I18n.t(fallbackKey);
+    const raw = String(errorCode || '');
+    // An unmapped identifier is not a sentence (`ERR_BATCH_OP_INVALID`,
+    // `probe_skipped`). Show the actionable default; callers keep the code for
+    // the tooltip / technical detail instead of printing it at the user.
+    if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(raw) || /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(raw)) {
+      return I18n.t(fallbackKey === 'error.unknown' ? 'error.genericAction' : fallbackKey);
+    }
+    return raw || I18n.t(fallbackKey);
   },
 
   renderLsPoolTelemetry(ls = {}) {
@@ -4742,7 +4777,12 @@ docker compose up -d --force-recreate</pre>
       // loader guard stays reachable on 404/500 — and on a non-JSON error body,
       // where there is nothing to spread (#257).
       if (!r.ok) {
-        this.toast((data && data.error && (data.error.message || data.error)) || I18n.t('toast.requestFailed', { status: r.status }), 'error');
+        const rawError = data && data.error && (data.error.message || data.error);
+        this.toast(
+          rawError ? this.translateError(String(rawError), 'error.genericAction') : I18n.t('toast.requestFailed', { status: r.status }),
+          'error',
+          rawError ? String(rawError) : '',
+        );
         const failed = (data && typeof data === 'object' && !Array.isArray(data)) ? { ...data } : {};
         failed.success = false;
         return failed;
@@ -4758,6 +4798,9 @@ docker compose up -d --force-recreate</pre>
   stopAllPolls() {
     Object.values(this.pollers || {}).forEach(clearInterval);
     this.pollers = {};
+    // A fleet run's poll is a timeout chain, not an interval. Stop it too: the
+    // lockout/401 path must not keep hammering a banned endpoint.
+    if (this._fleetTimer) { clearTimeout(this._fleetTimer); this._fleetTimer = null; }
     // Also tear down the logs SSE stream. Without this, stopping polls while
     // sitting on the logs panel during a 429/401 lockout leaves the fetch
     // ReadableStream open and still hitting the banned /logs/stream endpoint.
@@ -4795,12 +4838,14 @@ docker compose up -d --force-recreate</pre>
     }, 1000);
   },
 
-  toast(msg, type = 'success') {
+  // `detail` is the raw server code, shown only as the tooltip: the visible
+  // sentence stays human, and support can still read the identifier.
+  toast(msg, type = 'success', detail = '') {
     const t = document.createElement('div');
     t.className = 'toast ' + type;
     t.textContent = msg;
     t.style.cursor = 'pointer';
-    t.title = I18n.t('toast.dismiss');
+    t.title = detail ? `${detail} · ${I18n.t('toast.dismiss')}` : I18n.t('toast.dismiss');
     document.getElementById('toast-stack').appendChild(t);
     let done = false;
     const dismiss = () => {
@@ -7990,8 +8035,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     if (sub) {
       sub.textContent = I18n.t('accounts.subtitle', {
         total: Number(stats.total || 0),
-        active: Number(stats.active || 0),
-        flagged: Number(stats.flagged || 0),
+        active: Number(stats.stateCounts?.active || 0),
+        attention: Number(stats.attention || 0),
         balance: this.poolBalanceText(stats),
       });
     }
@@ -8038,11 +8083,36 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     return I18n.t(key);
   },
 
-  // Pool balance is the SUM of the accounts that reported a plausible on-demand
-  // balance (getAccountListStats only counts 0 ≤ bal ≤ $1M). With zero reporting
-  // accounts the arithmetic identity is 0, but "nobody reported a balance" is
-  // unknown — printing $0.00 asserted an empty pool. Em dash instead; a real
-  // reported 0 still renders $0.00.
+  // `api_key` / `token` / `email` are the credential's storage names, not a
+  // user's words for "how I added this account". The raw value stays in the
+  // chip's title so support can still see it; the visible text is a sentence
+  // fragment in both locales.
+  accountMethodLabel(method) {
+    const raw = String(method || '').trim();
+    const key = `accounts.method.${raw || 'unknown'}`;
+    const label = I18n.t(key);
+    return label === key ? I18n.t('accounts.method.unknown') : label;
+  },
+
+  // Probe skip reasons are LS/pool enum names (`ls_not_idle_resident`,
+  // `account_busy`, `memory_guard`, …). Show what it MEANS; the code is kept in
+  // the caller's tooltip. Unknown codes fall back to a neutral sentence rather
+  // than leaking the enum.
+  skipReasonText(reason) {
+    const code = String(reason || '').trim();
+    if (!code) return '';
+    const key = `accounts.skip.${code}`;
+    const label = I18n.t(key);
+    return label === key ? I18n.t('accounts.skip.other') : label;
+  },
+
+  // Pool balance is the SUM of the accounts that reported a plausible
+  // on-demand balance (getAccountListStats only counts 0 ≤ bal ≤ $1M), counted
+  // ONCE per billing owner: Teams members read the same team balance, so a
+  // per-account sum would multiply it. With zero reporting accounts the
+  // arithmetic identity is 0, but "nobody reported a balance" is unknown —
+  // printing $0.00 asserted an empty pool. Em dash instead; a real reported 0
+  // still renders $0.00.
   poolBalanceText(stats = {}) {
     if (!(Number(stats.balanceAccounts || 0) > 0)) return '—';
     const total = Number(stats.balanceTotal);
@@ -8074,28 +8144,56 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       // api() error envelopes carry either a string or {message}; String() on
       // the object form prints "[object Object]" and hides the actual reason.
       const raw = detail && typeof detail === 'object' ? (detail.message || detail.error || '') : detail;
-      const reason = raw ? String(raw).slice(0, 160) : '—';
+      // The envelope's `error` may be a raw code (`ERR_*`) or a human message.
+      // translateError keeps the human one and replaces the code with a
+      // sentence; the code itself stays in the banner's tooltip.
+      const reason = raw ? this.translateError(String(raw), 'error.genericAction') : '—';
       text.textContent = I18n.t('accounts.loadFailed', { detail: reason });
+      text.title = raw ? String(raw).slice(0, 240) : '';
     }
   },
 
+  // KPI strip: a PARTITION, not six overlapping counters.
+  //   账号总数 = 正常 + 已停用 + 需处理   (exactly, on every load)
+  //   已停用 = operator-disabled only — banned/reauth/error are 需处理
+  //   需处理 = the same predicate as `filter=flagged` (server counts both)
+  //   池余额 = one balance per billing owner (Teams share one; see auth.js)
+  // Every cell carries its own derivation in `title`: "where did this number
+  // come from" is the one question a KPI must never dodge.
   renderAccountsKpis(stats = {}, total = 0) {
     const el = document.getElementById('accounts-kpis');
     if (!el) return;
-    const cell = (labelKey, value, sub, tone) => `
-      <div class="acct-kpi">
+    const states = stats.stateCounts || {};
+    const n = (v) => Number(v || 0);
+    const healthy = n(states.active);
+    const disabled = n(states.disabled);
+    const attention = n(stats.attention);
+    const cell = (key, labelKey, value, sub, tone, tip) => `
+      <div class="acct-kpi" data-kpi="${key}" data-value="${this.esc(String(value))}" title="${this.esc(tip)}">
         <div class="acct-kpi-label">${I18n.t(labelKey)}</div>
         <div class="acct-kpi-value"${tone ? ` style="color:${tone}"` : ''}>${value}</div>
         ${sub ? `<div class="acct-kpi-sub">${sub}</div>` : ''}
       </div>`;
+    const attentionSub = attention > 0
+      ? I18n.t('accounts.kpi.attentionSub', {
+        banned: n(stats.banned),
+        reauth: n(stats.reauth),
+        limited: n(stats.rateLimited),
+        cooled: n(states.quota_cooled),
+      })
+      : '';
+    const shared = n(stats.balanceSharedAccounts);
+    const balanceSub = n(stats.balanceAccounts) > 0
+      ? (shared > 0
+        ? I18n.t('accounts.kpi.balanceSubShared', { count: n(stats.balanceAccounts), shared })
+        : I18n.t('accounts.kpi.balanceSub', { count: n(stats.balanceAccounts) }))
+      : '';
     el.innerHTML = [
-      cell('accounts.kpi.total', Number(stats.total ?? total ?? 0)),
-      cell('accounts.kpi.active', Number(stats.active || 0), '', 'var(--success)'),
-      cell('accounts.kpi.disabled', Number(stats.disabled || 0),
-        Number(stats.banned || 0) > 0 ? I18n.t('accounts.kpi.disabledSub', { count: Number(stats.banned) }) : ''),
-      cell('accounts.kpi.flagged', Number(stats.flagged || 0), '', 'var(--warn)'),
-      cell('accounts.kpi.rateLimited', Number(stats.rateLimited || 0), '', 'var(--warn)'),
-      cell('accounts.kpi.balance', this.poolBalanceText(stats), I18n.t('accounts.kpi.balanceSub', { count: Number(stats.balanceAccounts || 0) })),
+      cell('total', 'accounts.kpi.total', n(stats.total ?? total), '', '', I18n.t('accounts.kpi.totalTip')),
+      cell('active', 'accounts.kpi.active', healthy, '', 'var(--success)', I18n.t('accounts.kpi.activeTip')),
+      cell('disabled', 'accounts.kpi.disabled', disabled, '', '', I18n.t('accounts.kpi.disabledTip')),
+      cell('attention', 'accounts.kpi.attention', attention, attentionSub, 'var(--warn)', I18n.t('accounts.kpi.attentionTip')),
+      cell('balance', 'accounts.kpi.balance', this.poolBalanceText(stats), balanceSub, '', I18n.t('accounts.kpi.balanceTip')),
     ].join('');
   },
 
@@ -8123,7 +8221,6 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       return;
     }
     this.setAccountsLoadStatus('ok');
-    this._accountsStats = d.stats || {};
     this.renderAccountsPagination(d);
     this.renderAccountsKpis(d.stats || {}, d.total);
     this.renderAccountsFilterState(d);
@@ -8179,11 +8276,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const tierTooltip = usTipLines.length ? usTipLines.join('\n') : I18n.t('status.clickToEditTier');
     const isSelected = this._selectedAccounts?.has(a.id);
     const batch = this._batchResults?.get(a.id);
-    const batchChip = batch
-      ? (batch.skipped
-        ? `<span class="acct-batch-chip skip" title="${this.esc(batch.error || '')}">⏭</span>`
-        : `<span class="acct-batch-chip ${batch.ok ? 'ok' : 'fail'}" title="${this.esc(batch.error || '')}">${batch.ok ? '✓' : '✗'}</span>`)
-      : '';
+    const batchChip = this._batchChipHtml(batch);
     const label = String(a.label || '').trim();
     const labelChip = label && label !== a.email
       ? `<span class="note-chip" title="${this.esc(label)}">${this.esc(label)}</span>`
@@ -8197,7 +8290,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           <div class="acct-line1">
             <button type="button" class="acct-name acct-open" onclick="App.openAccountDrawer('${this.escJsAttr(a.id)}')" title="${this.esc(I18n.t('accounts.row.details'))}">${this.esc(a.email || a.id)}</button>
             ${labelChip}
-            <span class="method-chip">${this.esc(a.method || '')}</span>
+            ${a.method ? `<span class="method-chip" title="${this.esc(a.method)}">${this.esc(this.accountMethodLabel(a.method))}</span>` : ''}
           </div>
           <div class="acct-line2">
             <code class="text-xs">${this.esc(a.id)}</code>
@@ -8991,7 +9084,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       ${attention.length
         ? `<div class="dm-subhead">${T('attention')}<span class="dm-subhead-count">${this.esc(String(attention.length))}</span></div><div class="dm-attention">${rows}</div>`
         : `<div class="dm-empty">${this.esc(empty)}</div>`}
-      <div class="dm-note">${this.esc(srcBits.join(' · '))}</div>
+      <div class="dm-note" title="${this.esc(T('sourceTech'))}">${this.esc(srcBits.join(' · '))}</div>
     </div>`;
   },
 
@@ -9193,8 +9286,11 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           <div class="reauth-notice-title">${this.esc(this.accountStateLabel(stateMeta))}</div>
           <div class="text-sm">${this.esc(I18n.t('accounts.reauth.detail', {
             time: a.reauth?.at ? new Date(a.reauth.at).toLocaleString() : '—',
-            code: a.reauth?.code || 'UNAUTHORIZED',
           }))}</div>
+          <details class="reauth-tech">
+            <summary class="text-xs">${this.esc(I18n.t('accounts.reauth.techToggle'))}</summary>
+            <div class="text-xs">${this.esc(I18n.t('accounts.reauth.techDetail', { code: a.reauth?.code || 'UNAUTHORIZED' }))}</div>
+          </details>
         </div>`
       : '';
     const barColor = (v) => v == null ? 'var(--text-dim)' : v <= 10 ? 'var(--error)' : v <= 30 ? 'var(--warn)' : 'var(--success)';
@@ -9322,7 +9418,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
             <div class="detail-kv">
               <span class="k">${T('runtime.accountId')}</span><span class="v"><code>${this.esc(a.id)}</code></span>
               <span class="k">${T('runtime.apiKey')}</span><span class="v"><code>${this.esc(a.apiKey_masked || a.id || '')}</code></span>
-              ${cr.lastError ? `<span class="k">${T('runtime.lastError')}</span><span class="v" style="color:var(--error);font-size:11px">${this.esc(cr.lastError).slice(0, 80)}</span>` : ''}
+              ${cr.lastError ? `<span class="k">${T('runtime.lastError')}</span><span class="v" style="color:var(--error);font-size:11px" title="${this.esc(String(cr.lastError).slice(0, 240))}">${this.esc(T('runtime.lastErrorHuman'))}</span>` : ''}
             </div>
             ${this.renderSpendCells(a.totalSpend)}
           </div>
@@ -9340,6 +9436,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       const r = await this.api('POST', `/accounts/${id}/refresh-credits`, {});
       this._batchResults ||= new Map();
       this._batchResults.set(id, { ok: !!r.ok, error: r.ok ? undefined : r.error });
+      this._noteSingleResult('refresh', id, { ok: !!r.ok, error: r.error });
       if (r.ok) {
         this._accountDetails?.delete(id);
         this._cardsByAccount?.delete(id);
@@ -9347,73 +9444,271 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         this.loadAccounts();
         this.refreshOpenDrawer(id);
       } else {
-        this.toast(this.translateError(r.error, 'toast.credits.refreshFailed'), 'error');
+        this.toast(this.translateError(r.error, 'toast.credits.refreshFailed'), 'error', r.error);
       }
     } catch (e) { this.toast(I18n.t('toast.credits.refreshFailed') + ': ' + e.message, 'error'); }
   },
 
-  async refreshAllCredits() {
-    const total = Number(this.accountsTotal || 0);
-    this.setOpStatus(I18n.t('accounts.op.refreshing', { total }));
-    try {
-      const r = await this.api('POST', '/accounts/refresh-credits', {});
-      if (r.success) {
-        const results = r.results || [];
-        const okCount = results.filter(x => x.ok).length;
-        const failCount = results.length - okCount;
-        this._batchResults = new Map(results.map((x) => [x.id, { ok: !!x.ok, error: x.error }]));
-        this._accountDetails?.clear();
-        this._cardsByAccount?.clear();
-        this.setOpStatus(I18n.t('accounts.op.done', { ok: okCount, fail: failCount }), failCount ? 'error' : 'success');
-        this.renderBatchFailures();
-        this.toast(I18n.t('toast.credits.allRefreshed', { ok: okCount, fail: failCount }));
-        this.loadAccounts();
-      } else {
-        this.setOpStatus(this.translateError(r.error, 'toast.credits.refreshFailed'), 'error');
-        this.toast(this.translateError(r.error, 'toast.credits.refreshFailed'), 'error');
-      }
-    } catch (e) {
-      this.setOpStatus((I18n.t('toast.credits.refreshFailed') + ': ' + e.message), 'error');
-      this.toast(I18n.t('toast.credits.refreshFailed') + ': ' + e.message, 'error');
+  // ─── Fleet runs: probe-all / refresh-all ──────────────────
+  // 3.9.53 ran these as one blocking POST: a static sentence for minutes, no
+  // cancel, and failures that could only be opened by selecting rows first.
+  // Now: start a server-side job, poll it for the delta, cancel between
+  // accounts, and keep a result panel that outlives the selection bar.
+  async startFleetRun(op) {
+    if (this._fleetTimer || this._fleetRun?.state === 'running') {
+      this.toast(I18n.t('accounts.fleet.busy'), 'info');
+      return;
     }
+    const verb = op === 'probe' ? I18n.t('accounts.op.probeVerb') : I18n.t('accounts.op.refreshVerb');
+    this.setOpStatus(I18n.t('accounts.fleet.starting', { action: verb }));
+    let started;
+    try {
+      started = await this.api('POST', '/accounts/fleet-jobs', { op });
+    } catch (e) {
+      started = { success: false, error: e.message };
+    }
+    if (!started?.success || !started.job) {
+      const msg = this.translateError(started?.error, 'error.genericAction');
+      this.setOpStatus(msg, 'error');
+      this.toast(msg, 'error', started?.error);
+      return;
+    }
+    this._fleetPollFailures = 0;
+    this._batchResults = new Map();
+    this._fleetRun = { ...started.job, items: [], itemCount: 0, op };
+    this._applyFleetSnapshot(started.job, { merge: true });
+    this._pollFleetRun(started.job.id);
   },
 
-  async probeAll() {
-    // Probe-all only targets active accounts. The old text hard-coded "0/N"
-    // and never moved because the request is one blocking POST; report the
-    // target up front and the attempted/succeeded/failed/skipped split at the
-    // end. A skipped probe (LS not resident) is NOT a success.
-    const active = Number(this._accountsStats?.active);
-    const total = Number.isFinite(active) ? active : Number(this.accountsTotal || 0);
-    this.setOpStatus(I18n.t('accounts.op.probing', { total }));
-    try {
-      const r = await this.api('POST', '/accounts/probe-all', {});
-      if (r.success) {
-        const results = r.results || [];
-        const skippedCount = Number(r.skippedCount ?? results.filter(x => x.skipped).length);
-        const okCount = Number(r.okCount ?? results.filter(x => !x.error && !x.skipped).length);
-        const failCount = Number(r.failCount ?? (results.length - okCount - skippedCount));
-        const attempted = Number(r.attempted ?? (results.length - skippedCount));
-        this._batchResults = new Map(results.map((x) => [x.id, x.skipped
-          ? { ok: false, skipped: true, error: x.reason || '' }
-          : { ok: !x.error, error: x.error }]));
-        this._accountDetails?.clear();
-        this._cardsByAccount?.clear();
-        const summary = I18n.t('accounts.op.probeSummary', { attempted, ok: okCount, fail: failCount, skipped: skippedCount });
-        this.setOpStatus(summary, failCount ? 'error' : (skippedCount ? '' : 'success'));
-        this.renderBatchFailures();
-        this.toast(I18n.t('toast.probeAllComplete', { summary }));
-        this.loadAccounts();
-      } else {
-        this.setOpStatus(this.translateError(r.error, 'error.probeFailed'), 'error');
-        this.toast(this.translateError(r.error, 'error.probeFailed'), 'error');
+  _pollFleetRun(jobId) {
+    clearTimeout(this._fleetTimer);
+    this._fleetTimer = setTimeout(async () => {
+      this._fleetTimer = null;
+      const run = this._fleetRun;
+      if (!run || run.id !== jobId) return;
+      let res;
+      try {
+        res = await this.api('GET', `/accounts/fleet-jobs/${jobId}?since=${run.itemCount}`);
+      } catch (e) {
+        res = { success: false, error: e.message };
       }
-    } catch (e) {
-      // Clear the "probing" line on failure — otherwise the toolbar spins
-      // forever and the operator cannot tell the request died.
-      this.setOpStatus(I18n.t('error.probeFailed') + ': ' + e.message, 'error');
-      this.toast(I18n.t('error.probeFailed') + ': ' + e.message, 'error');
+      if (!res?.success || !res.job) {
+        this._fleetPollFailures = (this._fleetPollFailures || 0) + 1;
+        // A dropped poll is not a failed run: retry a few times before saying
+        // so, and never discard the items already collected.
+        if (this._fleetPollFailures < 3) {
+          this._pollFleetRun(jobId);
+          return;
+        }
+        this.setOpStatus(I18n.t('accounts.fleet.connectionLost', { done: Number(run.done || 0) }), 'error');
+        this._setFleetCancelVisible(false);
+        return;
+      }
+      this._fleetPollFailures = 0;
+      this._applyFleetSnapshot(res.job);
+      if (res.job.state === 'running') this._pollFleetRun(jobId);
+      else this._finishFleetRun();
+    }, 700);
+  },
+
+  _applyFleetSnapshot(job, { merge = false } = {}) {
+    const run = this._fleetRun;
+    if (!run || !job) return;
+    const items = Array.isArray(job.items) ? job.items : [];
+    if (merge) {
+      run.items = items;
+    } else if (items.length) {
+      run.items.push(...items);
     }
+    run.itemCount = Number.isFinite(job.itemCount) ? job.itemCount : run.items.length;
+    Object.assign(run, {
+      state: job.state || run.state,
+      total: Number(job.total ?? run.total),
+      done: Number(job.done ?? run.done),
+      ok: Number(job.ok ?? run.ok),
+      fail: Number(job.fail ?? run.fail),
+      skipped: Number(job.skipped ?? run.skipped),
+      excluded: Number(job.excluded ?? run.excluded ?? 0),
+      cancelRequested: !!job.cancelRequested,
+      current: job.current || null,
+      error: job.error || null,
+    });
+    // Row chips update from the stream, so a running job never re-lists the pool.
+    this._batchResults ||= new Map();
+    for (const item of run.items) {
+      this._batchResults.set(item.id, item.skipped
+        ? { ok: false, skipped: true, error: item.reason || item.error || '' }
+        : { ok: !!item.ok, error: item.ok ? undefined : (item.error || '') });
+    }
+    this._refreshRowChips();
+    this.renderFleetProgress();
+    this.renderFleetPanel();
+  },
+
+  _finishFleetRun() {
+    clearTimeout(this._fleetTimer);
+    this._fleetTimer = null;
+    this._setFleetCancelVisible(false);
+    this._accountDetails?.clear();
+    this._cardsByAccount?.clear();
+    this.renderFleetProgress();
+    this.renderFleetPanel();
+    // Exactly one list refresh, after the run — never once per item.
+    this.loadAccounts();
+    this.renderBatchFailures();
+  },
+
+  async cancelFleetRun() {
+    const run = this._fleetRun;
+    if (!run || run.state !== 'running') return;
+    const btn = document.getElementById('accounts-fleet-cancel');
+    if (btn) btn.disabled = true;
+    try {
+      const res = await this.api('POST', `/accounts/fleet-jobs/${run.id}/cancel`, {});
+      // The cancel reply carries the whole item list (since=0), so replace the
+      // accumulated delta instead of appending it again.
+      if (res?.job) this._applyFleetSnapshot(res.job, { merge: true });
+    } catch { /* the poll will notice the run ended */ }
+    if (btn) btn.disabled = false;
+  },
+
+  _setFleetCancelVisible(visible) {
+    const btn = document.getElementById('accounts-fleet-cancel');
+    if (btn) btn.hidden = !visible;
+  },
+
+  renderFleetProgress() {
+    const run = this._fleetRun;
+    if (!run) {
+      this.setOpStatus('');
+      this._setFleetCancelVisible(false);
+      return;
+    }
+    const total = Number(run.total || 0);
+    const done = Number(run.done || 0);
+    const verb = run.op === 'probe' ? I18n.t('accounts.op.probeVerb') : I18n.t('accounts.op.refreshVerb');
+    this._setFleetCancelVisible(run.state === 'running');
+    if (run.state === 'running') {
+      const current = run.current?.email
+        ? ` · ${I18n.t('accounts.fleet.current', { email: run.current.email })}`
+        : '';
+      this.setOpStatus(I18n.t('accounts.fleet.running', { action: verb, done, total }) + current);
+      return;
+    }
+    if (run.state === 'cancelled') {
+      this.setOpStatus(I18n.t('accounts.fleet.cancelled', { done, total }));
+      return;
+    }
+    if (run.state === 'failed') {
+      this.setOpStatus(this.translateError(run.error, 'error.genericAction'), 'error');
+      return;
+    }
+    const summary = run.op === 'probe'
+      ? I18n.t('accounts.op.probeSummary', {
+        attempted: done - Number(run.skipped || 0),
+        ok: Number(run.ok || 0),
+        fail: Number(run.fail || 0),
+        skipped: Number(run.skipped || 0),
+      })
+      : I18n.t('accounts.op.done', { ok: Number(run.ok || 0), fail: Number(run.fail || 0) });
+    const tone = Number(run.fail || 0) ? 'error' : (Number(run.skipped || 0) ? '' : 'success');
+    this.setOpStatus(summary, tone);
+  },
+
+  renderFleetPanel() {
+    const panel = document.getElementById('accounts-fleet-panel');
+    const summary = document.getElementById('accounts-fleet-summary');
+    const list = document.getElementById('accounts-fleet-list');
+    if (!panel || !summary || !list) return;
+    const run = this._fleetRun;
+    if (!run) {
+      panel.hidden = true;
+      return;
+    }
+    const verb = run.op === 'probe' ? I18n.t('accounts.op.probeVerb') : I18n.t('accounts.op.refreshVerb');
+    const stateLabel = run.state === 'running' ? I18n.t('accounts.fleet.stateRunning')
+      : run.state === 'cancelled' ? I18n.t('accounts.fleet.stateCancelled')
+        : I18n.t('accounts.fleet.stateDone');
+    summary.textContent = I18n.t('accounts.fleet.summary', {
+      action: verb,
+      state: stateLabel,
+      ok: Number(run.ok || 0),
+      fail: Number(run.fail || 0),
+      skipped: Number(run.skipped || 0),
+    });
+    const bad = (run.items || []).filter((item) => !item.ok);
+    const toggle = document.getElementById('accounts-fleet-toggle');
+    if (toggle) {
+      toggle.hidden = bad.length === 0;
+      toggle.textContent = bad.length ? I18n.t('accounts.fleet.detailsCount', { count: bad.length }) : '';
+      if (bad.length === 0) toggle.setAttribute('aria-expanded', 'false');
+    }
+    // Dismissing a RUNNING job would abandon the only view of its progress.
+    const dismiss = document.getElementById('accounts-fleet-dismiss');
+    if (dismiss) dismiss.hidden = run.state === 'running';
+    list.innerHTML = bad.map((item) => {
+      const code = String(item.skipped ? (item.reason || item.error || '') : (item.error || ''));
+      const human = item.skipped ? this.skipReasonText(code) : this.translateError(code, 'error.genericAction');
+      const tip = code ? I18n.t('accounts.batch.techDetail', { code }) : '';
+      return `<li${tip ? ` title="${this.esc(tip)}"` : ''}>${this.esc(item.email || item.id)} — ${this.esc(human)}</li>`;
+    }).join('');
+    if (bad.length === 0) list.hidden = true;
+    panel.hidden = false;
+  },
+
+  toggleFleetDetails() {
+    const list = document.getElementById('accounts-fleet-list');
+    const toggle = document.getElementById('accounts-fleet-toggle');
+    if (!list || !toggle) return;
+    list.hidden = !list.hidden;
+    toggle.setAttribute('aria-expanded', String(!list.hidden));
+  },
+
+  dismissFleetPanel() {
+    const panel = document.getElementById('accounts-fleet-panel');
+    if (panel) panel.hidden = true;
+    this._fleetRun = null;
+  },
+
+  // Single-account probe/refresh stays instant, but its outcome belongs in the
+  // same panel — otherwise the only record is a toast that disappears.
+  _noteSingleResult(op, id, result) {
+    const email = this._accountsById?.get(id)?.email || id;
+    const item = result?.skipped
+      ? { id, email, ok: false, skipped: true, reason: result.reason || '' }
+      : { id, email, ok: !!result?.ok, error: result?.ok ? undefined : (result?.error || '') };
+    this._fleetRun = {
+      id: `single-${Date.now()}`,
+      op,
+      state: 'done',
+      total: 1,
+      done: 1,
+      ok: item.ok ? 1 : 0,
+      fail: item.ok || item.skipped ? 0 : 1,
+      skipped: item.skipped ? 1 : 0,
+      excluded: 0,
+      items: [item],
+      itemCount: 1,
+    };
+    this.renderFleetPanel();
+  },
+
+  _batchChipHtml(batch) {
+    if (!batch) return '';
+    return batch.skipped
+      ? `<span class="acct-batch-chip skip" title="${this.esc(this.skipReasonText(batch.error))}">⏭</span>`
+      : `<span class="acct-batch-chip ${batch.ok ? 'ok' : 'fail'}" title="${this.esc(batch.ok ? I18n.t('accounts.batch.itemOk') : this.translateError(batch.error, 'error.genericAction'))}">${batch.ok ? '✓' : '✗'}</span>`;
+  },
+
+  _refreshRowChips() {
+    document.querySelectorAll('#accounts-table tbody tr[data-id]').forEach((tr) => {
+      const cell = tr.querySelector('.acct-state-cell');
+      if (!cell) return;
+      const chip = cell.querySelector('.acct-batch-chip');
+      if (chip) chip.remove();
+      const html = this._batchChipHtml(this._batchResults?.get(tr.dataset.id));
+      if (html) cell.insertAdjacentHTML('beforeend', html);
+    });
   },
 
   async probeAccount(id) {
@@ -9425,11 +9720,13 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         // A skip means nothing was probed. Showing "success" here made a cold
         // pool (LS not resident) look like a healthy sweep.
         this._batchResults.set(id, { ok: false, skipped: true, error: r.reason || '' });
+        this._noteSingleResult('probe', id, { skipped: true, reason: r.reason || '' });
         this.renderBatchFailures();
-        this.toast(I18n.t('accounts.op.skipped', { reason: r.reason || '—' }), 'info');
+        this.toast(I18n.t('accounts.op.skipped', { reason: this.skipReasonText(r.reason) || I18n.t('accounts.skip.other') }), 'info');
         return;
       }
       this._batchResults.set(id, { ok: !!r.success, error: r.success ? undefined : r.error });
+      this._noteSingleResult('probe', id, { ok: !!r.success, error: r.error });
       if (r.success) {
         const tierLabel = { pro: 'Pro', free: 'Free', expired: I18n.t('tier.expiredLabel'), unknown: I18n.t('tier.unknown') };
         this._accountDetails?.delete(id);
@@ -9438,7 +9735,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         this.loadAccounts();
         this.refreshOpenDrawer(id);
       } else {
-        this.toast(this.translateError(r.error, 'error.probeFailed'), 'error');
+        this.toast(this.translateError(r.error, 'error.probeFailed'), 'error', r.error);
       }
     } catch (e) { this.toast(I18n.t('error.probeFailed') + ': ' + e.message, 'error'); }
   },
@@ -9975,11 +10272,20 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         : I18n.t('accounts.batch.viewFailures');
     }
     pop.hidden = true;
-    const list = (rows, label) => (rows.length
-      ? `<div style="font-weight:600;margin:6px 0 2px">${label}</div><ul>${rows.map((f) => `<li><code>${this.esc(f.id)}</code> — ${this.esc(f.error || f.reason || '')}</li>`).join('')}</ul>`
+    const who = (id) => this._accountsById?.get(id)?.email || id;
+    // The visible line is "email — what happened"; the raw code rides the
+    // list item's tooltip so support can still quote it.
+    const item = (row, skipped) => {
+      const code = String(row.error || row.reason || '');
+      const human = skipped ? this.skipReasonText(code) : this.translateError(code, 'error.genericAction');
+      const tip = code ? I18n.t('accounts.batch.techDetail', { code }) : '';
+      return `<li${tip ? ` title="${this.esc(tip)}"` : ''}>${this.esc(who(row.id))} — ${this.esc(human)}</li>`;
+    };
+    const list = (rows, label, skipped = false) => (rows.length
+      ? `<div style="font-weight:600;margin:6px 0 2px">${label}</div><ul>${rows.map((f) => item(f, skipped)).join('')}</ul>`
       : '');
     pop.innerHTML = all.length
-      ? `${list(failed, I18n.t('accounts.batch.failedTitle', { count: failed.length }))}${list(skipped, I18n.t('accounts.batch.skippedTitle', { count: skipped.length }))}`
+      ? `${list(failed, I18n.t('accounts.batch.failedTitle', { count: failed.length }))}${list(skipped, I18n.t('accounts.batch.skippedTitle', { count: skipped.length }), true)}`
       : '';
   },
   toggleBatchFailures() {

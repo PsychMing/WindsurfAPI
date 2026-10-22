@@ -23,7 +23,7 @@ import {
   removeAccount, setAccountStatus, resetAccountErrors, updateAccountLabel,
   markAccountReauthenticated, requestReauthCheck, setAccountCredentialEmail,
   isAuthenticated, probeAccount, ensureLsForAccount,
-  refreshCredits, refreshAllCredits, searchWebForAccount,
+  refreshCredits, searchWebForAccount,
   setAccountBlockedModels, setAccountTokens, setAccountTier, setAccountSpendPolicy,
   getAccountInternal, isLocalBindHost, maskApiKey, safeEqualString,
   checkLockout, failedAuthAttempt, successfulAuthAttempt,
@@ -56,6 +56,15 @@ import { buildConnectReachability } from '../handlers/models.js';
 import { FREE_REACHABLE_SELECTORS, getLiveCatalog, getSnapshotSelectors, resolveConnectSelector } from '../devin-connect-models.js';
 import { buildCatalogDiff } from './catalog-diff.js';
 import { accountState, cooldownState } from './pool-events.js';
+import {
+  probeOutcomeEntry,
+  summarizeProbeResults,
+  startFleetJob,
+  awaitFleetJob,
+  getFleetJob,
+  cancelFleetJob,
+  publicFleetJob,
+} from './fleet-jobs.js';
 import { peekBillingFacts } from './devin-read.js';
 import { readQuotaBurnDown } from './quota-burn-down.js';
 import { readAcuUsageByOrg } from './acu-usage.js';
@@ -657,28 +666,6 @@ function applyReauthToken(id, rawToken, { via = 'token' } = {}) {
     account: { id: account.id, email: account.email, method: account.method, status: account.status },
     apiKey_masked: maskApiKey(account.apiKey),
   };
-}
-
-/**
- * Normalize one probeAccount() result into the per-item shape the batch and
- * fleet routes return. `skipped` is deliberately NOT success: the probe never
- * touched the account (the LS is not resident and allowLsStart was false), so
- * counting it as ok made a cold pool look like a healthy sweep.
- */
-export function probeOutcomeEntry(id, result) {
-  if (!result) return { id, ok: false, error: 'ERR_ACCOUNT_NOT_FOUND' };
-  if (result.skipped) {
-    return { id, ok: false, skipped: true, reason: result.reason || 'probe_skipped', tier: result.tier || 'unknown' };
-  }
-  return { id, ok: true, tier: result.tier || 'unknown' };
-}
-
-/** Attempted/succeeded/failed/skipped totals for a probe result list. */
-export function summarizeProbeResults(results = []) {
-  const skippedCount = results.filter((r) => r.skipped).length;
-  const okCount = results.filter((r) => r.ok && !r.skipped).length;
-  const failCount = results.filter((r) => !r.ok && !r.skipped).length;
-  return { attempted: results.length - skippedCount, okCount, failCount, skippedCount };
 }
 
 /**
@@ -1583,6 +1570,38 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     return json(res, 200, { ids, total: ids.length });
   }
 
+  // POST /accounts/fleet-jobs — start an observable probe/refresh run.
+  // The run is serial server-side; what the browser gets is a job id it can
+  // poll for `done/total`, cancel, and read failures from after the fact.
+  if (subpath === '/accounts/fleet-jobs' && method === 'POST') {
+    const op = String(body?.op || '');
+    if (op !== 'probe' && op !== 'refresh') return json(res, 400, { error: 'ERR_FLEET_OP_INVALID' });
+    const rawIds = Array.isArray(body?.ids) ? body.ids : null;
+    if (rawIds && rawIds.length > 1000) return json(res, 400, { error: 'ERR_FLEET_TOO_LARGE', max: 1000 });
+    const ids = rawIds ? [...new Set(rawIds.filter((id) => typeof id === 'string' && id))] : null;
+    const force = body?.force === true || body?.allowLsStart === true;
+    const job = startFleetJob({ op, ids, force });
+    return json(res, 200, { success: true, job: publicFleetJob(job, { since: 0 }) });
+  }
+
+  // GET /accounts/fleet-jobs/:id?since=N — delta poll. `since` is the item
+  // count the caller already has, so a long run does not resend every row.
+  const fleetJobMatch = subpath.match(/^\/accounts\/fleet-jobs\/([^/]+)$/);
+  if (fleetJobMatch && method === 'GET') {
+    const job = getFleetJob(fleetJobMatch[1]);
+    if (!job) return json(res, 404, { error: 'ERR_FLEET_JOB_NOT_FOUND' });
+    const since = Number(dashboardUrl(req).searchParams.get('since') ?? 0);
+    return json(res, 200, { success: true, job: publicFleetJob(job, { since }) });
+  }
+
+  // POST /accounts/fleet-jobs/:id/cancel — stop scheduling new accounts.
+  const fleetCancelMatch = subpath.match(/^\/accounts\/fleet-jobs\/([^/]+)\/cancel$/);
+  if (fleetCancelMatch && method === 'POST') {
+    const job = cancelFleetJob(fleetCancelMatch[1]);
+    if (!job) return json(res, 404, { error: 'ERR_FLEET_JOB_NOT_FOUND' });
+    return json(res, 200, { success: true, job: publicFleetJob(job, { since: 0 }) });
+  }
+
   // POST /accounts/batch — one request for a bulk operation, per-item results.
   // Serial by design: parallel writes to the same pool trip the upstream
   // brute-force guard. Partial failure is a 200 with `failed[]`, never a 500
@@ -1798,26 +1817,15 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     }
   }
 
-  // POST /accounts/probe-all — probe every active account
+  // POST /accounts/probe-all — legacy blocking form. Kept for API clients and
+  // the smoke matrix; the dashboard now uses /accounts/fleet-jobs so the run is
+  // observable and cancellable. Same loop, one implementation.
   if (subpath === '/accounts/probe-all' && method === 'POST') {
-    const list = getAccountList({ view: 'summary' }).filter(a => a.status === 'active');
     const force = body?.force === true || body?.allowLsStart === true;
-    const results = [];
-    for (const a of list) {
-      try {
-        const r = await probeAccount(a.id, { allowLsStart: force });
-        const entry = probeOutcomeEntry(a.id, r);
-        results.push({
-          ...entry,
-          email: a.email,
-          reason: entry.reason || r?.reason || null,
-          admission: r?.admission || null,
-        });
-      } catch (err) {
-        results.push({ id: a.id, email: a.email, ok: false, error: err.message });
-      }
-    }
-    return json(res, 200, { success: true, total: list.length, ...summarizeProbeResults(results), results });
+    const started = startFleetJob({ op: 'probe', force });
+    const job = await awaitFleetJob(started.id);
+    const results = job?.items || [];
+    return json(res, 200, { success: true, total: job?.total || 0, ...summarizeProbeResults(results), results });
   }
 
   // POST /accounts/:id/reauth — SessionReauth actions (never returns the key).
@@ -1864,9 +1872,18 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     }
   }
 
-  // POST /accounts/refresh-credits — refresh every active account's balance
+  // POST /accounts/refresh-credits — legacy blocking form of the refresh run.
+  // The dashboard uses /accounts/fleet-jobs (progress + cancel); this stays for
+  // API clients and the smoke matrix and shares the same loop.
   if (subpath === '/accounts/refresh-credits' && method === 'POST') {
-    const results = await refreshAllCredits();
+    const started = startFleetJob({ op: 'refresh' });
+    const job = await awaitFleetJob(started.id);
+    const results = (job?.items || []).map((item) => ({
+      id: item.id,
+      email: item.email,
+      ok: item.ok,
+      ...(item.ok ? {} : { error: item.error || 'ERR_REFRESH_FAILED' }),
+    }));
     return json(res, 200, { success: true, results });
   }
 
