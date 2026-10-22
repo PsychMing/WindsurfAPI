@@ -114,6 +114,7 @@ The current rule is a **measurement, not a preference**. What would have to exis
 | the pre-existing tail-assistant 400 on the chat surface | `test/responses-chain-scope.test.js:106-137` |
 | empty-user shapes (including the tool-tail case), the streaming refusals, the predicate order, the Anthropic/Gemini drop difference, the with-text boundary, and the Responses surface's empty-array 400 | `test/request-tail-contract.test.js` |
 | mutants that must red that file | `test/mutations/request-tail-contract.json` |
+| the shared layer forwards orphan `tool` / `function` results instead of sweeping them (PR #274 M1: a re-added `repairUnanswerableMessages`-style pre-pass reds it; the PR's own pins call `normalizeMessagesForCascade` directly and cannot see a pre-pass above it) | `test/chat-orphan-guard.test.js` |
 
 Provenance, 2026-10-07, `master` @ `df9d429`:
 

@@ -10,7 +10,10 @@ README 的表格列常用变量，[.env.example](../.env.example) 是完整清�
 2026-10-22 在有界队列分支（base `e2c8547`）重测：**164**；新增
 `DEVIN_CONNECT_MAX_QUEUE_FRAMES`、`DEVIN_CONNECT_MAX_QUEUE_BYTES` 与
 `DEVIN_CONNECT_RELOGIN_QUEUE_TIMEOUT_MS` 三个读取点，同时收录进 `.env.example`
-（故上句覆盖数 78→81）。）
+（故上句覆盖数 78→81）。
+2026-10-23 在 `fix/gh-backlog-b`（base `432aee3`）重测：**166**（base 实测 164）；新增
+`WINDSURFAPI_HISTORY_BUDGET_TURNS` 与 `WINDSURFAPI_HISTORY_BUDGET_BYTES` 两个读取点
+（`src/history-budget.js`，`const X = 'FOO'` 形式），同时收录进 `.env.example`。）
 
 数开关**别用裸 `grep 'env\.'`**，有两个坑：一是 `WINDSURFAPI_TRACE` 这类名字是
 `WINDSURFAPI_TRACE_DIR` 的前缀，正则不加边界会重复计数；二是**相当一部分读取点
@@ -215,6 +218,8 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | `WINDSURFAPI_TOOL_DESC_MAX` | `500` | 工具描述的字符上限（`toolDescMax()`，要求 `>= 0` 的有限数否则回落 500）。**`0` = 不限长**，不是"全砍掉"。注释说明当前只用于长度阈值判断。 |
 | `CASCADE_1M_HISTORY_BYTES` | `900000` | 1M 上下文模型的历史字节预算（`client.js`，`positiveIntEnv`）。非 1M 模型走 `CASCADE_MAX_HISTORY_BYTES`（默认 `600000`）。 |
 | `CASCADE_MAX_HISTORY_BYTES` | `600000` | 非 1M 模型的历史字节预算（`client.js`，`positiveIntEnv`）。源码注释记着这个默认值的来历：早先是 400KB，**200KB 曾导致 30+ 轮工具调用的会话静默丢上下文**，所以调到 600KB 留出余量。调小之前先想清楚这一点。此前只作为上一行的说明文字出现，没有自己的条目。 |
+| `WINDSURFAPI_HISTORY_BUDGET_TURNS` | `100` | **出站**历史预算的轮数上限（`history-budget.js`，非负整数；`0` = 关闭该维度，非法值回落 100）。在共享 chat 层、任何上游调用之前检查：超过即打一条带实测数字的 `WARN`，并返回 `413 payload_too_large`（`code: history_budget_exceeded`）。默认值取在实测死亡线之下 —— #136/#191 的 113 轮 / 128 KB 会话会在流中途被上游 `context deadline exceeded` 掐断，客户端已经收到半截字节且无法干净重试。注意它与 `CASCADE_MAX_HISTORY_BYTES` 是两层：后者只裁剪 Cascade 历史后缀（并且永远保留最新一轮），DEVIN_CONNECT 路径没有对应物，两者都不是准入检查。 |
+| `WINDSURFAPI_HISTORY_BUDGET_BYTES` | `8000000`（8 MB） | 同一预算的字节上限（`history-budget.js`，非负整数；`0` = 关闭，非法值回落 8 MB）。统计的是编码器会写出的载荷字段（content 文本/非文本部件、tool_calls 的 id/name/arguments、reasoning_content、name、tool_call_id）的 UTF-8 字节，不含传输框架 —— 是线上体积的**下界**，不是估计值。默认值压在入口 10 MB 上限之下、又高于 1M 模型的 900 KB 历史预算，所以它拦的是病态载荷（例如单条 10 MB 粘贴），不会拦正常会被裁剪的大转录。任一维度超限即拒绝。 |
 | `CASCADE_MAX_WAIT_MS` | `600000` | Cascade 单次等待上限（`client.js`）。曾只出现在 2.0.74 的 release notes 里；`9031b9b` 起 README 两语的 FAQ 也点名了它（`README.md:642` / `README.en.md:542`，cold stall 的封顶值）—— 本文不再是它唯一的落点。 |
 | `CASCADE_IDLE_GRACE_MS` | `8000` | 空闲宽限（`client.js`）。 |
 | `CASCADE_COLD_STALL_BASE_MS` | `30000` | 冷启动停顿基数（`client.js`）。 |

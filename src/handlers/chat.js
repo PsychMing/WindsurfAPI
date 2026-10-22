@@ -18,6 +18,7 @@ import { isModelAllowed } from '../dashboard/model-access.js';
 import { cacheKey as computeCacheKey, cacheGet, cacheSet, isCacheEnabled } from '../cache.js';
 import { isExperimentalEnabled, getBreakerTunable, strictUsageTotal } from '../runtime-config.js';
 import { budgetExceededError, isBudgetExceededError } from '../request-budget.js';
+import { checkOutboundHistory, historyBudgetErrorMessage, HISTORY_BUDGET_ERROR_CODE } from '../history-budget.js';
 import { neutralizeClientIdentity, neutralizeMessageContent } from './identity-neutralize.js';
 import { normalizeStop, applyStop, StopSequenceGate } from '../stop-sequences.js';
 import { normalizeToolCallArgs, recordArgRepair } from './cline-compat.js';
@@ -3132,6 +3133,33 @@ async function _handleChatCompletionsInner(body, context = {}) {
           },
         };
       }
+    }
+  }
+
+  // #136 / #191: refuse an oversized outbound transcript HERE — after the
+  // answerability guard, before backend selection, account acquisition, the
+  // response cache, or any upstream call. The measured failure is a 113-turn /
+  // ~128 KB transcript that the upstream accepts and then abandons mid-stream
+  // with `context deadline exceeded`; the caller has partial bytes and cannot
+  // retry cleanly. One local 413 with the measured numbers and the knobs is
+  // strictly better than that, and it costs no account and no prompt assembly.
+  // Both dimensions are independent; a dimension set to 0 is disabled.
+  // See src/history-budget.js for the units and the default rationale.
+  {
+    const history = checkOutboundHistory(messages);
+    if (!history.ok) {
+      log.warn(`Chat[${reqId}]: outbound history over budget — turns=${history.measured.turns}/${history.budget.maxTurns} bytes=${history.measured.bytes}/${history.budget.maxBytes} (overTurns=${history.overTurns} overBytes=${history.overBytes}); rejecting before the upstream call`);
+      return {
+        status: 413,
+        body: {
+          error: {
+            message: historyBudgetErrorMessage(history),
+            type: 'payload_too_large',
+            param: 'messages',
+            code: HISTORY_BUDGET_ERROR_CODE,
+          },
+        },
+      };
     }
   }
 
