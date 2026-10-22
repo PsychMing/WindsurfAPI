@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 192 份发布说明</a> ·
+  <a href="docs/releases/">全部 204 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **203** 份,v2.0.6 → v3.9.52 |
+| 发布说明 | **204** 份,v2.0.6 → v3.9.53 |
 | git tag | 202 个（截至 2026-10-15） |
-| 当前 | **v3.9.52**(2026-10-22) |
+| 当前 | **v3.9.53**(2026-10-23) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -41,6 +41,13 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.9.53](docs/releases/RELEASE_NOTES_3.9.53.md) · 2026-10-23
+
+CascadeTurn 生产者对象（`WINDSURFAPI_CASCADE_TURN`，默认关，快照缺逐 step 游标即拒绝）；Docker 一条命令
+更新 `deploy/update.sh`（健康门 + 自动回滚）；五项安全修复（空白 dashboard proof 不再付 scrypt、nginx 不记
+query、Windows ACL、SHA256SUMS、secret-scan 未加引号规则）；GitHub backlog #272/#258/#236；出站历史预算
+（413 `history_budget_exceeded`）与 PR #274 孤儿守卫；smoke 矩阵扩到 124 条 / 20 族。
 
 ### [v3.9.52](docs/releases/RELEASE_NOTES_3.9.52.md) · 2026-10-22
 
