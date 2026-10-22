@@ -54,7 +54,7 @@
     "outputPath": "dist-windows"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.13.0"
   },
   "license": "MIT",
   "author": "dwgx <somdhmtb@gmail.com> (https://github.com/dwgx)",

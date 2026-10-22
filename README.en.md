@@ -142,6 +142,10 @@ sequenceDiagram
 
 ## Quick Start
 
+> **Runtime**: Node.js **22.13+** (24.x is the release gate). Node 20 reached EOL on 2026-04-30 and is
+> unsupported; local Windsurf account import needs the unflagged `node:sqlite` from 22.13, and earlier
+> 22.x returns `sqlite_unavailable`.
+
 ### One-Click Deployment
 
 ```bash

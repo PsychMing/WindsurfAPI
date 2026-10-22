@@ -35,7 +35,7 @@ $PidFile = Join-Path $LogDir 'windsurfapi.pid'
 
 # 预检:源码模式需要 Node;EXE 模式自带运行时,跳过。
 if (-not $script:ExeMode -and -not (Get-Command node -ErrorAction SilentlyContinue)) {
-  [System.Windows.Forms.MessageBox]::Show('未检测到 Node.js。请从 https://nodejs.org 安装 Node 20+ 后重试。（或改用解压即用的 Windows 单 exe 分发包，无需安装 Node）', 'WindsurfAPI', 'OK', 'Error') | Out-Null
+  [System.Windows.Forms.MessageBox]::Show('未检测到 Node.js。请从 https://nodejs.org 安装 Node 22.13+ 后重试。（或改用解压即用的 Windows 单 exe 分发包，无需安装 Node）', 'WindsurfAPI', 'OK', 'Error') | Out-Null
   exit 1
 }
 
