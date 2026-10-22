@@ -28,7 +28,7 @@ async function run(pattern, env = {}, emittedInitially = false) {
     },
     ensureDeviceSeed: () => undefined, recordTokenUsage() {}, recordAccountSpend() {}, connectSpendOpts: () => ({}),
     finalizeConnectAccount: (a, result) => finalized.push({ id: a?.id, err: result.err?.code }),
-    isConnectRetryable: e => e.code === 'STREAM_TRUNCATED', isAbortError: e => e?.name === 'AbortError',
+    isAbortError: e => e?.name === 'AbortError',
     reLoginAccount: async id => `fresh-${id}`, currentApiKeyForId: (_id, key) => key,
     bumpConnect: event => events.push(event), releaseAccountById() {}, bindConnectSticky() {}, commitConnectSession() {},
     reportDeadToken() {}, isAccountFailoverError: code => ['QUOTA_EXHAUSTED', 'RATE_LIMITED'].includes(code),
@@ -50,10 +50,14 @@ async function run(pattern, env = {}, emittedInitially = false) {
   return { attempts, events, finalized, scheduled };
 }
 
-test('R5 default outer ceiling is nine adapter calls, with two 500ms account gaps', async () => {
-  const r = await run(n => ['STREAM_TRUNCATED', 'UNAUTHORIZED', 'QUOTA_EXHAUSTED'][n % 3]);
-  assert.equal(r.attempts.length, 9);
-  assert.deepEqual(r.attempts.map(a => a.at), [0, 0, 0, 500, 500, 500, 1000, 1000, 1000]);
+test('R5 default outer ceiling is three adapter calls, with two account gaps', async () => {
+  // Q5 ownership: the handler no longer replays transport faults (the adapter
+  // owns that one bounded retry), so the only per-account retry left in this
+  // block is account failover. A pool where every account is quota-dry burns
+  // one adapter call per account: initial + two 500ms/1000ms hops.
+  const r = await run(() => 'QUOTA_EXHAUSTED');
+  assert.equal(r.attempts.length, 3);
+  assert.deepEqual(r.attempts.map(a => a.at), [0, 500, 1000]);
   assert.equal(r.events.filter(x => x === 'quota_failover_hops').length, 2);
   assert.equal(r.finalized.length, 3);
 });
@@ -63,9 +67,11 @@ test('R5 healthy first-attempt success has zero scheduled delay', async () => {
   assert.equal(r.attempts.length, 1); assert.equal(r.scheduled, 0); assert.equal(r.attempts[0].at, 0);
 });
 
-test('R5 repeated transient failures alone are only two attempts and never hop', async () => {
+test('R5 repeated transient failures stay on one handler attempt and never hop', async () => {
+  // The adapter (devin-connect-openai.js) owns the single transport retry, so
+  // one handler attempt is the whole handler-side cost of a persistent 5xx.
   const r = await run(() => 'STREAM_TRUNCATED');
-  assert.equal(r.attempts.length, 2); assert.equal(r.scheduled, 0);
+  assert.equal(r.attempts.length, 1); assert.equal(r.scheduled, 0);
 });
 
 test('R5 max=0 and already-emitted payload retain the original retry vetoes', async () => {

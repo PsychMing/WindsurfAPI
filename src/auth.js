@@ -2283,7 +2283,7 @@ export async function probeAndRecoverConnectAccount(id, { signal } = {}) {
   if (result.code === 'UNAUTHORIZED') {
     log.warn(`liveness probe: ${safeAccountRef(account)} session token DEAD (${result.code})`);
     reportError(account.apiKey);
-    const fresh = await reLoginAccount(id, { force: true }).catch(() => false);
+    const fresh = await reLoginAccount(id, { force: true, signal }).catch(() => false);
     if (fresh) bumpConnect('liveness_recovered');
     return { alive: false, recovered: Boolean(fresh), code: result.code };
   }

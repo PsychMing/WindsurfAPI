@@ -52,18 +52,20 @@ describe('B1: the DEVIN_CONNECT paths are actually wired to recordTokenUsage', (
       'non-stream connect ok-path must feed recordTokenUsage');
   });
 
-  it('all three streamChatCompletion sites capture and record the returned usage', () => {
+  it('both streamChatCompletion sites capture and record the returned usage', () => {
     // The return value used to be discarded (`await streamChatCompletion(...)`);
-    // now each is captured into _sr* and recorded.
+    // now each is captured into _sr* and recorded. Q5 removed the handler-owned
+    // transient replay, so the two remaining ok paths are the initial attempt
+    // and the re-login retry.
     const matches = chat.match(/recordTokenUsage\(_sr\d?\?\.usage\)/g) || [];
-    assert.ok(matches.length >= 3, `expected >=3 stream usage-record sites, found ${matches.length}`);
+    assert.ok(matches.length >= 2, `expected >=2 stream usage-record sites, found ${matches.length}`);
     // And ensure NO ok-return stream path discards the result (both the direct
-    // `(params, send, connectMeta)` sites and the re-login `({...token}, …)` site
+    // `(params, send, connectMeta)` site and the re-login `({...token}, …)` site
     // must capture into _sr* before finalize — a bare discard = token dist stays
     // empty on that path). Guard both call shapes.
     assert.doesNotMatch(chat, /await streamChatCompletion\([^;]*\);\n\s+finalizeConnectAccount\(a, \{ model: reqModelName, startTime: ccStart, err: null \}\);\n\s+return \{ kind: 'ok' \}/,
       'a streamChatCompletion result on any ok path must be captured (const _sr = …), not discarded');
-    // Exactly three capture sites (main, transient-replay, re-login-replay).
-    assert.equal(matches.length, 3, `expected exactly 3 stream capture sites, found ${matches.length}`);
+    // Exactly two capture sites (main attempt, re-login replay).
+    assert.equal(matches.length, 2, `expected exactly 2 stream capture sites, found ${matches.length}`);
   });
 });
