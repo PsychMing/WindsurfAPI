@@ -220,6 +220,22 @@ docker compose logs -f
 
 如果想改持久化目录，可在 `.env` 里设置 `DATA_DIR`。Docker 默认已设为 `/data`。
 
+### Docker 一键更新
+
+Docker 部署用 `deploy/update.sh`：拉新镜像 → 只重建 `windsurf-api` → 等 `/health` → 失败自动回滚到上一个镜像；数据卷全程不动，不需要挂 `docker.sock`，也不需要 Watchtower。
+
+```bash
+bash deploy/update.sh              # 拉 :latest 并更新
+bash deploy/update.sh --tag 3.9.52 # 固定到某个发布版本
+bash deploy/update.sh --build      # 从当前源码重建（本地镜像/分叉用）
+bash deploy/update.sh --dry-run    # 只打印计划，不做任何改动
+bash deploy/update.sh --rollback   # 手动回到上一次更新前的镜像
+```
+
+完整说明、健康门、回滚与排障见 **[docs/DOCKER-UPDATE.md](docs/DOCKER-UPDATE.md)**。
+
+> 下面的 `update.sh` 是给 git/PM2 部署用的；Docker 部署请用 `deploy/update.sh`。
+
 ### 一键更新
 
 部署过之后要拉最新修复，一条命令搞定：
