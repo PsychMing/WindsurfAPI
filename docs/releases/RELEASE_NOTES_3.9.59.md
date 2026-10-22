@@ -21,4 +21,5 @@
 
 ## 尚未验证
 
-- `[UNVERIFIED]` 真实 Actions 在 20 分钟内的完成时间（本轮 tag 推送后观察）。
+- Release run `39871636798` **success**（Test + 两个单文件 + Docker + GitHub Release 全绿）。
+- `gh release view v3.9.59`：5 个资产（含 `SHA256SUMS`）；逐个计算哈希与清单比对 **4/4 OK**（本机 Git Bash 的 `sha256sum -c` 有兼容问题，直接比对为准）。
