@@ -5,7 +5,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { WindsurfClient, contentToString, isCascadeTransportError } from '../client.js';
-import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed } from '../auth.js';
+import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
 import { isStickyEnabled, setStickyBinding, peekStickyBinding } from '../account/sticky-session.js';
 import { resolveModel, getModelInfo, pickRateLimitFallback, isModelDisabledUpstream, getModelCaps } from '../models.js';
 import { getLsFor, ensureLs } from '../langserver.js';
@@ -4109,6 +4109,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
               // r.kind === 'dead' — guaranteed !emitted, so a fresh account is safe.
               if (acct) reportDeadToken(acct.apiKey);
               bumpConnect('dead_tokens');
+              // SessionReauth: a chat 401 is NOT proof the token was retired —
+              // the non-stream path documents an entitlement wall that is
+              // byte-for-byte indistinguishable from one. One free GetUserStatus
+              // probe decides; fire-and-forget (de-duped inside auth.js) so
+              // failover never waits on it.
+              if (acct) requestReauthCheck(acct.id, { source: 'request' }).catch(() => {});
               if (hops >= maxHops || emitted) { bumpConnect('failover_exhausted'); send(chatStreamError('all DEVIN_CONNECT accounts exhausted (dead session tokens)', 'upstream_error', 'UNAUTHORIZED')); break; }
               const next = await acquireConnectFailover(triedKeys, abortController.signal, callerKey, selector, context.budget || null);
               if (!next) { bumpConnect('failover_exhausted'); send(chatStreamError('all DEVIN_CONNECT accounts exhausted (dead session tokens)', 'upstream_error', 'UNAUTHORIZED')); break; }
@@ -4313,6 +4319,10 @@ async function _handleChatCompletionsInner(body, context = {}) {
       // r.kind === 'dead' — the session token couldn't be revived on this account.
       if (acct) reportDeadToken(acct.apiKey);
       bumpConnect('dead_tokens');
+      // Two-signal rule (same as the stream path): the free GetUserStatus probe
+      // decides whether the token is really retired, and only that verdict
+      // benches the account.
+      if (acct) requestReauthCheck(acct.id, { source: 'request' }).catch(() => {});
       if (hops >= maxHops) {
         const { status, type } = connectErrorToHttp('UNAUTHORIZED');
         log.error(`Chat[${reqId}]: DEVIN_CONNECT failover exhausted after ${hops} hop(s)`);

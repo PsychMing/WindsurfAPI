@@ -87,6 +87,7 @@ export function parsePostAuthResponseData(payload) {
   } catch {}
   // The wire response is application/proto — decode it directly (binary-safe)
   // instead of scanning the bytes as text: session_token = #1, orgs = #2,
+  // auth1_token = #3 (optional, possibly ROTATED by this exchange),
   // account_id = #4, primary_org_id = #5.
   if (Buffer.isBuffer(payload)) {
     try {
@@ -97,6 +98,10 @@ export function parsePostAuthResponseData(payload) {
           sessionToken,
           accountId: getField(fields, 4, 2)?.value?.toString('utf8'),
           primaryOrgId: getField(fields, 5, 2)?.value?.toString('utf8'),
+          // Field #3 exists in WindsurfPostAuthResponse and the decoder used to
+          // skip it. Absent → undefined (no behaviour change); present → the
+          // token that can mint the NEXT session, so callers can re-store it.
+          auth1Token: getField(fields, 3, 2)?.value?.toString('utf8'),
           orgs: getAllFields(fields, 2).filter(f => f.wireType === 2).map(f => decodePostAuthOrg(f.value)),
         };
       }

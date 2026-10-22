@@ -1431,6 +1431,18 @@ tbody tr:hover td { background: var(--surface-2); }
 }
 .badge.no-dot::before { display: none; }
 
+/* SessionReauth: the "needs a fresh token" notice (drawer body + bound login
+   modal). Terminal state, so it borrows the banned chip's error treatment. */
+.reauth-notice {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--error);
+  background: var(--surface-2);
+}
+.reauth-notice-title { font-weight: 600; color: var(--error); margin-bottom: 4px; }
+.reauth-notice .btn { margin-top: 8px; }
+
 /* Tier pill */
 .tier {
   display: inline-flex;
@@ -2831,6 +2843,7 @@ tbody tr:hover td { background: var(--surface-2); }
         <option value="active" data-i18n="accounts.status.active">正常</option>
         <option value="disabled" data-i18n="accounts.status.disabled">停用</option>
         <option value="banned" data-i18n="accounts.status.banned">已封禁</option>
+        <option value="reauth" data-i18n="accounts.status.reauth">需要重新授权</option>
         <option value="error" data-i18n="accounts.status.error">异常</option>
         <option value="quota_cooled" data-i18n="accounts.status.quotaCooled">配额耗尽</option>
         <option value="rate_limited" data-i18n="accounts.status.rateLimited">限流中</option>
@@ -2906,6 +2919,14 @@ tbody tr:hover td { background: var(--surface-2); }
           <div class="modal-desc" data-i18n="accounts.add.desc">登录、粘贴凭证、批量导入或从本机导入</div>
         </div>
         <button class="btn btn-ghost btn-sm" onclick="App.closeAddAccountModal()" aria-label="关闭" data-i18n-aria-label="action.close">×</button>
+      </div>
+      <!-- SessionReauth: shown only when the modal was opened from an account
+           row. Every submit then carries accountId, so the login REPLACES that
+           account's token instead of adding a duplicate row. -->
+      <div id="add-reauth-banner" class="reauth-notice hidden" role="status">
+        <div class="reauth-notice-title" data-i18n="accounts.reauth.bannerTitle">需要重新授权</div>
+        <div class="text-sm" id="add-reauth-banner-text"></div>
+        <button class="btn btn-outline btn-sm" onclick="App.clearReauthBinding()" data-i18n="accounts.reauth.cancelBinding">取消绑定</button>
       </div>
       <div class="add-tabs" role="tablist" data-i18n-aria-label="accounts.add.tabsLabel" onkeydown="App.onAddTabKeydown(event)">
         <button class="add-tab active" role="tab" id="add-tab-login" aria-selected="true" aria-controls="add-panel-login" onclick="App.switchAddTab('login')" data-i18n="accounts.add.tab.login">登录</button>
@@ -4844,6 +4865,7 @@ docker compose up -d --force-recreate</pre>
     if (!a) return 'unknown';
     if (a.status === 'disabled') return 'disabled';
     if (a.status === 'banned') return 'banned';
+    if (a.status === 'reauth') return 'reauth';
     if (a.status === 'error') return 'error';
     if (a.quotaCooled) return 'quota';
     if (a.rateLimited) return 'rate_limited';
@@ -4853,7 +4875,7 @@ docker compose up -d --force-recreate</pre>
   _poolClassify(from, to) {
     if (from === to) return null;
     if (to === 'active') return { kind: 'recovered', severity: 'success' };
-    const sev = (to === 'disabled' || to === 'quota' || to === 'banned') ? 'error' : 'warn';
+    const sev = (to === 'disabled' || to === 'quota' || to === 'banned' || to === 'reauth') ? 'error' : 'warn';
     return { kind: to, severity: sev };
   },
   _poolCollapse(events, collapseAt) {
@@ -5913,7 +5935,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const el = document.getElementById('connect-metrics-status');
     if (!el) return;
     if (!cm) { el.innerHTML = `<div class="text-sm text-muted">${I18n.t('overview.connect.empty')}</div>`; return; }
-    const GOOD = new Set(['reloginOk', 'transientReplays', 'livenessRecovered']);
+    const GOOD = new Set(['reloginOk', 'transientReplays', 'livenessRecovered', 'reauthOk', 'reauthCleared']);
     const NEUTRAL = new Set(['failoverHops']);
     const core = [
       ['reloginOk', cm.relogin_ok], ['failoverHops', cm.failover_hops],
@@ -5923,6 +5945,10 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const extra = [
       ['reloginFail', cm.relogin_fail], ['transientReplays', cm.transient_replays],
       ['livenessRecovered', cm.liveness_recovered], ['credDecryptFail', cm.credDecryptFailures],
+      // SessionReauth: "how many tokens died and were never re-authenticated"
+      // is answerable without a log grep — the same reason dead_tokens exists.
+      ['reauthRequired', cm.reauth_required], ['reauthCleared', cm.reauth_cleared],
+      ['reauthOk', cm.reauth_ok], ['reauthFail', cm.reauth_fail],
     ].filter(([, v]) => Number(v) > 0);
     const rows = core.concat(extra);
     const cell = ([k, v]) => {
@@ -6826,17 +6852,22 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       // show-auth-token value, a windsurf:// deep link, or the whole callback
       // URL. It does not depend on a pending /oauth/start session, so a valid
       // token can never fail with ERR_INVALID_STATE again.
-      const r = await this.api('POST', '/windsurf-login/token', { token: pasted, label });
+      const r = await this.api('POST', '/windsurf-login/token', {
+        token: pasted, label,
+        ...(this._reauthAccountId ? { accountId: this._reauthAccountId } : {}),
+      });
       if (r.success) {
         const email = r.account?.email || label || '';
+        const bound = !!this._reauthAccountId;
         status.style.color = '#22c55e';
         status.textContent = I18n.t('oauth.tokenImported', { email });
-        this.toast(I18n.t('account.addSuccess'), 'success');
+        this.toast(I18n.t(bound ? 'accounts.reauth.success' : 'account.addSuccess'), 'success');
         if (input) input.value = '';
         this._oauthState = '';
         document.getElementById('oauth-token-step')?.classList.add('hidden');
         this.loadAccounts();
         this.pushLoginHistory({ time: new Date().toISOString(), email, proxy: I18n.t('proxy.direct'), status: 'success', method: label || 'token' });
+        if (bound) this.closeAddAccountModal();
       } else {
         const translatedErr = this.translateError(r.error, 'toast.addFailed');
         status.style.color = '#ef4444';
@@ -6947,11 +6978,16 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const originalDisabled = btn?.disabled;
     if (btn) btn.disabled = true;
     try {
-      const r = await this.api('POST', '/accounts', { token, label });
+      const r = await this.api('POST', '/accounts', {
+        token, label,
+        ...(this._reauthAccountId ? { accountId: this._reauthAccountId } : {}),
+      });
       if (r.success) {
-        this.toast(I18n.t('account.addSuccess'), 'success');
+        const bound = !!this._reauthAccountId;
+        this.toast(I18n.t(bound ? 'accounts.reauth.success' : 'account.addSuccess'), 'success');
         input.value = '';
         this.loadAccounts();
+        if (bound) this.closeAddAccountModal();
       } else {
         this.toast(this.translateError(r.error, 'toast.addFailed'), 'error');
       }
@@ -7470,16 +7506,19 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     try {
       const r = await this.api('POST', '/windsurf-login/email/complete', {
         flowId: flow.flowId, code, autoAdd, proxy: this.getWindsurfLoginProxy(),
+        ...(this._reauthAccountId ? { accountId: this._reauthAccountId } : {}),
       });
       if (r && r.success) {
+        const bound = r.reauthenticated === true || !!this._reauthAccountId;
         this._wlFlow = null;
         if (codeEl) codeEl.value = '';
         entry.status = 'success';
         entry.apiKey = r.apiKey_masked || (r.apiKey ? r.apiKey.slice(0, 16) + '...' : '');
         if (status) status.textContent = '';
         this.renderSingleWindsurfLoginResult(r, autoAdd);
-        this.toast(autoAdd ? I18n.t('toast.loginSuccessAdded') : I18n.t('toast.loginSuccess'), 'success');
+        this.toast(bound ? I18n.t('accounts.reauth.success') : (autoAdd ? I18n.t('toast.loginSuccessAdded') : I18n.t('toast.loginSuccess')), 'success');
         this.loadAccounts();
+        if (bound) this.closeAddAccountModal();
       } else {
         entry.status = 'error: ' + ((r && r.error) || 'unknown');
         this.renderSingleWindsurfLoginResult(r, autoAdd);
@@ -7552,13 +7591,18 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const entry = { time: new Date().toISOString(), email, proxy: this.getWindsurfProxyLabel(proxy), status: 'pending' };
 
     try {
-      const r = await this.api('POST', '/windsurf-login', { email, password, proxy, autoAdd, storeCredential });
+      const r = await this.api('POST', '/windsurf-login', {
+        email, password, proxy, autoAdd, storeCredential,
+        ...(this._reauthAccountId ? { accountId: this._reauthAccountId } : {}),
+      });
       if (r.success) {
+        const bound = r.reauthenticated === true || !!this._reauthAccountId;
         entry.status = 'success';
         entry.apiKey = r.apiKey_masked || (r.apiKey?.slice(0, 16) + '...');
         this.renderSingleWindsurfLoginResult(r, autoAdd);
-        this.toast(autoAdd ? I18n.t('toast.loginSuccessAdded') : I18n.t('toast.loginSuccess'), 'success');
+        this.toast(bound ? I18n.t('accounts.reauth.success') : (autoAdd ? I18n.t('toast.loginSuccessAdded') : I18n.t('toast.loginSuccess')), 'success');
         this.loadAccounts();
+        if (bound) this.closeAddAccountModal();
       } else {
         entry.status = 'error: ' + (r.error || 'unknown');
         this.renderSingleWindsurfLoginResult(r, autoAdd);
@@ -7898,7 +7942,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   },
 
   setAccountsStatus(value) {
-    const allowed = ['', 'active', 'disabled', 'banned', 'error', 'quota_cooled', 'rate_limited', 'capacity', 'near_limit', 'watch'];
+    const allowed = ['', 'active', 'disabled', 'banned', 'reauth', 'error', 'quota_cooled', 'rate_limited', 'capacity', 'near_limit', 'watch'];
     this.accountsStatus = allowed.includes(value) ? value : '';
     this.accountsPage = 1;
     this.clearAccountSelection();
@@ -7960,6 +8004,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     if (!a) return 'active';
     if (a.status === 'disabled') return 'disabled';
     if (a.status === 'banned') return 'banned';
+    if (a.status === 'reauth') return 'reauth';
     if (a.status === 'error') return 'error';
     if (a.quotaCooled) return 'quota_cooled';
     if (a.rateLimited) return 'rate_limited';
@@ -7975,6 +8020,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     switch (state) {
       case 'disabled': return { labelKey: 'accounts.status.disabled', cls: 'disabled', band: 'var(--text-dim)' };
       case 'banned': return { labelKey: 'accounts.status.banned', cls: 'banned', band: 'var(--error)' };
+      // Terminal, like banned: the token is retired upstream and only a fresh
+      // login brings the account back, so it must never borrow a warning chip.
+      case 'reauth': return { labelKey: 'accounts.status.reauth', cls: 'banned', band: 'var(--error)' };
       case 'error': return { labelKey: 'accounts.status.error', cls: 'error', band: 'var(--error)' };
       case 'quota_cooled': return { labelKey: 'accounts.status.quotaCooled', cls: 'warn', band: 'var(--error)' };
       case 'rate_limited': return { labelKey: 'accounts.status.rateLimited', cls: 'warn', band: 'var(--error)' };
@@ -8357,14 +8405,23 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this.closeRowMenu();
     const a = this._accountsById?.get(id);
     if (!a) return;
+    const state = a.state || this.accountStateOf(a);
     const trigger = ev?.currentTarget || ev?.target;
     const items = [
       { key: 'accounts.row.probe', act: () => this.probeAccount(id) },
       { key: 'accounts.row.refreshBalance', act: () => this.refreshCredits(id) },
       { key: 'accounts.row.blockedModels', act: () => this.openBlockedModal(id) },
-      { key: 'accounts.row.relogin', act: () => this.reloginAccount(id) },
-      { key: a.status === 'active' ? 'action.disable' : 'action.enable', act: () => this.toggleAccount(id, a.status === 'active' ? 'disabled' : 'active') },
-      { key: 'action.reset', act: () => this.resetErrors(id) },
+      // One action, two labels: a reauth account's only way back is a fresh
+      // login, so the row says so instead of the generic "log in again".
+      { key: state === 'reauth' ? 'accounts.row.reauth' : 'accounts.row.relogin', act: () => this.reloginAccount(id) },
+      // A reauth account cannot be re-enabled without a replaced token (409),
+      // so offer the action that can actually work: disable.
+      state === 'reauth'
+        ? { key: 'action.disable', act: () => this.toggleAccount(id, 'disabled') }
+        : { key: a.status === 'active' ? 'action.disable' : 'action.enable', act: () => this.toggleAccount(id, a.status === 'active' ? 'disabled' : 'active') },
+      // "Reset errors" on a reauth account is the same lie as Enable — it would
+      // put the retired token back in rotation — so it is not offered.
+      ...(state === 'reauth' ? [] : [{ key: 'action.reset', act: () => this.resetErrors(id) }]),
       { sep: true },
       { key: 'action.delete', cls: 'danger', act: () => this.deleteAccount(id) },
     ];
@@ -8430,7 +8487,10 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const a = this._accountsById?.get(id);
     this.closeRowMenu();
     this.closeAccountDrawer();
-    this.openAddAccountModal('login', { email: a?.email || '' });
+    // Bind the login modal to THIS account: the backend then installs the fresh
+    // token on the same row instead of adding a duplicate account for the same
+    // person (which is what made re-auth a manual accounts.json edit).
+    this.openAddAccountModal('login', { email: a?.email || '', accountId: id || null });
   },
 
   // ─── Detail drawer ────────────────────────────────────────────────────
@@ -8483,13 +8543,32 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     if (body) body.innerHTML = this.renderAccountDetail(a, this._cardsByAccount?.get(id) || null);
     const foot = document.getElementById('acct-drawer-foot');
     if (foot) {
+      // Reauth is terminal: the primary action is a fresh login, and the free
+      // GetUserStatus probe is offered as the escape hatch (an upstream/proxy
+      // blip can be the real reason the token 401'd).
+      const isReauth = state === 'reauth';
       foot.innerHTML = `
         <button class="btn btn-outline btn-sm" onclick="App.probeAccount('${this.escJsAttr(a.id)}')">${I18n.t('action.probe')}</button>
         <button class="btn btn-outline btn-sm" onclick="App.refreshCredits('${this.escJsAttr(a.id)}')">${I18n.t('accounts.row.refreshBalance')}</button>
-        <button class="btn btn-outline btn-sm" onclick="App.reloginAccount('${this.escJsAttr(a.id)}')">${I18n.t('accounts.row.relogin')}</button>
+        ${isReauth ? `<button class="btn btn-outline btn-sm" onclick="App.checkAccountToken('${this.escJsAttr(a.id)}')">${I18n.t('accounts.reauth.checkToken')}</button>` : ''}
+        <button class="btn ${isReauth ? 'btn-primary' : 'btn-outline'} btn-sm" onclick="App.reloginAccount('${this.escJsAttr(a.id)}')">${I18n.t(isReauth ? 'accounts.row.reauth' : 'accounts.row.relogin')}</button>
         <span class="spacer"></span>
         <button class="btn btn-danger btn-sm" onclick="App.deleteAccount('${this.escJsAttr(a.id)}')">${I18n.t('action.delete')}</button>`;
     }
+  },
+
+  // Free GetUserStatus confirmation for a benched account: alive → back in
+  // rotation, UNAUTHORIZED → the state stays, anything else → no change.
+  async checkAccountToken(id) {
+    const r = await this.api('POST', `/accounts/${id}/reauth`, { action: 'probe' });
+    if (r && r.checked) {
+      const alive = r.alive === true;
+      this.toast(I18n.t(alive ? 'accounts.reauth.probeAlive' : 'accounts.reauth.probeDead'), alive ? 'success' : 'error');
+    } else if (r && r.reason === 'COOLDOWN') {
+      this.toast(I18n.t('accounts.reauth.probeCooldown'), 'info');
+    }
+    this._accountDetails?.delete(id);
+    this.loadAccounts();
   },
 
   _onDrawerKeydown(e) {
@@ -8519,10 +8598,11 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   },
 
   // ─── Add-account modal (登录 / 粘贴 / 批量导入 / 本机扫描) ────────────
-  openAddAccountModal(tab = 'login', { email = '' } = {}) {
+  openAddAccountModal(tab = 'login', { email = '', accountId = null } = {}) {
     const overlay = document.getElementById('add-account-overlay');
     if (!overlay) return;
     this._addModalReturnFocus = document.activeElement;
+    this._reauthAccountId = accountId || null;
     overlay.classList.remove('hidden');
     this.switchAddTab(tab);
     const emailInput = document.getElementById('wl-email');
@@ -8531,6 +8611,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       const probe = document.getElementById('wl-probe-status');
       if (probe) probe.textContent = I18n.t('accounts.add.reloginHint');
     }
+    this.renderReauthBanner();
     this.loadWindsurfLogin();
     this.checkLocalImportAvailability();
     this._addModalKeyHandler = (e) => {
@@ -8559,10 +8640,36 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const overlay = document.getElementById('add-account-overlay');
     if (!overlay) return;
     overlay.classList.add('hidden');
+    this._reauthAccountId = null;
+    this.renderReauthBanner();
     if (this._addModalKeyHandler) document.removeEventListener('keydown', this._addModalKeyHandler, true);
     this._addModalKeyHandler = null;
     this._addModalReturnFocus?.focus?.();
     this._addModalReturnFocus = null;
+  },
+
+  // ─── SessionReauth binding ────────────────────────────────────────────
+  // `_reauthAccountId` turns the add-account modal into a re-auth modal: every
+  // submit forwards it, and the backend replaces that account's token instead
+  // of adding a row. Cleared on close, and by the banner's Cancel button.
+  renderReauthBanner() {
+    const el = document.getElementById('add-reauth-banner');
+    if (!el) return;
+    const id = this._reauthAccountId;
+    el.classList.toggle('hidden', !id);
+    if (!id) return;
+    const a = this._accountsById?.get(id);
+    const text = document.getElementById('add-reauth-banner-text');
+    if (text) {
+      text.textContent = I18n.t('accounts.reauth.banner', {
+        email: a?.email || id,
+      });
+    }
+  },
+
+  clearReauthBinding() {
+    this._reauthAccountId = null;
+    this.renderReauthBanner();
   },
 
   switchAddTab(tab) {
@@ -9079,6 +9186,17 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     // accounts as "active" here while the row above said otherwise.
     const state = a.state || this.accountStateOf(a);
     const stateMeta = this.accountStateMeta(state);
+    // Reauth is the one state whose cause is not visible anywhere else in the
+    // drawer: the token is retired upstream, and only a fresh login fixes it.
+    const reauthNotice = state === 'reauth'
+      ? `<div class="reauth-notice" role="status">
+          <div class="reauth-notice-title">${this.esc(this.accountStateLabel(stateMeta))}</div>
+          <div class="text-sm">${this.esc(I18n.t('accounts.reauth.detail', {
+            time: a.reauth?.at ? new Date(a.reauth.at).toLocaleString() : '—',
+            code: a.reauth?.code || 'UNAUTHORIZED',
+          }))}</div>
+        </div>`
+      : '';
     const barColor = (v) => v == null ? 'var(--text-dim)' : v <= 10 ? 'var(--error)' : v <= 30 ? 'var(--warn)' : 'var(--success)';
     const fmtUnix = (u) => u ? new Date(u * 1000).toLocaleString() : '—';
     const fmtAgo = (ts) => {
@@ -9151,6 +9269,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
 
     return `
     <div class="account-detail-wrap">
+      ${reauthNotice}
       <div class="detail-grid">
         ${this.renderPlanCard(a, cr, us)}
 
@@ -9546,9 +9665,19 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const proxy = document.getElementById('acc-proxy').value.trim();
     if (!key) return this.toast(I18n.t('toast.enterKeyOrToken'), 'error');
     const body = type === 'api_key' ? { api_key: key, label, proxy } : { token: key, label, proxy };
+    if (this._reauthAccountId) body.accountId = this._reauthAccountId;
     const r = await this.api('POST', '/accounts', body);
-    if (r.success) { this.toast(I18n.t('account.addSuccess')); document.getElementById('acc-key').value = ''; document.getElementById('acc-label').value = ''; document.getElementById('acc-proxy').value = ''; this.accountsPage = 1; this._accountDetails?.clear(); this.closeAddAccountModal(); this.loadAccounts(); }
-    else this.toast(this.translateError(r.error, 'toast.addFailed'), 'error');
+    if (r.success) {
+      const bound = !!this._reauthAccountId;
+      this.toast(I18n.t(bound ? 'accounts.reauth.success' : 'account.addSuccess'));
+      document.getElementById('acc-key').value = '';
+      document.getElementById('acc-label').value = '';
+      document.getElementById('acc-proxy').value = '';
+      this.accountsPage = 1;
+      this._accountDetails?.clear();
+      this.closeAddAccountModal();
+      this.loadAccounts();
+    } else this.toast(this.translateError(r.error, 'toast.addFailed'), 'error');
   },
 
   // v2.0.60 — preflight the local-windsurf availability so the dashboard

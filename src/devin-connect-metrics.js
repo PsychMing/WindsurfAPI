@@ -67,6 +67,13 @@ const _counters = {
   queue_overflow: 0,
   // liveness probe pre-emptively recovered a dying token
   liveness_recovered: 0,
+  // SessionReauth: accounts benched because a free GetUserStatus probe confirmed
+  // the session token was retired, and the ways back out. A `reauth_required`
+  // that never finds a matching `reauth_ok` is a token nobody re-authenticated.
+  reauth_required: 0,
+  reauth_cleared: 0,
+  reauth_ok: 0,
+  reauth_fail: 0,
   // router-model (adaptive/arena-*) AssignModel resolution failed → fell back
   assign_model_failed: 0,
   // credential store was read back through a resilience tier (JSON repair or

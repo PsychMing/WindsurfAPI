@@ -15,6 +15,7 @@ import {
   addAccountByKey,
   configureBindHost,
   getAccountInternal,
+  markNeedsReauth,
   publicBanReason,
   removeAccount,
   resolveAccountState,
@@ -191,12 +192,16 @@ describe('GET /accounts query params', () => {
 });
 
 describe('resolveAccountState precedence', () => {
-  it('resolves disabled > banned > error > quota > rate > capacity > near-limit > watch > active', () => {
+  it('resolves disabled > banned > reauth > error > quota > rate > capacity > near-limit > watch > active', () => {
     const now = 1_000_000;
     assert.equal(resolveAccountState({ status: 'disabled', errorCount: 9 }, now), 'disabled');
     assert.equal(resolveAccountState({ status: 'banned', errorCount: 9 }, now), 'banned',
       'banned must outrank error/cooldowns: the credential itself was rejected');
     assert.equal(resolveAccountState({ status: 'banned', quotaResetAt: now + 1, rateLimitedUntil: now + 1 }, now), 'banned');
+    assert.equal(resolveAccountState({ status: 'reauth', errorCount: 9 }, now), 'reauth',
+      'a retired session token outranks every self-healing state: it never recovers on its own');
+    assert.equal(resolveAccountState({ status: 'reauth', quotaResetAt: now + 1, rateLimitedUntil: now + 1 }, now), 'reauth');
+    assert.equal(resolveAccountState({ status: 'reauth' }, now), 'reauth');
     assert.equal(resolveAccountState({ status: 'error', quotaResetAt: now + 1 }, now), 'error');
     assert.equal(resolveAccountState({ status: 'active', quotaResetAt: now + 1, rateLimitedUntil: now + 1 }, now), 'quota_cooled');
     assert.equal(resolveAccountState({ status: 'active', rateLimitedUntil: now + 1 }, now), 'rate_limited');
@@ -206,6 +211,33 @@ describe('resolveAccountState precedence', () => {
     assert.equal(resolveAccountState({ status: 'active' }, now), 'active');
     assert.equal(resolveAccountState({ status: 'active', quotaResetAt: now - 1, rateLimitedUntil: now - 1 }, now), 'active',
       'expired cooldowns do not keep an account in a warning state');
+  });
+});
+
+describe('reauth accounts are visible and counted separately', () => {
+  it('exposes state + evidence, matches status=reauth and filter=flagged, and counts once', async () => {
+    enableOpenLocal();
+    const benched = addTestAccount('reauth@example.invalid');
+    markNeedsReauth(benched.id, { source: 'request', code: 'UNAUTHORIZED' });
+    const healthy = addTestAccount('reauth-healthy@example.invalid');
+
+    const byState = await get('/accounts?view=summary&status=reauth');
+    assert.equal(byState.status, 200);
+    assert.deepEqual(byState.body.accounts.map((a) => a.id), [benched.id]);
+    const row = byState.body.accounts[0];
+    assert.equal(row.state, 'reauth');
+    assert.equal(row.status, 'reauth');
+    assert.equal(row.reauth.source, 'request');
+    assert.equal(row.reauth.code, 'UNAUTHORIZED');
+    assert.ok(row.reauth.at > 0);
+
+    const flagged = await get('/accounts?view=summary&filter=flagged');
+    assert.deepEqual(flagged.body.accounts.map((a) => a.id), [benched.id],
+      '仅异常 must include reauth accounts');
+    assert.equal(flagged.body.stats.reauth, 1);
+    assert.equal(flagged.body.stats.banned, 0);
+    assert.ok(!flagged.body.accounts.some((a) => a.id === healthy.id),
+      'a healthy account must not be pulled in by 仅异常');
   });
 });
 

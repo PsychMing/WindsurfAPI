@@ -44,6 +44,7 @@ import {
 } from './devin-connect-models.js';
 import { getLsAdmissionStatus, getLsMaintenanceRequests } from './langserver.js';
 import { bumpConnect } from './devin-connect-metrics.js';
+import { deleteCredential } from './devin-connect-credentials.js';
 import { classifyToken, unwrapPastedSecret } from './dashboard/account-text-parser.js';
 
 import { join } from 'path';
@@ -750,6 +751,10 @@ function _serializeAccounts() {
     id: a.id, email: a.email, apiKey: a.apiKey,
     apiServerUrl: a.apiServerUrl, method: a.method,
     status: a.status, addedAt: a.addedAt,
+    // Re-auth evidence (when/how the retired session token was confirmed dead).
+    // `status === 'reauth'` is the bit; this only explains it. Written solely by
+    // markNeedsReauth and dropped the moment the account re-enters rotation.
+    ...(a.status === 'reauth' && a.reauth ? { reauth: a.reauth } : {}),
     // AP-RISK-1: half-open recovery clock. Without persisting this an account
     // flipped to 'error' loses its since-timestamp on restart, so
     // maybeRecoverErrorAccount computes since=0 and bails forever — the pool
@@ -934,6 +939,7 @@ function _deserializeAccount(a, now = Date.now()) {
   // in 'error' would recover with since=0 → never. Default it to load time so
   // it re-probes after the normal cooldown rather than staying disabled forever.
   const erroredAt = a.erroredAt || (status === 'error' ? now : 0);
+  const reauth = status === 'reauth' ? sanitizeReauthRecord(a.reauth) : null;
   return {
     id: a.id || randomUUID().slice(0, 8),
     email: a.email, apiKey: a.apiKey,
@@ -944,6 +950,10 @@ function _deserializeAccount(a, now = Date.now()) {
     // status === 'banned'; a manually re-enabled account clears both fields.
     bannedAt: Number.isFinite(a.bannedAt) ? a.bannedAt : 0,
     bannedReason: typeof a.bannedReason === 'string' ? a.bannedReason : '',
+    // SessionReauth: restore the evidence behind `status === 'reauth'`. Only a
+    // well-formed record survives; the STATUS is the bit, so a corrupt record
+    // loses the explanation but never puts the account back in rotation.
+    ...(reauth ? { reauth } : {}),
     lastUsed: 0, errorCount: 0,
     refreshToken: a.refreshToken || '', expiresAt: 0, refreshTimer: null,
     addedAt: a.addedAt || now,
@@ -1918,15 +1928,196 @@ function clearBanState(account) {
   account._banSignalLastMessage = '';
 }
 
+// ─── Session re-auth (`status: 'reauth'`) ───────────────────────────────────
+// A `devin-session-token$` account whose server-side session_id was retired is
+// unrecoverable without a fresh login. A bare UNAUTHORIZED on the data path is
+// NOT proof of that: the non-stream path documents an entitlement wall as
+// "byte-for-byte indistinguishable from a retired token". Only the free
+// GetUserStatus liveness probe can arbitrate, so `reauth` is written from
+// requestReauthCheck (and the liveness sweep) — never from one chat 401.
+//
+// `status === 'reauth'` is the whole bit. Selection already filters
+// `status === 'active'`, and the half-open error recovery only runs for
+// `status === 'error'`, so a new status value makes both correct structurally
+// instead of relying on a boolean that a later refactor can drop.
+const REAUTH_SOURCES = new Set(['request', 'liveness', 'manual']);
+const REAUTH_CHECK_COOLDOWN_MS = 60 * 1000;
+
+function sanitizeReauthRecord(record) {
+  if (!record || typeof record !== 'object') return null;
+  const at = Number(record.at);
+  if (!Number.isFinite(at) || at <= 0) return null;
+  return {
+    at,
+    source: REAUTH_SOURCES.has(record.source) ? record.source : 'request',
+    code: typeof record.code === 'string' ? record.code.slice(0, 64) : '',
+    attempts: Number.isFinite(Number(record.attempts)) ? Math.max(0, Math.floor(Number(record.attempts))) : 0,
+    lastAttemptAt: Number.isFinite(Number(record.lastAttemptAt)) ? Math.max(0, Number(record.lastAttemptAt)) : 0,
+  };
+}
+
+function reauthRefusal() {
+  return Object.assign(new Error('ERR_REAUTH_TOKEN_UNCHANGED'), {
+    code: 'ERR_REAUTH_TOKEN_UNCHANGED',
+    statusCode: 409,
+  });
+}
+
 /**
- * Set account status (active, disabled, error).
+ * Mark an account as needing a fresh session token. Called only after the free
+ * GetUserStatus probe answered UNAUTHORIZED for the CURRENT key.
  */
-export function setAccountStatus(id, status) {
+export function markNeedsReauth(id, { source = 'request', code = 'UNAUTHORIZED' } = {}) {
   const account = accounts.find(a => a.id === id);
   if (!account) return false;
+  // Operator intent (disabled) and upstream bans outrank a token verdict.
+  if (account.status === 'disabled' || account.status === 'banned') return false;
+  if (account.status === 'reauth') return false; // keep the first confirmation timestamp
+  account.status = 'reauth';
+  account.reauth = sanitizeReauthRecord({ at: Date.now(), source, code });
+  saveAccounts();
+  log.warn(`Account ${safeAccountRef(account)} NEEDS RE-AUTH: session token confirmed dead (${code}, source=${source}) — out of rotation until a fresh token is added`);
+  bumpConnect('reauth_required');
+  trySyncModelCatalog();
+  return true;
+}
+
+/** Return a reauth account to rotation (probe said alive, or the operator proved it). */
+export function clearNeedsReauth(id, { reason = 'alive' } = {}) {
+  const account = accounts.find(a => a.id === id);
+  if (!account || account.status !== 'reauth') return false;
+  account.status = 'active';
+  account.errorCount = 0;
+  account.erroredAt = 0;
+  delete account.reauth;
+  saveAccounts();
+  log.info(`Account ${safeAccountRef(account)} re-auth cleared (${reason}) — back in rotation`);
+  bumpConnect('reauth_cleared');
+  trySyncModelCatalog();
+  return true;
+}
+
+/**
+ * Install a freshly minted token on an EXISTING account and return it to
+ * rotation. This is the only way out of `reauth` that proves liveness: the
+ * caller just logged in (or exchanged a token) upstream.
+ *
+ * Refuses the one move that re-creates the original bug: putting the SAME key
+ * back with no re-auth performed (I2). Login paths pass `allowSameKey: true`
+ * because a successful login IS proof the token works.
+ */
+export function markAccountReauthenticated(id, { apiKey = null, via = 'manual', allowSameKey = false } = {}) {
+  const account = accounts.find(a => a.id === id);
+  if (!account) return false;
+  if (apiKey != null && account.status === 'reauth' && apiKey === account.apiKey && !allowSameKey) {
+    throw reauthRefusal();
+  }
+  if (apiKey != null && apiKey !== account.apiKey) {
+    const previousKey = account.apiKey;
+    account.apiKey = apiKey;
+    markKeyRotation(account, previousKey);
+    invalidateModelCatalogForAccount(account.id);
+    bumpUserJwtEpoch();
+  }
+  const wasReauth = account.status === 'reauth';
+  account.status = 'active';
+  account.errorCount = 0;
+  account.erroredAt = 0;
+  account._errorAt = 0;
+  account._reloginAt = Date.now();
+  delete account.reauth;
+  saveAccounts();
+  trySyncModelCatalog();
+  if (wasReauth) {
+    log.info(`Account ${safeAccountRef(account)} re-authenticated (${via}) — fresh session token installed`);
+    bumpConnect('reauth_ok');
+  }
+  return true;
+}
+
+// Per-account de-dupe for the confirmation probe: a burst of dead-token
+// verdicts must not turn into a probe storm, and concurrent callers share one
+// in-flight probe. `force` bypasses the cooldown (manual "Check token").
+const _reauthChecks = new Map(); // id → { lastAt, inflight }
+
+/** Test seam: clear the confirmation-probe cooldown between cases. */
+export function __resetReauthChecks() {
+  _reauthChecks.clear();
+}
+
+/**
+ * The two-signal confirmation rule (SessionReauth §2).
+ *
+ * UNAUTHORIZED on the data path → one free GetUserStatus probe:
+ *   alive             → clear any stale reauth (the 401 was a blip)
+ *   code UNAUTHORIZED → mark `reauth` (confirmed death)
+ *   anything else     → no-op (CAPACITY / UPSTREAM_INTERNAL / NO_TOKEN are transient)
+ *
+ * Never throws; a probe failure is not evidence of anything.
+ * @returns {Promise<{checked:boolean, alive?:boolean, code?:string, marked?:boolean, status?:string, reason?:string}>}
+ */
+export async function requestReauthCheck(id, { source = 'request', force = false } = {}) {
+  const account = accounts.find(a => a.id === id);
+  if (!account) return { checked: false, reason: 'NO_ACCOUNT' };
+  if (account.status === 'disabled' || account.status === 'banned') {
+    return { checked: false, reason: 'NOT_ELIGIBLE' };
+  }
+  const state = _reauthChecks.get(id) || { lastAt: 0, inflight: null };
+  if (state.inflight) return state.inflight;
+  const now = Date.now();
+  if (!force && now - state.lastAt < REAUTH_CHECK_COOLDOWN_MS) {
+    return { checked: false, reason: 'COOLDOWN' };
+  }
+  const token = account.apiKey;
+  const attempt = (async () => {
+    const { checkSessionLiveness } = (_reloginDeps && _reloginDeps.checkSessionLiveness)
+      ? _reloginDeps
+      : await import('./devin-connect-catalog.js');
+    let result;
+    try {
+      result = await checkSessionLiveness({ token });
+    } catch (e) {
+      return { checked: false, reason: 'PROBE_FAILED', code: e.code || 'UPSTREAM_ERROR' };
+    }
+    // The key was replaced while the probe was in flight: its verdict is about
+    // a credential that is no longer in the pool.
+    if (account.apiKey !== token) return { checked: false, reason: 'TOKEN_CHANGED' };
+    if (result?.alive) {
+      const cleared = clearNeedsReauth(id, { reason: 'probe_alive' });
+      return { checked: true, alive: true, cleared, status: account.status };
+    }
+    if (result?.code === 'UNAUTHORIZED') {
+      const marked = markNeedsReauth(id, { source, code: result.code });
+      return { checked: true, alive: false, code: result.code, marked, status: account.status };
+    }
+    return { checked: true, alive: false, code: result?.code || 'UPSTREAM_ERROR', marked: false, status: account.status };
+  })();
+  state.lastAt = now;
+  state.inflight = attempt;
+  _reauthChecks.set(id, state);
+  try {
+    return await attempt;
+  } finally {
+    const s = _reauthChecks.get(id);
+    if (s) s.inflight = null;
+  }
+}
+
+/**
+ * Set account status (active, disabled, error, banned, reauth).
+ *
+ * `reauth → active` is refused without `force`: that flip puts a token the
+ * upstream has already retired back into rotation, which is the 401 loop this
+ * state exists to stop. The operator must re-authenticate (or force).
+ */
+export function setAccountStatus(id, status, { force = false } = {}) {
+  const account = accounts.find(a => a.id === id);
+  if (!account) return false;
+  if (account.status === 'reauth' && status === 'active' && !force) throw reauthRefusal();
   account.status = status;
   if (status === 'active') {
     account.errorCount = 0;
+    delete account.reauth;
     clearBanState(account);
   }
   saveAccounts();
@@ -1941,6 +2132,9 @@ export function setAccountStatus(id, status) {
 export function resetAccountErrors(id) {
   const account = accounts.find(a => a.id === id);
   if (!account) return false;
+  // "Reset errors" on a reauth account is the operator asserting a token they
+  // have not replaced is fine — the same lie as `setAccountStatus(active)`.
+  if (account.status === 'reauth') throw reauthRefusal();
   account.errorCount = 0;
   account.status = 'active';
   clearBanState(account);
@@ -2215,18 +2409,25 @@ export async function reLoginAccount(id, { force = false, signal } = {}) {
         bumpUserJwtEpoch();
       }
       if (result.refreshToken) account.refreshToken = result.refreshToken;
+      const wasReauth = account.status === 'reauth';
       account.status = 'active';
       account.errorCount = 0;
       account._errorAt = 0;
       account._reloginAt = Date.now();
+      // A successful login proves the NEW token works, so the evidence behind a
+      // previous reauth verdict is dead — dropping it is what makes the state
+      // change structural rather than a second flag to remember.
+      delete account.reauth;
       saveAccounts();
       trySyncModelCatalog();
       log.info(`re-login OK: ${safeAccountRef(account)} → fresh session token`);
       bumpConnect('relogin_ok');
+      if (wasReauth) bumpConnect('reauth_ok');
       return result.apiKey;
     } catch (e) {
       log.warn(`re-login ${safeAccountRef(account)} failed: ${e.message}`);
       bumpConnect('relogin_fail');
+      if (account.status === 'reauth') bumpConnect('reauth_fail');
       return false;
     } finally {
       releaseReloginSlot();
@@ -2274,6 +2475,11 @@ export async function probeAndRecoverConnectAccount(id, { signal } = {}) {
       saveAccounts();
       trySyncModelCatalog();
       log.info(`liveness probe: ${safeAccountRef(account)} recovered to active`);
+    } else if (account.status === 'reauth') {
+      // The token that was benched now answers GetUserStatus (proxy fixed,
+      // upstream restored). The probe is the evidence that benched it, so it
+      // is also the only automatic way back into rotation.
+      clearNeedsReauth(id, { reason: 'liveness_alive' });
     }
     return { alive: true };
   }
@@ -2285,6 +2491,11 @@ export async function probeAndRecoverConnectAccount(id, { signal } = {}) {
     reportError(account.apiKey);
     const fresh = await reLoginAccount(id, { force: true, signal }).catch(() => false);
     if (fresh) bumpConnect('liveness_recovered');
+    // No stored credential (or the re-login failed): the token cannot be
+    // revived on this account. The probe already answered UNAUTHORIZED for the
+    // CURRENT key, so record the terminal state instead of leaving the account
+    // to flap back through the error TTL and burn a login attempt every cycle.
+    else markNeedsReauth(id, { source: 'liveness', code: result.code });
     return { alive: false, recovered: Boolean(fresh), code: result.code };
   }
   return { alive: false, code: result.code };
@@ -2307,6 +2518,16 @@ export function removeAccount(id) {
   forgetCloudModelCatalog(id);
   trySyncModelCatalog();
   saveAccounts();
+  // The stored password is a live re-login credential for an account that no
+  // longer exists. Leaving it behind meant a deleted account kept a decryptable
+  // secret on disk forever (deleteCredential had zero production callers).
+  // Best-effort: a store that is disabled, locked or corrupt must not stop the
+  // removal — the account is already out of the pool.
+  try {
+    if (deleteCredential(account.email)) log.info(`Stored credential removed for ${safeAccountRef(account)}`);
+  } catch (e) {
+    log.warn(`Could not remove stored credential for ${safeAccountRef(account)}: ${e.code || e.message}`);
+  }
   // Drop any Cascade conversations owned by this key so future requests
   // don't try to resume on an account that no longer exists.
   import('./conversation-pool.js').then(m => m.invalidateFor({ apiKey: account.apiKey })).catch(() => {});
@@ -3940,7 +4161,7 @@ function accountUserStatusSummary(userStatus) {
 // its own. `state` rides the account payload so the client never recomputes it
 // and the filter can never disagree with the badge it painted.
 export const ACCOUNT_STATE_VALUES = Object.freeze([
-  'disabled', 'banned', 'error', 'quota_cooled', 'rate_limited', 'capacity', 'near_limit', 'watch', 'active',
+  'disabled', 'banned', 'reauth', 'error', 'quota_cooled', 'rate_limited', 'capacity', 'near_limit', 'watch', 'active',
 ]);
 
 export function resolveAccountState(a, now = Date.now(), { rpmUsed, rpmLimit } = {}) {
@@ -3950,6 +4171,11 @@ export function resolveAccountState(a, now = Date.now(), { rpmUsed, rpmLimit } =
   // (reset errors / enable). It must never render as healthy, and it outranks
   // every transient cooldown: the credential itself was rejected upstream.
   if (a.status === 'banned') return 'banned';
+  // SessionReauth: the server retired this session token. Terminal until a
+  // fresh token is installed, so it outranks every self-healing cooldown — an
+  // account that is also rate-limited is still dead, and painting it "rate
+  // limited" would promise a recovery that never comes.
+  if (a.status === 'reauth') return 'reauth';
   if (a.status === 'error') return 'error';
   if (a.quotaResetAt && a.quotaResetAt > now) return 'quota_cooled';
   if (a.rateLimitedUntil && a.rateLimitedUntil > now) return 'rate_limited';
@@ -3993,6 +4219,13 @@ function publicAccount(a, now, { view = 'full' } = {}) {
     // accounts, so the drawer can render conditionally.
     bannedAt: a.status === 'banned' ? (a.bannedAt || a._banSignalAt || 0) : 0,
     bannedReason: a.status === 'banned' ? publicBanReason(a.bannedReason || a._banSignalLastMessage) : '',
+    // SessionReauth: `status`/`state` are the bit; this is only the evidence
+    // behind it (when the probe confirmed death and what it answered), so the
+    // row tooltip and the drawer card can explain the state without a second
+    // request. Null for every other status.
+    reauth: a.status === 'reauth' && a.reauth
+      ? { at: a.reauth.at || 0, source: a.reauth.source || 'request', code: a.reauth.code || '' }
+      : null,
     errorCount: a.errorCount,
     lastUsed: a.lastUsed ? new Date(a.lastUsed).toISOString() : null,
     addedAt: new Date(a.addedAt).toISOString(),
@@ -4101,7 +4334,7 @@ export const ACCOUNT_SORT_VALUES = Object.freeze(['quota_weekly', 'balance', 'la
 // to count byTier[tier] while rows honoured both).
 function accountMatchesQuery(a, { filter = '', tier = '', q = '', status = '', now = Date.now() }) {
   if (filter === 'flagged') {
-    const flagged = a.status === 'error' || a.status === 'banned'
+    const flagged = a.status === 'error' || a.status === 'banned' || a.status === 'reauth'
       || (a.errorCount || 0) > 0 || (a.rateLimitedUntil && a.rateLimitedUntil > now);
     if (!flagged) return false;
   }
@@ -4166,6 +4399,7 @@ export function getAccountListStats() {
   let rateLimited = 0;
   let disabled = 0;
   let banned = 0;
+  let reauth = 0;
   const byTier = { pro: 0, free: 0, unknown: 0, expired: 0 };
   let balanceTotal = 0;
   let balanceAccounts = 0;
@@ -4174,7 +4408,8 @@ export function getAccountListStats() {
     if (isRateLimited) rateLimited++;
     if (account.status !== 'active') disabled++;
     if (account.status === 'banned') banned++;
-    if (account.status === 'error' || account.status === 'banned' || (account.errorCount || 0) > 0 || isRateLimited) flagged++;
+    if (account.status === 'reauth') reauth++;
+    if (account.status === 'error' || account.status === 'banned' || account.status === 'reauth' || (account.errorCount || 0) > 0 || isRateLimited) flagged++;
     byTier[tierBucket(account.tier)]++;
     // On-demand prepaid balance ($) — only Teams/paid accounts carry it. Sum for
     // a pool total. NOTE: Teams share one balance, so multiple accounts in the
@@ -4192,6 +4427,7 @@ export function getAccountListStats() {
     rateLimited,
     disabled,
     banned,
+    reauth,
     byTier,
     balanceTotal,
     balanceAccounts,
@@ -4892,6 +5128,7 @@ export function getAccountCount() {
     active: accounts.filter(a => a.status === 'active').length,
     error: accounts.filter(a => a.status === 'error').length,
     banned: accounts.filter(a => a.status === 'banned').length,
+    reauth: accounts.filter(a => a.status === 'reauth').length,
   };
 }
 

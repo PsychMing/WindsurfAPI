@@ -1190,6 +1190,7 @@
       "active": "正常",
       "disabled": "停用",
       "banned": "已封禁",
+      "reauth": "需要重新授权",
       "error": "异常",
       "quotaCooled": "配额耗尽",
       "rateLimited": "限流中",
@@ -1219,7 +1220,19 @@
       "probe": "探测层级 / 模型",
       "refreshBalance": "刷新余额",
       "blockedModels": "屏蔽模型",
-      "relogin": "重新登录"
+      "relogin": "重新登录",
+      "reauth": "重新登录 / 重新导入"
+    },
+    "reauth": {
+      "bannerTitle": "需要重新授权",
+      "banner": "正在为 {{email}} 重新授权 — 成功后会替换该账号的会话 token，不会新增账号行。",
+      "cancelBinding": "取消绑定",
+      "checkToken": "检查 token",
+      "detail": "上游已注销该会话 token（{{time}} 由 GetUserStatus 确认，{{code}}）。该密钥无法刷新 — 请重新登录以换取新 token。",
+      "probeAlive": "上游已接受该 token — 账号已回到轮换",
+      "probeDead": "上游仍拒绝该 token — 请重新登录以换取新 token",
+      "probeCooldown": "刚刚检查过 — 请一分钟后再试",
+      "success": "账号已重新授权"
     },
     "batch": {
       "selectPage": "选择本页 {{count}} 项",
@@ -1723,6 +1736,9 @@
     "ERR_HTTP_REFERRER_BLOCKED": "上游拒绝请求：该 Firebase API Key 限制请求来源，服务器的 referrer 不在白名单内。请检查登录代理 / 出口 IP，或在 Firebase 控制台放行。",
     "ERR_AUTH1_TOKEN_MISSING": "Auth1 回应缺少 token",
     "ERR_AUTH1_NOT_A_POOL_KEY": "auth1_ 是 PostAuth 中间票,不是池密钥。请走完登录,或改贴 show-auth-token / session token。",
+    "ERR_REAUTH_TOKEN_UNCHANGED": "该账号的 token 已被上游注销。请重新登录换取新 token；若确认无误，可强制重新启用。",
+    "ERR_REAUTH_NOT_APPLICABLE": "该操作不适用于已停用或已封禁的账号。",
+    "ERR_REAUTH_TOKEN_INVALID": "这不是会话 token。请贴 devin-session-token / show-auth-token 的值，或改用邮箱验证码登录。",
     "ERR_NO_TOKEN_IN_INPUT": "这段粘贴里没有 token。请贴 session、API Key，或带 token= 的 show-auth-token 链接。",
     "ERR_IMPORT_TEXT_EMPTY": "粘贴内容为空。",
     "ERR_POSTAUTH_FAILED": "Windsurf 已接受登录，但换取会话失败。请用同一个验证码重试——2 分钟内仍然有效。",
@@ -1842,6 +1858,10 @@
       "transientReplays": "瞬态重放",
       "livenessRecovered": "存活恢复",
       "credDecryptFail": "凭证解密失败",
+      "reauthRequired": "需要重新授权",
+      "reauthCleared": "重新授权已解除",
+      "reauthOk": "重新授权成功",
+      "reauthFail": "重新授权失败",
       "silentOk": "正常",
       "empty": "暂无连接指标"
     },
