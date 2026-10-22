@@ -23,6 +23,7 @@ function boundary(env = {}, localBind = true) {
     windsurfLogin: async email => ({ apiKey: 'offline-key', email, name: 'fixture' }),
     addAccountByKey: () => ({ id: 'offline-account', email: 'a@example.test', status: 'active' }),
     setAccountTokens() {}, setAccountProxy() {}, scheduleAccountWarmup() {},
+    setAccountCredentialEmail() {},
     maskApiKey: () => '[masked]',
     log: { info() {}, warn() {} },
     credentials: {
