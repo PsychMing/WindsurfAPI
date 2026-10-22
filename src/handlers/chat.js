@@ -5,7 +5,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { WindsurfClient, contentToString, isCascadeTransportError } from '../client.js';
-import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed } from '../auth.js';
+import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed } from '../auth.js';
 import { isStickyEnabled, setStickyBinding, peekStickyBinding } from '../account/sticky-session.js';
 import { resolveModel, getModelInfo, pickRateLimitFallback, isModelDisabledUpstream, getModelCaps } from '../models.js';
 import { getLsFor, ensureLs } from '../langserver.js';
@@ -57,7 +57,8 @@ import { acpVisionEnabled } from '../devin-acp.js';
 import { selectBackend, usesCascadeFlow } from '../backend-router.js';
 import { toChatCompletion as _toChatCompletion, streamChatCompletion as _streamChatCompletion } from '../devin-connect-openai.js';
 import { resolveConnectSelector, DROUGHT_SAFE_SELECTORS } from '../devin-connect-models.js';
-import { isRetryable as isConnectRetryable, getToolDefTags, parseToolCallTagMap } from '../devin-connect.js';
+import { getToolDefTags, parseToolCallTagMap } from '../devin-connect.js';
+import { recordRateLimitBurstEvent, RATE_LIMIT_BURST_WINDOW_MS } from '../rate-limit-burst.js';
 import { isRouterModel, assignModel as _assignModel } from '../devin-connect-catalog.js';
 import { bumpConnect } from '../devin-connect-metrics.js';
 import { resolveSessionId as resolveConnectSessionId, commitAfterResponse as commitConnectSession, getSessionModelConfig as getSessionConnectModelConfig, getSessionReasoningTrail as getSessionConnectReasoningTrail } from '../session-continuity.js';
@@ -2289,6 +2290,11 @@ let _connectDeps = {
   // account — which left the router branch of the degrade-honesty contract unguarded
   // (a mutation swapping connectParams.model back to `selector` passed every test).
   assignModel: _assignModel,
+  // Same seam for the recovery side: the handler must forward the request's
+  // AbortSignal into reLoginAccount so a caller that went away stops waiting for
+  // a global login slot. Without this seam a test can only observe the real
+  // (credential-gated) auth module, where the call is a no-op.
+  reLoginAccount: _reLoginAccount,
 };
 async function toChatCompletion(...args) {
   const out = await _connectDeps.toChatCompletion(...args);
@@ -2297,9 +2303,15 @@ async function toChatCompletion(...args) {
 }
 function streamChatCompletion(...args) { return _connectDeps.streamChatCompletion(...args); }
 function assignModel(...args) { return _connectDeps.assignModel(...args); }
+function reLoginAccount(...args) { return _connectDeps.reLoginAccount(...args); }
 export function __setConnectDeps(overrides = {}) { _connectDeps = { ..._connectDeps, ...overrides }; }
 export function __resetConnectDeps() {
-  _connectDeps = { toChatCompletion: _toChatCompletion, streamChatCompletion: _streamChatCompletion, assignModel: _assignModel };
+  _connectDeps = {
+    toChatCompletion: _toChatCompletion,
+    streamChatCompletion: _streamChatCompletion,
+    assignModel: _assignModel,
+    reLoginAccount: _reLoginAccount,
+  };
 }
 
 // The connect path is token-based: it needs a Windsurf session key, which the
@@ -2505,7 +2517,7 @@ const TRANSPORT_FAULT_CODES = new Set([
 // upstream error it was holding. The callers used to substitute a synthetic
 // AbortError for the real one on disconnect, which erased the upstream verdict
 // (e.g. RATE_LIMITED + resetMs) before this function could act on it.
-export function finalizeConnectAccount(acct, { model, selector = null, startTime, err, aborted: abortedHint = false }) {
+export function finalizeConnectAccount(acct, { model, selector = null, startTime, err, aborted: abortedHint = false, signal = null }) {
   if (!acct) {
     // env-token path: still record the request for dashboard totals.
     recordRequest(model, !err, Date.now() - startTime, null);
@@ -2626,8 +2638,10 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       // path — UNAUTHORIZED most likely means the server retired it. If the
       // account has stored credentials + auto-relogin is enabled, trigger a
       // background re-login (throttled/de-duped in auth.js) so the next request
-      // lands on a fresh token instead of a permanently-dead account.
-      reLoginAccount(acct.id).catch(() => {});
+      // lands on a fresh token instead of a permanently-dead account. The
+      // request signal only bounds the QUEUED wait for a global login slot: a
+      // caller that disconnected must not hold (or later spend) a slot.
+      reLoginAccount(acct.id, { signal }).catch(() => {});
     }
     else if (err.code === 'UPSTREAM_INTERNAL') {
       // Transient upstream BACKEND fault ("an internal error occurred (trace
@@ -3925,42 +3939,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: err || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true });
                 return { kind: 'abort' };
               }
-              // Transient blip (5xx / ECONNRESET / server "unavailable") BEFORE
-              // any byte hit the wire: the non-stream path already retries these
-              // (devin-connect-openai.js maxRetries), but the stream path didn't,
-              // so a one-off upstream hiccup surfaced as a hard error to the
-              // client. Replay once on the SAME token while !emitted — replaying
-              // after bytes are out would duplicate content, so it's gated.
-              if (isConnectRetryable(err) && a && !emitted) {
-                // Don't start a replay if the client disconnected while we were
-                // catching the first error — writing to a dead socket is pointless
-                // and can leave the handler stuck.
-                if (abortController.signal.aborted) {
-                  finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
-                  return { kind: 'abort' };
-                }
-                log.info(`Chat[${reqId}]: DEVIN_CONNECT stream transient error (${err.code || err.status}); replaying once on same token`);
-                bumpConnect('transient_replays');
-                try {
-                  const _sr2 = await streamChatCompletion(params, send, connectMeta);
-                  try { recordTokenUsage(_sr2?.usage); } catch {}
-                  try { recordAccountSpend(a?.apiKey, _sr2?.usage, connectSpendOpts(_sr2?.billing)); } catch {}
-                  finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
-                  return { kind: 'ok', sr: _sr2 };
-                } catch (retryErr) {
-                  // If the client hung up during the replay, stop immediately rather
-                  // than falling through to the generic error handling which would
-                  // log an ERROR and possibly try to write to a dead socket.
-                  if (abortController.signal.aborted || isAbortError(retryErr)) {
-                    finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: retryErr || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true });
-                    return { kind: 'abort' };
-                  }
-                  // Retry failed too — fall through to the normal handling below
-                  // (which may still recover an UNAUTHORIZED via re-login, or
-                  // surface the error). Reassign so the branches below see it.
-                  err = retryErr;
-                }
-              }
+              // Transport retries belong to the adapter (devin-connect-openai
+              // owns ONE bounded pre-emit retry for 5xx/ECONNRESET). The handler
+              // owns ACCOUNT failover only — replaying the same token here as
+              // well made a single 5xx cost three upstream attempts (adapter
+              // maxRetries + this replay + failover).
               if (err.code === 'UNAUTHORIZED' && a && !emitted) {
                 // No force: honor the 60s re-login cooldown. Concurrent callers
                 // still coalesce on the inflight promise (auth.js), so a dead
@@ -3968,7 +3951,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 // that result instead of each firing a fresh Auth1 login — the
                 // cutover-day storm guard. force:true is reserved for the
                 // scheduled liveness sweep, which is already interval-throttled.
-                const freshKey = await reLoginAccount(a.id).catch(() => false);
+                // The signal bounds only the QUEUED wait for a login slot, so a
+                // client that disconnected stops consuming the queue.
+                const freshKey = await reLoginAccount(a.id, { signal: abortController.signal }).catch(() => false);
                 if (freshKey && !emitted) {
                   log.info(`Chat[${reqId}]: DEVIN_CONNECT re-login recovered token, replaying stream once`);
                   try {
@@ -3990,15 +3975,15 @@ async function _handleChatCompletionsInner(body, context = {}) {
                     const reErr = (retryErr.code === 'UNAUTHORIZED' && !emitted)
                       ? Object.assign(new Error('model requires a paid Devin entitlement (fresh session token still UNAUTHORIZED → not a dead token)'), { code: 'MODEL_BLOCKED' })
                       : retryErr;
-                    finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: reErr });
+                    finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: reErr, signal: abortController.signal });
                     log.error(`Chat[${reqId}]: DEVIN_CONNECT stream retry error: ${reErr.message}`);
                     return { kind: 'error', err: reErr };
                   }
                 }
-                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err });
+                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err, signal: abortController.signal });
                 return !emitted ? { kind: 'dead' } : { kind: 'error', err };
               }
-              finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err });
+              finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err, signal: abortController.signal });
               log.error(`Chat[${reqId}]: DEVIN_CONNECT stream error: ${err.message}`);
               return { kind: 'error', err };
             }
@@ -4183,7 +4168,8 @@ async function _handleChatCompletionsInner(body, context = {}) {
           // No force — see the streaming path: honor the 60s cooldown so a
           // mass token-death event recovers each account once instead of
           // storming Auth1 with one full login per in-flight request.
-          const freshKey = await reLoginAccount(a.id).catch(() => false);
+          // The request signal bounds the queued wait for a login slot only.
+          const freshKey = await reLoginAccount(a.id, { signal: context.signal }).catch(() => false);
           if (freshKey) {
             log.info(`Chat[${reqId}]: DEVIN_CONNECT re-login recovered token, retrying once`);
             try {
@@ -4209,15 +4195,15 @@ async function _handleChatCompletionsInner(body, context = {}) {
               const reErr = retryErr.code === 'UNAUTHORIZED'
                 ? Object.assign(new Error('model requires a paid Devin entitlement (fresh session token still UNAUTHORIZED → not a dead token)'), { code: 'MODEL_BLOCKED' })
                 : retryErr;
-              finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: reErr });
+              finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: reErr, signal: context.signal });
               log.error(`Chat[${reqId}]: DEVIN_CONNECT retry-after-relogin error (${reErr.code || 'UPSTREAM_ERROR'}): ${reErr.message}`);
               return { kind: 'error', err: reErr };
             }
           }
-          finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err });
+          finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err, signal: context.signal });
           return { kind: 'dead' };
         }
-        finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err });
+        finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err, signal: context.signal });
         return { kind: 'error', err };
       }
     };
@@ -5126,11 +5112,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
       // window, it's usually IP-wide cooldown, not per-account.
       // Burning through all 40+ accounts just marks them all dead
       // for 30 min. Detect and short-circuit.
-      if (!context.__rateLimitEvents) context.__rateLimitEvents = [];
-      const RL_WINDOW_MS = 8_000;
-      const RL_BURST_THRESHOLD = 3;
-      context.__rateLimitEvents.push({
-        time: Date.now(),
+      //
+      // Q5: the window is PROCESS-scoped (src/rate-limit-burst.js), not
+      // per-request. A per-request array could never observe a burst that
+      // started in an earlier request, so the "IP-level" claim was false and
+      // the pool kept burning accounts across requests.
+      const burst = recordRateLimitBurstEvent({
         model: routingModelKey,
         account: acct.id,
         cooldownMs: rateLimitBurstCooldownMs({
@@ -5140,15 +5127,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
           modelKey: routingModelKey,
         }),
       });
-      // Prune old events
-      const cutoff = Date.now() - RL_WINDOW_MS;
-      while (context.__rateLimitEvents.length && context.__rateLimitEvents[0].time < cutoff) {
-        context.__rateLimitEvents.shift();
-      }
-      const sameModelBurst = context.__rateLimitEvents.filter(e => e.model === routingModelKey);
-      if (sameModelBurst.length >= RL_BURST_THRESHOLD) {
-        const maxCooldown = Math.max(...sameModelBurst.map(e => e.cooldownMs || IP_RATE_LIMIT_BURST_FLOOR_MS));
-        log.warn(`Chat[${reqId}]: IP-rate-limit burst detected — ${sameModelBurst.length} accounts rate-limited on ${displayModel} within ${RL_WINDOW_MS}ms. Short-circuiting.`);
+      if (burst.tripped) {
+        const maxCooldown = Math.max(burst.maxCooldownMs, IP_RATE_LIMIT_BURST_FLOOR_MS);
+        log.warn(`Chat[${reqId}]: IP-rate-limit burst detected — ${burst.count} accounts rate-limited on ${displayModel} within ${RATE_LIMIT_BURST_WINDOW_MS}ms. Short-circuiting.`);
         return {
           status: 429,
           headers: { 'Retry-After': String(Math.ceil(maxCooldown / 1000)) },
@@ -7344,15 +7325,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // v2.0.91 — IP-level rate limit circuit breaker (stream path).
             // Same logic as non-stream: ≥3 accounts rate-limited for the
             // same model within 8s → Windsurf is doing IP-wide cooldown,
-            // stop burning accounts and surface immediately.
+            // stop burning accounts and surface immediately. Q5: the window
+            // is process-scoped (src/rate-limit-burst.js); per-request state
+            // could not see a burst that began in an earlier request.
             const ctx = deps.context || {};
             if (isRateLimit && !ctx.__rlAborted) {
-              if (!ctx.__rateLimitEvents) ctx.__rateLimitEvents = [];
-              const RL_WINDOW_MS = 8_000;
-              const RL_BURST_THRESHOLD = 3;
-              const now = Date.now();
-              ctx.__rateLimitEvents.push({
-                time: now,
+              const burst = recordRateLimitBurstEvent({
                 model: modelKey,
                 account: acct?.id,
                 cooldownMs: rateLimitBurstCooldownMs({
@@ -7362,15 +7340,10 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                   modelKey,
                 }),
               });
-              const cutoff = now - RL_WINDOW_MS;
-              while (ctx.__rateLimitEvents.length && ctx.__rateLimitEvents[0].time < cutoff) {
-                ctx.__rateLimitEvents.shift();
-              }
-              const sameModelBurst = ctx.__rateLimitEvents.filter(e => e.model === modelKey);
-              if (sameModelBurst.length >= RL_BURST_THRESHOLD) {
+              if (burst.tripped) {
                 ctx.__rlAborted = true;
-                log.warn(`Chat[${reqId}] stream: IP-rate-limit burst — ${sameModelBurst.length} accounts rate-limited on ${model} within ${RL_WINDOW_MS}ms. Short-circuiting.`);
-                const cooldown = Math.max(...sameModelBurst.map(e => e.cooldownMs || IP_RATE_LIMIT_BURST_FLOOR_MS));
+                log.warn(`Chat[${reqId}] stream: IP-rate-limit burst — ${burst.count} accounts rate-limited on ${model} within ${RATE_LIMIT_BURST_WINDOW_MS}ms. Short-circuiting.`);
+                const cooldown = Math.max(burst.maxCooldownMs, IP_RATE_LIMIT_BURST_FLOOR_MS);
                 lastErr = Object.assign(new Error(`All accounts temporarily rate-limited on ${model}. Windsurf upstream is applying IP-level cooldown. Wait ~${formatRetryAfter(cooldown)} before retrying.`), { type: 'rate_limit_exceeded', retry_after_ms: cooldown });
                 break;
               }

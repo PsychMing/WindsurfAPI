@@ -580,6 +580,44 @@ export function buildAcpPromptBlocks(prompt, modelHint = '', env = process.env) 
   return blocks;
 }
 
+// One bounded retry for TRANSPORT/5xx faults. The whole ACP turn is the retry
+// unit: the child process, its handshake and the prompt are re-created, because
+// a dead `devin acp` child cannot be resumed. Deliberately excluded:
+//   - tool-mapping failures (backend_tool_call_unmapped): deterministic given
+//     the same turn; replaying burns a session for the same answer;
+//   - UPSTREAM_INTERNAL: measured persistent (3/3), same-token replay just
+//     amplifies load — mirrors devin-connect.js isRetryable();
+//   - auth / rate-limit / abort / environment faults (missing CLI, oversized
+//     output): retrying cannot change the verdict.
+const ACP_TRANSPORT_CODES = new Set([
+  'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'EAI_AGAIN',
+  'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH',
+]);
+
+function isAcpRetryable(err) {
+  if (!err) return false;
+  if (err.status === 499 || err.type === 'request_aborted') return false;
+  if (err.type === 'backend_tool_call_unmapped') return false;
+  if (err.type === 'backend_unavailable' || err.type === 'backend_output_too_large'
+    || err.type === 'backend_mode_unsupported') return false;
+  if (err.type === 'upstream_internal' || err.code === 'UPSTREAM_INTERNAL') return false;
+  if (err.type === 'unauthorized' || err.code === 'UNAUTHORIZED') return false;
+  if (err.code === 'RATE_LIMITED') return false;
+  // Explicit capacity ("high demand") is classified retryable by the ACP
+  // classifier; one replay is exactly the mitigation it asks for.
+  if (err.retryable === true) return true;
+  if (err.type === 'backend_timeout' || err.status === 504) return true;
+  if (err.code && ACP_TRANSPORT_CODES.has(err.code)) return true;
+  // A raw RPC 5xx / dead child (502 backend_error) is transport-shaped.
+  if (typeof err.status === 'number' && err.status >= 500 && err.status !== 501) return true;
+  return false;
+}
+
+function acpRetryBaseMs() {
+  const raw = Number(process.env.DEVIN_ACP_RETRY_BASE_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 250;
+}
+
 export async function runDevinAcpProcess(prompt, { modelKey = '', apiKey = '', apiServerUrl = '', signal = null, onChunk = null } = {}) {
   if (!apiKey) {
     throw Object.assign(new Error('Devin ACP mode requires an upstream Windsurf account apiKey.'), {
@@ -596,6 +634,32 @@ export async function runDevinAcpProcess(prompt, { modelKey = '', apiKey = '', a
   if (modelKey && !args.includes('--model')) {
     args.push('--model', modelKey);
   }
+
+  // A replay after ANY chunk crossed onChunk would duplicate the visible answer.
+  let emitted = false;
+  const trackedChunk = onChunk
+    ? (chunk) => { emitted = true; onChunk(chunk); }
+    : null;
+
+  const maxRetries = 1;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await runDevinAcpAttempt(prompt, {
+        command, args, env, modelKey, apiKey, apiServerUrl, signal, onChunk: trackedChunk,
+      });
+    } catch (err) {
+      if (attempt >= maxRetries || emitted || signal?.aborted || !isAcpRetryable(err)) throw err;
+      const backoff = acpRetryBaseMs();
+      log.warn(`Devin ACP: retryable ${err.code || err.type || err.status} (${err.message}); retry ${attempt + 1}/${maxRetries} in ${backoff}ms`);
+      if (backoff) await new Promise((r) => setTimeout(r, backoff));
+      // The caller may have gone away while we waited; a fresh child would
+      // outlive its request (an already-aborted signal never fires onAbort).
+      if (signal?.aborted) throw err;
+    }
+  }
+}
+
+async function runDevinAcpAttempt(prompt, { command, args, env, modelKey, apiKey, apiServerUrl, signal, onChunk }) {
   const client = makeAcpClient({
     command,
     args,

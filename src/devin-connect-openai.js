@@ -28,6 +28,7 @@ import { applyStop, StopSequenceGate } from './stop-sequences.js';
 import { normalizeToolCallArgs, recordArgRepair } from './handlers/cline-compat.js';
 import { ThinkTextClassifier } from './response-classifier.js';
 import { budgetExceededError } from './request-budget.js';
+import { bumpConnect } from './devin-connect-metrics.js';
 
 // Gate for the leading think-tag reroute (Item 1, loop break). The classifier
 // lives HERE, in the connect layer, so the DEVIN_CONNECT_ prefix is accurate:
@@ -433,7 +434,7 @@ function nowSeconds() {
  * @returns {Promise<{status:number, body:object, stop:string|null}>}
  */
 export async function toChatCompletion(params, opts = {}) {
-  const { id = newId(), created = nowSeconds(), displayModel, maxRetries = 2, retryBaseMs = 400, emulateTools = false, stop = null, clineCompat = false, stopCarrier = false, budget = null } = opts;
+  const { id = newId(), created = nowSeconds(), displayModel, maxRetries = 1, retryBaseMs = 400, emulateTools = false, stop = null, clineCompat = false, stopCarrier = false, budget = null } = opts;
   const model = displayModel || params.model;
 
   // Non-stream path buffers the whole answer, so a transient failure (network
@@ -645,22 +646,23 @@ export async function toChatCompletion(params, opts = {}) {
  *          the assembled result, so callers can cache it after streaming.
  */
 export async function streamChatCompletion(params, send, opts = {}) {
-  const { id = newId(), created = nowSeconds(), displayModel, emulateTools = false, includeUsage = false, stop = null, clineCompat = false, stopCarrier = false } = opts;
+  const { id = newId(), created = nowSeconds(), displayModel, emulateTools = false, includeUsage = false, stop = null, clineCompat = false, stopCarrier = false, maxRetries = 1, retryBaseMs = 400, budget = null } = opts;
   const model = displayModel || params.model;
   const base = { id, object: OBJECT_CHUNK, created, model, system_fingerprint: systemFingerprint(model) };
 
   // 1. Role-priming chunk. This USED to fire eagerly here, before streamChat
   //    opened the upstream — but the very first send() flips `emitted=true` in
-  //    the caller (handlers/chat.js), which disarms every !emitted-gated
-  //    first-connect recovery branch (transient replay / re-login / failover).
-  //    A transient 5xx/reset or a dead token — which the non-stream path retries
-  //    / re-logs-in / fails over — then surfaced as a hard client error on the
-  //    stream path. So we DEFER the prime behind `primed` until the first REAL
-  //    delta (content / reasoning / tool_call) actually arrives, i.e. until the
-  //    upstream has demonstrably opened. The empty / immediate-finish path primes
-  //    from the finish tail below, so a legitimately empty response is still a
-  //    well-formed OpenAI stream (role → finish → optional usage). Operators who
-  //    relied on the eager role chunk can restore it with DEVIN_CONNECT_EAGER_PRIME=1.
+  //    the caller (handlers/chat.js), which disarms the handler's !emitted-gated
+  //    account recovery branches (re-login / failover). A dead token — which the
+  //    non-stream path re-logs-in / fails over — then surfaced as a hard client
+  //    error on the stream path. So we DEFER the prime behind `primed` until the
+  //    first REAL delta (content / reasoning / tool_call) actually arrives, i.e.
+  //    until the upstream has demonstrably opened. `primed` also gates this
+  //    adapter's own one-shot transport retry (nothing emitted ⇒ safe replay).
+  //    The empty / immediate-finish path primes from the finish tail below, so a
+  //    legitimately empty response is still a well-formed OpenAI stream
+  //    (role → finish → optional usage). Operators who relied on the eager role
+  //    chunk can restore it with DEVIN_CONNECT_EAGER_PRIME=1.
   let primed = false;
   const prime = () => {
     if (primed) return;
@@ -686,7 +688,8 @@ export async function streamChatCompletion(params, send, opts = {}) {
   // proto-openai-03: stream-side stop enforcement. The gate holds back a short
   // tail so a stop sequence straddling two content chunks is still caught; on a
   // hit we emit the safe prefix, flip finish_reason:'stop', and stop the stream.
-  const stopGate = new StopSequenceGate(stop);
+  // `let` because a pre-emit transport retry must start from a fresh gate.
+  let stopGate = new StopSequenceGate(stop);
   let stopHit = false;
   let matchedStop = null;
   // Emit content through the stop gate. Returns true when the stream should end.
@@ -736,38 +739,67 @@ export async function streamChatCompletion(params, send, opts = {}) {
     }
   };
 
-  for await (const ev of streamChatWithEmptyRetry(params, undefined, opts)) {
-    // A rescue attempt REPLACES the previous one. The deltas already sent cannot be
-    // retracted (documented at the promotion site below), but the accumulators must
-    // not keep the abandoned attempt — otherwise `content` ends up holding every
-    // attempt concatenated, and the promotion re-sends that pile as the answer.
-    if (ev.type === 'attempt_reset') {
-      reasoning = '';
-      content = '';
-      delivered = '';
-      collectedToolCalls.length = 0;
-      nativeToolCalls = [];
-      continue;
-    }
-    if (ev.type === 'reasoning') {
-      prime(); // first real delta: emit the deferred role chunk first
-      reasoning += ev.text;
-      send({ ...base, choices: [{ index: 0, delta: { reasoning_content: ev.text }, finish_reason: null }] });
-    } else if (ev.type === 'content') {
-      prime(); // first real delta: emit the deferred role chunk first
-      content += ev.text;
-      if (toolParser) {
-        const { text, toolCalls } = toolParser.feed(ev.text);
-        emitToolCalls(toolCalls);
-        if (sendContent(text)) break;
-      } else {
-        if (sendContent(ev.text)) break;
+  // Q5 ownership: the ADAPTER owns transport retries. One bounded retry for a
+  // retryable fault (5xx / ECONNRESET / server unavailable) is safe ONLY while
+  // nothing has crossed the wire — `primed` is flipped by the first real delta
+  // (and by the eager-prime opt-in), so a partial answer is never replayed.
+  // Account failover stays in the handler.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      for await (const ev of streamChatWithEmptyRetry(params, undefined, opts)) {
+        // A rescue attempt REPLACES the previous one. The deltas already sent cannot be
+        // retracted (documented at the promotion site below), but the accumulators must
+        // not keep the abandoned attempt — otherwise `content` ends up holding every
+        // attempt concatenated, and the promotion re-sends that pile as the answer.
+        if (ev.type === 'attempt_reset') {
+          reasoning = '';
+          content = '';
+          delivered = '';
+          collectedToolCalls.length = 0;
+          nativeToolCalls = [];
+          continue;
+        }
+        if (ev.type === 'reasoning') {
+          prime(); // first real delta: emit the deferred role chunk first
+          reasoning += ev.text;
+          send({ ...base, choices: [{ index: 0, delta: { reasoning_content: ev.text }, finish_reason: null }] });
+        } else if (ev.type === 'content') {
+          prime(); // first real delta: emit the deferred role chunk first
+          content += ev.text;
+          if (toolParser) {
+            const { text, toolCalls } = toolParser.feed(ev.text);
+            emitToolCalls(toolCalls);
+            if (sendContent(text)) break;
+          } else {
+            if (sendContent(ev.text)) break;
+          }
+        } else if (ev.type === 'finish') {
+          if (ev.reason) finishReason = ev.reason;
+          if (ev.usage) usage = ev.usage;
+          if (ev.billing) streamBilling = ev.billing;
+          if (ev.toolCalls && ev.toolCalls.length) nativeToolCalls = ev.toolCalls;
+        }
       }
-    } else if (ev.type === 'finish') {
-      if (ev.reason) finishReason = ev.reason;
-      if (ev.usage) usage = ev.usage;
-      if (ev.billing) streamBilling = ev.billing;
-      if (ev.toolCalls && ev.toolCalls.length) nativeToolCalls = ev.toolCalls;
+      break;
+    } catch (err) {
+      if (primed || attempt >= maxRetries || !isRetryable(err)) throw err;
+      // A client abort during the previous attempt (or during the backoff
+      // below) must not start a fresh upstream call for a caller that is gone.
+      if (params.signal?.aborted) throw err;
+      // The route budget owns the total attempt count: re-issuing with no
+      // turn/time left would only be refused by the next upstream call.
+      if (budget && !budget.canStartAttempt()) throw err;
+      const backoff = retryBaseMs * 2 ** attempt;
+      log.warn(`DEVIN_CONNECT: stream retryable error (${err.code || err.status || err.message}); retry ${attempt + 1}/${maxRetries} in ${backoff}ms`);
+      bumpConnect('transient_replays');
+      if (!(await budgetedSleep(backoff, budget))) throw err;
+      if (params.signal?.aborted) throw err;
+      // Nothing was emitted, so a clean restart cannot duplicate output.
+      content = ''; reasoning = ''; finishReason = 'stop'; usage = null;
+      streamBilling = null; nativeToolCalls = []; delivered = '';
+      collectedToolCalls.length = 0;
+      stopGate = new StopSequenceGate(stop);
+      stopHit = false; matchedStop = null;
     }
   }
 

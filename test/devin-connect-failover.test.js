@@ -494,17 +494,13 @@ describe('DEVIN_CONNECT cross-account failover — stream', () => {
     assert.ok(!seen.includes(b.apiKey), 'did not fail over to a second account');
   });
 
-  it('replays once on the SAME token after a pre-emit transient 5xx, then streams (P1 #34)', async () => {
-    const a = seed('s-transient-1');
+  it('does NOT replay a pre-emit transient 5xx in the handler (the adapter owns that retry, P1 #34)', async () => {
+    seed('s-transient-1');
     let calls = 0;
-    const seen = [];
     __setConnectDeps({
-      streamChatCompletion: async (params, send) => {
+      streamChatCompletion: async () => {
         calls++;
-        seen.push(params.token);
-        if (calls === 1) throw transient(); // 503 before any byte
-        send({ id: 's', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: 'RECOVERED' }, finish_reason: null }] });
-        send({ id: 's', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+        throw transient(); // 503 before any byte
       },
     });
 
@@ -515,18 +511,18 @@ describe('DEVIN_CONNECT cross-account failover — stream', () => {
     const res = fakeRes();
     await result.handler(res);
     const frames = parseFrames(res.body);
-    assert.equal(calls, 2, 'retried once on the transient blip');
-    assert.equal(seen[0], seen[1], 'replay used the SAME token (no failover hop)');
-    assert.ok(frames.some(f => f !== '[DONE]' && f.choices?.[0]?.delta?.content === 'RECOVERED'), 'streamed after replay');
-    assert.ok(!frames.some(f => f !== '[DONE]' && f.error), 'no error frame after a successful replay');
+    // Q5 ownership: devin-connect-openai.js performs the single bounded
+    // pre-emit transport retry; the handler must not add a second one.
+    assert.equal(calls, 1, 'one adapter call — the adapter owns the bounded retry');
+    assert.ok(frames.some(f => f !== '[DONE]' && f.error), 'the transient error still reaches the client');
   });
 
-  it('CAPACITY (high-demand) replays on the SAME token, never re-logs in or fails over (P0 #56/#57)', async () => {
+  it('CAPACITY (high-demand) never re-logs in or fails over in the handler (P0 #56/#57)', async () => {
     // The regression that motivated this: a momentary "high demand" on a free
     // token was classified UNAUTHORIZED → auto re-login → still busy → mislabeled
-    // MODEL_BLOCKED → free model cooled down forever. Now it's CAPACITY: a
-    // transient, replayed once on the same token. If the replay succeeds we
-    // stream clean; re-login must NEVER fire (it would burn the account).
+    // MODEL_BLOCKED → free model cooled down forever. The single in-place replay
+    // is now owned by the adapter (retry-ownership.test.js); this test pins the
+    // handler half: a capacity blip must NEVER re-login or hop accounts.
     const a = seed('s-capacity-1');
     const b = seed('s-capacity-2');
     process.env.DEVIN_CONNECT_AUTO_RELOGIN = '1';
@@ -539,12 +535,10 @@ describe('DEVIN_CONNECT cross-account failover — stream', () => {
     let calls = 0;
     const seen = [];
     __setConnectDeps({
-      streamChatCompletion: async (params, send) => {
+      streamChatCompletion: async (params) => {
         calls++;
         seen.push(params.token);
-        if (calls === 1) throw capacity(); // first hit: model busy, before any byte
-        send({ id: 's', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: 'AFTERBUSY' }, finish_reason: null }] });
-        send({ id: 's', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+        throw capacity(); // model busy, before any byte
       },
     });
 
@@ -555,12 +549,10 @@ describe('DEVIN_CONNECT cross-account failover — stream', () => {
     const res = fakeRes();
     await result.handler(res);
     const frames = parseFrames(res.body);
-    assert.equal(calls, 2, 'replayed once on the capacity blip');
-    assert.equal(seen[0], seen[1], 'replay used the SAME token (no failover, no fresh token)');
+    assert.equal(calls, 1, 'one handler attempt — the adapter owns the in-place replay');
     assert.equal(reloginCalls, 0, 'CAPACITY must NEVER trigger re-login');
     assert.ok(!seen.includes(b.apiKey), 'did not fail over to the second account');
-    assert.ok(frames.some(f => f !== '[DONE]' && f.choices?.[0]?.delta?.content === 'AFTERBUSY'), 'streamed after the busy blip cleared');
-    assert.ok(!frames.some(f => f !== '[DONE]' && f.error), 'no error frame after a successful capacity replay');
+    assert.ok(frames.some(f => f !== '[DONE]' && f.error), 'surfaced the capacity error');
   });
 
   it('persistent CAPACITY surfaces a clean 503-class error, NOT MODEL_BLOCKED or a re-login storm (P0 #57)', async () => {
@@ -589,7 +581,7 @@ describe('DEVIN_CONNECT cross-account failover — stream', () => {
     await result.handler(res);
     const frames = parseFrames(res.body);
     const errFrame = frames.find(f => f !== '[DONE]' && f.error);
-    assert.equal(calls, 2, 'one in-place replay then give up (no pool storm)');
+    assert.equal(calls, 1, 'one handler attempt — the adapter owns the in-place replay (no pool storm)');
     assert.equal(reloginCalls, 0, 'CAPACITY must NEVER trigger re-login');
     assert.ok(errFrame, 'surfaced an error frame');
     assert.notEqual(errFrame.error.code, 'MODEL_BLOCKED', 'capacity must NOT escalate to a permanent entitlement wall');
