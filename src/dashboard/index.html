@@ -6388,6 +6388,25 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     });
   },
 
+  // Overage credits are a SIGNED USD balance, not a count. A negative value is
+  // an overdrawn on-demand balance (usage posted beyond the prepaid amount), so
+  // the sign is kept and never clamped to zero. The ledger is micro-dollar
+  // precise, so the formatter widens below one cent instead of flattening a real
+  // balance to "$0.00" (the same lie the ACU spend cell already avoids).
+  fmtCreditBalance(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    const locale = I18n.locale === 'zh-CN' ? 'zh-CN' : 'en-US';
+    const abs = Math.abs(value);
+    const options = { minimumFractionDigits: 2, maximumFractionDigits: 6 };
+    let text = abs.toLocaleString(locale, options);
+    // A sub-micro amount would round to "0.00" and re-introduce a "-$0.00"
+    // artifact; keep the magnitude visible instead.
+    if (value !== 0 && text === '0.00') {
+      text = abs.toLocaleString(locale, { maximumSignificantDigits: 2 });
+    }
+    return `${value < 0 ? '-' : ''}$${text}`;
+  },
+
   fmtUsageDate(value) {
     if (!value) return '—';
     if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -6475,6 +6494,12 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const cycle = org.cycle || {};
     const quota = org.quota || {};
     const limits = org.limits || {};
+    // Signed USD balance: a negative value means the on-demand balance is
+    // overdrawn, so it is rendered with its sign and named as such — clamping
+    // it to zero would assert "nothing owed", which the upstream did not say.
+    const overageText = org.overageCredits == null
+      ? '—'
+      : `${this.fmtCreditBalance(org.overageCredits)}${org.overageCredits < 0 ? ` (${T('overdrawn')})` : ''}`;
     const rows = [
       [T('plan'), plan],
       [T('billingMethod'), org.billingMethod || '—'],
@@ -6483,7 +6508,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       [T('cycleTotal'), cycle.total == null ? '—' : this.fmtAcu(cycle.total)],
       [T('maxSession'), limits.maxTotalSessionAcuLimit == null ? T('unlimitedLabel') : this.fmtAcu(limits.maxTotalSessionAcuLimit)],
       [T('availableCredits'), org.availableCredits == null ? '—' : this.fmtAcu(org.availableCredits)],
-      [T('overageCredits'), org.overageCredits == null ? '—' : this.fmtAcu(org.overageCredits)],
+      [T('overageBalance'), overageText],
     ].map(([key, value]) => `<span class="k">${this.esc(key)}</span><span class="v">${this.esc(value)}</span>`).join('');
 
     const quotaBar = (label, pct, resetAt, resetLabel) => {

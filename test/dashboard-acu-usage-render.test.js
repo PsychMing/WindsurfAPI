@@ -58,7 +58,7 @@ const self = {
 };
 
 before(() => {
-  for (const name of ['fmtAcu', 'fmtUsageDate', 'fmtUsageDateTime', 'usageReason', 'usageReasonTip', 'renderAcuOrgError']) {
+  for (const name of ['fmtAcu', 'fmtCreditBalance', 'fmtUsageDate', 'fmtUsageDateTime', 'usageReason', 'usageReasonTip', 'renderAcuOrgError']) {
     self[name] = fn(name);
   }
   self.renderAcuOrg = fn('renderAcuOrg');
@@ -211,6 +211,48 @@ describe('renderAcuOrg — ACU limit / used / remaining', () => {
     assert.match(html, /i18n:usage\.partial/);
     assert.match(html, /i18n:usage\.reason\.timeout/);
     assert.match(html, />20</, 'the limit still renders when one source failed');
+  });
+});
+
+describe('renderAcuOrg — overage balance is signed, never clamped', () => {
+  // Regression: the panel showed the raw upstream `overage_credits` as
+  // "-0.1 credits" under a label that implied an available count. The value is
+  // a signed USD balance: a negative one is an overdraft and must stay visible
+  // (clamping to 0 would assert a zero balance the upstream never reported).
+  const row = (overageCredits) => self.renderAcuOrg(baseOrg({ overageCredits }), payload);
+
+  it('renders a negative balance with its sign and an overdrawn marker', () => {
+    const html = row(-0.1);
+    assert.match(html, /i18n:usage\.overageBalance/, 'the row is named as a balance, not a credit count');
+    assert.match(html, /-\$0\.10/, 'the negative balance is shown as -$0.10');
+    assert.match(html, /i18n:usage\.overdrawn/, 'a negative balance is labelled overdrawn');
+    assert.doesNotMatch(html, /overageBalance<\/span><span class="v">\$0\.00/, 'the overdraft is not clamped to zero');
+  });
+
+  it('keeps positive and zero balances unsigned and unmarked', () => {
+    const positive = row(12.34);
+    assert.match(positive, /\$12\.34/);
+    assert.doesNotMatch(positive, /i18n:usage\.overdrawn/);
+
+    const zero = row(0);
+    assert.match(zero, /\$0\.00/);
+    assert.doesNotMatch(zero, /i18n:usage\.overdrawn/);
+  });
+
+  it('keeps a sub-cent balance visible instead of flattening it to $0.00', () => {
+    const html = row(-0.0006735);
+    assert.match(html, /-\$0\.000674/, 'micro-dollar precision survives formatting');
+    assert.doesNotMatch(html, /-\$0\.00</, 'a real balance must not render as negative zero');
+
+    const tiny = row(-1e-9);
+    assert.match(tiny, /-\$0\.000000001/, 'even a sub-micro value keeps its magnitude');
+    assert.doesNotMatch(tiny, /-\$0\.00</, 'rounding must never manufacture negative zero');
+  });
+
+  it('renders an absent balance as an em dash, never as $0.00', () => {
+    const html = row(null);
+    assert.match(html, /overageBalance<\/span><span class="v">—/);
+    assert.doesNotMatch(html, /overageBalance<\/span><span class="v">\$0\.00/);
   });
 });
 

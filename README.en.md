@@ -471,7 +471,10 @@ Open `http://YOUR_IP:3003/dashboard`:
 | **Proxy Config** | Global or per-account HTTP / SOCKS5 proxy |
 | **Logs** | Real-time SSE streaming · Filter by level · `turns=N chars=M` diagnostics per turn |
 | **Stats & Analytics** | Time range 6h / 24h / 72h · Per-account dimensions · p50 / p95 latency |
+| **ACU & Usage** | Org-scoped ACU limit · cycle usage · daily burn-down · per-product breakdown · overage balance in USD |
 | **Experimental** | Cascade conversation reuse · **Model Identity Injection (custom prompt per vendor)** |
+
+The **ACU & Usage** panel reads `app.devin.ai/{org}/billing/*` once per organization, so members sharing an org render one ledger instead of one per account. Truth rules: `max_acu_limit: null` means unlimited (never zero), an absent cycle total is unknown (`—`), and `overage_credits` is a **signed USD balance**. A negative balance is an overdrawn on-demand balance: it renders as `-$0.10 (overdrawn)` and is never clamped to zero or hidden.
 
 ## Supported Models
 

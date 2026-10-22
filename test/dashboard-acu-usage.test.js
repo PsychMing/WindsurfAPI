@@ -233,6 +233,25 @@ describe('readAcuUsageByOrg', () => {
     assert.equal(serialized.includes('alpha-two'), false);
   });
 
+  it('passes a negative overage balance through to the panel payload', async () => {
+    // The overage balance is signed USD: a negative value is an overdraft, so
+    // the org reader must not clamp or drop it before the renderer sees it.
+    addDevinAccount('devin-session-token$tok-over', 'overdrawn-account');
+    installFetch({
+      statusBody: {
+        plan_slug: 'pro',
+        is_subscription_valid: true,
+        billing_method: 'stripe',
+        available_credits: 0,
+        overage_credits: -0.1,
+      },
+    });
+
+    const result = await readAcuUsageByOrg({ now: NOW });
+    assert.equal(result.ok, true);
+    assert.equal(result.orgs[0].overageCredits, -0.1);
+  });
+
   it('serves a second load from the read cache without new upstream calls', async () => {
     addDevinAccount('devin-session-token$tok-cache', 'cache-account');
     const calls = installFetch();
