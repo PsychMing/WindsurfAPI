@@ -21,7 +21,7 @@ function jsonReply(json, status = 200) {
 }
 
 export function registerAcuFlows(ctx) {
-  const { http, requireThat, addFlow, MATRIX, deps, SMOKE } = ctx;
+  const { http, requireThat, addFlow, MATRIX, deps, SMOKE, state } = ctx;
 
   // ─── acu ─────────────────────────────────────────────────────────────
   addFlow('acu', 'acu.orgs-panel', async () => {
@@ -125,4 +125,91 @@ export function registerAcuFlows(ctx) {
     requireThat(recovered.json.orgs[0].ok === true, 'recovery org is not healthy');
     return 'per-org 403 isolated; healthy org rendered; no sticky failure';
   });
+
+  // ─── signed overage balance (3.9.55, 83f6b63) ────────────────────────
+  // `overage_credits` is a SIGNED USD balance from the upstream ledger, not a
+  // credit count. A negative value is an overdrawn on-demand balance, so it
+  // must survive normalization unchanged and the panel must render the sign
+  // (`-$0.10 (overdrawn)`) — never clamp it to 0, never print `-$0.00`.
+  addFlow('acu', 'acu.signed-overage-balance', async () => {
+    const original = deps.fetchImpl;
+    const overdrawn = async (url, init) => {
+      if (String(url).includes('/billing/status')) {
+        return jsonReply({
+          plan_slug: 'pro',
+          is_subscription_valid: true,
+          available_credits: 1234,
+          overage_credits: -0.1,
+          billing_method: 'card',
+        });
+      }
+      return original(url, init);
+    };
+
+    deps.installFetch(overdrawn);
+    try {
+      // The org reader forwards the signed value unchanged.
+      const orgs = await http('GET', '/dashboard/api/usage/orgs?refresh=1');
+      requireThat(orgs.status === 200 && orgs.json?.ok === true, `orgs status ${orgs.status} error ${orgs.json?.error || '?'}`);
+      requireThat(orgs.json.orgs.length === 1, `orgs ${orgs.json.orgs.length}`);
+      const org = orgs.json.orgs[0];
+      requireThat(org.ok === true, `org error ${org.error || '?'}`);
+      requireThat(org.overageCredits === -0.1, `org.overageCredits ${JSON.stringify(org.overageCredits)} (a signed balance was clamped)`);
+      requireThat(org.availableCredits === 1234, `availableCredits ${org.availableCredits} (the positive side drifted)`);
+
+      // The per-account usage normalizer does the same.
+      const usage = await http('GET', `/dashboard/api/usage?account=${encodeURIComponent(state.tokenAccountId)}&refresh=1`);
+      requireThat(usage.status === 200 && usage.json?.ok === true, `usage status ${usage.status} error ${usage.json?.error || '?'}`);
+      requireThat(usage.json.overageCredits === -0.1, `usage.overageCredits ${JSON.stringify(usage.json.overageCredits)}`);
+    } finally {
+      deps.installFetch(original);
+      deps.resetReadCache();
+    }
+
+    // Execute the formatter the browser actually gets: fetch the dashboard,
+    // pull the method out of the served HTML, run it.
+    const html = await http('GET', '/dashboard', { auth: 'none' });
+    requireThat(html.status === 200, `dashboard status ${html.status}`);
+    const source = methodSource(html.text, 'fmtCreditBalance');
+    const fmt = new Function('I18n', `return (function ${source});`)({ locale: 'en-US' });
+    requireThat(fmt(-0.1) === '-$0.10', `fmtCreditBalance(-0.1) = ${fmt(-0.1)}`);
+    requireThat(fmt(0) === '$0.00', `fmtCreditBalance(0) = ${fmt(0)} (a zero balance must not read as a debt)`);
+    requireThat(fmt(2.5) === '$2.50', `fmtCreditBalance(2.5) = ${fmt(2.5)}`);
+    requireThat(fmt(-0.0000001) !== '-$0.00', 'a sub-micro overdraft rendered as -$0.00');
+    requireThat(fmt(-0.0000001).startsWith('-$'), `fmtCreditBalance(-1e-7) = ${fmt(-0.0000001)}`);
+    requireThat(fmt(null) === '—', `fmtCreditBalance(null) = ${fmt(null)} (unknown must not read as zero)`);
+
+    // Wiring: the ACU panel labels the row as a balance and names the state.
+    requireThat(html.text.includes("[T('overageBalance'), overageText]"), 'the ACU panel row is not labelled as an overage BALANCE');
+    requireThat(/overageCredits < 0 \? ` \(\$\{T\('overdrawn'\)\}\)`/.test(html.text), 'the panel does not append the overdrawn label for a negative balance');
+
+    const en = await http('GET', '/dashboard/i18n/en.json', { auth: 'none' });
+    const zh = await http('GET', '/dashboard/i18n/zh-CN.json', { auth: 'none' });
+    requireThat(en.json?.usage?.overageBalance === 'Overage balance', `en overageBalance ${en.json?.usage?.overageBalance}`);
+    requireThat(typeof en.json?.usage?.overdrawn === 'string' && en.json.usage.overdrawn, 'en overdrawn label missing');
+    requireThat(zh.json?.usage?.overageBalance === '按量余额', `zh overageBalance ${zh.json?.usage?.overageBalance}`);
+    requireThat(zh.json?.usage?.overdrawn === '已透支', `zh overdrawn ${zh.json?.usage?.overdrawn}`);
+    return '-0.1 passes through both readers; the served formatter prints -$0.10, never -$0.00';
+  });
+}
+
+/**
+ * Pull one shorthand method (`name(args) { … }`) out of the served dashboard by
+ * brace matching, so the assertion runs the shipped source, not a copy.
+ */
+function methodSource(html, name) {
+  const start = html.indexOf(`  ${name}(`);
+  if (start < 0) throw new Error(`${name} is missing from the served dashboard`);
+  const open = html.indexOf('{', start);
+  if (open < 0) throw new Error(`${name} has no body`);
+  let depth = 0;
+  for (let i = open; i < html.length; i++) {
+    const ch = html[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return html.slice(start + 2, i + 1);
+    }
+  }
+  throw new Error(`${name} body is unterminated`);
 }
