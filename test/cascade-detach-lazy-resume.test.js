@@ -976,4 +976,35 @@ describe('Detach P1 claim discipline', () => {
       assert.equal(state.sendCalls, 1, 'no retry ever re-sent the user message');
     });
   });
+
+  it('T20 a resume that loses its deadline evicts and releases the request lease', async () => {
+    const acct = seedAccount('t20');
+    createdIds.push(acct.id);
+    const { state, handler } = cascadeUpstream();
+    await withFakeLanguageServer(handler, async (port) => {
+      const lsFake = makeLsFake(port);
+      const body = bodyFor('t20');
+      const ctx = handlerContext(port, acct, lsFake);
+      await runToCompletion(body, ctx, { closeAfterWrites: 2 });
+      const deadline0 = registry.detachedRegistry.stats().evict.deadline;
+      // The claim succeeds, then the request's own budget is already spent:
+      // the handler must evict and release the lease it just acquired.
+      const budget = {
+        deadline: Date.now() + 60_000,
+        remainingMs: () => 0,
+        waitMs: () => 0,
+        takeTurn: () => false,
+        expired: () => true,
+        describe: () => 'zero-budget',
+      };
+      const retryCtx = handlerContext(port, acct, lsFake, { budget });
+      await runToCompletion(body, retryCtx, {});
+      assert.equal(registry.detachedRegistry.stats().evict.deadline - deadline0, 1,
+        'the expired resume evicted the entry');
+      assert.equal(registry.detachedRegistry.stats().entries, 0);
+      assert.equal(registry.detachedRegistry.stats().serve, 0);
+      assert.equal(lsFake.activeRequests, 0, 'the claim lease must be released on the deadline path');
+      void state;
+    });
+  });
 });
