@@ -68,6 +68,15 @@
 - **移除账号的迟到结果**：`finalizeConnectAccount` 先按不可变 id 解析账号；账号已删除则只记全局统计，不再回落到旧 key 惩罚重建账号。
 - **签名验证收窄**：默认 identity 正则锚定结尾；`--tag vX.Y.Z` 生成精确身份，`v3.10.0-unrequested` 不再匹配。
 
+
+## Wave 12（真实上游与真实客户端）
+
+- **detach gate 6 真上游 PASS**：`claude-haiku-5-5-medium` 3/3、`gpt-5.5-xhigh` 3/3，abort→同请求恢复答案逐字节一致，60s detach 在 120s TTL 内恢复；计费每次恢复只记一次。`gpt-6-*` 无 Cascade 路径（“only in Devin Local”），已由路由修复。
+- **真实客户端**：Claude Code 2.1.306 3/3、Codex 0.163 3/3，wire 校验 24/24、0 违规；发现并修复 `reasoning.effort=medium` 把 `gpt-6-luna-max` 降级为 medium（显式后缀现在优先，Responses 报告实际服务模型）。
+- **工具/图片/缓存矩阵**（75 次 live）：四族工具全 native；HTTPS `image_url` 之前被静默丢弃，现已按 5MB/8s/私有 IP 防护内联；`gpt-6` 默认开启 prompt-cache hint。
+- **面板**：`#stats` 改为 new-api 风格请求日志（时间/模型/账号/状态/延迟/token/费用 + 过滤/分页/聚合/时间序列）；新增 `#devin` 页（runtime/sessions/catalog/quota/settings，缺失源显式标注）；配色回退到 workbuddy 之前的 zinc/clay 并保留 AA；审计 10 tab/42 端点/42 动作，修 5 个接线 bug（0 console error）。
+- 已知未修（记录）：Gemini `max_tokens` 不限制 thinking；swe 工具 ID 形状；`parallel_tool_calls:false` 在该路由无效；stats 每账号求和 352 vs 总数 393。
+
 ## 尚未验证
 
 - `[UNVERIFIED]` detach 默认开启（NO-GO 未变）；真实 Cascade 上游 resume。
