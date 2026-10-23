@@ -432,9 +432,28 @@ function percentile(sortedArr, p) {
   return sortedArr[idx];
 }
 
+/**
+ * Split the lifetime request total into rows that carry an account id and rows
+ * that cannot be attributed to any account. Global/unauthenticated paths call
+ * recordRequest with `accountId == null`, so they increment totalRequests but
+ * have no accountCounts key — the account dimension silently sums short of the
+ * page total. Derived at read time so pre-fix persisted snapshots reconcile
+ * without a migration.
+ */
+function accountAttribution() {
+  let attributed = 0;
+  for (const s of Object.values(_state.accountCounts || {})) {
+    const n = Number(s?.requests);
+    if (Number.isFinite(n) && n > 0) attributed += n;
+  }
+  const total = Number(_state.totalRequests) || 0;
+  return { total, attributed, unattributed: Math.max(0, total - attributed) };
+}
+
 /** Get all stats, with computed latency percentiles per model. */
 export function getStats() {
   const out = { ..._state };
+  out.accountAttribution = accountAttribution();
   out.modelCounts = {};
   for (const [m, s] of Object.entries(_state.modelCounts)) {
     const sorted = (s.recentMs || []).slice().sort((a, b) => a - b);
@@ -807,6 +826,7 @@ export function getRequestLog({
   const byModel = new Map();
   const byAccount = new Map();
   const byDay = new Map();
+  const unattributed = emptyAggregate({ account: null });
   for (const row of filtered) {
     addToAggregate(summary, row);
     if (row.model) {
@@ -818,6 +838,8 @@ export function getRequestLog({
       const agg = byAccount.get(row.account) || emptyAggregate({ account: row.account });
       addToAggregate(agg, row);
       byAccount.set(row.account, agg);
+    } else {
+      addToAggregate(unattributed, row);
     }
     const day = new Date(row.ts).toISOString().slice(0, 10);
     const agg = byDay.get(day) || emptyAggregate({ day });
@@ -825,6 +847,7 @@ export function getRequestLog({
     byDay.set(day, agg);
   }
   finishAggregate(summary);
+  finishAggregate(unattributed);
 
   const models = [...byModel.values()]
     .map(finishAggregate)
@@ -852,6 +875,9 @@ export function getRequestLog({
     summary,
     byModel: models,
     byAccount: accounts,
+    // Rows with no account id: byAccount + unattributed = summary, so the
+    // account tab can state the remainder instead of silently summing short.
+    unattributed,
     byDay: days,
   };
 }

@@ -4077,6 +4077,7 @@ tbody tr:hover td { background: var(--surface-2); }
             <tbody id="stats-agg-body"></tbody>
           </table>
         </div>
+        <div id="stats-agg-note" class="text-sm text-muted" style="margin-top:8px" hidden></div>
       </div>
     </div>
   </section>
@@ -12175,6 +12176,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       if (label) label.textContent = '-';
       if (prev) prev.disabled = true;
       if (next) next.disabled = true;
+      const note = document.getElementById('stats-agg-note');
+      if (note) { note.hidden = true; note.textContent = ''; }
       return;
     }
 
@@ -12236,6 +12239,23 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const body = document.getElementById('stats-agg-body');
     if (!head || !body) return;
     const tab = this.statsAggTab;
+    // Per-account rows can only cover requests that carried an account id;
+    // global/unauthenticated paths still count in the log total. State the
+    // remainder so the table never silently sums short of that total.
+    const note = document.getElementById('stats-agg-note');
+    const unattributed = Number(d?.unattributed?.requests) || 0;
+    if (note) {
+      if (tab === 'account' && unattributed > 0) {
+        note.hidden = false;
+        note.textContent = I18n.t('section.statsAgg.unattributedNote', {
+          count: unattributed,
+          total: Number(d?.summary?.requests) || 0,
+        });
+      } else {
+        note.hidden = true;
+        note.textContent = '';
+      }
+    }
     const rows = tab === 'account' ? (d.byAccount || []) : tab === 'day' ? (d.byDay || []) : (d.byModel || []);
     const nameKey = tab === 'account' ? 'table.header.account' : tab === 'day' ? 'table.header.day' : 'table.header.model';
     const th = (key) => `<th class="numeric">${this.esc(I18n.t(key))}</th>`;

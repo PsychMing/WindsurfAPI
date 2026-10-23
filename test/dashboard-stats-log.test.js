@@ -273,5 +273,7 @@ describe('GET /dashboard/api/stats/log', () => {
     assert.equal(typeof stats.modelCounts, 'object');
     assert.equal(typeof stats.tokenTotals, 'object');
     assert.equal(typeof stats.modelBilling, 'object');
+    assert.equal(stats.accountAttribution.total, stats.totalRequests);
+    assert.equal(stats.accountAttribution.attributed + stats.accountAttribution.unattributed, stats.totalRequests);
   });
 });
