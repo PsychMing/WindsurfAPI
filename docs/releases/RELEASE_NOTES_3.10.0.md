@@ -47,6 +47,17 @@
 - mutation：全部 **88 个规格 exit 0**（含 detach soak/addendum；无 survivor）。
 - 真实 Docker E2E：**4/4 PASS**（`evidence/DockerE2E.md`）。
 
+
+## 外部审查修正（GPT-6-Pro，独立复现）
+
+审查指出三条真实故障链与两条 detach 反例，全部修复：
+
+- **模型级 401 不再污染账号**：`SELECTOR_NOT_ELIGIBLE` 识别 “This model is no longer available for your account”，只记录（账号 × canonical selector）的 30 分钟短期不可用，不触发 `reportError`/重登录；failover 只挑对该 selector 有资格的 peer；`isLastUsableAccount` 带 selector。无可用 peer 时返回 403 `model_not_available`（不是 401）。17/17（双账号红先）。
+- **Responses 不再伪造 hosted 搜索完成**：没有执行器时在模型调用前拒绝 hosted `web_search`（400 `unsupported_hosted_tool`），删除所有 `web_search_call.status=completed` 构造；普通客户端 `function` 仍是 `function_call`。44/44。
+- **请求中轮换 key 不再漏记账**：`recordAccountSpend` 按不可变 `accountId` 归属，`attemptId` 入 ring；旧凭证 epoch 的迟到 401 不惩罚新 epoch。6/6 旋转测试。
+- **detach D1/D2**：TTL 只作准入，已 claim 的 entry 只按原请求 deadline + token 清理；`evict` 带身份校验（关掉 ABA）；发出过工具调用（含 markup 模拟）的回合不进 no-tool 缓存。119/119 + 127/127。
+- 顺带：`test/connect-token-usage` 的两处单参数断言更新为接受 2 参数调用；4 个 mutation baseline 与 escape 行号随合并重钉。
+
 ## 尚未验证
 
 - `[UNVERIFIED]` detach 默认开启（NO-GO 未变）；真实 Cascade 上游 resume。
