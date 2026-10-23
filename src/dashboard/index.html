@@ -10345,6 +10345,13 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const resetRow = (key, at) => (at
       ? `<span class="k">${T(key)}</span><span class="v">${fmtReset(at)}</span>`
       : '');
+    // The drawer reads the SAME signed USD balance as the ACU panel. `toFixed(4)`
+    // put the sign before the currency symbol ($-0.1000) and flattened a
+    // sub-cent debt to $-0.0000, so it goes through the one formatter that keeps
+    // the sign and the magnitude, plus the same overdrawn label.
+    const overageText = cr.overageBalance == null
+      ? null
+      : `${this.fmtCreditBalance(cr.overageBalance)}${cr.overageBalance < 0 ? ` (${I18n.t('usage.overdrawn')})` : ''}`;
     return `<div class="detail-card">
           <div class="detail-card-head"><span class="dot"></span>${T('title')}</div>
           <div class="detail-kv">
@@ -10355,7 +10362,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
             <span class="k">${T('end')}</span><span class="v">${fmtDate(planEnd)}${trialDaysLeft != null ? ` <span style="color:${trialDaysLeft <= 3 ? 'var(--error)' : 'var(--text-dim)'};font-size:11px">(${trialDaysLeft}d left)</span>` : ''}</span>
             ${resetRow('dailyReset', a.periodStart)}
             ${resetRow('weeklyReset', a.periodEnd)}
-            ${cr.overageBalance != null ? `<span class="k">${T('overage')}</span><span class="v">$${cr.overageBalance.toFixed(4)}</span>` : ''}
+            ${overageText ? `<span class="k">${T('overage')}</span><span class="v">${this.esc(overageText)}</span>` : ''}
           </div>
         </div>`;
   },

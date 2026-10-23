@@ -65,6 +65,9 @@ function esc(value) {
 
 const self = { esc };
 self.poolBalanceText = (stats) => poolBalanceText(I18n, self, stats);
+// The drawer reads the signed overage balance through the same formatter the
+// ACU panel uses, so the stub delegates to the shipped method.
+self.fmtCreditBalance = (value) => renderer('fmtCreditBalance')(I18n, self, value);
 
 function renderer(name) {
   const { params, body } = methodParts(name);
@@ -196,6 +199,47 @@ describe('account drawer — plan card labels', () => {
     assert.equal(ZH.account.detail.plan.weeklyReset, '每周配额重置');
     assert.equal(EN.account.detail.plan.periodStart, undefined);
     assert.equal(ZH.account.detail.plan.periodStart, undefined);
+  });
+});
+
+describe('account drawer — signed overage balance', () => {
+  const card = (overage) => renderPlanCard(
+    I18n, self,
+    { tier: 'pro' },
+    { planName: 'Pro', overageBalance: overage },
+    {},
+  );
+
+  it('renders an overdrawn balance with its sign and the overdrawn label', () => {
+    const html = card(-0.1);
+    assert.match(html, /i18n:account\.detail\.plan\.overage/);
+    assert.match(html, /<span class="v">-\$0\.10 \(i18n:usage\.overdrawn\)<\/span>/,
+      'a negative balance must keep its sign and say it is overdrawn');
+    assert.doesNotMatch(html, /\$-0\.1000/, 'the sign must not sit before the currency symbol');
+  });
+
+  it('never flattens a sub-cent debt to -$0.00', () => {
+    const html = card(-0.0000001);
+    assert.match(html, /-\$0\.0000001/, 'the magnitude must survive below one cent');
+    assert.doesNotMatch(html, /-\$0\.00\b/, 'a real debt must never render as -$0.00');
+    assert.match(html, /i18n:usage\.overdrawn/);
+  });
+
+  it('keeps a real zero and a positive balance unsigned', () => {
+    assert.match(card(0), /<span class="v">\$0\.00<\/span>/);
+    assert.match(card(2.5), /<span class="v">\$2\.50<\/span>/);
+    assert.doesNotMatch(card(2.5), /overdrawn/);
+  });
+
+  it('omits the row entirely when upstream reported no balance', () => {
+    for (const unknown of [null, undefined]) {
+      assert.doesNotMatch(card(unknown), /plan\.overage/, 'an absent balance must not render a row');
+    }
+  });
+
+  it('no longer formats the drawer row with toFixed', () => {
+    assert.doesNotMatch(HTML, /overageBalance\.toFixed/);
+    assert.match(HTML, /this\.fmtCreditBalance\(cr\.overageBalance\)/);
   });
 });
 
