@@ -2920,10 +2920,12 @@ async function waitForAccount(tried, signal, maxWaitMs = QUEUE_MAX_WAIT_MS, mode
 // two fields, the user's `xhigh` knob is silently dropped (zhqsuo's #115
 // followup: log shows `model=gpt-5.5-medium reasoning=xhigh`).
 //
-// Merge logic: if reqModel has no effort suffix already AND
-// `${reqModel}-${effort}` resolves to a known model in the catalog, swap.
-// Anything else (unknown model, no effort, effort already in name)
-// returns reqModel unchanged.
+// Merge logic: the effort field is folded into the model id ONLY when the id
+// carries no effort suffix. An explicit suffix in the requested model is the
+// caller's tier selection and is AUTHORITATIVE — neither `reasoning.effort` nor
+// `reasoning_effort` may rewrite it (see the suffix guard below). When the id
+// has no suffix, `${reqModel}-${effort}` is used only if it resolves to a known
+// catalog model; anything else returns reqModel unchanged.
 export function mergeReasoningEffortIntoModel(reqModel, body) {
   if (!reqModel || typeof reqModel !== 'string') return reqModel;
   const effort = String(
@@ -2934,24 +2936,27 @@ export function mergeReasoningEffortIntoModel(reqModel, body) {
   if (!effort) return reqModel;
   const VALID = new Set(['minimal', 'none', 'low', 'medium', 'high', 'xhigh', 'max']);
   if (!VALID.has(effort)) return reqModel;
-  const normalizedEffort = effort === 'minimal' ? 'none' : effort;
-  let baseModel = reqModel;
-  // If the model already carries an effort suffix, replace it with the explicit
-  // request effort instead of treating it as final. Claude Code can send
-  // `claude-opus-4-8-medium` together with `reasoning.effort=xhigh`; the
-  // separate effort field is the caller's current selection and must win.
+  // An explicit effort suffix in the requested model wins.
+  //
+  // This used to strip the suffix and rebuild the id from the effort field, on
+  // the theory that the field was the caller's "current selection". It is not:
+  // codex CLI sends `reasoning:{effort:"medium"}` on EVERY turn, so a request
+  // naming `gpt-6-luna-max` was silently served as `gpt-6-luna-medium` (a
+  // cheaper tier, wrong output and wrong billing — CompatClients F1: 18/18
+  // requests). The reverse direction is just as wrong: a caller who asked for
+  // `-medium` did not ask us to promote it to `-xhigh`. A model id that already
+  // names its tier is what runs; the separate effort field only supplies a
+  // missing tier (the #115 case: bare `gpt-5.5` + xhigh → `gpt-5.5-xhigh`).
   for (const e of VALID) {
     const suffix = '-' + (e === 'minimal' ? 'none' : e);
-    if (baseModel.toLowerCase().endsWith(suffix)) {
-      baseModel = baseModel.slice(0, -suffix.length);
-      break;
-    }
+    if (reqModel.toLowerCase().endsWith(suffix)) return reqModel;
   }
+  const normalizedEffort = effort === 'minimal' ? 'none' : effort;
   // Try the merged form. resolveModel returns the model key if it exists,
   // unchanged input otherwise; getModelInfo returns null for unknown models.
   // Both checks together guard against accidentally inventing a model that
   // doesn't exist in the catalog.
-  const merged = `${baseModel}-${normalizedEffort}`;
+  const merged = `${reqModel}-${normalizedEffort}`;
   const resolved = resolveModel(merged);
   if (resolved && getModelInfo(resolved)) return merged;
   return reqModel;

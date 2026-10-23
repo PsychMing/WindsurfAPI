@@ -909,16 +909,26 @@ describe('mergeReasoningEffortIntoModel — v2.0.66 reasoning_effort fold-in', (
     );
   });
 
-  it('replaces an existing effort suffix when the caller sends an explicit effort field', async () => {
+  it('an explicit effort suffix is authoritative over the effort field (CompatClients F1)', async () => {
     const { mergeReasoningEffortIntoModel } = await import('../src/handlers/chat.js');
+    // This case used to pin the OPPOSITE (suffix stripped and replaced), which
+    // is the defect Codex hit: it sends reasoning.effort=medium on every turn,
+    // so gpt-6-luna-max was served as gpt-6-luna-medium. An explicit tier in
+    // the model id is the caller's selection and must win in both directions —
+    // a -medium request must not be promoted either.
+    assert.equal(
+      mergeReasoningEffortIntoModel('gpt-6-luna-max', { reasoning: { effort: 'medium' } }),
+      'gpt-6-luna-max',
+    );
     assert.equal(
       mergeReasoningEffortIntoModel('gpt-5.5-xhigh', { reasoning: { effort: 'medium' } }),
-      'gpt-5.5-medium',
+      'gpt-5.5-xhigh',
     );
     assert.equal(
       mergeReasoningEffortIntoModel('claude-opus-4-8-medium', { reasoning: { effort: 'xhigh' } }),
-      'claude-opus-4-8-xhigh',
+      'claude-opus-4-8-medium',
     );
+    // No suffix in the request → the effort field still supplies the tier.
     assert.equal(
       mergeReasoningEffortIntoModel('claude-opus-4.8', { reasoning_effort: 'max' }),
       'claude-opus-4.8-max',

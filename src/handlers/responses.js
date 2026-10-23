@@ -699,7 +699,16 @@ export function chatToResponse(chatBody, requestedModel, responseId = genRespons
     created_at: chatBody.created || Math.floor(Date.now() / 1000),
     status: truncated ? 'incomplete' : 'completed',
     ...(truncated ? { incomplete_details: { reason: finishReason === 'length' ? 'max_output_tokens' : 'content_filter' } } : {}),
-    model: requestedModel || chatBody.model,
+    // The SERVED name wins over the requested one, matching /v1/messages
+    // (messages.js `result.model || model`). chat.js reports what actually ran —
+    // the requested name for a mapped alias, the real selector when a request
+    // degrades, and the authoritative tier when the caller named one — so
+    // deferring to it is what makes this route honest. Before this, the
+    // non-stream path echoed the raw request string, which MASKED the F1 tier
+    // downgrade (requested gpt-6-luna-max, served gpt-6-luna-medium, body said
+    // max) while the stream path adopted the served name from the chunk. The
+    // fallback still covers a result with no model field at all.
+    model: chatBody.model || requestedModel,
     output,
     // Omitted, not zeroed, when the upstream reported nothing. `input_tokens: 0` is
     // an ASSERTION that the turn consumed no prompt tokens, which is false for any
@@ -1759,7 +1768,9 @@ export async function handleResponses(body, deps = {}) {
   // `terminal` carries the status this request REPORTED to the client, so a later
   // GET /v1/responses/{id} answers with the same thing instead of assuming
   // 'completed'. Defaults to a clean completion when the caller passes nothing.
-  const commit = (assistantMessage, terminal = {}) => {
+  // `servedModel` is what the POST reported as response.model (the served name,
+  // not the raw request string) so a later retrieval cannot contradict it.
+  const commit = (assistantMessage, terminal = {}, servedModel = requestedModel) => {
     if (!isResponseStoreEnabled() || !chainable) return;
     try {
       const stored = putResponse(
@@ -1772,7 +1783,7 @@ export async function handleResponses(body, deps = {}) {
         })(),
         callerKey,
         {
-          model: requestedModel,
+          model: servedModel || requestedModel,
           store: body.store,
           status: terminal.status || 'completed',
           incompleteReason: terminal.incompleteReason || null,
@@ -1809,7 +1820,7 @@ export async function handleResponses(body, deps = {}) {
     } : null, {
       status: responseBody.status,
       incompleteReason: responseBody.incomplete_details?.reason || null,
-    });
+    }, responseBody.model);
     return { status: 200, body: responseBody };
   }
 
@@ -1874,7 +1885,7 @@ export async function handleResponses(body, deps = {}) {
               status: 'incomplete',
               incompleteReason: reason === 'length' ? 'max_output_tokens' : 'content_filter',
             }
-            : { status: 'completed' });
+            : { status: 'completed' }, translator.model);
         }
       } catch (e) {
         log.error(`Responses stream error: ${e.message}`);
