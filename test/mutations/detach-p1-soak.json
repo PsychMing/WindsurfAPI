@@ -4,7 +4,7 @@
     "test/detached-registry.test.js",
     "test/cascade-detach-lazy-resume.test.js"
   ],
-  "expectBaselinePass": 42,
+  "expectBaselinePass": 44,
   "mutations": [
     {
       "name": "M1 cursor completeness: snapshot() drops generatorOffset",
@@ -61,10 +61,11 @@
       "replacement": "                }"
     },
     {
-      "name": "M9a eligibility: tool-chunk scan removed",
+      "name": "M9a eligibility: tool-chunk scan removed (EQUIVALENT: the toolCalls guard independently refuses)",
       "file": "src/client.js",
       "anchor": "        if (turn.chunks.some(chunk => chunk?.nativeToolCall || chunk?.nativeToolResult)) return null;",
-      "replacement": "        /* MUTANT: tool-chunk scan removed */"
+      "replacement": "        /* MUTANT: tool-chunk scan removed */",
+      "expectCaught": false
     },
     {
       "name": "M9b eligibility: tool-chunk scan + toolCalls guard removed",
