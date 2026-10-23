@@ -429,16 +429,14 @@ jobs:
             cosign sign-blob \
               --yes \
               --bundle "${base}.sigstore.json" \
-              --output-signature "${base}.sig" \
-              --output-certificate "${base}.pem" \
               "$f"
           done
           # A missing or empty signature would otherwise be attached as a
           # zero-byte asset and only discovered by the first user to verify.
-          for f in *.sig *.pem *.sigstore.json; do
-            [ -s "$f" ] || { echo "::error::signature artifact $f is empty"; exit 1; }
+          for f in *.sigstore.json; do
+            [ -s "$f" ] || { echo "::error::signature bundle $f is empty"; exit 1; }
           done
-          ls -l *.sig *.pem *.sigstore.json
+          ls -l *.sigstore.json
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
