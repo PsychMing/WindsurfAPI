@@ -149,8 +149,8 @@
     {
       "name": "the static whitelist becomes a union again over live cost-tier data",
       "file": "src/auth.js",
-      "anchor": "  if (costFree === null && rateFree === null) return [...FREE_REACHABLE_SELECTORS];",
-      "replacement": "  if (costFree === null || rateFree === null) return [...FREE_REACHABLE_SELECTORS];"
+      "anchor": "  for (const selector of rateFree || []) {\n    if (isConnectSelectorCurrentlyFree(selector)) out.add(selector);\n  }\n  return [...out];",
+      "replacement": "  for (const selector of rateFree || []) {\n    if (isConnectSelectorCurrentlyFree(selector)) out.add(selector);\n  }\n  return [...new Set([...FREE_REACHABLE_SELECTORS, ...out])];"
     },
     {
       "name": "the cost tier is ignored when deciding whether a selector is free",
