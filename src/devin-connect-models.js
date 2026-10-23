@@ -117,7 +117,13 @@ const SELECTOR_MAP = new Map(Object.entries({
   'gemini-3.5-flash': 'gemini-3-5-flash-medium',
   'gemini-3-1-pro': 'gemini-3-1-pro-low',
   'gemini-3.1-pro': 'gemini-3-1-pro-low',
+  // GLM-5.1 is the previous discovery id for the same upstream model (selector
+  // glm-5-2). Clients send it both dotted and dashed; without the dashed row the
+  // dashed spelling missed every map lookup, was absent from the live catalog,
+  // and resolved to {selector:null, mapped:false} → 400 model_not_found, while
+  // the dotted form worked. Keep both spellings on the same target.
   'glm-5.1': 'glm-5-2',
+  'glm-5-1': 'glm-5-2',
   'kimi-k2.6': 'kimi-k2-6',
   'kimi-k2.7': 'kimi-k2-7',
   // New families in the live 105 catalog (2026-07): SWE-1.7 + DeepSeek V4 Pro.

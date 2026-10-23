@@ -368,8 +368,16 @@ export function pickToolDialect(modelKey, provider, route = null) {
     // hard one to diagnose: the model answers in plain text, emits no tool call, and the
     // client waits forever for one. Every other spelling (`glm-5.2`, `glm-5.2-none`,
     // `glm-5-2-none`) already resolved correctly, which is what kept it hidden.
+    //
+    // GLM-5.1 belongs to the same upstream family: SELECTOR_MAP maps `glm-5.1` / `glm-5-1`
+    // onto the very same `glm-5-2` selector, and the v2.0.72 finding (glm47 markup ignored,
+    // plain-text answer, zero tool calls) holds for the whole 5.x ≥ 5.1 family. The old
+    // `[2-9]` minor-version class started at 5.2, so the entire 5.1 alias family fell
+    // through to glm47 — the identical silent stall. Match the minor version as exactly
+    // `1` or `2`-`9` followed by `-` or end: a hypothetical `glm-5-12` / `glm-5-1x` must
+    // NOT be swallowed, and bare `glm-5` plus glm-4.x stay on glm47.
     const dashed = normalizedModelKey.replace(/\./g, '-');
-    if (/^glm-5-[2-9](?:-|$)/.test(dashed)) return 'gpt_native';
+    if (/^glm-5-(?:1|[2-9])(?:-|$)/.test(dashed)) return 'gpt_native';
     return 'glm47';
   }
   if (normalizedProvider === 'moonshot' || normalizedModelKey.startsWith('kimi')) {
