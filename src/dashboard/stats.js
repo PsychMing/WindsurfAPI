@@ -6,7 +6,8 @@ import { readFileSync, existsSync } from 'fs';
 import { writeJsonAtomic } from '../fs-atomic.js';
 import { join } from 'path';
 import { config } from '../config.js';
-import { getModelInfo } from '../models.js';
+import { getModelInfo, getCloudSelectorPricing, resolveModel } from '../models.js';
+import { resolveConnectSelector } from '../devin-connect-models.js';
 
 const STATS_FILE = join(config.dataDir, 'stats.json');
 
@@ -63,12 +64,29 @@ function foldIntoOther(src, modelCounts = _state.modelCounts) {
 }
 
 /**
+ * The modelCounts key a request belongs to, applying the cardinality cap.
+ *
+ * Shared by recordRequest and recordTokenUsage so the two maps cannot disagree
+ * about which bucket a model landed in — a token row under a key the request
+ * table never created would render as a model with tokens and zero requests.
+ */
+function boundedModelKey(model) {
+  let key = typeof model === 'string' && model ? model : OTHER_MODEL_KEY;
+  if (!_state.modelCounts[key] && key !== OTHER_MODEL_KEY) {
+    enforceModelCap();
+    if (MAX_MODELS > 0 && realModelKeyCount() >= MAX_MODELS) key = OTHER_MODEL_KEY;
+  }
+  return key;
+}
+
+/**
  * Ensure there is room for one more real model key, LRU-evicting the
  * least-recently-updated real model into '(other)' while over the cap.
  * No-op when MAX_MODELS is 0 (unbounded).
  */
 function enforceModelCap(reserveSlot = true, modelCounts = _state.modelCounts) {
-  if (MAX_MODELS <= 0) return;
+  const evicted = [];
+  if (MAX_MODELS <= 0) return evicted;
   while (realModelKeyCount(modelCounts) > MAX_MODELS - (reserveSlot ? 1 : 0)) {
     let coldestKey = null;
     let coldestTs = Infinity;
@@ -80,6 +98,38 @@ function enforceModelCap(reserveSlot = true, modelCounts = _state.modelCounts) {
     if (coldestKey == null) break;
     foldIntoOther(modelCounts[coldestKey], modelCounts);
     delete modelCounts[coldestKey];
+    evicted.push(coldestKey);
+  }
+  // Only the live state owns the live token map, and only the keys THIS call
+  // evicted may be folded: a token row can legitimately exist before its request
+  // row (recordTokenUsage runs first on several chat paths), so sweeping every
+  // key absent from modelCounts would misfile a live model under '(other)'.
+  if (modelCounts === _state.modelCounts && evicted.length) {
+    pruneTokensToModelCounts(evicted, modelCounts);
+  }
+  return evicted;
+}
+
+/**
+ * Fold the given models' token rows into '(other)'.
+ *
+ * Used for keys the request table actually lost (LRU eviction, or an imported
+ * snapshot whose cap dropped them). The dashboard joins the two maps by key, and
+ * an orphan would render a model that "moved 2M tokens" while the request table
+ * says it never ran.
+ */
+function pruneTokensToModelCounts(keys, modelCounts = _state.modelCounts, tokens = _state.tokensByModel) {
+  if (!tokens || typeof tokens !== 'object') return;
+  for (const key of keys || []) {
+    if (key === OTHER_MODEL_KEY) continue;
+    if (Object.hasOwn(modelCounts, key)) continue;
+    if (!Object.hasOwn(tokens, key)) continue;
+    const dst = tokens[OTHER_MODEL_KEY] || {
+      fresh_input: 0, cache_read: 0, cache_write: 0, output: 0, total: 0, requests_with_usage: 0,
+    };
+    tokens[OTHER_MODEL_KEY] = dst;
+    for (const field of Object.keys(dst)) dst[field] += tokens[key][field] || 0;
+    delete tokens[key];
   }
 }
 
@@ -119,6 +169,11 @@ const STATS_DEFAULTS = {
   creditsByHour: {},   // { "2026-07-09T01:00:00Z": 12.5 }
   creditsByDay: {},    // { "2026-07-09": 340.0 }
   creditsByModel: {},  // { "claude-opus-4-8-medium": 88.0 }
+  // v3.10.x — per-model token totals. tokenTotals answers "how many tokens did
+  // this deployment move"; this answers "which model moved them", which is the
+  // question a bill asks. Keyed by the same bounded model key modelCounts uses,
+  // so a client-permuted name cannot grow this map without bound.
+  tokensByModel: {},   // { "swe-2-medium": { fresh_input, cache_read, cache_write, output, total, requests_with_usage } }
   // v2.0.148 — per-request detail ring buffer (bounded, persisted) so long runs
   // keep a rolling window of recent calls for audit/export instead of losing them.
   recentRequests: [],  // [{ ts, model, success, ms, account, credit }]  newest last, cap 500
@@ -163,6 +218,29 @@ function getHourKey() {
 }
 
 /**
+ * Credit cost of one request, from live billing data when the sync knows it.
+ *
+ * The static rate card is a snapshot of one moment and knows nothing about
+ * promotions: swe-2-medium's card says 6 credits while the upstream marks it
+ * FREE until 2026-11-01. Metering the card would report spend the account never
+ * incurred, and the free badge on the model row would then contradict the very
+ * number next to it. Precedence: live free → 0; live credit rate → that rate;
+ * nothing live → the static card (the pre-existing behaviour).
+ */
+function requestCreditCost(model) {
+  if (!model) return 0;
+  const key = resolveModel(model) || model;
+  const resolution = resolveConnectSelector(key, { warnOnFallback: false });
+  if (resolution?.mapped) {
+    const live = getCloudSelectorPricing(resolution.selector);
+    if (live.freeNow === true) return 0;
+    if (typeof live.rate === 'number') return Math.max(0, live.rate);
+  }
+  const card = Number(getModelInfo(key)?.credit);
+  return Number.isFinite(card) && card > 0 ? card : 0;
+}
+
+/**
  * Record a completed request.
  */
 export function recordRequest(model, success, durationMs, accountId) {
@@ -174,11 +252,7 @@ export function recordRequest(model, success, durationMs, accountId) {
   // Cap real-model cardinality: a brand-new key that would exceed the limit
   // gets folded into the shared '(other)' bucket instead (LRU eviction of the
   // coldest existing key). Known keys and '(other)' itself always update.
-  let key = model;
-  if (!_state.modelCounts[key] && key !== OTHER_MODEL_KEY) {
-    enforceModelCap();
-    if (MAX_MODELS > 0 && realModelKeyCount() >= MAX_MODELS) key = OTHER_MODEL_KEY;
-  }
+  const key = boundedModelKey(model);
   if (!_state.modelCounts[key]) {
     _state.modelCounts[key] = { requests: 0, success: 0, errors: 0, totalMs: 0, recentMs: [], lastTs: 0 };
   }
@@ -227,10 +301,12 @@ export function recordRequest(model, success, durationMs, accountId) {
   bucket.requests++;
   if (!success) bucket.errors++;
 
-  // v2.0.148 — Credits spend + per-request detail. Cost = model's rate-card
-  // credit (getModelInfo), 0 if unknown. Persisted maps stay JSON-safe.
+  // v2.0.148 — Credits spend + per-request detail. Cost comes from the live
+  // billing sync when it knows the model (free promo → 0, catalog/rate-table
+  // multiplier otherwise) and only falls back to the static rate card when the
+  // upstream has said nothing. Persisted maps stay JSON-safe.
   let credit = 0;
-  try { credit = Number(getModelInfo(model)?.credit) || 0; } catch { credit = 0; }
+  try { credit = requestCreditCost(model); } catch { credit = 0; }
   if (credit > 0 && success) {
     const dayKey = hourKey.slice(0, 10);
     _state.creditsTotal = (_state.creditsTotal || 0) + credit;
@@ -331,6 +407,13 @@ function normalizeStatsSnapshot(src) {
     }
   }
   if (Object.hasOwn(src, 'tokenTotals')) out.tokenTotals = counts(src.tokenTotals, Object.keys(out.tokenTotals));
+  if (Object.hasOwn(src, 'tokensByModel')) {
+    if (!object(src.tokensByModel)) throw new Error('invalid token map');
+    for (const [name, value] of Object.entries(src.tokensByModel)) {
+      out.tokensByModel[name] = counts(value,
+        ['fresh_input', 'cache_read', 'cache_write', 'output', 'total', 'requests_with_usage']);
+    }
+  }
   for (const key of ['hourlyBuckets', 'recentRequests', 'recentPolicyBlocks']) {
     if (!Object.hasOwn(src, key)) continue;
     if (!Array.isArray(src[key])) throw new Error('invalid history');
@@ -385,6 +468,11 @@ export function importStats(snap, { mode = 'merge' } = {}) {
           next[key][name] = (Object.hasOwn(next[key], name) ? next[key][name] : 0) + value;
         }
       }
+      for (const [name, incoming] of Object.entries(src.tokensByModel)) {
+        const current = Object.hasOwn(next.tokensByModel, name) ? next.tokensByModel[name] : null;
+        if (!current) { next.tokensByModel[name] = { ...incoming }; continue; }
+        for (const field of Object.keys(current)) current[field] += incoming[field] || 0;
+      }
       for (const key of ['modelCounts', 'accountCounts']) {
         for (const [name, incoming] of Object.entries(src[key])) {
           const current = Object.hasOwn(next[key], name) ? next[key][name] : null;
@@ -412,6 +500,7 @@ export function importStats(snap, { mode = 'merge' } = {}) {
     pruneKeyed(next.creditsByHour, 720);
     pruneKeyed(next.creditsByDay, 90);
     enforceModelCap(false, next.modelCounts);
+    pruneTokensToModelCounts(Object.keys(next.tokensByModel || {}), next.modelCounts, next.tokensByModel);
     next = normalizeStatsSnapshot(next); // Also reject numeric overflow from merging.
   } catch {
     return { ok: false, error: 'invalid snapshot' };
@@ -440,6 +529,7 @@ export function resetStats() {
   _state.creditsByHour = {};
   _state.creditsByDay = {};
   _state.creditsByModel = {};
+  _state.tokensByModel = {};
   _state.recentRequests = [];
   _state.recentPolicyBlocks = [];
   _state.startedAt = Date.now();
@@ -455,7 +545,7 @@ export function resetStats() {
  * cascade_breakdown is the authoritative source when present, otherwise
  * fall back to standard fields.
  */
-export function recordTokenUsage(usage) {
+export function recordTokenUsage(usage, model = null) {
   if (!usage || typeof usage !== 'object') return;
   const bd = usage.cascade_breakdown || null;
   const fresh = bd?.fresh_input_tokens ?? Math.max(0, (usage.prompt_tokens || 0) - (usage.prompt_tokens_details?.cached_tokens || usage.cache_read_input_tokens || 0));
@@ -472,6 +562,25 @@ export function recordTokenUsage(usage) {
   _state.tokenTotals.output += output;
   _state.tokenTotals.total += fresh + cacheR + cacheW + output;
   _state.tokenTotals.requests_with_usage += 1;
+  // Per-model attribution. Only when the caller KNOWS the model: filing an
+  // unknown request under '(other)' would invent a model row that no client
+  // ever named, and the global totals above already count it.
+  const key = typeof model === 'string' && model.trim() ? boundedModelKey(model) : null;
+  if (key) {
+    if (!_state.tokensByModel || typeof _state.tokensByModel !== 'object') _state.tokensByModel = {};
+    if (!_state.tokensByModel[key]) {
+      _state.tokensByModel[key] = {
+        fresh_input: 0, cache_read: 0, cache_write: 0, output: 0, total: 0, requests_with_usage: 0,
+      };
+    }
+    const tm = _state.tokensByModel[key];
+    tm.fresh_input += fresh;
+    tm.cache_read += cacheR;
+    tm.cache_write += cacheW;
+    tm.output += output;
+    tm.total += fresh + cacheR + cacheW + output;
+    tm.requests_with_usage += 1;
+  }
   scheduleSave();
 }
 

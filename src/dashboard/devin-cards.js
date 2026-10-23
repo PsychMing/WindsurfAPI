@@ -36,6 +36,7 @@ import {
   isAllTemporarilyUnavailable,
   isConnectSelectorCurrentlyFree,
   hasConnectEntitledAccount,
+  getConnectPricingMap,
 } from '../auth.js';
 import { MODELS, getTierModels } from '../models.js';
 import {
@@ -235,6 +236,23 @@ function entitlementOf(key, cap, blocked) {
 }
 
 /**
+ * Selectors the model-status card can price.
+ *
+ * Every MODELS row it renders, resolved the same display-only way buildModelStatus
+ * resolves it, plus whatever the account's own rate table names (a selector can be
+ * priced without having a MODELS row).
+ */
+function modelStatusSelectors(rateTable = null) {
+  const out = new Set();
+  for (const key of Object.keys(MODELS)) {
+    const resolution = resolveConnectSelector(key, { warnOnFallback: false, allowSnapshotFallback: true });
+    if (resolution?.mapped) out.add(resolution.selector);
+  }
+  for (const selector of Object.keys(obj(rateTable) || {})) out.add(selector);
+  return [...out];
+}
+
+/**
  * Build the per-account model entitlement matrix.
  *
  * Sources, all account-local (no network):
@@ -242,6 +260,7 @@ function entitlementOf(key, cap, blocked) {
  *   - `tierModels`          — the local tier table (labelled `tierListed`)
  *   - `blockedModels`       — operator blocklist (always wins)
  *   - `credits.rateTable`   — selector → credit multiplier, when paired
+ *   - `pricing`             — live free/promo verdicts, when the caller has them
  *
  * `unknown` is the honest state for a model that was never probed; it is never
  * folded into `available`.
@@ -254,6 +273,7 @@ export function buildModelStatus({
   blockedModels = [],
   capabilities = null,
   rateTable = null,
+  pricing = null,
   userStatus = null,
   userStatusLastFetched = 0,
   now = Date.now(),
@@ -261,6 +281,10 @@ export function buildModelStatus({
   const blocked = new Set((Array.isArray(blockedModels) ? blockedModels : []).filter((k) => typeof k === 'string' && k));
   const caps = obj(capabilities) || {};
   const table = obj(rateTable);
+  // selector → live pricing (auth.getConnectPricingMap). Optional so the builder
+  // stays pure and a test can assert the rate-table-only path; when present it
+  // is the authority, because a promo can be free with no zero in the table.
+  const live = obj(pricing) || {};
   const tierList = new Set((Array.isArray(tierModels) ? tierModels : []).filter((k) => typeof k === 'string' && k));
   const us = obj(userStatus) || {};
 
@@ -283,6 +307,12 @@ export function buildModelStatus({
       : null;
     const selector = resolution && resolution.mapped ? resolution.selector : null;
     const creditNow = table && selector && num(table[selector]) != null ? num(table[selector]) : null;
+    const priced = selector ? obj(live[selector]) : null;
+    // `freeNow` stays boolean here (the card's counts and the chip copy read it
+    // that way): a strict zero in the account's own table OR the live sync's own
+    // free verdict. `pricingKnown` carries the tri-state separately, so an
+    // unpriced model is not silently promoted to "paid" in the reason fields.
+    const freeNow = priced?.freeNow === true || creditNow === 0;
     rows.push({
       id: key,
       provider: str(info?.provider, 32) || 'other',
@@ -290,7 +320,12 @@ export function buildModelStatus({
       tierListed: tierList.has(key),
       selector,
       creditNow,
-      freeNow: creditNow === 0,
+      freeNow,
+      freeReason: priced?.freeReason || null,
+      promoEndsAt: priced?.promoEndsAt || null,
+      promoLabel: priced?.promoLabel || null,
+      pricingKnown: priced ? priced.freeNow !== null : null,
+      pricingStale: priced ? priced.pricingStale === true : false,
       reason: str(cap?.reason, 32),
       probedAt: num(cap?.lastCheck),
     });
@@ -644,6 +679,10 @@ export function buildAccountCards(id, { now = Date.now() } = {}) {
       blockedModels: account.blockedModels || [],
       capabilities: account.capabilities || {},
       rateTable: credits?.rateTable || null,
+      // One bulk lookup, not one per row: same snapshot of the pool-wide free
+      // set for every row, so a promo cannot render as free on one line and
+      // paid on the next.
+      pricing: getConnectPricingMap(modelStatusSelectors(credits?.rateTable)),
       userStatus: account.userStatus || null,
       userStatusLastFetched: account.userStatusLastFetched || 0,
       now,

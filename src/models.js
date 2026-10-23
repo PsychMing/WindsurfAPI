@@ -1042,6 +1042,197 @@ export function getCloudCostTierFreeSelectors(now = Date.now()) {
   return free;
 }
 
+// ── Billing sync: rate + freshness ─────────────────────────────────────────
+//
+// GetCascadeModelConfigs carries the credit rate (`creditMultiplier`) on the SAME
+// rows as `modelCostTier`/`promoStatus`, and the catalog sync already fetches it.
+// Keeping only the cost tier threw that half away, so "free by a zero rate" could
+// only ever be answered by GetUserStatus's rate table — which a free account may
+// never receive at all. These maps make the rate a first-class synced fact.
+//
+// Both maps are per account for the same reason the cost tiers are: a promotion
+// or a plan-scoped rate belongs to the account that reported it, and pooling at
+// write time would let one account's row outlive its own plan.
+const _cloudRatesByAccount = new Map();
+// When each account's billing snapshot (cost tier + rate) was last REPLACED.
+// Deliberately not "last fetched": a response that omitted the fields keeps the
+// last-known-good rows, so the honest age of those rows is the older timestamp.
+// That is what makes staleness visible instead of silently trusted.
+const _cloudBillingFetchedAtByAccount = new Map();
+
+// How old a billing snapshot may get before the dashboard says so. 2h is 4× the
+// default 30-min refresh interval, so one missed round does not flip the badge,
+// while a stopped sync becomes visible the same working day. Env override for
+// operators who run a much slower cadence.
+const CLOUD_BILLING_STALE_MS = (() => {
+  const raw = Number(process.env.BILLING_SYNC_STALE_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 2 * 60 * 60 * 1000;
+})();
+
+/** True once any account has contributed a numeric credit rate. */
+export function hasCloudRateData() {
+  for (const map of _cloudRatesByAccount.values()) {
+    if (map.size) return true;
+  }
+  return false;
+}
+
+/**
+ * The upstream's own credit rate for one selector, pooled across accounts.
+ *
+ * Returns `{ credit, fetchedAt }` or null. A zero rate is a real answer (the
+ * upstream charges nothing); "no row" stays null so absence never reads as free.
+ */
+export function getCloudCreditRate(selector) {
+  const key = typeof selector === 'string' ? selector.trim().toLowerCase() : '';
+  if (!key) return null;
+  let found = null;
+  for (const [accountKey, map] of _cloudRatesByAccount) {
+    const credit = map.get(key);
+    if (typeof credit !== 'number') continue;
+    const fetchedAt = _cloudBillingFetchedAtByAccount.get(accountKey) || 0;
+    if (!found) { found = { credit, fetchedAt }; continue; }
+    // Same "free wins" rule as the cost tiers: a zero rate from any account is
+    // enough to say this deployment can run it without spending quota.
+    if (found.credit !== 0 && credit === 0) found = { credit, fetchedAt };
+    else if (credit === found.credit && fetchedAt > found.fetchedAt) found = { credit, fetchedAt };
+  }
+  return found;
+}
+
+/**
+ * Selectors at least one account's catalog prices at exactly 0 credits, or null
+ * when no account has contributed a numeric rate.
+ *
+ * Strictly zero, like the account rate table: a 0.5-credit row still bills, and
+ * calling it free is the failure that spends someone's quota.
+ */
+export function getCloudZeroRateSelectors() {
+  if (!hasCloudRateData()) return null;
+  const free = new Set();
+  for (const map of _cloudRatesByAccount.values()) {
+    for (const [selector, credit] of map) {
+      if (credit === 0) free.add(selector);
+    }
+  }
+  return free;
+}
+
+/** When the newest billing snapshot was applied, or 0 when none ever was. */
+export function getCloudBillingFetchedAt() {
+  let newest = 0;
+  for (const ts of _cloudBillingFetchedAtByAccount.values()) {
+    if (ts > newest) newest = ts;
+  }
+  return newest;
+}
+
+/** Is the newest billing snapshot older than the staleness budget? */
+export function isCloudBillingStale(now = Date.now()) {
+  const fetchedAt = getCloudBillingFetchedAt();
+  return fetchedAt > 0 && now - fetchedAt > CLOUD_BILLING_STALE_MS;
+}
+
+/**
+ * One snapshot of the billing-sync state for the dashboard.
+ *
+ * `accounts` and the two row counts say WHAT is known; `fetchedAt`/`stale` say
+ * HOW current it is. An operator needs both: "3 free rows" is meaningless if the
+ * last successful sync was yesterday.
+ */
+export function getCloudBillingSyncState(now = Date.now()) {
+  let costTierRows = 0;
+  let rateRows = 0;
+  for (const map of _cloudCostTiersByAccount.values()) costTierRows += map.size;
+  for (const map of _cloudRatesByAccount.values()) rateRows += map.size;
+  const fetchedAt = getCloudBillingFetchedAt();
+  return {
+    fetchedAt: fetchedAt || null,
+    stale: isCloudBillingStale(now),
+    staleAfterMs: CLOUD_BILLING_STALE_MS,
+    accounts: new Set([..._cloudCostTiersByAccount.keys(), ..._cloudRatesByAccount.keys()]).size,
+    costTierRows,
+    rateRows,
+    freeRows: getCloudCostTierFreeSelectors(now)?.size ?? 0,
+  };
+}
+
+/**
+ * Billing facts for one selector, from the synced upstream snapshots only.
+ *
+ * Precedence is the project's documented one: the cost tier is the upstream's own
+ * "no charge" statement, so it wins; otherwise a zero credit rate is the same
+ * statement in the other field. `freeNow: null` means the upstream has said
+ * NOTHING about this selector — never fold that into false here, because callers
+ * still have the static cold-start fallback to consider.
+ */
+export function getCloudSelectorPricing(selector, now = Date.now()) {
+  const info = getCloudCostTierInfo(selector);
+  const costFree = info ? isCostTierFreeNow(info, now) : false;
+  const rate = getCloudCreditRate(selector);
+  const base = {
+    costTier: info?.costTier || null,
+    promoEndsAt: info?.promoEndsAt || null,
+    promoLabel: info?.promoLabel || null,
+    rate: rate ? rate.credit : null,
+    fetchedAt: rate?.fetchedAt || getCloudBillingFetchedAt() || null,
+  };
+  if (costFree) return { ...base, freeNow: true, freeReason: 'cost_tier_free' };
+  if (rate && rate.credit === 0) return { ...base, freeNow: true, freeReason: 'rate_zero' };
+  if (info || rate) return { ...base, freeNow: false, freeReason: null };
+  return { ...base, freeNow: null, freeReason: null };
+}
+
+/**
+ * Apply the billing half of one accepted GetCascadeModelConfigs snapshot.
+ *
+ * Split out of applyCloudModels so the periodic billing refresh can update cost
+ * tier + rate WITHOUT touching the model-UID filter snapshot or its "this account
+ * has synced" latch. Those answer different questions: the UID set gates what may
+ * be advertised, while these rows price what is already known. Re-fetching one
+ * must never let a transient shrunken catalog overwrite the other.
+ *
+ * Replace rule: a response that carries at least one cost-tier row (or one numeric
+ * rate) replaces that account's map wholesale, so a model the upstream stopped
+ * marking free loses its stale promotion. A response that carries NONE of the
+ * fields is a partial body and keeps the last-known-good rows — the same
+ * fail-conservative rule the UID filter uses.
+ */
+export function mergeCloudCostTiers(configs, { accountId = null, now = Date.now() } = {}) {
+  const accountKey = cloudCatalogAccountKey(accountId);
+  const safeConfigs = Array.isArray(configs) ? configs : [];
+  const nextCostTiers = new Map();
+  const nextRates = new Map();
+  for (const m of safeConfigs) {
+    const uid = normalizeCloudCatalogUid(m?.modelUid);
+    if (!uid) continue;
+    const info = cloudCostInfo(m);
+    if (info) nextCostTiers.set(uid, info);
+    const credit = Number(m?.creditMultiplier);
+    if (m?.creditMultiplier !== null && m?.creditMultiplier !== undefined
+      && Number.isFinite(credit) && credit >= 0) {
+      nextRates.set(uid, credit);
+    }
+  }
+
+  let applied = false;
+  if (nextCostTiers.size > 0) {
+    _cloudCostTiersByAccount.set(accountKey, nextCostTiers);
+    applied = true;
+  }
+  if (nextRates.size > 0) {
+    _cloudRatesByAccount.set(accountKey, nextRates);
+    applied = true;
+  }
+  if (applied) _cloudBillingFetchedAtByAccount.set(accountKey, now);
+  return {
+    applied,
+    costTierRows: nextCostTiers.size,
+    rateRows: nextRates.size,
+    fetchedAt: applied ? now : (_cloudBillingFetchedAtByAccount.get(accountKey) || null),
+  };
+}
+
 /**
  * Set the accounts that currently contribute to pool-wide model listings.
  *
@@ -1061,6 +1252,8 @@ export function setActiveCloudCatalogAccounts(accountIds) {
     _pendingCloudCatalogUidsByAccount.delete(accountId);
     _cloudCatalogQuarantineRoundsByAccount.delete(accountId);
     _cloudCostTiersByAccount.delete(accountId);
+    _cloudRatesByAccount.delete(accountId);
+    _cloudBillingFetchedAtByAccount.delete(accountId);
   }
   _activeCloudCatalogAccounts.clear();
   for (const accountId of nextActiveAccounts) _activeCloudCatalogAccounts.add(accountId);
@@ -1080,6 +1273,8 @@ export function removeCloudModelCatalog(accountId) {
   _pendingCloudCatalogUidsByAccount.delete(accountKey);
   _cloudCatalogQuarantineRoundsByAccount.delete(accountKey);
   _cloudCostTiersByAccount.delete(accountKey);
+  _cloudRatesByAccount.delete(accountKey);
+  _cloudBillingFetchedAtByAccount.delete(accountKey);
 }
 
 /** Drop every trace of an account, including that it ever had a catalog. */
@@ -1101,6 +1296,8 @@ export function clearCloudModelCatalogs() {
   _cloudCatalogQuarantineRoundsByAccount.clear();
   _cloudCatalogEverFilteredAccounts.clear();
   _cloudCostTiersByAccount.clear();
+  _cloudRatesByAccount.clear();
+  _cloudBillingFetchedAtByAccount.clear();
   _activeCloudCatalogAccounts.clear();
 }
 
@@ -1251,16 +1448,10 @@ function applyCloudModels(configs, { accountId = null } = {}) {
   // Same account-scoped replace as the UID set, with the same "never blank on a
   // silent response" rule. `applyCloudModels` only runs for ACCEPTED snapshots, so
   // reaching here means the upstream actually answered for this account.
-  const nextCostTiers = new Map();
-  for (const m of safeConfigs) {
-    const uid = normalizeCloudCatalogUid(m?.modelUid);
-    if (!uid) continue;
-    const info = cloudCostInfo(m);
-    if (info) nextCostTiers.set(uid, info);
-  }
-  if (nextCostTiers.size > 0) {
-    _cloudCostTiersByAccount.set(catalogAccountKey, nextCostTiers);
-  }
+  //
+  // Delegated to mergeCloudCostTiers (the single writer) so the periodic billing
+  // refresh and this catalog sync cannot drift apart about what a snapshot means.
+  mergeCloudCostTiers(safeConfigs, { accountId });
 
   let added = 0;
   const providerMap = {

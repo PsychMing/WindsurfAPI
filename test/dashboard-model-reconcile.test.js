@@ -1,7 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildModelReconciliation, mapToggleableVersion } from '../src/dashboard/model-reconcile.js';
-import { getSnapshotSelectors } from '../src/devin-connect-models.js';
+import {
+  clearLiveCatalogSelectors,
+  getSnapshotSelectors,
+  setLiveCatalogSelectors,
+} from '../src/devin-connect-models.js';
 
 const TOGGLEABLE = [
   'devin-gpt-6-1-sol',
@@ -71,6 +75,53 @@ describe('mapToggleableVersion', () => {
     assert.deepEqual(mapToggleableVersion('devin-swe-2-lightning-high'), { selector: 'swe-2-high-lightning', mapped: true });
     assert.deepEqual(mapToggleableVersion('devin-2-5'), { selector: null, mapped: false });
     assert.deepEqual(mapToggleableVersion(''), { selector: null, mapped: false });
+  });
+
+  // The ladder is catalog-driven, not a hardcoded table: the same upstream
+  // version maps or stays unmapped depending on what the live catalog exposes.
+  // This is the difference between "we know this is swe-2-low" and "we guessed".
+  it('maps the effort-reordered families only when the live catalog has them', () => {
+    try {
+      setLiveCatalogSelectors([
+        'swe-2-low',
+        'swe-2-low-priority',
+        'swe-2-high-priority',
+        'swe-2-low-lightning',
+        'auto',
+      ]);
+      assert.deepEqual(mapToggleableVersion('devin-swe-2-low'), { selector: 'swe-2-low', mapped: true });
+      assert.deepEqual(mapToggleableVersion('devin-swe-2-priority-low'),
+        { selector: 'swe-2-low-priority', mapped: true },
+        'upstream writes the effort tier last: <family>-<effort>-priority');
+      assert.deepEqual(mapToggleableVersion('devin-swe-2-priority-high'),
+        { selector: 'swe-2-high-priority', mapped: true });
+      assert.deepEqual(mapToggleableVersion('devin-swe-2-lightning-low'),
+        { selector: 'swe-2-low-lightning', mapped: true });
+      assert.deepEqual(mapToggleableVersion('devin-auto'), { selector: 'auto', mapped: true },
+        'a catalog that exposes `auto` is the only evidence that `auto` is callable');
+      // Still unmapped: no token-preserving selector exists for these, so the row
+      // must say so rather than point at a different model.
+      assert.deepEqual(mapToggleableVersion('devin-2-5'), { selector: null, mapped: false });
+      assert.deepEqual(mapToggleableVersion('devin-fast-opus'), { selector: null, mapped: false });
+      assert.deepEqual(mapToggleableVersion('devin_lite'), { selector: null, mapped: false });
+    } finally {
+      clearLiveCatalogSelectors();
+    }
+  });
+
+  it('keeps unmapped versions visible in the reconciliation rows', () => {
+    try {
+      setLiveCatalogSelectors(['swe-2-low']);
+      const out = buildModelReconciliation(base({ live: ['swe-2-low'] }));
+      const low = out.toggleable.rows.find((r) => r.version === 'devin-swe-2-low');
+      assert.deepEqual(low, { version: 'devin-swe-2-low', selector: 'swe-2-low', mapped: true });
+      const auto = out.toggleable.rows.find((r) => r.version === 'devin-auto');
+      assert.deepEqual(auto, { version: 'devin-auto', selector: null, mapped: false },
+        'an unmapped version still gets a row — hiding it is what makes a gap invisible');
+      assert.equal(out.toggleable.unmappedCount, out.toggleable.total - out.toggleable.mappedCount);
+    } finally {
+      clearLiveCatalogSelectors();
+    }
   });
 });
 
