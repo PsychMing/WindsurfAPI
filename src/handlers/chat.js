@@ -2519,7 +2519,25 @@ const TRANSPORT_FAULT_CODES = new Set([
 // upstream error it was holding. The callers used to substitute a synthetic
 // AbortError for the real one on disconnect, which erased the upstream verdict
 // (e.g. RATE_LIMITED + resetMs) before this function could act on it.
-export function finalizeConnectAccount(acct, { model, selector = null, startTime, err, aborted: abortedHint = false, signal = null }) {
+//
+// `credentialKey` is the credential the attempt ACTUALLY presented (a re-login
+// retry presents a different one than the acquire-time snapshot). It defaults
+// to acct.apiKey for the normal case.
+//
+// True when the credential an attempt presented is still the pool's current one
+// for that account. An old credential's verdict must not be written onto the new
+// credential: a 401 from a retired key must not charge the fresh key's error
+// budget, trigger another re-login, or clear its errors on an old-key success.
+// This is the same epoch test auth.js already uses for credit refreshes and
+// catalog syncs; the immutable id is what makes the account findable at all.
+function credentialEpochCurrent(acct, credentialKey = null) {
+  if (!acct?.id) return true;
+  const attempted = credentialKey || acct.apiKey;
+  if (!attempted) return true;
+  return currentApiKeyForId(acct.id, attempted) === attempted;
+}
+
+export function finalizeConnectAccount(acct, { model, selector = null, startTime, err, aborted: abortedHint = false, signal = null, credentialKey = null }) {
   if (!acct) {
     // env-token path: still record the request for dashboard totals.
     recordRequest(model, !err, Date.now() - startTime, null);
@@ -2532,7 +2550,14 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
   // the cooldown/health signal. Resolve the account's CURRENT apiKey via its
   // immutable id (falls back to the snapshot when the id is unknown), and
   // release by id so the counter always finds its account.
+  //
+  // Credential-scoped verdicts are the exception: `apiKey` is the live key and
+  // exists so account-level cooldowns still land after a rotation (REF-2), but
+  // an auth/health verdict belongs to the credential that produced it. When the
+  // attempt presented a key the pool has since replaced, charging the live key
+  // would penalize the NEW epoch for the OLD one's failure.
   const apiKey = currentApiKeyForId(acct.id, acct.apiKey);
+  const credentialCurrent = credentialEpochCurrent(acct, credentialKey);
   if (err) {
     // A client-side abort (caller disconnected) is not an account fault — release
     // without penalizing the account's error budget.
@@ -2635,15 +2660,22 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       /* no penalty — request configuration rejected, not an account fault */
     }
     else if (err.code === 'UNAUTHORIZED') {
-      reportError(apiKey);
-      // The DEVIN_CONNECT session token is an opaque session_id with no refresh
-      // path — UNAUTHORIZED most likely means the server retired it. If the
-      // account has stored credentials + auto-relogin is enabled, trigger a
-      // background re-login (throttled/de-duped in auth.js) so the next request
-      // lands on a fresh token instead of a permanently-dead account. The
-      // request signal only bounds the QUEUED wait for a global login slot: a
-      // caller that disconnected must not hold (or later spend) a slot.
-      reLoginAccount(acct.id, { signal }).catch(() => {});
+      // A 401 from a credential the pool has already replaced is evidence
+      // about the OLD epoch only. Charging the live key's error budget would
+      // walk the fresh credential toward eviction, and re-logging in would
+      // mint a third key over it — both penalize the new epoch for the old
+      // one's failure.
+      if (credentialCurrent) {
+        reportError(apiKey);
+        // The DEVIN_CONNECT session token is an opaque session_id with no refresh
+        // path — UNAUTHORIZED most likely means the server retired it. If the
+        // account has stored credentials + auto-relogin is enabled, trigger a
+        // background re-login (throttled/de-duped in auth.js) so the next request
+        // lands on a fresh token instead of a permanently-dead account. The
+        // request signal only bounds the QUEUED wait for a global login slot: a
+        // caller that disconnected must not hold (or later spend) a slot.
+        reLoginAccount(acct.id, { signal }).catch(() => {});
+      }
     }
     else if (err.code === 'UPSTREAM_INTERNAL') {
       // Transient upstream BACKEND fault ("an internal error occurred (trace
@@ -2654,7 +2686,7 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       // 2 in a row — exactly the persistent backend-fault case) and records a
       // health-window error so selection de-prioritizes a genuinely sick
       // account, WITHOUT the errorCount eviction a plain reportError would cause.
-      reportInternalError(apiKey);
+      if (credentialCurrent) reportInternalError(apiKey);
       bumpConnect('upstream_internal');
     }
     else if (err.code === 'STREAM_TRUNCATED') {
@@ -2669,7 +2701,7 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       // above were added to remove. Record it as a health-window event so a
       // genuinely sick account is still de-prioritized by selection, but skip the
       // errorCount eviction.
-      reportInternalError(apiKey);
+      if (credentialCurrent) reportInternalError(apiKey);
       bumpConnect('stream_truncated');
     }
     // UPSTREAM_ERROR carries the gRPC `internal` class, which classifyUpstreamError
@@ -2685,7 +2717,7 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
     // errorCount eviction. (Verified by repro: 3 UPSTREAM_ERROR calls disabled a
     // healthy account whenever a peer existed to void the last-account exemption.)
     else if (err.code === 'UPSTREAM_ERROR') {
-      reportInternalError(apiKey);
+      if (credentialCurrent) reportInternalError(apiKey);
       bumpConnect('upstream_error');
     }
     else if (TRANSPORT_FAULT_CODES.has(err.code)) {
@@ -2705,11 +2737,14 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       // Measured before this branch: 3 calls of each flipped a healthy account to
       // status='error' with errorCount=3 (peer seeded so lastAccountExempt could
       // not mask it).
-      reportInternalError(apiKey);
+      if (credentialCurrent) reportInternalError(apiKey);
       bumpConnect('transport_fault');
     }
-    else reportError(apiKey);
-  } else {
+    else if (credentialCurrent) reportError(apiKey);
+  } else if (credentialCurrent) {
+    // An old-key success does not prove the new key works, so it must not
+    // clear the new epoch's error budget either. The account-level stats below
+    // still record the request.
     reportSuccess(apiKey);
   }
   recordRequest(model, !err, Date.now() - startTime, apiKey);
@@ -3980,7 +4015,10 @@ async function _handleChatCompletionsInner(body, context = {}) {
               // before → "Token 用量分布" empty on connect deployments.
               try { recordTokenUsage(_sr?.usage, reqModelName); } catch {}
               // K8: attribute the spend to THIS account (per-account lifetime total).
-              try { recordAccountSpend(a?.apiKey, _sr?.usage, connectSpendOpts(_sr?.billing)); } catch {}
+              // Pass the whole reservation, not its apiKey: the credential may have
+              // rotated while the stream was in flight, and the ledger belongs to
+              // the immutable account id (review #3).
+              try { recordAccountSpend(a, _sr?.usage, connectSpendOpts(_sr?.billing)); } catch {}
               finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
               return { kind: 'ok', sr: _sr };
             } catch (err) {
@@ -4005,31 +4043,41 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 // scheduled liveness sweep, which is already interval-throttled.
                 // The signal bounds only the QUEUED wait for a login slot, so a
                 // client that disconnected stops consuming the queue.
-                const freshKey = await reLoginAccount(a.id, { signal: abortController.signal }).catch(() => false);
-                if (freshKey && !emitted) {
-                  log.info(`Chat[${reqId}]: DEVIN_CONNECT re-login recovered token, replaying stream once`);
-                  try {
-                    const _sr3 = await streamChatCompletion({ ...connectParams, token: freshKey }, send, connectMeta);
-                    try { recordTokenUsage(_sr3?.usage, reqModelName); } catch {}
-                    try { recordAccountSpend(currentApiKeyForId(a.id, a.apiKey), _sr3?.usage, connectSpendOpts(_sr3?.billing)); } catch {}
-                    finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
-                    return { kind: 'ok', sr: _sr3 };
-                  } catch (retryErr) {
-                    // Client disconnected while re-login was in flight — stop cleanly.
-                    if (abortController.signal.aborted || isAbortError(retryErr)) {
-                      finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: retryErr || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true });
-                      return { kind: 'abort' };
+                // Skip recovery when the pool rotated this account's key while
+                // the attempt was in flight: the 401 belongs to the retired
+                // credential. A re-login would overwrite the fresh key
+                // (penalizing the new epoch for the old one's failure), and
+                // finalize's epoch guard suppresses the auth penalty. The
+                // failover loop moves on instead.
+                if (credentialEpochCurrent(a)) {
+                  const freshKey = await reLoginAccount(a.id, { signal: abortController.signal }).catch(() => false);
+                  if (freshKey && !emitted) {
+                    log.info(`Chat[${reqId}]: DEVIN_CONNECT re-login recovered token, replaying stream once`);
+                    try {
+                      const _sr3 = await streamChatCompletion({ ...connectParams, token: freshKey }, send, connectMeta);
+                      try { recordTokenUsage(_sr3?.usage, reqModelName); } catch {}
+                      // Billing identity is the account, not the credential: the
+                      // retry presented freshKey, but the row belongs to a.id.
+                      try { recordAccountSpend({ accountId: a.id, apiKey: freshKey, attemptId: a.reservationTimestamp }, _sr3?.usage, connectSpendOpts(_sr3?.billing)); } catch {}
+                      finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null, credentialKey: freshKey });
+                      return { kind: 'ok', sr: _sr3 };
+                    } catch (retryErr) {
+                      // Client disconnected while re-login was in flight — stop cleanly.
+                      if (abortController.signal.aborted || isAbortError(retryErr)) {
+                        finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: retryErr || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true, credentialKey: freshKey });
+                        return { kind: 'abort' };
+                      }
+                      // Fresh token still UNAUTHORIZED ⇒ entitlement wall, not a dead
+                      // session (see non-stream path). Reclassify as MODEL_BLOCKED so
+                      // we surface a clean error instead of storming re-login +
+                      // failover across the pool. Gated on !emitted as always.
+                      const reErr = (retryErr.code === 'UNAUTHORIZED' && !emitted)
+                        ? Object.assign(new Error('model requires a paid Devin entitlement (fresh session token still UNAUTHORIZED → not a dead token)'), { code: 'MODEL_BLOCKED' })
+                        : retryErr;
+                      finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: reErr, signal: abortController.signal, credentialKey: freshKey });
+                      log.error(`Chat[${reqId}]: DEVIN_CONNECT stream retry error: ${reErr.message}`);
+                      return { kind: 'error', err: reErr };
                     }
-                    // Fresh token still UNAUTHORIZED ⇒ entitlement wall, not a dead
-                    // session (see non-stream path). Reclassify as MODEL_BLOCKED so
-                    // we surface a clean error instead of storming re-login +
-                    // failover across the pool. Gated on !emitted as always.
-                    const reErr = (retryErr.code === 'UNAUTHORIZED' && !emitted)
-                      ? Object.assign(new Error('model requires a paid Devin entitlement (fresh session token still UNAUTHORIZED → not a dead token)'), { code: 'MODEL_BLOCKED' })
-                      : retryErr;
-                    finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: reErr, signal: abortController.signal });
-                    log.error(`Chat[${reqId}]: DEVIN_CONNECT stream retry error: ${reErr.message}`);
-                    return { kind: 'error', err: reErr };
                   }
                 }
                 finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err, signal: abortController.signal });
@@ -4227,35 +4275,42 @@ async function _handleChatCompletionsInner(body, context = {}) {
           // mass token-death event recovers each account once instead of
           // storming Auth1 with one full login per in-flight request.
           // The request signal bounds the queued wait for a login slot only.
-          const freshKey = await reLoginAccount(a.id, { signal: context.signal }).catch(() => false);
-          if (freshKey) {
-            log.info(`Chat[${reqId}]: DEVIN_CONNECT re-login recovered token, retrying once`);
-            try {
-              const out = await toChatCompletion({ ...connectParams, token: freshKey }, connectMeta);
-              finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
-              return { kind: 'ok', out };
-            } catch (retryErr) {
-              // Client aborted during the re-login retry.
-              if ((context.signal?.aborted) || isAbortError(retryErr)) {
-                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: retryErr || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true });
-                return { kind: 'abort' };
+          //
+          // Skip recovery when the pool rotated this account's key while the
+          // attempt was in flight: the 401 belongs to the retired credential.
+          // A re-login would overwrite the fresh key, and finalize's epoch
+          // guard suppresses the auth penalty. Fail over instead.
+          if (credentialEpochCurrent(a)) {
+            const freshKey = await reLoginAccount(a.id, { signal: context.signal }).catch(() => false);
+            if (freshKey) {
+              log.info(`Chat[${reqId}]: DEVIN_CONNECT re-login recovered token, retrying once`);
+              try {
+                const out = await toChatCompletion({ ...connectParams, token: freshKey }, connectMeta);
+                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null, credentialKey: freshKey });
+                return { kind: 'ok', out };
+              } catch (retryErr) {
+                // Client aborted during the re-login retry.
+                if ((context.signal?.aborted) || isAbortError(retryErr)) {
+                  finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: retryErr || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true, credentialKey: freshKey });
+                  return { kind: 'abort' };
+                }
+                // The re-login above minted a verifiably-fresh token (windsurfLogin
+                // succeeded), so a SECOND UNAUTHORIZED on that brand-new token cannot
+                // be a dead session — the account simply lacks entitlement for this
+                // selector (free account → paid model). Upstream returns a bare
+                // `permission_denied` with a generic "internal error" body, byte-for-
+                // byte indistinguishable from a retired token; the fresh-token retry
+                // is what disambiguates. Treat it as a tier wall (MODEL_BLOCKED → 402,
+                // no penalty) instead of `dead` — otherwise every free→paid request
+                // would storm Auth1 with a re-login per pooled account and then lie to
+                // the client with "all accounts exhausted (dead session tokens)".
+                const reErr = retryErr.code === 'UNAUTHORIZED'
+                  ? Object.assign(new Error('model requires a paid Devin entitlement (fresh session token still UNAUTHORIZED → not a dead token)'), { code: 'MODEL_BLOCKED' })
+                  : retryErr;
+                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: reErr, signal: context.signal, credentialKey: freshKey });
+                log.error(`Chat[${reqId}]: DEVIN_CONNECT retry-after-relogin error (${reErr.code || 'UPSTREAM_ERROR'}): ${reErr.message}`);
+                return { kind: 'error', err: reErr };
               }
-              // The re-login above minted a verifiably-fresh token (windsurfLogin
-              // succeeded), so a SECOND UNAUTHORIZED on that brand-new token cannot
-              // be a dead session — the account simply lacks entitlement for this
-              // selector (free account → paid model). Upstream returns a bare
-              // `permission_denied` with a generic "internal error" body, byte-for-
-              // byte indistinguishable from a retired token; the fresh-token retry
-              // is what disambiguates. Treat it as a tier wall (MODEL_BLOCKED → 402,
-              // no penalty) instead of `dead` — otherwise every free→paid request
-              // would storm Auth1 with a re-login per pooled account and then lie to
-              // the client with "all accounts exhausted (dead session tokens)".
-              const reErr = retryErr.code === 'UNAUTHORIZED'
-                ? Object.assign(new Error('model requires a paid Devin entitlement (fresh session token still UNAUTHORIZED → not a dead token)'), { code: 'MODEL_BLOCKED' })
-                : retryErr;
-              finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: reErr, signal: context.signal });
-              log.error(`Chat[${reqId}]: DEVIN_CONNECT retry-after-relogin error (${reErr.code || 'UPSTREAM_ERROR'}): ${reErr.message}`);
-              return { kind: 'error', err: reErr };
             }
           }
           finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err, signal: context.signal });
@@ -4313,7 +4368,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
         // when usage is absent (recordTokenUsage guards null).
         try { recordTokenUsage(r.out?.body?.usage, r.out?.body?.model || reqModelName); } catch {}
         // K8: per-account lifetime spend (non-stream connect path).
-        try { recordAccountSpend(acct ? currentApiKeyForId(acct.id, acct.apiKey) : null, r.out?.body?.usage, connectSpendOpts(r.out?.body?._windsurf_billing)); } catch {}
+        try { recordAccountSpend(acct, r.out?.body?.usage, connectSpendOpts(r.out?.body?._windsurf_billing)); } catch {}
         // Session continuity: commit the completed request→response pair so the
         // next turn resolves to this session_id via pair-chain overlap. The
         // response tool_calls already ride the OpenAI function shape here.
@@ -5163,6 +5218,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
       // Route-owned deadline/turn budget: clamps admission waits and the
       // per-attempt upstream spend; see src/request-budget.js.
       context.budget || null,
+      // Ledger identity: the immutable account id (the credential may rotate
+      // while this turn is in flight; see recordAccountSpend).
+      acct.id,
     );
     if (context.signal?.aborted || result?.body?.error?.code === 'client_disconnect') {
       log.info(`Chat[${reqId}]: non-stream aborted (client gone) — not failing over or restoring reuse`);
@@ -5325,7 +5383,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
   return lastErr || { status: 503, body: { error: { message: 'No active accounts available', type: 'pool_exhausted' } } };
 }
 
-async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, provider, emulateTools, toolPreamble, wantJson = false, cachePolicy = null, wantThinking = false, tools = [], route = 'chat', nativeOpts = null, reqId = 'non-stream', aliasCkey = null, clineCompatActive = false, allowCascadeMetadataUnwrap = true, stopSequences = [], stopCarrier = false, signal = null, budget = null) {
+async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, provider, emulateTools, toolPreamble, wantJson = false, cachePolicy = null, wantThinking = false, tools = [], route = 'chat', nativeOpts = null, reqId = 'non-stream', aliasCkey = null, clineCompatActive = false, allowCascadeMetadataUnwrap = true, stopSequences = [], stopCarrier = false, signal = null, budget = null, accountId = '') {
   const startTime = Date.now();
   const nativeBridgeOn = !!nativeOpts?.enabled;
   try {
@@ -5880,8 +5938,10 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     // v2.0.69 (#118): feed bucket totals into stats so dashboard can show
     // fresh_input vs cache_read vs cache_write breakdown.
     try { recordTokenUsage(usage, model); } catch {}
-    // K8: per-account lifetime spend (Cascade non-stream path).
-    try { recordAccountSpend(apiKey, usage); } catch {}
+    // K8: per-account lifetime spend (Cascade non-stream path). The account id
+    // owns the row; apiKey is only the credential the attempt presented and may
+    // have rotated while this turn was in flight (review #3).
+    try { recordAccountSpend({ accountId, apiKey }, usage); } catch {}
     const finishReason = toolCalls.length ? 'tool_calls' : 'stop';
     const choice = { index: 0, message, finish_reason: finishReason };
     // SEED-C3a carrier on the internal Messages route only (same contract as the
@@ -7528,8 +7588,9 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               // K8: per-account lifetime spend (Cascade STREAM path).
               //
               // This call point was missing while the other three had it (connect stream,
-              // connect non-stream, Cascade non-stream at the `recordAccountSpend(apiKey,
-              // usage)` below), so on a Cascade deployment every streamed turn — the common
+              // connect non-stream, Cascade non-stream at the
+              // `recordAccountSpend({ accountId, apiKey }, usage)` below), so on a Cascade
+              // deployment every streamed turn — the common
               // case for an agent client — added nothing to the account's lifetime tally.
               // The dashboard's per-account spend column therefore under-reported by
               // however much of the traffic was streamed.
@@ -7546,21 +7607,21 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               //    abort as "nothing happened" (connect's finalizer exempts
               //    aborts from every penalty).
               //  - cache replay: a cache hit never enters this path at all.
-              // `acct` is the account this attempt checked out; currentApiKeyForId resolves
-              // the CURRENT key for it, because a re-login mid-request rotates the key and
-              // the stale one would credit a row that no longer exists.
+              // `acct` is the reservation this attempt checked out. Pass the whole
+              // reservation: the ledger is owned by its immutable id, so a re-login
+              // that rotated the credential mid-turn cannot lose the row (review #3).
               //
               // Detach P1: a resume has NO checked-out account (`acct === null`).
               // Billing `acct` would silently bill nothing, so the target is the
-              // entry's owner, resolved to its CURRENT key (a re-auth may have
-              // rotated it while the turn was detached).
+              // entry's owner id (a re-auth may have rotated its key while the
+              // turn was detached); the current key is only the fallback credential.
               try {
                 if (acct) {
-                  recordAccountSpend(currentApiKeyForId(acct.id, acct.apiKey), usage);
+                  recordAccountSpend(acct, usage);
                 } else if (resumeBillingAccountId) {
                   const ownerKey = currentApiKeyForId(resumeBillingAccountId);
                   if (ownerKey) {
-                    recordAccountSpend(ownerKey, usage);
+                    recordAccountSpend({ accountId: resumeBillingAccountId, apiKey: ownerKey }, usage);
                     detachedRegistry.noteBilled();
                   }
                 }
