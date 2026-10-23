@@ -26,7 +26,7 @@
 - Windows `npm run gate`：**PASS**；`npm run test:release` **6,202 pass / 0 fail / 95 skip（510 文件）**。
 - Linux `npm run test:release`（HMC，Node v24.21.0，510 文件）：**6,294 pass / 0 fail / 3 skip**。
 - wire：对 `v3.9.59`（`630fe95`）比较 **270/270**。
-- mutation：全量 sweep 结果见发布提交。
+- mutation：全部 **85 个规格 exit 0**（无 survivor）。
 - 测试宿主修复：`test/s4-r4.test.js` 的失败续段锚点在 client.js 重构后失效，已重锚到新的 `finally` 块（仍执行真实续段），并做 CRLF→LF 归一。
 
 ## 尚未验证
