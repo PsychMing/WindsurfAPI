@@ -2813,6 +2813,10 @@ tbody tr:hover td { background: var(--surface-2); }
     </div>
     <div class="nav-group">
       <div class="nav-group-label" data-i18n="nav.group.usage">用量</div>
+      <a href="#devin" data-panel="devin">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/></svg>
+        <span data-i18n="nav.devin">Devin 面板</span>
+      </a>
       <a href="#usage" data-panel="usage">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
         <span data-i18n="nav.usage">用量</span>
@@ -3849,6 +3853,87 @@ tbody tr:hover td { background: var(--surface-2); }
     </div>
     <div id="usage-org-bar" class="section usage-org-bar hidden"></div>
     <div id="usage-content"></div>
+  </section>
+
+  <!-- DevIn panel: one screen for the Devin surface the proxy can actually read.
+       The session/catalog/quota/settings split mirrors the four questions an
+       operator asks during an incident. Anything the proxy cannot observe is
+       labelled with a reason (never rendered as a zero or an empty list). -->
+  <section class="panel" id="p-devin">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title" data-i18n="page.devin">Devin 面板</h1>
+        <div class="page-subtitle" data-i18n="pageSubtitle.devin">会话与轨迹、模型目录、用量配额、运行时设置。只显示代理真实读到的数据；读不到的项标明原因，不用 0 冒充。</div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-ghost btn-sm" onclick="App.loadDevin(true)" data-i18n-title="action.refresh" title="刷新">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.24-2.52L3 21"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.24 2.52L21 3"/><path d="M21 3v6h-6"/><path d="M3 21v-6h6"/></svg>
+          <span data-i18n="action.refresh">刷新</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="metrics-grid" id="devin-kpis"></div>
+
+    <div class="section">
+      <div class="section-header">
+        <div>
+          <div class="section-title" data-i18n="section.devin.runtime.title">运行时</div>
+          <div class="section-desc" data-i18n="section.devin.runtime.desc">语言服务器进程、准入计数与断连续传缓存。全部来自本进程状态，打开页面不产生上游调用。</div>
+        </div>
+      </div>
+      <div class="section-body" id="devin-runtime"><div class="text-sm text-muted" data-i18n="settings.loading">加载中…</div></div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <div>
+          <div class="section-title" data-i18n="section.devin.sessions.title">会话与轨迹</div>
+          <div class="section-desc" data-i18n="section.devin.sessions.desc">代理侧已计费轮次（按账号去重合并）。Cascade 轨迹与 ACP 会话不在代理可见范围内，原因写在来源表里。</div>
+        </div>
+      </div>
+      <div class="section-body" id="devin-sessions"><div class="text-sm text-muted" data-i18n="settings.loading">加载中…</div></div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <div>
+          <div class="section-title" data-i18n="section.devin.catalog.title">模型目录与状态</div>
+          <div class="section-desc" data-i18n="section.devin.catalog.desc">本地可达性、免费/计费三态与实时目录差异。上游权限（entitlement）需要点“上游对账”，那一步会产生上游调用。</div>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-outline btn-sm" id="devin-reconcile-btn" onclick="App.loadDevinReconcile()" data-i18n="devin.catalog.reconcile.run">上游对账</button>
+        </div>
+      </div>
+      <div class="section-body" id="devin-catalog"><div class="text-sm text-muted" data-i18n="settings.loading">加载中…</div></div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <div>
+          <div class="section-title" data-i18n="section.devin.quota.title">用量与配额</div>
+          <div class="section-desc" data-i18n="section.devin.quota.desc">干旱判定与阈值来自本地缓存；工作区 ACU 需要点“读取 ACU”，冷缓存时会读一次上游。</div>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-ghost btn-sm" onclick="App.navigate('usage')" data-i18n="devin.quota.acu.full">完整用量</button>
+          <button class="btn btn-outline btn-sm" id="devin-acu-btn" onclick="App.loadDevinAcu()" data-i18n="devin.quota.acu.load">读取 ACU</button>
+        </div>
+      </div>
+      <div class="section-body" id="devin-quota"><div class="text-sm text-muted" data-i18n="settings.loading">加载中…</div></div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <div>
+          <div class="section-title" data-i18n="section.devin.settings.title">设置</div>
+          <div class="section-desc" data-i18n="section.devin.settings.desc">Devin 相关开关的实际生效值与来源；写入入口在全局设置页。配额/按量策略可直接在此保存。</div>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-ghost btn-sm" onclick="App.navigate('settings')" data-i18n="devin.settings.open">打开全局设置</button>
+        </div>
+      </div>
+      <div class="section-body" id="devin-settings"><div class="text-sm text-muted" data-i18n="settings.loading">加载中…</div></div>
+    </div>
   </section>
 
   <!-- Stats -->
@@ -5004,6 +5089,7 @@ docker compose up -d --force-recreate</pre>
       overview: 'loadOverview',
       accounts: 'loadAccounts', models: 'loadModels', proxy: 'loadProxy',
       logs: 'loadLogs', stats: 'loadStats', usage: 'loadUsage',
+      devin: 'loadDevin',
       experimental: 'loadExperimental',
       credits: 'loadCredits', settings: 'loadSettings',
     };
@@ -6854,6 +6940,528 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         <div class="card-value" style="font-size:20px">${usage.quota?.dailyPercentage ?? '-'}%</div>
         <div class="card-sub">${this.esc(usage.plan || '-')} · daily · weekly ${usage.quota?.weeklyPercentage ?? '-'}% · ${credits} credits</div>
       </div>`;
+  },
+
+  // ─── DevIn panel (page) ──────────────────────────────────────────────
+  // GET /devin/panel is an in-process snapshot (switches, LS/detach, billed
+  // turns, drought, quota knobs), so opening the page costs no upstream call.
+  // The catalog half reuses GET /models + /models/catalog. The two reads that
+  // CAN reach the upstream — /models/reconcile and /usage/orgs — are explicit
+  // buttons: a panel that silently spent quota on mount would be a bug.
+  _devinPanel: null,
+  _devinModels: null,
+  _devinCatalog: null,
+  _devinReconcile: null,
+  _devinAcu: null,
+  _devinAcuLoading: false,
+  _devinReconcileLoading: false,
+
+  async loadDevin(force = false) {
+    const [panel, models, catalog] = await Promise.all([
+      this.api('GET', '/devin/panel').catch(() => null),
+      this.api('GET', '/models').catch(() => null),
+      this.api('GET', '/models/catalog').catch(() => null),
+    ]);
+    this._devinPanel = panel && typeof panel === 'object' && panel.ok !== false
+      ? panel
+      : { ok: false, error: (panel && panel.error) || 'failed' };
+    this._devinModels = models && Array.isArray(models.models) ? models.models : null;
+    this._devinCatalog = catalog && typeof catalog === 'object' && 'synced' in catalog ? catalog : null;
+    if (force) {
+      // Refresh drops the on-demand reads so an old upstream answer is never
+      // painted as if it had just been fetched.
+      this._devinReconcile = null;
+      this._devinAcu = null;
+    }
+    this.renderDevin();
+  },
+
+  renderDevin() {
+    const P = this._devinPanel;
+    const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+    set('devin-kpis', this.renderDevinKpis(P, this._devinModels, this._devinCatalog));
+    set('devin-runtime', this.renderDevinRuntime(P));
+    set('devin-sessions', this.renderDevinSessions(P));
+    set('devin-catalog', this.renderDevinCatalog(this._devinModels, this._devinCatalog, this._devinReconcile));
+    set('devin-quota', this.renderDevinQuota(P, this._devinAcu));
+    set('devin-settings', this.renderDevinSettings(P));
+  },
+
+  devinReason(kind) {
+    const raw = String(kind || 'unknown');
+    const key = 'devin.reason.' + raw;
+    const text = I18n.t(key);
+    // An unmapped reason is a code, not a sentence.
+    return text === key ? I18n.t('devin.reason.unknown') : text;
+  },
+
+  devinUnavailable(P) {
+    const detail = P && P.ok === false ? this.devinReason(P.error) : I18n.t('devin.unavailable');
+    return `<div class="dm-empty">${this.esc(detail)}</div>`;
+  },
+
+  renderDevinKpis(P, models, catalog) {
+    const T = (k, v) => I18n.t('devin.kpi.' + k, v);
+    if (!P || P.ok === false) {
+      return `<div class="card error" style="grid-column:1/-1">
+        <div class="card-header"><div class="card-title">${this.esc(T('failed'))}</div></div>
+        <div class="card-sub">${this.esc(this.devinReason(P && P.error))}</div>
+      </div>`;
+    }
+    const num = (n) => (n == null || !Number.isFinite(Number(n)) ? '—' : Number(n).toLocaleString());
+    const rt = P.runtime || {};
+    const turns = (P.sessions && P.sessions.turns) || {};
+    const drought = (P.quota && P.quota.drought) || {};
+    const sw = (key) => (Array.isArray(rt.switches) ? rt.switches.find((s) => s.key === key) : null);
+    const connect = sw('devinConnect');
+    const mode = connect && connect.value === true ? T('on') : connect && connect.value === false ? T('off') : I18n.t('devin.unknown');
+    const cliMode = sw('devinCliMode');
+    const rows = Array.isArray(models) ? models : null;
+    const freeCount = rows ? rows.filter((m) => m.freeNow === true).length : null;
+    const unreachable = rows ? rows.filter((m) => m.reachable === false).length : null;
+    const drift = catalog && catalog.synced === true
+      ? (Array.isArray(catalog.added) ? catalog.added.length : 0) + (Array.isArray(catalog.missing) ? catalog.missing.length : 0)
+      : null;
+    const droughtKnown = drought.coverageMet === true;
+    const windowTurns = turns.window ? turns.window.turns : null;
+    const card = (cls, title, value, sub, tip) => `<div class="card ${cls}">
+        <div class="card-header"><div class="card-title">${this.esc(title)}</div></div>
+        <div class="card-value"${tip ? ` title="${this.esc(tip)}"` : ''}>${this.esc(value)}</div>
+        <div class="card-sub">${this.esc(sub)}</div>
+      </div>`;
+    const pct = (n) => (n == null || !Number.isFinite(Number(n)) ? '—' : `${Math.round(Number(n))}%`);
+    return [
+      card('info', T('mode'), mode, T('modeSub', { cli: (cliMode && cliMode.value) || '—' })),
+      card('success', T('windowTurns'), num(windowTurns), T('windowSub', { accounts: num(turns.accountsWithTurns) })),
+      card('accent', T('retained'), num(turns.retained), T('retainedSub', { scanned: num(turns.scanned) })),
+      card('info', T('freeModels'), rows ? `${num(freeCount)} / ${num(rows.length)}` : '—', rows ? T('freeSub', { unreachable: num(unreachable) }) : T('noCatalog')),
+      card('warn', T('catalogDrift'), drift == null ? '—' : num(drift), catalog
+        ? (catalog.synced === true ? T('catalogSub', { live: num(catalog.liveCount), snapshot: num(catalog.snapshotCount) }) : T('catalogNotSynced'))
+        : T('noCatalog')),
+      card(drought.active ? 'warn' : (droughtKnown ? 'success' : 'info'), T('drought'), drought.active
+        ? T('droughtActive')
+        : (droughtKnown ? T('droughtOk') : T('droughtUnknown')), T('droughtSub', { weekly: pct(drought.lowestWeeklyPercent), daily: pct(drought.lowestDailyPercent) })),
+    ].join('');
+  },
+
+  renderDevinRuntime(P) {
+    const T = (k, v) => I18n.t('devin.runtime.' + k, v);
+    if (!P || P.ok === false || !P.runtime) return this.devinUnavailable(P);
+    const rt = P.runtime;
+    const ls = rt.langServer || {};
+    const det = rt.detach || {};
+    const cred = rt.credentials || {};
+    const num = (n) => (n == null || !Number.isFinite(Number(n)) ? '—' : Number(n).toLocaleString());
+    const bytes = (n) => {
+      if (n == null || !Number.isFinite(Number(n))) return '—';
+      const v = Number(n);
+      if (v >= 1024 ** 3) return `${(v / 1024 ** 3).toFixed(1)} GB`;
+      if (v >= 1024 ** 2) return `${(v / 1024 ** 2).toFixed(0)} MB`;
+      if (v >= 1024) return `${(v / 1024).toFixed(0)} KB`;
+      return `${v} B`;
+    };
+    const uptime = (s) => {
+      if (s == null || !Number.isFinite(Number(s))) return '—';
+      const v = Number(s);
+      return v < 60 ? `${v}s` : v < 3600 ? `${Math.floor(v / 60)}m` : v < 86400 ? `${(v / 3600).toFixed(1)}h` : `${(v / 86400).toFixed(1)}d`;
+    };
+    const adm = ls.admission;
+    const counters = det.counters || null;
+    const kv = (label, value) => `<span class="k">${this.esc(label)}</span><span class="v">${this.esc(value)}</span>`;
+    const admRows = adm
+      ? [
+          kv(T('startAttempts'), num(adm.startAttempts)),
+          kv(T('startSuccesses'), num(adm.startSuccesses)),
+          kv(T('startFailures'), num(adm.startFailures)),
+          kv(T('poolWaits'), num(adm.poolWaits)),
+          kv(T('memoryWaits'), num(adm.memoryWaits)),
+          kv(T('evictions'), num(adm.evictions)),
+          kv(T('lastFailure'), adm.lastFailure
+            ? `${adm.lastFailure.kind || '—'}${adm.lastFailure.errorType ? ' · ' + adm.lastFailure.errorType : ''}${adm.lastFailure.at ? ' · ' + this.dmAgo(adm.lastFailure.at) : ''}`
+            : '—'),
+        ].join('')
+      : kv(T('admission'), '—');
+    return `<div class="dm-grid">
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(ls.running ? T('running') : T('stopped'))}</span><span class="dm-stat-label">${this.esc(T('langServer'))}</span></div>
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(`${num(ls.ready)} / ${num(ls.instances)}`)}</span><span class="dm-stat-label">${this.esc(T('instances'))}</span></div>
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(num(ls.activeRequests))}</span><span class="dm-stat-label">${this.esc(T('activeRequests'))}</span></div>
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(bytes(ls.totalRssBytes))}</span><span class="dm-stat-label">${this.esc(T('rss'))}</span></div>
+      </div>
+      <div class="detail-kv">
+        ${kv(T('pid'), num(ls.pid))}
+        ${kv(T('port'), num(ls.port))}
+        ${kv(T('uptime'), uptime(rt.uptimeSec))}
+        ${kv(T('credStore'), cred.credStoreEnabled ? T('enabled') : T('disabled'))}
+        ${kv(T('remoteCredStore'), cred.remoteCredStore ? T('enabled') : T('disabled'))}
+      </div>
+      <div class="dm-subhead">${this.esc(T('admission'))}</div>
+      <div class="detail-kv">${admRows}</div>
+      <div class="dm-subhead">${this.esc(T('detach'))}</div>
+      <div class="detail-kv">
+        ${kv(T('detachState'), det.enabled ? T('enabled') : T('disabled'))}
+        ${kv(T('detachEntries'), num(det.entries))}
+        ${kv(T('detachBytes'), bytes(det.bytes))}
+        ${counters ? kv(T('admit'), num(counters.admit)) : ''}
+        ${counters ? kv(T('serve'), num(counters.serve)) : ''}
+        ${counters ? kv(T('reDetach'), num(counters.re_detach)) : ''}
+      </div>
+      <div class="dm-note">${this.esc(T('note'))}</div>`;
+  },
+
+  renderDevinSessions(P) {
+    const T = (k, v) => I18n.t('devin.sessions.' + k, v);
+    if (!P || P.ok === false || !P.sessions) return this.devinUnavailable(P);
+    const S = P.sessions;
+    const turns = S.turns || {};
+    const summary = turns.summary || {};
+    const win = turns.window || {};
+    const sources = Array.isArray(S.sources) ? S.sources : [];
+    const num = (n) => (n == null || !Number.isFinite(Number(n)) ? '—' : Number(n).toLocaleString());
+    const frac = (n) => (n == null || !Number.isFinite(Number(n)) ? '—'
+      : Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }));
+    const acu = (n) => (n == null || !Number.isFinite(Number(n)) ? '—'
+      : (Number(n) > 0 && Number(n) < 0.01
+        ? Number(n).toLocaleString(undefined, { maximumSignificantDigits: 4 })
+        : Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 })));
+    const kv = (label, value) => `<span class="k">${this.esc(label)}</span><span class="v">${this.esc(value)}</span>`;
+    const sourceRows = sources.map((src) => {
+      const id = (src && src.id) || 'unknown';
+      const available = src && src.available === true;
+      const detail = available
+        ? (Array.isArray(src.notes) ? src.notes.map((n) => this.devinReason(n)).join(' · ') : '')
+        : this.devinReason(src && src.reason);
+      return `<tr data-devin-source="${this.esc(id)}">
+        <td>${this.esc(I18n.t('devin.source.' + id))}</td>
+        <td><span class="badge ${available ? 'success' : 'muted'} no-dot">${this.esc(available ? T('available') : T('unavailable'))}</span></td>
+        <td class="text-sm text-muted">${this.esc(detail)}</td>
+      </tr>`;
+    }).join('');
+    const items = Array.isArray(turns.items) ? turns.items : [];
+    const rows = items.map((r) => `<tr>
+        <td title="${this.esc(r.ts ? new Date(r.ts).toLocaleString() : '')}">${this.esc(this.dmAgo(r.ts))}</td>
+        <td><code>${this.esc(r.accountRef || '—')}</code></td>
+        <td>${this.esc(r.model || '—')}</td>
+        <td class="text-sm">${this.esc(`${num(r.promptTokens)} / ${num(r.completionTokens)}`)}</td>
+        <td class="text-sm">${this.esc(num(r.totalTokens))}</td>
+        <td class="text-sm">${this.esc(frac(r.credit))}</td>
+        <td class="text-sm">${this.esc(acu(r.acu))}</td>
+      </tr>`).join('');
+    return `<div class="detail-kv">
+        ${kv(T('scanned'), turns.capped ? `${num(turns.scanned)} / ${num(turns.totalAccounts)}` : num(turns.scanned))}
+        ${kv(T('withTurns'), num(turns.accountsWithTurns))}
+        ${kv(T('retained'), num(turns.retained))}
+        ${kv(T('lastHour'), num(win.turns))}
+        ${kv(T('tokens'), num(summary.totalTokens))}
+        ${kv(T('credit'), frac(summary.credit))}
+        ${kv(T('acu'), acu(summary.acu))}
+      </div>
+      ${turns.capped ? `<div class="dm-note" style="color:var(--warn)">${this.esc(T('scanCapped', { total: num(turns.totalAccounts) }))}</div>` : ''}
+      <div class="dm-subhead">${this.esc(T('sources'))}</div>
+      <div class="table-wrap"><table><thead><tr>
+        <th>${this.esc(T('source'))}</th><th>${this.esc(T('state'))}</th><th>${this.esc(T('detail'))}</th>
+      </tr></thead><tbody>${sourceRows}</tbody></table></div>
+      <div class="dm-subhead">${this.esc(T('turns'))}<span class="dm-subhead-count">${this.esc(T('shown', { shown: items.length, retained: num(turns.retained) }))}</span></div>
+      ${items.length
+        ? `<div class="table-wrap"><table><thead><tr>
+            <th>${this.esc(I18n.t('table.header.time'))}</th>
+            <th>${this.esc(T('account'))}</th>
+            <th>${this.esc(I18n.t('table.header.model'))}</th>
+            <th>${this.esc(T('promptCompletion'))}</th>
+            <th>${this.esc(T('tokens'))}</th>
+            <th>${this.esc(T('credit'))}</th>
+            <th>${this.esc(T('acu'))}</th>
+          </tr></thead><tbody>${rows}</tbody></table></div>`
+        : `<div class="dm-empty">${this.esc(T('empty'))}</div>`}
+      <div class="dm-note">${this.esc(T('note'))}</div>`;
+  },
+
+  renderDevinCatalog(models, catalog, reconcile) {
+    const T = (k, v) => I18n.t('devin.catalog.' + k, v);
+    const rows = Array.isArray(models) ? models : null;
+    if (!rows) {
+      return `<div class="dm-empty">${this.esc(I18n.t('error.loadFailed'))}</div>`;
+    }
+    const count = (fn) => rows.filter(fn).length;
+    const chip = (label, value, cls) => `<span class="badge ${cls || 'muted'} no-dot">${this.esc(label)} ${this.esc(String(value))}</span>`;
+    const priceBadge = (m) => {
+      if (m.quotaState === 'blocked_daily') {
+        return `<span class="badge warn no-dot" title="${this.esc(I18n.t('model.dailyExhaustedHint'))}">${this.esc(I18n.t('model.dailyExhaustedBadge'))}</span>`;
+      }
+      if (m.quotaState === 'blocked_weekly') {
+        return `<span class="badge warn no-dot" title="${this.esc(I18n.t('model.weeklyDroughtHint'))}">${this.esc(I18n.t('model.weeklyDroughtBadge'))}</span>`;
+      }
+      if (m.quotaState === 'not_in_catalog') {
+        return `<span class="badge muted no-dot" title="${this.esc(I18n.t('model.notInCatalogHint'))}">${this.esc(I18n.t('model.notInCatalogBadge'))}</span>`;
+      }
+      if (m.freeNow === true) {
+        const tip = m.freeReason ? I18n.t('model.freeReason.' + m.freeReason) : '';
+        return `<span class="badge success no-dot"${tip ? ` title="${this.esc(tip)}"` : ''}>${this.esc(I18n.t('model.freeBadge'))}</span>`;
+      }
+      if (m.freeNow === false) {
+        return `<span class="badge info no-dot">${this.esc(I18n.t('model.paidBadge'))}</span>`;
+      }
+      return `<span class="badge muted no-dot" title="${this.esc(I18n.t('model.costUnknownHint'))}">${this.esc(T('chip.unknownPrice'))}</span>`;
+    };
+    const shown = rows.slice(0, 200);
+    const tableRows = shown.map((m) => `<tr>
+        <td><code>${this.esc(m.id)}</code></td>
+        <td class="text-sm">${this.esc(m.provider || '—')}</td>
+        <td><span class="badge ${m.reachable ? 'success' : 'muted'} no-dot">${this.esc(m.reachable ? T('reachable') : T('unreachable'))}</span></td>
+        <td>${priceBadge(m)}</td>
+        <td class="text-sm">${this.esc(m.costTier || '—')}</td>
+        <td class="text-sm">${this.esc(m.promoEndsAt ? new Date(m.promoEndsAt).toLocaleDateString() : '—')}</td>
+      </tr>`).join('');
+    const diff = catalog;
+    const diffRows = diff
+      ? [
+          ...(Array.isArray(diff.added) ? diff.added.map((s) => ({ kind: 'added', selector: s })) : []),
+          ...(Array.isArray(diff.missing) ? diff.missing.map((s) => ({ kind: 'missing', selector: s })) : []),
+        ].slice(0, 40).map((row) => `<div class="dm-row">
+          <span class="badge ${row.kind === 'added' ? 'info' : 'warn'} no-dot">${this.esc(T('diff.' + row.kind))}</span>
+          <span></span>
+          <span class="dm-row-delta">${this.esc(row.selector)}</span>
+        </div>`).join('')
+      : '';
+    const diffHtml = diff
+      ? `<div class="dm-subhead">${this.esc(T('diff.title'))}</div>
+        <div class="detail-kv">
+          <span class="k">${this.esc(T('diff.synced'))}</span><span class="v">${this.esc(diff.synced ? T('yes') : T('diff.notSynced'))}</span>
+          <span class="k">${this.esc(T('diff.live'))}</span><span class="v">${this.esc(String(diff.liveCount ?? '—'))}</span>
+          <span class="k">${this.esc(T('diff.snapshot'))}</span><span class="v">${this.esc(String(diff.snapshotCount ?? '—'))}</span>
+          <span class="k">${this.esc(T('diff.added'))}</span><span class="v">${this.esc(String((diff.added || []).length))}</span>
+          <span class="k">${this.esc(T('diff.missing'))}</span><span class="v">${this.esc(String((diff.missing || []).length))}</span>
+          <span class="k">${this.esc(T('diff.unmapped'))}</span><span class="v">${this.esc(String(diff.unmappedCount ?? 0))}</span>
+        </div>
+        ${diffRows ? `<div class="dm-rows">${diffRows}</div>` : ''}`
+      : `<div class="dm-note">${this.esc(T('diff.unavailable'))}</div>`;
+    const rec = reconcile;
+    const recHtml = rec
+      ? (rec.ok === false
+        ? `<div class="dm-note" style="color:var(--error)">${this.esc(this.devinReason(rec.error))}</div>`
+        : `<div class="detail-kv">
+            <span class="k">${this.esc(T('reconcile.account'))}</span><span class="v"><code>${this.esc(rec.accountRef || '—')}</code></span>
+            <span class="k">${this.esc(T('reconcile.local'))}</span><span class="v">${this.esc(String(rec.localCount ?? '—'))}</span>
+            <span class="k">${this.esc(T('reconcile.live'))}</span><span class="v">${this.esc(String(rec.liveCount ?? '—'))}</span>
+            <span class="k">${this.esc(T('reconcile.snapshot'))}</span><span class="v">${this.esc(String(rec.snapshotCount ?? '—'))}</span>
+            <span class="k">${this.esc(T('reconcile.partial'))}</span><span class="v">${this.esc(rec.partial ? T('yes') : T('no'))}</span>
+            <span class="k">${this.esc(T('reconcile.stale'))}</span><span class="v">${this.esc(rec.stale ? T('yes') : T('no'))}</span>
+          </div>
+          ${Array.isArray(rec.degraded) && rec.degraded.length
+            ? `<div class="dm-note" style="color:var(--warn)">${this.esc(T('reconcile.degraded', { sources: rec.degraded.map((d) => d.source).join(', ') }))}</div>`
+            : ''}`)
+      : `<div class="dm-note">${this.esc(T('reconcile.idle'))}</div>`;
+    return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+        ${chip(T('chip.total'), rows.length, 'info')}
+        ${chip(T('chip.reachable'), count((m) => m.reachable === true), 'success')}
+        ${chip(T('chip.free'), count((m) => m.freeNow === true), 'success')}
+        ${chip(T('chip.daily'), count((m) => m.quotaState === 'blocked_daily'), 'warn')}
+        ${chip(T('chip.weekly'), count((m) => m.quotaState === 'blocked_weekly'), 'warn')}
+        ${chip(T('chip.notInCatalog'), count((m) => m.quotaState === 'not_in_catalog'), 'muted')}
+        ${chip(T('chip.unknownPrice'), count((m) => m.freeNow == null), 'muted')}
+        ${chip(T('chip.stale'), count((m) => m.pricingStale === true), 'warn')}
+      </div>
+      <div class="table-wrap"><table><thead><tr>
+        <th>${this.esc(I18n.t('table.header.model'))}</th>
+        <th>${this.esc(T('col.provider'))}</th>
+        <th>${this.esc(T('col.reachable'))}</th>
+        <th>${this.esc(T('col.price'))}</th>
+        <th>${this.esc(T('col.tier'))}</th>
+        <th>${this.esc(T('col.promo'))}</th>
+      </tr></thead><tbody>${tableRows}</tbody></table></div>
+      ${rows.length > shown.length ? `<div class="dm-note">${this.esc(T('truncated', { shown: shown.length, total: rows.length }))}</div>` : ''}
+      ${diffHtml}
+      <div class="dm-subhead">${this.esc(T('reconcile.title'))}</div>
+      ${recHtml}
+      <div class="dm-note">${this.esc(T('note'))}</div>`;
+  },
+
+  renderDevinQuota(P, acu) {
+    const T = (k, v) => I18n.t('devin.quota.' + k, v);
+    if (!P || P.ok === false || !P.quota) return this.devinUnavailable(P);
+    const q = P.quota;
+    const d = q.drought || {};
+    const num = (n) => (n == null || !Number.isFinite(Number(n)) ? '—' : Number(n).toLocaleString());
+    const pct = (n) => (n == null || !Number.isFinite(Number(n)) ? '—' : `${Math.round(Number(n))}%`);
+    const kv = (label, value) => `<span class="k">${this.esc(label)}</span><span class="v">${this.esc(value)}</span>`;
+    const droughtHtml = `<div class="dm-grid">
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(d.active ? T('active') : T('ok'))}</span><span class="dm-stat-label">${this.esc(T('state'))}</span></div>
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(pct(d.lowestWeeklyPercent))}</span><span class="dm-stat-label">${this.esc(T('lowestWeekly'))}</span></div>
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(pct(d.lowestDailyPercent))}</span><span class="dm-stat-label">${this.esc(T('lowestDaily'))}</span></div>
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(`${num(d.droughtAccounts)} / ${num(d.quotaKnownAccounts)}`)}</span><span class="dm-stat-label">${this.esc(T('dryAccounts'))}</span></div>
+      </div>
+      <div class="detail-kv">
+        ${kv(T('threshold'), pct(d.threshold))}
+        ${kv(T('coverage'), d.coverageMet ? T('coverageMet') : T('coverageLow'))}
+        ${kv(T('restrict'), d.restrictEnabled ? T('on') : T('off'))}
+        ${kv(T('freeList'), Array.isArray(d.freeTierModels) && d.freeTierModels.length ? d.freeTierModels.join(', ') : '—')}
+      </div>
+      ${d.restrictionFailOpen ? `<div class="dm-note" style="color:var(--warn)">${this.esc(I18n.t('drought.restrictionFailOpen'))}</div>` : ''}`;
+
+    let acuHtml;
+    if (!acu) {
+      acuHtml = `<div class="dm-note">${this.esc(T('acu.idle'))}</div>`;
+    } else if (!Array.isArray(acu.orgs) || acu.orgs.length === 0) {
+      acuHtml = `<div class="dm-note" style="color:var(--error)">${this.esc(this.devinReason(acu.error))}</div>`;
+    } else {
+      const orgCards = acu.orgs.map((org, index) => {
+        const derived = org.derived || {};
+        const limit = derived.acuLimit || {};
+        const used = derived.used || {};
+        const remaining = derived.remaining || {};
+        const text = (part) => (part.unlimited
+          ? I18n.t('usage.unlimited')
+          : (part.known ? this.fmtAcu(part.value) : '—'));
+        const badges = [];
+        if (org.ok === false) badges.push(`<span class="badge error no-dot">${this.esc(this.devinReason(org.error))}</span>`);
+        if (org.cached) badges.push(`<span class="badge muted no-dot">${this.esc(I18n.t('usage.cached'))}</span>`);
+        if (org.stale) badges.push(`<span class="badge warn no-dot">${this.esc(I18n.t('usage.stale'))}</span>`);
+        if (org.partial) badges.push(`<span class="badge warn no-dot">${this.esc(I18n.t('usage.partial'))}</span>`);
+        const accounts = Array.isArray(org.accounts) ? org.accounts.length : 0;
+        const cycle = org.cycle || {};
+        const quota = org.quota || {};
+        const title = I18n.t('usage.orgOption', { index: index + 1, plan: org.plan || I18n.t('usage.notReported'), count: accounts });
+        return `<div class="detail-card" style="grid-column:1/-1">
+          <div class="detail-card-head">
+            <span class="dot" style="background:var(--accent)"></span>${this.esc(title)}
+            <span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">${badges.join('')}</span>
+          </div>
+          <div class="dm-grid">
+            <div class="dm-stat"><span class="dm-stat-value">${this.esc(text(remaining))}</span><span class="dm-stat-label">${this.esc(I18n.t('usage.cards.remaining'))}</span></div>
+            <div class="dm-stat"><span class="dm-stat-value">${this.esc(text(used))}</span><span class="dm-stat-label">${this.esc(I18n.t('usage.cards.used'))}</span></div>
+            <div class="dm-stat"><span class="dm-stat-value">${this.esc(text(limit))}</span><span class="dm-stat-label">${this.esc(I18n.t('usage.cards.limit'))}</span></div>
+          </div>
+          <div class="detail-kv">
+            ${kv(I18n.t('usage.cycleEnd'), cycle.end ? this.fmtUsageDate(cycle.end) : I18n.t('usage.notReported'))}
+            ${kv(I18n.t('usage.dailyQuota'), quota.dailyPercentage == null ? '—' : `${Math.round(quota.dailyPercentage)}%`)}
+            ${kv(I18n.t('usage.weeklyQuota'), quota.weeklyPercentage == null ? '—' : `${Math.round(quota.weeklyPercentage)}%`)}
+            ${kv(I18n.t('usage.dailyReset'), quota.dailyResetAt ? this.fmtUsageDateTime(quota.dailyResetAt) : '—')}
+            ${kv(I18n.t('usage.weeklyReset'), quota.weeklyResetAt ? this.fmtUsageDateTime(quota.weeklyResetAt) : '—')}
+          </div>
+        </div>`;
+      }).join('');
+      const notes = [];
+      if (acu.truncated) notes.push(I18n.t('usage.truncated', { count: acu.accountsScanned }));
+      if (acu.unresolvedAccounts) notes.push(I18n.t('usage.unresolved', { count: acu.unresolvedAccounts }));
+      acuHtml = `<div class="dm-subhead">${this.esc(T('acu.title'))}<span class="dm-subhead-count">${this.esc(I18n.t('usage.updated', { when: this.dmAgo(acu.generatedAt) }))}</span></div>
+        <div style="display:grid;gap:10px">${orgCards}</div>
+        ${notes.length ? `<div class="dm-note" style="color:var(--warn)">${this.esc(notes.join(' · '))}</div>` : ''}
+        <div class="dm-note">${this.esc(T('acu.note'))}</div>`;
+    }
+    return `<div class="dm-subhead">${this.esc(T('droughtTitle'))}</div>
+      ${droughtHtml}
+      ${acuHtml}`;
+  },
+
+  renderDevinSettings(P) {
+    const T = (k, v) => I18n.t('devin.settings.' + k, v);
+    if (!P || P.ok === false || !P.runtime) return this.devinUnavailable(P);
+    const rt = P.runtime;
+    const switches = Array.isArray(rt.switches) ? rt.switches : [];
+    const valueText = (row) => {
+      if (row.value === true) return T('on');
+      if (row.value === false) return T('off');
+      return row.value == null ? I18n.t('devin.unknown') : String(row.value);
+    };
+    const switchRows = switches.map((row) => `<tr data-devin-switch="${this.esc(row.key)}">
+        <td>${this.esc(I18n.t('devin.switch.' + row.key))}</td>
+        <td><code>${this.esc(valueText(row))}</code></td>
+        <td><span class="badge ${row.source === 'config' ? 'info' : 'muted'} no-dot">${this.esc(T('source.' + row.source))}</span></td>
+        <td class="text-sm text-muted">${this.esc(row.overridden ? T('overridden') : T('followEnv'))}</td>
+      </tr>`).join('');
+    const knobs = (P.quota && Array.isArray(P.quota.knobs)) ? P.quota.knobs : [];
+    const knobRows = knobs.map((knob) => {
+      const id = `dev-knob-${knob.key}`;
+      const label = this.esc(I18n.t('devin.knob.' + knob.key));
+      const isBool = typeof knob.value === 'boolean';
+      const control = isBool
+        ? `<select class="select" id="${this.esc(id)}">
+            <option value=""${knob.override == null ? ' selected' : ''}>${this.esc(T('followEnv'))}</option>
+            <option value="true"${knob.override === true ? ' selected' : ''}>${this.esc(T('on'))}</option>
+            <option value="false"${knob.override === false ? ' selected' : ''}>${this.esc(T('off'))}</option>
+          </select>`
+        : `<input class="input" type="number" id="${this.esc(id)}" style="max-width:160px"
+            value="${knob.override == null ? '' : this.esc(String(knob.override))}"
+            placeholder="${this.esc(String(knob.value ?? ''))}">`;
+      return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:6px 0">
+        <span style="min-width:220px">${label}</span>
+        ${control}
+        <span class="badge ${knob.source === 'config' ? 'info' : 'muted'} no-dot">${this.esc(T('source.' + knob.source))}</span>
+      </div>`;
+    }).join('');
+    return `<div class="dm-subhead">${this.esc(T('switches.title'))}</div>
+      <div class="table-wrap"><table><thead><tr>
+        <th>${this.esc(T('switch'))}</th><th>${this.esc(T('value'))}</th><th>${this.esc(T('source'))}</th><th>${this.esc(T('override'))}</th>
+      </tr></thead><tbody>${switchRows}</tbody></table></div>
+      <div class="dm-note">${this.esc(T('switches.note'))}</div>
+      <div class="dm-subhead">${this.esc(T('knobs.title'))}</div>
+      <div>${knobRows}</div>
+      <div class="dm-controls" style="margin-top:10px">
+        <button class="btn btn-primary btn-sm" id="devin-quota-save" onclick="App.saveDevinQuota()">${this.esc(I18n.t('action.save'))}</button>
+        <span class="text-sm text-muted">${this.esc(T('knobs.note'))}</span>
+      </div>`;
+  },
+
+  async loadDevinAcu(force = false) {
+    if (this._devinAcuLoading) return;
+    this._devinAcuLoading = true;
+    const btn = document.getElementById('devin-acu-btn');
+    if (btn) { btn.disabled = true; btn.textContent = I18n.t('devin.quota.acu.loading'); }
+    try {
+      const r = await this.api('GET', '/usage/orgs' + (force ? '?refresh=1' : ''));
+      this._devinAcu = r && typeof r === 'object' ? r : { ok: false, error: 'failed', orgs: [] };
+      if (!Array.isArray(this._devinAcu.orgs)) this._devinAcu.orgs = [];
+    } catch (e) {
+      this._devinAcu = { ok: false, error: e.message || 'failed', orgs: [] };
+    } finally {
+      this._devinAcuLoading = false;
+      if (btn) { btn.disabled = false; btn.textContent = I18n.t('devin.quota.acu.load'); }
+    }
+    const el = document.getElementById('devin-quota');
+    if (el) el.innerHTML = this.renderDevinQuota(this._devinPanel, this._devinAcu);
+  },
+
+  async loadDevinReconcile(force = false) {
+    if (this._devinReconcileLoading) return;
+    this._devinReconcileLoading = true;
+    const btn = document.getElementById('devin-reconcile-btn');
+    if (btn) { btn.disabled = true; btn.textContent = I18n.t('devin.catalog.reconcile.running'); }
+    try {
+      const r = await this.api('GET', '/models/reconcile' + (force ? '?refresh=1' : ''));
+      this._devinReconcile = r && typeof r === 'object' ? r : { ok: false, error: 'failed' };
+    } catch (e) {
+      this._devinReconcile = { ok: false, error: e.message || 'failed' };
+    } finally {
+      this._devinReconcileLoading = false;
+      if (btn) { btn.disabled = false; btn.textContent = I18n.t('devin.catalog.reconcile.run'); }
+    }
+    const el = document.getElementById('devin-catalog');
+    if (el) el.innerHTML = this.renderDevinCatalog(this._devinModels, this._devinCatalog, this._devinReconcile);
+  },
+
+  async saveDevinQuota() {
+    const keys = ['cooldownEnabled', 'cooldownMs', 'dryThreshold', 'spendOnDemand', 'onDemandReserveUsd'];
+    const patch = {};
+    for (const key of keys) {
+      const el = document.getElementById('dev-knob-' + key);
+      if (!el) continue;
+      const raw = String(el.value == null ? '' : el.value).trim();
+      if (raw === '') { patch[key] = null; continue; }
+      if (el.tagName === 'SELECT') { patch[key] = raw === 'true'; continue; }
+      const n = Number(raw);
+      if (Number.isFinite(n)) patch[key] = n;
+    }
+    const btn = document.getElementById('devin-quota-save');
+    if (btn) btn.disabled = true;
+    try {
+      const r = await this.api('PUT', '/quota-config', patch);
+      if (!r || r.success === false) throw new Error((r && r.error) || I18n.t('error.saveFailed'));
+      this.toast(I18n.t('devin.settings.saved'), 'success');
+      await this.loadDevin(true);
+    } catch (e) {
+      this.toast(e.message || I18n.t('error.saveFailed'), 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   },
 
   async loadOverview() {

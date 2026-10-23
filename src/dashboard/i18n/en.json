@@ -26,7 +26,8 @@
     "logs": "Logs",
     "experimental": "Experimental",
     "credits": "Credits",
-    "usage": "Usage"
+    "usage": "Usage",
+    "devin": "Devin Panel"
   },
   "page": {
     "overview": "Dashboard",
@@ -40,7 +41,8 @@
     "logs": "Runtime Logs",
     "experimental": "Experimental Features",
     "credits": "Credits",
-    "usage": "Usage"
+    "usage": "Usage",
+    "devin": "Devin Panel"
   },
   "pageTitle": {
     "main": "WindsurfAPI bydwgx1337 Control Panel"
@@ -57,7 +59,8 @@
     "bans": "Track error accounts and abnormal status",
     "settings": "Shared preferences and security thresholds — customizable",
     "experimental": "Unstable optimizations; disable anytime if issues occur",
-    "credits": "Thanks to contributors who submitted PRs / audited code / reported issues"
+    "credits": "Thanks to contributors who submitted PRs / audited code / reported issues",
+    "devin": "Sessions and trajectories, model catalog, usage and quota, runtime settings. Only what the proxy actually reads is shown; anything unreadable is labelled with its reason instead of a zero."
   },
   "usage": {
     "title": "Usage",
@@ -568,6 +571,7 @@
       "unavailable": "Request ring unavailable — retrying on the next overview poll",
       "meta": "{{total}} / {{capacity}} in ring"
     },
+<<<<<<< HEAD
     "statsLog": {
       "title": "Request log",
       "desc": "Per-request detail: time, model, account, status, latency, tokens and cost. One row per upstream attempt; cost is in Devin credits.",
@@ -590,6 +594,29 @@
       "byModel": "By model",
       "byAccount": "By account",
       "byDay": "By day"
+=======
+    "devin": {
+      "runtime": {
+        "title": "Runtime",
+        "desc": "Language-server processes, admission counters and the detached-continuation cache. All in-process state: opening this page makes no upstream call."
+      },
+      "sessions": {
+        "title": "Sessions and trajectories",
+        "desc": "Billed proxy turns merged across accounts. Cascade trajectories and ACP sessions are outside the proxy's view — the source table states why."
+      },
+      "catalog": {
+        "title": "Model catalog and status",
+        "desc": "Local reachability, the free/billable tri-state and the live catalog diff. Upstream entitlement needs “Reconcile upstream”, which does make upstream calls."
+      },
+      "quota": {
+        "title": "Usage and quota",
+        "desc": "The drought verdict and thresholds come from local caches; workspace ACU needs “Load ACU” and reads the upstream once on a cold cache."
+      },
+      "settings": {
+        "title": "Settings",
+        "desc": "Effective values and sources of the Devin switches; the write path stays on the Settings page. Quota/on-demand policy can be saved here."
+      }
+>>>>>>> feat/devin-panel
     }
   },
   "help": {
@@ -2133,5 +2160,217 @@
     "tryDevinHost": "Mail not received? Send via app.devin.ai",
     "useCode": "Use an email code instead",
     "methodNotFound": "No Windsurf account uses this email. Check the address."
+  },
+  "devin": {
+    "unknown": "Unknown",
+    "unavailable": "This section is unavailable.",
+    "switch": {
+      "devinConnect": "Devin Connect transport",
+      "devinOnly": "Devin only",
+      "devinCliMode": "Devin CLI mode",
+      "allowClientTools": "Allow client tools",
+      "loginHostFallback": "Login host fallback",
+      "autoRelogin": "Auto re-login"
+    },
+    "knob": {
+      "cooldownEnabled": "Quota cooldown",
+      "cooldownMs": "Quota cooldown (ms)",
+      "dryThreshold": "Dry threshold (%)",
+      "spendOnDemand": "Spend on demand",
+      "onDemandReserveUsd": "On-demand reserve (USD)"
+    },
+    "source": {
+      "proxyTurns": "Proxy billed turns",
+      "cascadeTrajectories": "Cascade trajectories",
+      "acpSessions": "ACP sessions"
+    },
+    "reason": {
+      "unknown": "Reason unavailable",
+      "ls_only": "Local language server only (binary gRPC); this proxy does not call it, and a DEVIN_CONNECT deployment has no local LS.",
+      "not_tracked": "Not tracked: ACP runs are spawned per request and no registry keeps them after the turn ends.",
+      "billed_successes_only": "Billed successes only: aborted and rate-limited requests never reach spend accounting.",
+      "process_local": "Process-local ring: a restart starts a new window.",
+      "failed": "The request failed.",
+      "upstream": "The upstream read failed.",
+      "no_account": "No Devin session account is available.",
+      "network_error": "Network error.",
+      "unauthorized": "Not authorized (401).",
+      "forbidden": "No permission (403).",
+      "not_found": "Not found (404).",
+      "stale": "Stale response discarded.",
+      "empty": "Empty response."
+    },
+    "kpi": {
+      "failed": "Panel data unavailable",
+      "mode": "Transport",
+      "modeSub": "CLI mode {{cli}}",
+      "windowTurns": "Turns · last hour",
+      "windowSub": "{{accounts}} account(s) with billed turns",
+      "retained": "Retained turns",
+      "retainedSub": "{{scanned}} account(s) scanned",
+      "freeModels": "Free models",
+      "freeSub": "{{unreachable}} not reachable now",
+      "noCatalog": "Catalog not loaded",
+      "catalogDrift": "Catalog drift",
+      "catalogSub": "live {{live}} · snapshot {{snapshot}}",
+      "catalogNotSynced": "Live catalog not synced yet",
+      "drought": "Quota drought",
+      "droughtActive": "Active",
+      "droughtOk": "Clear",
+      "droughtUnknown": "Not assessed",
+      "droughtSub": "min weekly {{weekly}} · min daily {{daily}}",
+      "on": "On",
+      "off": "Off"
+    },
+    "runtime": {
+      "running": "Running",
+      "stopped": "Stopped",
+      "langServer": "Language server",
+      "instances": "Ready / instances",
+      "activeRequests": "Active requests",
+      "rss": "RSS",
+      "pid": "PID",
+      "port": "Port",
+      "uptime": "Uptime",
+      "credStore": "Credential store",
+      "remoteCredStore": "Remote credential store",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "admission": "Admission",
+      "startAttempts": "Start attempts",
+      "startSuccesses": "Start successes",
+      "startFailures": "Start failures",
+      "poolWaits": "Pool waits",
+      "memoryWaits": "Memory-guard waits",
+      "evictions": "Evictions",
+      "lastFailure": "Last failure",
+      "detach": "Detached continuations",
+      "detachState": "State",
+      "detachEntries": "Entries",
+      "detachBytes": "Buffered bytes",
+      "admit": "Admitted",
+      "serve": "Served",
+      "reDetach": "Re-detached",
+      "note": "Counters are process-lifetime and reset on restart. The credential-store switches are env-only and read-only here."
+    },
+    "sessions": {
+      "available": "Available",
+      "unavailable": "Unavailable",
+      "scanned": "Accounts scanned",
+      "scanCapped": "Only the {{total}} most recently used accounts were scanned; older accounts contribute no rows.",
+      "withTurns": "Accounts with turns",
+      "retained": "Retained turns",
+      "lastHour": "Last hour",
+      "tokens": "Tokens",
+      "credit": "Credits",
+      "acu": "ACU",
+      "sources": "Sources",
+      "source": "Source",
+      "state": "State",
+      "detail": "Detail",
+      "turns": "Billed turns",
+      "shown": "{{shown}} of {{retained}}",
+      "account": "Account",
+      "promptCompletion": "Prompt / completion",
+      "empty": "No billed turns in the retained window.",
+      "note": "Rows are billed successes from the per-account rings (100 per account, process-local). Aborted or rejected requests never appear here, so an empty list is not proof that no traffic arrived."
+    },
+    "catalog": {
+      "reachable": "Reachable",
+      "unreachable": "Not reachable",
+      "yes": "Yes",
+      "no": "No",
+      "truncated": "Showing the first {{shown}} of {{total}} models.",
+      "note": "Reachability is resolved locally from the pool's catalog; it is not an upstream entitlement verdict. “Reconcile upstream” reads the account-scoped sources and reports degraded ones as partial.",
+      "chip": {
+        "total": "Models",
+        "reachable": "Reachable",
+        "free": "Free now",
+        "daily": "Daily exhausted",
+        "weekly": "Weekly drought",
+        "notInCatalog": "Not in catalog",
+        "unknownPrice": "Price unknown",
+        "stale": "Stale pricing"
+      },
+      "col": {
+        "provider": "Provider",
+        "reachable": "Reachable",
+        "price": "Price",
+        "tier": "Cost tier",
+        "promo": "Promo ends"
+      },
+      "diff": {
+        "title": "Live catalog vs snapshot",
+        "synced": "Synced",
+        "notSynced": "Not synced yet",
+        "live": "Live selectors",
+        "snapshot": "Snapshot selectors",
+        "added": "Added",
+        "missing": "Missing",
+        "unmapped": "Unmapped aliases",
+        "unavailable": "Catalog diff unavailable."
+      },
+      "reconcile": {
+        "title": "Upstream reconciliation",
+        "run": "Reconcile upstream",
+        "running": "Reconciling…",
+        "account": "Account",
+        "local": "Local models",
+        "live": "Live catalog",
+        "snapshot": "Snapshot",
+        "partial": "Partial",
+        "stale": "Stale",
+        "degraded": "Degraded sources: {{sources}}",
+        "idle": "Not run yet. This reads account-scoped upstream sources (catalog, fed models, toggleable versions, org configs) and may cost an upstream call."
+      }
+    },
+    "quota": {
+      "droughtTitle": "Quota drought",
+      "state": "State",
+      "active": "Drought",
+      "ok": "Clear",
+      "lowestWeekly": "Lowest weekly",
+      "lowestDaily": "Lowest daily",
+      "dryAccounts": "Dry / measured",
+      "threshold": "Threshold",
+      "coverage": "Coverage",
+      "coverageMet": "Enough accounts measured",
+      "coverageLow": "Too few accounts measured",
+      "restrict": "Low-quota restriction",
+      "on": "On",
+      "off": "Off",
+      "freeList": "Free list",
+      "acu": {
+        "idle": "Workspace ACU not loaded. “Load ACU” resolves every active session-token account to its org and reads the ledger once per org.",
+        "title": "Workspace ACU",
+        "note": "Remaining is derived as limit − used in the current cycle; it is not a balance the service reports directly.",
+        "load": "Load ACU",
+        "loading": "Loading…",
+        "full": "Full usage"
+      }
+    },
+    "settings": {
+      "saved": "Quota policy saved",
+      "on": "On",
+      "off": "Off",
+      "followEnv": "Follow env / default",
+      "source": {
+        "config": "config",
+        "env": "env"
+      },
+      "overridden": "Overridden in runtime-config",
+      "switch": "Switch",
+      "value": "Effective value",
+      "override": "Override",
+      "switches": {
+        "title": "Devin switches",
+        "note": "Read-only here. Flip these on the Settings page (“Runtime backend”), which writes runtime-config.json and takes effect immediately."
+      },
+      "knobs": {
+        "title": "Quota and on-demand policy",
+        "note": "Empty = follow env / default. Saving writes runtime-config.json immediately."
+      },
+      "open": "Open global settings"
+    }
   }
 }

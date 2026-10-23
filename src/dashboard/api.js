@@ -72,6 +72,15 @@ import { readAcuUsageByOrg } from './acu-usage.js';
 import { readBillingHealth } from './billing-health.js';
 import { readModelReconciliation } from './model-reconcile.js';
 import { buildAccountCards, preflightCapacity } from './devin-cards.js';
+import {
+  buildDevinPanel,
+  buildQuotaSection,
+  buildRuntimeSection,
+  buildSessionsSection,
+  buildTurnsSection,
+  MAX_SCAN_ACCOUNTS,
+  RUNTIME_SWITCH_KEYS,
+} from './devin-panel.js';
 import { listRequests, requestRingStats } from './request-ring.js';
 import { windsurfLogin, refreshFirebaseToken, reRegisterWithCodeium, probeLoginMethod, emailLoginStart, emailLoginComplete, checkEmailLocked } from './windsurf-login.js';
 import { getModelAccessConfig, setModelAccessMode, setModelAccessList, addModelToList, removeModelFromList, setDefaultModel } from './model-access.js';
@@ -119,6 +128,23 @@ function scheduleAccountWarmup(accountId, { probe = true } = {}) {
       return null;
     })
     .catch(e => log.warn(`LS ensure failed: ${e.message}`));
+}
+
+// One row per hot-swappable backend switch: effective value + whether it came
+// from runtime-config.json or is following the deployment env. Shared by
+// GET/PUT /runtime-env-status and the Devin panel so the two can never report
+// a different value for the same switch.
+function runtimeSwitchRows() {
+  const overrides = getBackendSwitchOverrides();
+  const rows = {};
+  for (const key of RUNTIME_SWITCH_KEYS) {
+    rows[key] = {
+      value: getBackendSwitch(key),
+      override: overrides[key] === undefined ? null : overrides[key],
+      source: overrides[key] === null || overrides[key] === undefined ? 'env' : 'config',
+    };
+  }
+  return rows;
 }
 
 export function parseProxyUrl(proxy) {
@@ -924,16 +950,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   // a presence flag only, never the value.
   if (subpath === '/runtime-env-status' && method === 'GET') {
     const on = (v) => String(v || '').trim() === '1';
-    const overrides = getBackendSwitchOverrides();
-    const SWITCH_KEYS = ['devinConnect', 'devinOnly', 'devinCliMode', 'allowClientTools', 'loginHostFallback', 'autoRelogin'];
-    const switches = {};
-    for (const key of SWITCH_KEYS) {
-      switches[key] = {
-        value: getBackendSwitch(key),           // effective (config → env → default)
-        override: overrides[key],               // null = not set → falling back to env
-        source: overrides[key] === null ? 'env' : 'config',
-      };
-    }
+    const switches = runtimeSwitchRows();
     return json(res, 200, {
       // Flat effective values (back-compat with the prior read-only card shape).
       devinConnect: switches.devinConnect.value,
@@ -955,17 +972,8 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   // set to null CLEARS the override (falls back to env). devinCliMode accepts
   // only 'acp'|'print'; the rest are booleans.
   if (subpath === '/runtime-env-status' && method === 'PUT') {
-    const overrides = setBackendSwitches(body || {});
-    const SWITCH_KEYS = ['devinConnect', 'devinOnly', 'devinCliMode', 'allowClientTools', 'loginHostFallback', 'autoRelogin'];
-    const switches = {};
-    for (const key of SWITCH_KEYS) {
-      switches[key] = {
-        value: getBackendSwitch(key),
-        override: overrides[key],
-        source: overrides[key] === null ? 'env' : 'config',
-      };
-    }
-    return json(res, 200, { success: true, switches });
+    setBackendSwitches(body || {});
+    return json(res, 200, { success: true, switches: runtimeSwitchRows() });
   }
 
   // ─── Circuit-breaker / rate-limit tunables (hot-flippable) ──
@@ -3355,6 +3363,43 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     } catch (err) {
       return json(res, 500, { error: err.message });
     }
+  }
+
+  // ─── DevIn panel (page-level snapshot) ─────────────────
+  // GET /devin/panel — one in-process snapshot for the Devin panel page:
+  // runtime switches + LS/detach state, the merged per-account billed-turn
+  // rings, the drought decision, and the quota/spend knobs. No upstream call
+  // and no key material, so opening the page costs no quota. Sources the proxy
+  // cannot read (Cascade trajectories, ACP sessions) are declared unavailable
+  // with a machine-readable reason by the builder — never returned as empty
+  // lists, which would read as "no sessions".
+  if (subpath === '/devin/panel' && method === 'GET') {
+    const now = Date.now();
+    // Newest-used first, so MAX_SCAN_ACCOUNTS only drops accounts that never
+    // served a turn. `lastUsed` is an ISO string (or null) on the summary view.
+    const allAccounts = getAccountList({ view: 'summary' });
+    const accounts = allAccounts
+      .map((a) => ({ id: a.id, ref: accountRef(a.id), lastUsed: a.lastUsed ? Date.parse(a.lastUsed) : 0 }))
+      .sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0))
+      .slice(0, MAX_SCAN_ACCOUNTS);
+    const runtime = buildRuntimeSection({
+      uptimeSec: Math.round(process.uptime()),
+      startedAt: getStats().startedAt,
+      switches: runtimeSwitchRows(),
+      credStoreEnabled: !!(process.env.DEVIN_CONNECT_CRED_KEY || '').trim(),
+      remoteCredStore: String(process.env.DEVIN_CONNECT_ALLOW_REMOTE_CRED_STORE || '').trim() === '1',
+      langServer: getLsStatus(),
+      detach: { enabled: cascadeDetachEnabled(), ...detachedRegistry.stats() },
+    });
+    const sessions = buildSessionsSection({
+      turns: buildTurnsSection({ accounts, totalAccounts: allAccounts.length, readRequests: getAccountRequests, now }),
+    });
+    const quota = buildQuotaSection({
+      drought: getDroughtSummary(),
+      tunables: getQuotaTunables(),
+      overrides: getQuotaOverrides(),
+    });
+    return json(res, 200, buildDevinPanel({ now, runtime, sessions, quota }), NO_STORE);
   }
 
   // ─── DevinMap cards (account drawer) ──────────────────

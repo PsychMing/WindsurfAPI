@@ -73,6 +73,7 @@ export const SMOKE_FLOWS = Object.freeze([
   'refresh-credits',
   'catalog-diff',
   'request-ring',
+  'devin-panel',
   'usage',
   'account-delete',
   'no-secret-leak',
