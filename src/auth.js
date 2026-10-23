@@ -646,6 +646,18 @@ function pruneRpmHistory(account, now) {
   return account._rpmHistory.length;
 }
 
+// Read-only twin of pruneRpmHistory's count. Admission probes (the selector
+// latch asking "could a peer serve this?") must not prune the peer's ring just
+// to answer a question — housekeeping belongs to the scheduler's own path.
+function rpmHistoryCount(account, now) {
+  const hist = account?._rpmHistory;
+  if (!Array.isArray(hist) || hist.length === 0) return 0;
+  const cutoff = now - RPM_WINDOW_MS;
+  let first = 0;
+  while (first < hist.length && hist[first] < cutoff) first++;
+  return hist.length - first;
+}
+
 // ─── C5: per-account rolling health window (persisted) ──────────────────────
 // RPM history answers "is this account busy right now"; errorCount answers "is
 // it disabled". Neither answers "how has this account BEHAVED over the last
@@ -2036,44 +2048,95 @@ export function isConnectSelectorAllowedForAccount(account, selector) {
 // latch can only ever affect one selector for one account and expires.
 const SELECTOR_INELIGIBLE_TTL_MS = 30 * 60 * 1000;
 
+/** Read-only form of the selector-latch test (no expired-entry cleanup). */
+function isSelectorIneligibleAt(account, selector, now) {
+  if (!account || !selector) return false;
+  const until = account._selectorIneligible?.[selector];
+  return !!until && until > now;
+}
+
 /** True when the upstream has told us THIS selector is not available to THIS account. */
 export function isSelectorIneligible(account, selector, now = Date.now()) {
   if (!account || !selector) return false;
-  const until = account._selectorIneligible?.[selector];
-  if (!until) return false;
-  if (until > now) return true;
+  if (isSelectorIneligibleAt(account, selector, now)) return true;
   // Self-heal: drop the expired entry so the map cannot grow across a long uptime.
-  delete account._selectorIneligible[selector];
+  if (account._selectorIneligible?.[selector]) delete account._selectorIneligible[selector];
   return false;
+}
+
+// ─── Candidate admission: ONE predicate for scheduler and latch ─────────────
+//
+// "Would getApiKey hand this account the NEXT request for (modelKey,
+// connectSelector)?" — the exact conjunction getApiKey's hard filter applies
+// after error recovery and request-specific exclusions.
+//
+// Why it is shared: markSelectorIneligible used to re-implement a near-copy
+// that checked entitlement/latch/cooldown/RPM but NOT the scheduler's
+// maintenance filter or its per-account in-flight cap. It could therefore
+// declare "a peer can take over" for a peer getApiKey would skip, latch the
+// rejected account, and leave the pool EMPTY — every later request queued or
+// failed (504) while the rejected account sat unselectable.
+//
+// Side-effect free by construction: read-only cooldown/latch/RPM checks, no
+// reservation token, no _inflight bump, no maintenance slot, no pruning. The
+// caller decides what to do with the answer; getApiKey still performs its own
+// bookkeeping (reservation, counters) after admission.
+function isAdmittedForRequest(account, {
+  modelKey = null,
+  connectSelector = null,
+  now = Date.now(),
+  inflightCap = maxInflightPerAccount(),
+  excludeKeys = null,
+} = {}) {
+  if (!account || account.status !== 'active') return false;
+  if (excludeKeys && excludeKeys.includes(account.apiKey)) return false;
+  if (isAccountInMaintenance(account)) return false;
+  if (isCooledForRequestReadOnly(account, modelKey, connectSelector, now)) return false;
+  const limit = rpmLimitFor(account);
+  if (limit <= 0) return false;
+  if (rpmHistoryCount(account, now) >= limit) return false;
+  if (isInflightCapped(account, inflightCap)) return false;
+  if (modelKey && !isModelAllowedForAccount(account, modelKey)) return false;
+  if (connectSelector && !isConnectSelectorAllowedForAccount(account, connectSelector)) return false;
+  return true;
 }
 
 /**
  * Record that `selector` is not available for this account.
  *
- * LATCH ONLY WHEN A PEER COULD TAKE OVER. With no other account eligible for
- * the selector, latching this one turns an honest 403 (the upstream's own
- * verdict) into "pool exhausted" for every later request — the account was
- * never the problem, the selector simply cannot run anywhere in this pool.
- * In that case keep the pool selectable and let each request surface the real
- * upstream rejection.
+ * LATCH ONLY WHEN A PEER COULD TAKE OVER — and only for the credential that
+ * produced the verdict. `credentialCurrent` is the epoch test the caller
+ * already computed (chat.js credentialEpochCurrent). A late denial from a
+ * credential the pool has since replaced is evidence about the OLD epoch: it
+ * may be counted, but writing it onto the account latches the NEW credential's
+ * selector on the old key's verdict even though the new key may serve it
+ * (repro: A-old rejected → A-new succeeds → late A-old denial → latched:true,
+ * account active, selector unselectable without a peer).
+ *
+ * With no other account admitted for the selector, latching this one turns an
+ * honest 403 (the upstream's own verdict) into "pool exhausted" for every
+ * later request — the account was never the problem, the selector simply
+ * cannot run anywhere in this pool. In that case keep the pool selectable and
+ * let each request surface the real upstream rejection.
  *
  * Returns true when the latch was written.
  */
-export function markSelectorIneligible(apiKey, selector) {
+export function markSelectorIneligible(apiKey, selector, { credentialCurrent = true } = {}) {
   if (!selector) return false;
+  // Old-epoch verdict: no availability state. The caller still bumps the
+  // selector_ineligible counter — stats describe what upstream said, not which
+  // credential is live now.
+  if (!credentialCurrent) return false;
   const account = accounts.find(a => a.apiKey === apiKey);
   if (!account || account.status !== 'active') return false;
   const now = Date.now();
-  // "Could take over" means servable for the NEXT request, not merely entitled:
-  // an eligible-but-cooled/RPM-full peer would leave getApiKey with no candidate,
-  // and acquireConnectAccount then queues for QUEUE_MAX_WAIT_MS before failing.
+  // "Could take over" means servable for the NEXT request, not merely entitled.
+  // isAdmittedForRequest is the scheduler's own predicate (maintenance,
+  // in-flight cap, cooldown, latch, RPM, tier/entitlement), so a peer that
+  // passes here is one getApiKey can actually hand out. `excludeKeys` is
+  // request-specific and irrelevant to the next request, so it is not passed.
   const hasPeer = accounts.some(a => a !== account
-    && a.status === 'active'
-    && isConnectSelectorAllowedForAccount(a, selector)
-    && !isSelectorIneligible(a, selector, now)
-    && !isCooledForRequest(a, null, selector, now)
-    && rpmLimitFor(a) > 0
-    && pruneRpmHistory(a, now) < rpmLimitFor(a));
+    && isAdmittedForRequest(a, { connectSelector: selector, now }));
   if (!hasPeer) return false;
   if (!account._selectorIneligible) account._selectorIneligible = {};
   account._selectorIneligible[selector] = now + SELECTOR_INELIGIBLE_TTL_MS;
@@ -2881,30 +2944,29 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
       // (and the repeat reportError calls disable it). Treat it as unusable so it
       // falls through to the no-longer-usable branch below.
       if (acct && !excludeKeys.includes(acct.apiKey)) {
-        const limit = rpmLimitFor(acct);
-        const used = pruneRpmHistory(acct, now);
-        if (limit > 0 && used < limit && !isCooledForRequest(acct, modelKey, connectSelector, now) && !isAccountInMaintenance(acct)
-            && !isInflightCapped(acct, inflightCap)) {
-          if ((!modelKey || isModelAllowedForAccount(acct, modelKey))
-              && (!connectSelector || isConnectSelectorAllowedForAccount(acct, connectSelector))) {
-            // A pinOnly poll that SUCCEEDS is a real acquisition, so record it as one now
-            // (the silent peek above deliberately did not). Without this a queued turn
-            // would report zero hits and under-state affinity by exactly the turns
-            // queue-on-pin rescued — the opposite bias to counting every poll.
-            if (pinOnly) getStickyBinding(callerKey, modelKey, connectSelector);
-            const reservationTimestamp = nextReservationToken(now);
-            acct._rpmHistory.push(reservationTimestamp);
-            acct.lastUsed = now;
-            acct._inflight = (acct._inflight || 0) + 1;
-            acct._inflightAt = Date.now();
-            return {
-              id: acct.id, email: acct.email, apiKey: acct.apiKey,
-              apiServerUrl: acct.apiServerUrl || '',
-              proxy: getEffectiveProxy(acct.id) || null,
-              reservationTimestamp,
-              _sticky: true,
-            };
-          }
+        // Same admission predicate the hard filter and the selector latch use:
+        // status, maintenance (incl. language-server), cooldown, selector latch,
+        // RPM window, in-flight cap, tier/entitlement. Keeping it in ONE place is
+        // what stops "usable here" from drifting away from "usable in getApiKey".
+        if (isAdmittedForRequest(acct, { modelKey, connectSelector, now, inflightCap, excludeKeys })) {
+          pruneRpmHistory(acct, now); // housekeeping only; the predicate is read-only
+          // A pinOnly poll that SUCCEEDS is a real acquisition, so record it as one now
+          // (the silent peek above deliberately did not). Without this a queued turn
+          // would report zero hits and under-state affinity by exactly the turns
+          // queue-on-pin rescued — the opposite bias to counting every poll.
+          if (pinOnly) getStickyBinding(callerKey, modelKey, connectSelector);
+          const reservationTimestamp = nextReservationToken(now);
+          acct._rpmHistory.push(reservationTimestamp);
+          acct.lastUsed = now;
+          acct._inflight = (acct._inflight || 0) + 1;
+          acct._inflightAt = Date.now();
+          return {
+            id: acct.id, email: acct.email, apiKey: acct.apiKey,
+            apiServerUrl: acct.apiServerUrl || '',
+            proxy: getEffectiveProxy(acct.id) || null,
+            reservationTimestamp,
+            _sticky: true,
+          };
         }
       }
       // Bound account is no longer usable.
@@ -2962,19 +3024,14 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
   const candidates = [];
   for (const a of accounts) {
     maybeRecoverErrorAccount(a, now); // AP-RISK-1: half-open trial after TTL
-    if (a.status !== 'active') continue;
-    if (excludeKeys.includes(a.apiKey)) continue;
-    if (isAccountInMaintenance(a)) continue;
-    if (isCooledForRequest(a, modelKey, connectSelector, now)) continue;
-    const limit = rpmLimitFor(a);
-    if (limit <= 0) continue; // expired tier
-    const used = pruneRpmHistory(a, now);
-    if (used >= limit) continue;
-    if (isInflightCapped(a, inflightCap)) continue; // R-4 hard cap (0 = off)
-    // Tier entitlement + per-account blocklist filter
-    if (modelKey && !isModelAllowedForAccount(a, modelKey)) continue;
-    if (connectSelector && !isConnectSelectorAllowedForAccount(a, connectSelector)) continue;
-    candidates.push({ account: a, used, limit });
+    // ONE admission predicate, shared with markSelectorIneligible: status,
+    // request exclusions, maintenance (incl. language-server), cooldown/selector
+    // latch, RPM window, in-flight cap, tier/entitlement. The latch asks this
+    // exact question before writing "a peer can take over", so it can no longer
+    // latch an account while the only peer is one this loop would skip.
+    if (!isAdmittedForRequest(a, { modelKey, connectSelector, now, inflightCap, excludeKeys })) continue;
+    const used = pruneRpmHistory(a, now); // housekeeping only; the predicate is read-only
+    candidates.push({ account: a, used, limit: rpmLimitFor(a) });
   }
   if (candidates.length === 0) {
     // L2: hard filter left nothing. Before returning null → 429, try a degraded
@@ -3917,6 +3974,19 @@ function isCooledForRequest(account, modelKey, connectSelector, now) {
   // selection must skip it exactly like a cooled one while keeping it fully
   // available for every other selector.
   if (connectSelector && isSelectorIneligible(account, connectSelector, now)) return true;
+  return false;
+}
+
+// Side-effect-free twin of isCooledForRequest for admission probes. Same
+// dimensions, but it never deletes expired model/latch entries — asking "could
+// this peer serve the selector?" must not mutate the peer.
+function isCooledForRequestReadOnly(account, modelKey, connectSelector, now) {
+  if ((account.rateLimitedUntil || 0) > now) return true;
+  if ((account.quotaResetAt || 0) > now) return true;
+  if (modelKey && (account._modelRateLimits?.[modelKey] || 0) > now) return true;
+  if (connectSelector && connectSelector !== modelKey
+      && (account._modelRateLimits?.[connectSelector] || 0) > now) return true;
+  if (connectSelector && isSelectorIneligibleAt(account, connectSelector, now)) return true;
   return false;
 }
 

@@ -34,7 +34,7 @@ import {
   addAccountByKey, removeAccount, getApiKey, releaseAccount, getAccountInternal,
   setAccountTier, isSelectorIneligible, isConnectSelectorAllowedForAccount,
   resolveAccountState, reportError, __isLastUsableAccount,
-  __setReloginDeps, __resetReloginState,
+  __setReloginDeps, __resetReloginState, markAccountReauthenticated,
 } from '../src/auth.js';
 import { classifyUpstreamError, isRetryable } from '../src/devin-connect.js';
 import { getConnectMetrics } from '../src/devin-connect-metrics.js';
@@ -148,6 +148,25 @@ describe('1. classification — the model-level rejection has its own scope', ()
     assert.equal(isAccountFailoverError('MODEL_BLOCKED'), false,
       'a tier wall is shared by every account of that tier — hopping would storm the pool');
   });
+
+  it('an explicit tier wall stays MODEL_BLOCKED (account-only branch does not preempt it)', () => {
+    // Reviewer F-classifier: the SELECTOR_NOT_ELIGIBLE arm used to accept
+    // plan/tier/subscription/workspace, so this body classified as a per-account
+    // selector verdict — which fails over and latches — instead of the tier wall
+    // it states. The two codes route differently on purpose.
+    const wall = 'This model is no longer available for your plan. Please /upgrade to access it';
+    assert.equal(classifyUpstreamError(wall, 'permission_denied', 403).code, 'MODEL_BLOCKED',
+      'a plan/tier noun plus /upgrade is a tier wall, not evidence about one account');
+    assert.equal(classifyUpstreamError('Please /upgrade to access this model').code, 'MODEL_BLOCKED',
+      'the plain /upgrade form keeps its existing verdict');
+    for (const text of [
+      'This model is no longer available for your plan',
+      'This model is no longer available for your workspace',
+    ]) {
+      assert.notEqual(classifyUpstreamError(text, 'permission_denied', 403).code, 'SELECTOR_NOT_ELIGIBLE',
+        `${text} is not the measured account-scoped body — it must not latch/hop`);
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -197,6 +216,92 @@ describe('2. blame — three rejections touch no account auth state', () => {
     assert.equal(after.status, 'active');
     assert.equal(isSelectorIneligible(after, X), false,
       'no peer can take over, so the account must stay selectable and surface the real error');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reviewer F1/F2 — the latch is availability state, so it must belong to the
+// credential that produced the verdict AND agree with the scheduler about
+// whether a peer can actually take over.
+describe('2b. latch safety — credential epoch (F1) and scheduler admission (F2)', () => {
+  it('late_old_selector_denial_must_not_override_new_credential_success', () => {
+    const a = seed('epoch-a');
+    const b = seed('epoch-b'); // admitted peer: pre-fix this made the latch writable
+    const oldSnapshot = { id: a.id, apiKey: a.apiKey };
+
+    // A fresh login installs a new credential on the SAME account (same id).
+    const newKey = `${oldSnapshot.apiKey}-fresh`;
+    markAccountReauthenticated(a.id, { apiKey: newKey, via: 'manual' });
+    assert.equal(getAccountInternal(a.id).apiKey, newKey, 'precondition: the pool moved to a new epoch');
+
+    // The new credential serves the selector.
+    finalizeConnectAccount(
+      { id: a.id, apiKey: newKey },
+      { model: X_MODEL, selector: X, startTime: Date.now() - 2, err: null },
+    );
+
+    // The OLD attempt's denial then lands (it was in flight across the rotation).
+    const m0 = getConnectMetrics();
+    finalizeConnectAccount(
+      oldSnapshot,
+      { model: X_MODEL, selector: X, startTime: Date.now() - 2, err: rejectSelector() },
+    );
+    const m1 = getConnectMetrics();
+
+    const after = getAccountInternal(a.id);
+    assert.equal(after.status, 'active', 'a selector-scoped denial never benches the account');
+    assert.equal(isSelectorIneligible(after, X), false,
+      "the old epoch's denial must not latch the NEW credential — it may still serve this selector");
+    assert.equal(m1.selector_ineligible - m0.selector_ineligible, 1,
+      'the observation is still counted; only the availability write is skipped');
+
+    // "selectableWithoutB": with the only peer gone, the account must still be
+    // handed out for X. Pre-fix the latch made the pool empty (getApiKey → null).
+    removeAccount(b.id);
+    const picked = getApiKey([], null, '', X);
+    assert.equal(picked?.id, a.id, 'the fresh credential remains selectable for X without the peer');
+    releaseAccount(picked.apiKey);
+  });
+
+  it('selector_latch_requires_a_peer_admitted_by_scheduler_maintenance_filter', () => {
+    const a = seed('maint-a');
+    const b = seed('maint-b');
+    b._maintenance = 1; // a background / language-server maintenance slot is held
+    const pre = getApiKey([], null, '', X);
+    assert.equal(pre?.id, a.id, 'precondition: the scheduler already skips the busy peer');
+    releaseAccount(pre.apiKey);
+
+    const after = failSelector(a, X, 1);
+    assert.equal(isSelectorIneligible(after, X), false,
+      'the only peer is in maintenance — latching A would empty the pool');
+    const picked = getApiKey([], null, '', X);
+    assert.equal(picked?.id, a.id, 'A stays selectable for X (no empty-pool 504)');
+    releaseAccount(picked.apiKey);
+  });
+
+  it('selector_latch_requires_a_peer_admitted_by_scheduler_inflight_filter', () => {
+    const ENV = 'DEVIN_CONNECT_MAX_INFLIGHT_PER_ACCOUNT';
+    const prev = process.env[ENV];
+    process.env[ENV] = '1';
+    try {
+      const a = seed('cap-a');
+      const b = seed('cap-b');
+      b._inflight = 1; // the peer is at the per-account hard cap
+      b._inflightAt = Date.now();
+      const pre = getApiKey([], null, '', X);
+      assert.equal(pre?.id, a.id, 'precondition: the scheduler already skips the capped peer');
+      releaseAccount(pre.apiKey);
+
+      const after = failSelector(a, X, 1);
+      assert.equal(isSelectorIneligible(after, X), false,
+        'the capped peer cannot take over, so latching A would leave no candidate');
+      const picked = getApiKey([], null, '', X);
+      assert.equal(picked?.id, a.id, 'A stays selectable for X; the in-flight cap is not bypassed');
+      releaseAccount(picked.apiKey);
+    } finally {
+      if (prev === undefined) delete process.env[ENV];
+      else process.env[ENV] = prev;
+    }
   });
 });
 

@@ -2692,7 +2692,13 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
     // latch is skipped and the upstream verdict surfaces as 403, which is honest:
     // the selector cannot run anywhere in this pool.
     else if (err.code === 'SELECTOR_NOT_ELIGIBLE') {
-      markSelectorIneligible(apiKey, selector || model);
+      // The latch is availability state for the CURRENT credential. `apiKey` is
+      // the live key, so a late denial from an attempt that presented a key the
+      // pool has since replaced would otherwise write the old epoch's verdict
+      // onto the new one — latching a selector the fresh credential may serve
+      // (repro: A-old rejected → A-new succeeds → late A-old denial). Count the
+      // observation, but only the current epoch may write the latch.
+      markSelectorIneligible(apiKey, selector || model, { credentialCurrent });
       bumpConnect('selector_ineligible');
     }
     else if (err.code === 'UNAUTHORIZED') {
