@@ -111,12 +111,22 @@ function normalizeMessageContent(content, { toolOutput = false } = {}) {
   return out.length ? out : '';
 }
 
-// Codex SDK exposes server-side tools (file_search, computer_use_preview,
-// mcp) where execution lives on OpenAI's side, not the model's. The proxy
-// can't bridge these — each needs its own service implementation — so
-// drop them silently rather than 500-ing the whole request.
+// Server-executed tools are the ones whose execution lives on the server side,
+// not the client's: file_search, computer_use_preview, mcp, code_interpreter,
+// image_generation, local_shell, shell and the hosted apply_patch. This proxy
+// has no executor for any of them — each needs its own service implementation —
+// so they are refused up front with an actionable 400 (see
+// assertNoServerSideTools).
 //
-// Hosted search (web_search / web_search_preview) is NOT silently dropped and
+// Refusing is the point: dropping them — silently for the three oldest types,
+// through the `unknown tool type` catch-all for every later one — let a client
+// declare a server-executed tool, receive a normal answer, and never learn the
+// tool did not exist. The one ambiguity is apply_patch: `{type:'apply_patch'}`
+// is the hosted tool and is refused, while `{type:'function', name:'apply_patch'}`
+// is the client-run tool codex clients declare and passes through untouched.
+// Only `tool.type` decides.
+//
+// Hosted search (web_search / web_search_preview) is rejected the same way and
 // is NOT flattened into a function tool: a client that declares it is asking
 // THIS SERVER to run searches, and this proxy has no hosted-search executor
 // (no GetWebSearchResults call is made for a model turn). Accepting the tool
@@ -128,6 +138,11 @@ const UNBRIDGED_SERVER_SIDE_TYPES = new Set([
   'file_search',
   'computer_use_preview',
   'mcp',
+  'code_interpreter',
+  'image_generation',
+  'local_shell',
+  'shell',
+  'apply_patch',
 ]);
 
 const HOSTED_SEARCH_TYPES = new Set(['web_search', 'web_search_preview']);
@@ -156,18 +171,28 @@ function hostedSearchUnsupported(param) {
 }
 
 /**
+ * Visit every tool in a list, recursing into namespaces. Shared by the
+ * hosted-search and server-executed gates so both cover the same positions.
+ */
+function forEachTool(tools, visit) {
+  for (const tool of tools || []) {
+    if (!tool || typeof tool !== 'object') continue;
+    visit(tool);
+    if (tool.type === 'namespace') {
+      const childKey = ['tools', 'children', 'functions', 'items'].find(key => Array.isArray(tool[key]));
+      if (childKey) forEachTool(tool[childKey], visit);
+    }
+  }
+}
+
+/**
  * Walk a tool list (namespaces included) and refuse hosted search.
  * Called for `body.tools` and for every `additional_tools` input item.
  */
 function assertNoHostedSearchTools(tools, param = 'tools') {
-  for (const tool of tools || []) {
-    if (!tool || typeof tool !== 'object') continue;
+  forEachTool(tools, tool => {
     if (isHostedSearchType(tool.type)) throw hostedSearchUnsupported(param);
-    if (tool.type === 'namespace') {
-      const childKey = ['tools', 'children', 'functions', 'items'].find(key => Array.isArray(tool[key]));
-      if (childKey) assertNoHostedSearchTools(tool[childKey], param);
-    }
-  }
+  });
 }
 
 /**
@@ -180,6 +205,54 @@ function assertNoHostedSearchInRequest(body) {
   if (!Array.isArray(body?.input)) return;
   for (const item of body.input) {
     if (item?.type === 'additional_tools') assertNoHostedSearchTools(item.tools, 'input');
+  }
+}
+
+function serverSideToolUnsupported(type, param) {
+  const err = new Error(
+    `Server-executed tool "${type}" is not supported by this proxy: it requires an executor that runs on `
+    + 'this server, and this proxy has none. Remove it and, if the client will run the tool itself, declare '
+    + `a normal function tool instead. Rejected server-side types: ${[...UNBRIDGED_SERVER_SIDE_TYPES].sort().join(', ')}.`,
+  );
+  err.param = param;
+  err.code = 'unsupported_server_side_tool';
+  return err;
+}
+
+/**
+ * Walk a tool list (namespaces included) and refuse server-executed tools.
+ * Called for `body.tools` and for every `additional_tools` input item.
+ */
+function assertNoServerSideTools(tools, param = 'tools') {
+  forEachTool(tools, tool => {
+    if (UNBRIDGED_SERVER_SIDE_TYPES.has(tool.type)) throw serverSideToolUnsupported(tool.type, param);
+  });
+}
+
+/**
+ * Scan the RAW request for the same reason as assertNoHostedSearchInRequest:
+ * `responseLiteClientTool` discards any non-function/custom/namespace entry
+ * before the flatten step, so a server-executed tool hidden in
+ * `additional_tools` would otherwise vanish without the 400.
+ */
+function assertNoServerSideToolsInRequest(body) {
+  assertNoServerSideTools(body?.tools);
+  if (!Array.isArray(body?.input)) return;
+  for (const item of body.input) {
+    if (item?.type === 'additional_tools') assertNoServerSideTools(item.tools, 'input');
+  }
+}
+
+/**
+ * A `tool_choice` naming a tool this proxy cannot execute is a 400, never a
+ * silent downgrade: dropping the choice (or the tool) leaves the caller unable
+ * to tell its forced tool was discarded.
+ */
+function assertSupportedToolChoice(toolChoice) {
+  if (!toolChoice || typeof toolChoice !== 'object') return;
+  if (isHostedSearchType(toolChoice.type)) throw hostedSearchUnsupported('tool_choice');
+  if (UNBRIDGED_SERVER_SIDE_TYPES.has(toolChoice.type)) {
+    throw serverSideToolUnsupported(toolChoice.type, 'tool_choice');
   }
 }
 
@@ -271,10 +344,10 @@ function flattenResponseTool(tool, inheritedNamespace = '') {
     }];
   }
 
-  // file_search / computer_use_preview / mcp — known server-side tools
-  // we can't bridge. Drop silently so Codex requests with these enabled
-  // don't 500; the model keeps whatever real function tools it has.
-  if (UNBRIDGED_SERVER_SIDE_TYPES.has(tool.type)) return [];
+  // Every server-executed type was refused up front (assertNoServerSideTools),
+  // so anything reaching here is genuinely unknown to this bridge. Keep the
+  // historical leniency — warn, drop, no 500 — but never pretend it was
+  // forwarded.
   log.warn(`responses: dropping unknown tool type "${tool.type}"`);
   return [];
 }
@@ -399,10 +472,10 @@ function pruneResponseToolChoice(toolChoice, forwardedTools) {
     return undefined;
   }
 
-  if (toolChoice && typeof toolChoice === 'object' && UNBRIDGED_SERVER_SIDE_TYPES.has(toolChoice.type)) {
-    log.warn(`responses: dropped forced server-side tool_choice "${toolChoice.type}" because this proxy does not bridge that tool type`);
-    return undefined;
-  }
+  // A forced server-executed tool_choice never reaches this point:
+  // responsesToChat throws `unsupported_server_side_tool` for it up front, since
+  // silently dropping the choice left the model free to answer as if the client
+  // had not asked for that tool at all.
   return normalized;
 }
 
@@ -429,14 +502,15 @@ function normalizeResponseTextFormat(format) {
 export function responsesToChat(body) {
   const messages = [];
   const requestedTools = collectResponseTools(body);
-  // No hosted-search executor exists on this route (see HOSTED_SEARCH_TYPES).
-  // Refuse BEFORE calling the model: letting the turn run and then reporting the
-  // proposal as a completed search is exactly the false execution receipt this
-  // gate removes. `tool_choice` alone can also force a hosted search.
+  // No hosted-search or server-executed executor exists on this route (see
+  // HOSTED_SEARCH_TYPES and UNBRIDGED_SERVER_SIDE_TYPES). Refuse BEFORE calling
+  // the model: letting the turn run and then reporting the proposal as a
+  // completed search is exactly the false execution receipt this gate removes,
+  // and letting it run with the tool silently dropped is the same failure
+  // without the receipt.
   assertNoHostedSearchInRequest(body);
-  if (body.tool_choice && typeof body.tool_choice === 'object' && isHostedSearchType(body.tool_choice.type)) {
-    throw hostedSearchUnsupported('tool_choice');
-  }
+  assertNoServerSideToolsInRequest(body);
+  assertSupportedToolChoice(body.tool_choice);
   const tools = flattenResponseTools(requestedTools);
   const toolNameMap = toolHygieneEnabled()
     ? buildToolNameMap(tools.map((t) => t.function?.name || t.name).filter(Boolean))
