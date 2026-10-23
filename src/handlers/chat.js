@@ -4,11 +4,12 @@
  */
 
 import { createHash, randomUUID } from 'crypto';
-import { WindsurfClient, contentToString, isCascadeTransportError } from '../client.js';
+import { WindsurfClient, contentToString, isCascadeTransportError, acquireLsUseOrThrow } from '../client.js';
 import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
 import { isStickyEnabled, setStickyBinding, peekStickyBinding } from '../account/sticky-session.js';
 import { resolveModel, getModelInfo, pickRateLimitFallback, isModelDisabledUpstream, getModelCaps } from '../models.js';
-import { getLsFor, ensureLs } from '../langserver.js';
+import { getLsFor, ensureLs, beginLsUse, endLsUse, getLsEntryByPort } from '../langserver.js';
+import { detachedKey, detachedRegistry, cascadeDetachEnabled } from '../detached-registry.js';
 import { config, log } from '../config.js';
 import { leakTraceEnabled, thinkMarkersIn, leakSample } from '../leak-trace.js';
 import { safeAccountRef, safeKeyRef, safeLogValue } from '../log-safety.js';
@@ -4819,6 +4820,24 @@ async function _handleChatCompletionsInner(body, context = {}) {
   // cache-private (skip get+set) so there is zero cross-tenant leak by default.
   const cacheShareable = hasPerUserScope(callerKey);
 
+  // Detach P1: a byte-identical retry may resume this turn. The key covers the
+  // body + trusted scope + every output-affecting route decision; it is NOT
+  // the handler's `ckey` (that is null when the response cache is disabled,
+  // which must not disable detach). `hasPerUserScope` is the one authoritative
+  // tenancy gate; the registry never re-implements it.
+  const detachKeyValue = cascadeDetachEnabled() && hasPerUserScope(callerKey)
+    ? detachedKey(body, callerKey, {
+        scopeTrusted: true,
+        route: body.__route || 'chat',
+        modelKey: routingModelKey,
+        toolPreambleTier: preambleTier || null,
+        emulateTools,
+        native: nativeOpts,
+        stop: normalizeStop(body.stop),
+        displayModel,
+      })
+    : null;
+
   if (stream) {
     return streamResponse(
       chatId,
@@ -4862,6 +4881,13 @@ async function _handleChatCompletionsInner(body, context = {}) {
       ensureLs: context.ensureLs,
       getLsFor: context.getLsFor,
       WindsurfClient: context.WindsurfClient,
+      detachKey: detachKeyValue,
+      // Lease seams for the resume path (tests inject a fake LS entry; the
+      // production context leaves these undefined and the module helpers win).
+      getLsEntryByPort: context.getLsEntryByPort,
+      beginLsUse: context.beginLsUse,
+      endLsUse: context.endLsUse,
+      acquireLsUse: context.acquireLsUse,
     });
   }
 
@@ -6003,7 +6029,14 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
   const waitForAccountFn = deps.waitForAccount || waitForAccount;
   const ensureLsFn = deps.ensureLs || ensureLs;
   const getLsForFn = deps.getLsFor || getLsFor;
+  const getLsEntryByPortFn = deps.getLsEntryByPort || getLsEntryByPort;
+  const beginLsUseFn = deps.beginLsUse || beginLsUse;
+  const acquireLsUseFn = deps.acquireLsUse || acquireLsUseOrThrow;
+  const endLsUseFn = deps.endLsUse || endLsUse;
   const ClientClass = deps.WindsurfClient || WindsurfClient;
+  // Detach P1 is available only for a Cascade turn with a trusted-scope key
+  // and no native bridge (P1 admits no tool/native turn).
+  const detachKeyValue = deps.detachKey || null;
   // Route-owned request budget (src/request-budget.js). Null for direct
   // callers that predate it (tests, embedders); every use below is guarded.
   const budget = deps.budget || deps.context?.budget || null;
@@ -6039,6 +6072,10 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
   // / list_dir as first-class steps, not as <tool_call> markup in text).
   const nativeOpts = deps.nativeOpts || null;
   const nativeBridgeOn = !!nativeOpts?.enabled;
+  // Detach P1: only a Cascade turn with a trusted-scope key. The native bridge
+  // is excluded outright (P1 admits no native/tool turn), and the producer
+  // additionally refuses any turn that emitted a tool chunk.
+  const detachEnabled = !!detachKeyValue && useCascade && !nativeBridgeOn;
   return {
     status: 200,
     stream: true,
@@ -6053,12 +6090,49 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
     async handler(res) {
       const abortController = new AbortController();
       let unregisterSse = () => {};
+      // Detach P1 cause classification. Only a genuine client-gone may admit
+      // an entry: a shutdown or drain timeout means the client may still be
+      // reading, or the process is going away. Set BEFORE abort() so the
+      // producer's handle reads the right cause.
+      let detachCause = null;
       res.on('close', () => {
         if (!res.writableEnded) {
+          if (detachCause === null) detachCause = drainTimedOut ? 'drain_timeout' : 'client_gone';
           log.info('Client disconnected mid-stream, aborting upstream');
           abortController.abort();
         }
       });
+      // `resumeClaim` is the claimed registry entry for THIS request, if any.
+      // It is also what makes the producer's handle switch from "admit a new
+      // entry" to "release the claimed entry back to running" on a re-detach.
+      let resumeClaim = null;
+      const detachHandle = detachEnabled ? {
+        admit: (snapshot, pin) => {
+          if (resumeClaim) {
+            // A resumed request may only re-detach on a genuine client-gone;
+            // a shutdown/drain is handled by the registry drain.
+            if (detachCause !== 'client_gone') return { refused: detachCause || 'not_client_gone' };
+            // Re-detach: replace the claimed snapshot, keep the original TTL.
+            const ok = detachedRegistry.release(resumeClaim.key, resumeClaim.token, {
+              state: 'running',
+              snapshot,
+            });
+            return ok ? { token: null } : { refused: 'release_failed' };
+          }
+          const pinDeadline = Number.isFinite(pin?.deadline) ? pin.deadline : Infinity;
+          const budgetDeadline = Number.isFinite(budget?.deadline) ? budget.deadline : Infinity;
+          const deadline = Math.min(pinDeadline, budgetDeadline);
+          // The registry is the ONE funnel: it counts not_client_gone /
+          // draining / no_deadline refusals too.
+          return detachedRegistry.admit({
+            key: detachKeyValue,
+            callerKey,
+            snapshot,
+            pin: { ...pin, deadline: Number.isFinite(deadline) ? deadline : null },
+            cause: detachCause || 'unknown',
+          });
+        },
+      } : null;
       const fp = systemFingerprint(model);
       // O10: 仅直连 OpenAI 客户端(route==='chat')归一化 error.type;
       // messages/gemini/responses 路由须保留内部词供下游 translator remap。
@@ -6126,6 +6200,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             'DRAIN_TIMEOUT',
           )));
           finishDrain();
+          detachCause = 'drain_timeout';
           abortController.abort(new Error('drain timeout'));
         };
         pendingDrain = operation;
@@ -6192,6 +6267,10 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       const send = (data) => writeFrame(formatFrame(data));
       unregisterSse = registerSseController({
         abort(reason) {
+          // Detach P1: the response is ended BEFORE the abort below, so the
+          // close hook sees writableEnded and never classifies this as a
+          // client-gone. Set the cause explicitly for defence in depth.
+          detachCause = 'shutdown';
           // Best effort only, and deliberately SYNCHRONOUS: a shutdown notice
           // must not block behind a stalled writer, and the abort below is what
           // wakes that writer. Writing after the abort would be dropped.
@@ -6696,6 +6775,67 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         return run;
       };
 
+      // ── Detach P1: lazy resume ──────────────────────────────────────────
+      // Precedence: response cache (returned above) → detached registry →
+      // upstream. A byte-identical retry claims the frozen entry and continues
+      // the ORIGINAL turn's poll loop; nothing is replayed until the first
+      // successful steps read proves the cascade survived (see client.js).
+      if (detachEnabled) {
+        const found = detachedRegistry.lookup(detachKeyValue, callerKey);
+        if (found) {
+          const now = Date.now();
+          if (now > Math.min(found.expiresAt, found.deadline)) {
+            detachedRegistry.evict(detachKeyValue, 'ttl');
+          } else {
+            const lsEntry = getLsEntryByPortFn(found.pin.lsPort);
+            const generationMismatch = lsEntry && found.pin.lsGeneration != null
+              && lsEntry.generation !== found.pin.lsGeneration;
+            if (!lsEntry || generationMismatch) {
+              detachedRegistry.evict(detachKeyValue, 'resume_miss');
+            } else {
+              // The request lease covers this request only. The entry itself
+              // pins no lease, so between detach and claim the LS is free to
+              // be reaped; the re-read of the generation from the object
+              // beginLsUse returned catches a restart in that window.
+              const leased = beginLsUseFn(found.pin.lsPort);
+              const leaseMismatch = leased && found.pin.lsGeneration != null
+                && leased.generation !== found.pin.lsGeneration;
+              if (!leased || leaseMismatch) {
+                if (leased) endLsUseFn(found.pin.lsPort);
+                detachedRegistry.evict(detachKeyValue, 'resume_miss');
+              } else {
+                const claimed = detachedRegistry.claim(detachKeyValue, callerKey);
+                if (claimed.entry) {
+                  resumeClaim = {
+                    key: detachKeyValue,
+                    token: claimed.token,
+                    entry: claimed.entry,
+                    lsEntry: leased,
+                  };
+                  log.info(`Chat[${reqId}]: detached turn CLAIMED cascade=${String(found.pin.cascadeId).slice(0, 8)}… stepOffset=${claimed.entry.snapshot.stepOffset}`);
+                } else {
+                  // Busy / expired between lookup and claim: stay foreground.
+                  endLsUseFn(found.pin.lsPort);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Replay the frozen prefix through the stream pipeline — never a direct
+      // socket write. `onChunk` runs ToolCallStreamParser + PathSanitizeStream
+      // + metadata egress + stop gate + think reroute + reasoning dedup, so the
+      // prefix is transformed exactly as the live one was.
+      const replayDetachedPrefix = async () => {
+        let bytes = 0;
+        for (const chunk of resumeClaim.entry.snapshot.chunks) {
+          await onChunk(chunk);
+          bytes += 2 * ((chunk?.text?.length || 0) + (chunk?.thinking?.length || 0));
+        }
+        detachedRegistry.noteReplay(bytes);
+      };
+
       try {
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
           if (abortController.signal.aborted) return;
@@ -6726,7 +6866,11 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               : null;
           }
           let acct = null;
-          if (reuseEntry && attempt === 0) {
+          // Attempt 0 may be the synthetic resume: no account checkout, no
+          // ensureLs, no upstream turn. If the cascade turns out to be gone,
+          // the catch evicts the entry and continues to a normal attempt.
+          const resumeAttempt = attempt === 0 && !!resumeClaim;
+          if (!resumeAttempt && reuseEntry && attempt === 0) {
             acct = acquireAccountByKey(reuseEntry.apiKey, modelKey);
             if (!acct) {
               for (let w = 0; w < 10 && !acct && !abortController.signal.aborted; w++) {
@@ -6749,7 +6893,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               }
             }
           }
-          if (!acct) {
+          if (!acct && !resumeAttempt) {
             // Exhausted pool at t=0: waiting cannot produce an account, and a
             // 30 s stall would hide the 429 behind a committed stream. Fail the
             // admission now; the deferred gate is still uncommitted, so the
@@ -6808,17 +6952,21 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           // status, so it is safe for the commit gate to start its silence
           // timer on the first heartbeat.
           startHeartbeat();
-          tried.push(acct.apiKey);
-          currentApiKey = acct.apiKey;
+          if (acct) {
+            tried.push(acct.apiKey);
+            currentApiKey = acct.apiKey;
+          } else {
+            currentApiKey = null;
+          }
 
           try {
-            if (nativeBridgeOn && !isNativeBridgeAccountAllowed(acct)) {
+            if (!resumeAttempt && nativeBridgeOn && !isNativeBridgeAccountAllowed(acct)) {
               recordNativeBridgeAccountGateSkip();
               log.info(`Chat[${reqId}]: native bridge account gate skipped ${safeAccountRef(acct)}`);
               continue;
             }
           // Pre-flight rate limit check (experimental)
-          if (isExperimentalEnabled('preflightRateLimit')) {
+          if (!resumeAttempt && isExperimentalEnabled('preflightRateLimit')) {
             try {
               const px = getEffectiveProxy(acct.id) || null;
               const rl = await checkMessageRateLimitFn(acct.apiKey, px);
@@ -6845,37 +6993,82 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             }
           }
 
-          try { await ensureLsFn(acct.proxy); } catch (e) {
-            lastErr = isLsPoolExhausted(e)
-              ? Object.assign(new Error(e.message), { type: 'ls_pool_exhausted', status: e.status || 503 })
-              : e;
-            break;
-          }
-          const ls = getLsForFn(acct.proxy);
-          if (!ls) { lastErr = new Error('No LS instance available'); break; }
-          if (reuseEntry && reuseEntry.lsPort !== ls.port) {
-            log.info(`Chat[${reqId}]: reuse MISS — LS port changed`);
-            checkedOutReuseEntry = null;
-            reuseEntry = null;
+          let ls;
+          if (resumeAttempt) {
+            // The claim already holds a request lease on this LS entry; the
+            // producer runs with `leaseHeld: true` and releases it in its
+            // finally. No ensureLs: the entry exists and was generation-
+            // checked, and a fresh spawn would not own the cascade anyway.
+            ls = resumeClaim.lsEntry;
+          } else {
+            try { await ensureLsFn(acct.proxy); } catch (e) {
+              lastErr = isLsPoolExhausted(e)
+                ? Object.assign(new Error(e.message), { type: 'ls_pool_exhausted', status: e.status || 503 })
+                : e;
+              break;
+            }
+            ls = getLsForFn(acct.proxy);
+            if (!ls) { lastErr = new Error('No LS instance available'); break; }
+            if (reuseEntry && reuseEntry.lsPort !== ls.port) {
+              log.info(`Chat[${reqId}]: reuse MISS — LS port changed`);
+              checkedOutReuseEntry = null;
+              reuseEntry = null;
+            }
           }
           const _msgCharsStream = (messages || []).reduce((n, m) => {
             const c = m?.content;
             return n + (typeof c === 'string' ? c.length : Array.isArray(c) ? c.reduce((k, p) => k + (typeof p?.text === 'string' ? p.text.length : 0), 0) : 0);
           }, 0);
-          log.info(`Chat: model=${model} flow=${useCascade ? 'cascade' : 'legacy'} stream=true attempt=${attempt + 1} ${safeAccountRef(acct)} ls=${ls.port} turns=${(messages||[]).length} chars=${_msgCharsStream}${reuseEntry ? ' reuse=1' : ''}`);
+          log.info(`Chat: model=${model} flow=${useCascade ? 'cascade' : 'legacy'} stream=true attempt=${attempt + 1} ${resumeAttempt ? 'detached' : safeAccountRef(acct)} ls=${ls.port} turns=${(messages||[]).length} chars=${_msgCharsStream}${reuseEntry ? ' reuse=1' : ''}${resumeAttempt ? ' resume=1' : ''}`);
           // One upstream turn per attempt. The hard cap is per REQUEST, shared
           // with the connect wrapper's internal retries; a spent budget stops
-          // the account loop here instead of multiplying it.
-          const turnErr = takeUpstreamTurn(budget, 'cascade stream attempt');
+          // the account loop here instead of multiplying it. A resume continues
+          // the turn that was already counted before the detach.
+          const turnErr = resumeAttempt ? null : takeUpstreamTurn(budget, 'cascade stream attempt');
           if (turnErr) { lastErr = turnErr; break; }
-          const client = new ClientClass(acct.apiKey, ls.port, ls.csrfToken);
+          const client = new ClientClass(resumeAttempt ? '' : acct.apiKey, ls.port, ls.csrfToken);
           let cascadeResult = null;
+          const resumeBillingAccountId = resumeAttempt ? resumeClaim.entry.pin.accountId : null;
+          const resumeMaxWaitMs = resumeAttempt
+            ? Math.min(
+                Number.isFinite(budget?.remainingMs?.()) ? budget.remainingMs() : Infinity,
+                resumeClaim.entry.deadline - Date.now(),
+              )
+            : null;
+          if (resumeAttempt && !(resumeMaxWaitMs > 0)) {
+            detachedRegistry.evict(resumeClaim.key, 'deadline');
+            resumeClaim = null;
+            // The claim acquired this request's lease; no producer ran to
+            // release it.
+            endLsUseFn(ls.port);
+            continue;
+          }
           try {
             if (useCascade) {
               cascadeResult = await client.cascadeChat(cascadeMessages, modelEnum, modelUid, {
                 onChunk, signal: abortController.signal, reuseEntry,
                 // Clamp the internal poll window to what the request has left.
-                ...(budget ? { maxWaitMs: budget.remainingMs() } : {}),
+                ...(resumeAttempt
+                  ? {
+                      resumeTurn: {
+                        cascadeId: resumeClaim.entry.pin.cascadeId,
+                        sessionId: resumeClaim.entry.pin.sessionId,
+                        snapshot: resumeClaim.entry.snapshot,
+                        onFirstRead: replayDetachedPrefix,
+                      },
+                      leaseHeld: true,
+                      maxWaitMs: resumeMaxWaitMs,
+                      detach: detachHandle,
+                      acquireLease: acquireLsUseFn,
+                      releaseLease: endLsUseFn,
+                    }
+                  : {
+                      ...(budget ? { maxWaitMs: budget.remainingMs() } : {}),
+                      accountId: acct?.id || null,
+                      modelKey,
+                      lsGeneration: ls.generation ?? null,
+                      detach: detachHandle,
+                    }),
                 toolPreamble: nativeBridgeOn ? '' : toolPreamble,
                 nativeEnvironment: nativeBridgeOn ? (nativeOpts?.environment || '') : '',
                 displayModel: model,
@@ -6902,6 +7095,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // abort is observed during polling; this covers the return race.
             if (abortController.signal.aborted) {
               log.info(`Chat[${reqId}]: stream aborted (client gone) — discarding turn`);
+              // The resumed turn completed upstream but the socket is gone:
+              // P1 has no completed-entry replay, so drop the claim.
+              if (resumeClaim) {
+                detachedRegistry.release(resumeClaim.key, resumeClaim.token, { state: 'served' });
+                resumeClaim = null;
+              }
               return;
             }
             // C2: the Cascade producer awaited every emission, so this is
@@ -7166,10 +7365,16 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // irreversible side effect.
             if (abortController.signal.aborted) {
               log.info(`Chat[${reqId}]: stream aborted before commit — discarding turn`);
+              if (resumeClaim) {
+                detachedRegistry.release(resumeClaim.key, resumeClaim.token, { state: 'served' });
+                resumeClaim = null;
+              }
               return;
             }
-            // Pool check-in on success (cascade only)
-            if (reuseEnabled && cascadeResult?.cascadeId && (accText || collectedToolCalls.length)) {
+            // Pool check-in on success (cascade only). A resumed turn is never
+            // pooled in P1: the retry that resumed it may not be the client
+            // that owns the next turn, and the pool key is fingerprint-based.
+            if (!resumeAttempt && reuseEnabled && cascadeResult?.cascadeId && (accText || collectedToolCalls.length)) {
               const turnComplete = appendAssistantTurn(messages, accText, collectedToolCalls);
               const fpAfter = fingerprintAfter(turnComplete, modelKey, callerKey, fpOpts);
               const ttlHint = ttlHintFromCachePolicy(cachePolicy);
@@ -7195,6 +7400,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             if (hadSuccess) reportSuccess(currentApiKey);
             updateCapability(currentApiKey, modelKey, true, 'success');
             recordRequest(model, true, Date.now() - startTime, currentApiKey);
+            // The resumed turn is now committed through the normal success
+            // tail; P1 has no completed-entry replay, so the entry is deleted.
+            if (resumeAttempt && resumeClaim) {
+              detachedRegistry.release(resumeClaim.key, resumeClaim.token, { state: 'served' });
+              resumeClaim = null;
+            }
             if (!rolePrinted) {
               await send({ id, object: 'chat.completion.chunk', created, model,
                 choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
@@ -7312,8 +7523,21 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               // `acct` is the account this attempt checked out; currentApiKeyForId resolves
               // the CURRENT key for it, because a re-login mid-request rotates the key and
               // the stale one would credit a row that no longer exists.
+              //
+              // Detach P1: a resume has NO checked-out account (`acct === null`).
+              // Billing `acct` would silently bill nothing, so the target is the
+              // entry's owner, resolved to its CURRENT key (a re-auth may have
+              // rotated it while the turn was detached).
               try {
-                if (acct) recordAccountSpend(currentApiKeyForId(acct.id, acct.apiKey), usage);
+                if (acct) {
+                  recordAccountSpend(currentApiKeyForId(acct.id, acct.apiKey), usage);
+                } else if (resumeBillingAccountId) {
+                  const ownerKey = currentApiKeyForId(resumeBillingAccountId);
+                  if (ownerKey) {
+                    recordAccountSpend(ownerKey, usage);
+                    detachedRegistry.noteBilled();
+                  }
+                }
               } catch {}
               if (deps.includeUsage) {
                 await awaitWriter();
@@ -7346,7 +7570,34 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // as if it were a complete turn.
             if (abortController.signal.aborted || err?.name === 'AbortError' || err?.code === 'ABORT_ERR') {
               log.info(`Chat[${reqId}]: stream aborted (client gone) — not retrying`);
+              if (resumeClaim) {
+                // F21/F22: re-detach with the turn's own snapshot when the
+                // producer managed one; otherwise keep the frozen snapshot.
+                // release() is idempotent: the producer may already have
+                // released this token.
+                detachedRegistry.release(resumeClaim.key, resumeClaim.token, {
+                  state: 'running',
+                  snapshot: resumeClaim.entry.snapshot,
+                });
+                resumeClaim = null;
+              }
               return;
+            }
+            if (resumeAttempt && !hadSuccess) {
+              // The cascade did not survive the detach (first read returned
+              // not_found/expired) or the resume failed before any byte was
+              // written. Drop the entry and fall through to a normal upstream
+              // attempt; nothing was committed to the client.
+              detachedRegistry.evict(resumeClaim.key, 'resume_miss');
+              resumeClaim = null;
+              lastErr = null;
+              continue;
+            }
+            if (resumeAttempt && resumeClaim) {
+              // Bytes were already on the wire; a completed-entry replay does
+              // not exist in P1, so this claim cannot be served later.
+              detachedRegistry.evict(resumeClaim.key, 'resume_miss');
+              resumeClaim = null;
             }
             lastErr = err;
             reuseEntry = null; // don't try to reuse on retry
@@ -7684,6 +7935,17 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           if (!res.writableEnded) res.end();
         });
       } finally {
+        // Safety net: every normal path above releases its claim (served or
+        // running). A claim that survives to here means an early return or a
+        // throw took a path that did not; re-detach with the frozen snapshot
+        // rather than leaving the entry claimed until TTL.
+        if (resumeClaim) {
+          detachedRegistry.release(resumeClaim.key, resumeClaim.token, {
+            state: 'running',
+            snapshot: resumeClaim.entry.snapshot,
+          });
+          resumeClaim = null;
+        }
         unregisterSse();
         stopHeartbeat();
       }
