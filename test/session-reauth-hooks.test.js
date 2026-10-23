@@ -57,7 +57,7 @@ describe('chat dead-verdict → requestReauthCheck wiring', () => {
 
     for (const hit of hits) {
       const before = CHAT.slice(Math.max(0, hit.index - 600), hit.index);
-      assert.match(before, /reportDeadToken\(acct\.apiKey\)/,
+      assert.match(before, /reportDeadToken\(currentApiKeyForId\(acct\.id, acct\.apiKey\)\)/,
         'the probe must follow the dead-token verdict, not precede it');
     }
   });
