@@ -518,6 +518,91 @@ describe('Detach P1 admission gates', () => {
     });
   });
 
+  it('T25 a turn that delivered emulated <tool_call> markup admits nothing (D2)', async () => {
+    const acct = seedAccount('t25');
+    createdIds.push(acct.id);
+    const markup = '<tool_call>{"name":"audit_echo","arguments":{"text":"hi"}}</tool_call>';
+    const { state, handler } = cascadeUpstream({ initialText: markup });
+    await withFakeLanguageServer(handler, async (port) => {
+      const lsFake = makeLsFake(port);
+      const body = {
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'detach test t25' }],
+        stream: true,
+        tools: [{
+          type: 'function',
+          function: {
+            name: 'audit_echo',
+            description: 'echo text',
+            parameters: { type: 'object', properties: { text: { type: 'string' } } },
+          },
+        }],
+      };
+      const ctx = handlerContext(port, acct, lsFake);
+      const { state: resState } = await runToCompletion(body, ctx, { closeAfterWrites: 2 });
+      assert.ok(resState.body.includes('audit_echo'),
+        'precondition: the emulated call reached the client before the disconnect');
+      assert.equal(registry.detachedRegistry.stats().admit, 0,
+        'a turn that delivered a tool call must never enter the no-tool detach cache');
+
+      state.status = 'idle';
+      state.grown = true;
+      await runToCompletion(body, ctx, {});
+      assert.equal(state.startCalls, 2,
+        'the retry starts a fresh turn instead of replaying the call under a new id');
+      assert.equal(state.sendCalls, 2);
+    });
+  });
+
+  it('T26 a resumed turn that delivers a tool call is not re-frozen (D2)', async () => {
+    const acct = seedAccount('t26');
+    createdIds.push(acct.id);
+    const markup = '<tool_call>{"name":"audit_echo","arguments":{"text":"again"}}</tool_call>';
+    const { state, handler } = cascadeUpstream({ initialText: PREFIX });
+    await withFakeLanguageServer(handler, async (port) => {
+      const lsFake = makeLsFake(port);
+      const body = {
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'detach test t26' }],
+        stream: true,
+        tools: [{
+          type: 'function',
+          function: {
+            name: 'audit_echo',
+            description: 'echo text',
+            parameters: { type: 'object', properties: { text: { type: 'string' } } },
+          },
+        }],
+      };
+      const ctx = handlerContext(port, acct, lsFake);
+      await runToCompletion(body, ctx, { closeAfterWrites: 2 });
+      assert.equal(registry.detachedRegistry.stats().admit, 1, 'precondition: a tool-free prefix was frozen');
+
+      // The resume grows the SAME step with a complete emulated tool call. The
+      // client dies on the call delta: the frozen prefix predates that call, so
+      // re-freezing it would replay the call under a new id.
+      state.stepsFor = (offset) => rawStepsResponse(offset === 0
+        ? [plannerStep(`${PREFIX}${markup}`, { status: 3 })]
+        : []);
+      const starts0 = state.startCalls;
+      const { state: resumeState } = await runToCompletion(body, ctx, { closeAfterWrites: 3 });
+      assert.ok(resumeState.body.includes('audit_echo'),
+        'precondition: the resumed turn delivered the call before the disconnect');
+      assert.equal(registry.detachedRegistry.stats().re_detach, 0,
+        'a tool-delivering resume must not be re-frozen');
+      assert.equal(registry.detachedRegistry.stats().evict.resume_miss, 1);
+      assert.equal(registry.detachedRegistry.stats().entries, 0);
+      assert.equal(state.startCalls, starts0, 'the resume itself did not start a cascade');
+
+      // The retry has no entry left, so it goes upstream instead of replaying.
+      state.stepsFor = (offset) => rawStepsResponse(offset === 0
+        ? [plannerStep(FULL_TEXT, { status: 3 })]
+        : []);
+      await runToCompletion(body, ctx, {});
+      assert.equal(state.startCalls, starts0 + 1, 'the retry starts a fresh turn');
+    });
+  });
+
   it('T10 a normal stream end admits nothing', async () => {
     const acct = seedAccount('t10');
     createdIds.push(acct.id);
@@ -990,6 +1075,48 @@ describe('Detach P1 claim discipline', () => {
     });
   });
 
+  it('T24 a TTL sweep never deletes a live claim; its release still counts as served (D1)', async () => {
+    const acct = seedAccount('t24');
+    createdIds.push(acct.id);
+    const { state, handler } = cascadeUpstream();
+    await withFakeLanguageServer(handler, async (port) => {
+      const lsFake = makeLsFake(port);
+      const bodyA = bodyFor('t24-a');
+      const bodyB = bodyFor('t24-b');
+      const ctx = handlerContext(port, acct, lsFake);
+      const realNow = registry.detachedRegistry.now;
+      const realTtl = registry.detachedRegistry.ttlMs;
+      let fakeNow = Date.now();
+      registry.detachedRegistry.now = () => fakeNow;
+      registry.detachedRegistry.ttlMs = 1_000;
+      try {
+        // A detaches and a resumer claims it at t=999.
+        await runToCompletion(bodyA, ctx, { closeAfterWrites: 2 });
+        const key = detachKeyOf(bodyA);
+        const claim = registry.detachedRegistry.claim(key, ctx.callerKey);
+        assert.ok(claim.entry, 'precondition: the entry is claimable');
+
+        // t=1001: the admission window is gone, but the claim is owned by the
+        // original request deadline/token. Another request's admission runs
+        // the sweep. Old code deleted the claim here; the owner's release then
+        // returned false (serve=0 while the turn was still billed).
+        fakeNow += 1_001;
+        await runToCompletion(bodyB, ctx, { closeAfterWrites: 2 });
+        assert.equal(registry.detachedRegistry.stats().evict.ttl, 0,
+          'TTL is an admission bound: it must not evict a claimed entry');
+        assert.equal(registry.detachedRegistry.lookup(key, ctx.callerKey)?.state, 'claimed');
+
+        assert.equal(registry.detachedRegistry.release(key, claim.token, { state: 'served' }), true,
+          'the original token still owns the entry past its admission window');
+        assert.equal(registry.detachedRegistry.stats().serve, 1);
+        assert.equal(registry.detachedRegistry.stats().entries, 1, 'only the other request remains');
+      } finally {
+        registry.detachedRegistry.now = realNow;
+        registry.detachedRegistry.ttlMs = realTtl;
+      }
+    });
+  });
+
   it('T20 a resume that loses its deadline evicts and releases the request lease', async () => {
     const acct = seedAccount('t20');
     createdIds.push(acct.id);
@@ -1151,34 +1278,50 @@ describe('Detach P1 claim/lease regressions', () => {
       assert.equal(state.startCalls, starts0 + 1, 'the second retry stays foreground');
       assert.equal(contentOf(genState), FULL_TEXT);
 
-      // A claimed entry past its own deadline is likewise left to its owner.
-      const bodyB = bodyFor('t23-deadline');
-      const keyB = detachKeyOf(bodyB);
-      const admitted = registry.detachedRegistry.admit({
-        key: keyB,
-        callerKey: ctx.callerKey,
-        snapshot,
-        cause: 'client_gone',
-        pin: {
-          cascadeId: 'deadline-cascade', sessionId: 'deadline-session', lsPort: port,
-          lsGeneration: lsFake.generation, accountId: acct.id, modelKey: resolveModel(bodyB.model),
-          generatorOffset: 0, deadline: Date.now() + 30, startedAt: Date.now(),
-        },
-      });
-      assert.ok(admitted.token);
-      const claimB = registry.detachedRegistry.claim(keyB, ctx.callerKey);
-      assert.ok(claimB.entry);
-      await new Promise(resolve => setTimeout(resolve, 40));
-      const ttl0 = registry.detachedRegistry.stats().evict.ttl;
-      const starts1 = state.startCalls;
-      const { state: deadlineState } = await runToCompletion(bodyB, ctx, {});
-      assert.equal(registry.detachedRegistry.stats().evict.ttl, ttl0,
-        'a claimed entry past its deadline is not evicted by a second retry');
-      assert.equal(registry.detachedRegistry.lookup(keyB, ctx.callerKey).state, 'claimed');
-      assert.equal(state.startCalls, starts1 + 1);
-      assert.equal(contentOf(deadlineState), FULL_TEXT);
+      // A claim past its own request deadline is no longer owned: the next
+      // registry operation cleans it by that deadline — never by the second
+      // retry's TTL or resume-miss path. Disable timers so the lookup below is
+      // the deterministic cleanup point.
+      const realTimers = registry.detachedRegistry.timers;
+      registry.detachedRegistry.timers = false;
+      try {
+        const bodyB = bodyFor('t23-deadline');
+        const keyB = detachKeyOf(bodyB);
+        const admitted = registry.detachedRegistry.admit({
+          key: keyB,
+          callerKey: ctx.callerKey,
+          snapshot,
+          cause: 'client_gone',
+          pin: {
+            cascadeId: 'deadline-cascade', sessionId: 'deadline-session', lsPort: port,
+            lsGeneration: lsFake.generation, accountId: acct.id, modelKey: resolveModel(bodyB.model),
+            generatorOffset: 0, deadline: Date.now() + 30, startedAt: Date.now(),
+          },
+        });
+        assert.ok(admitted.token);
+        const claimB = registry.detachedRegistry.claim(keyB, ctx.callerKey);
+        assert.ok(claimB.entry);
+        await new Promise(resolve => setTimeout(resolve, 40));
+        const ttl0 = registry.detachedRegistry.stats().evict.ttl;
+        const miss0 = registry.detachedRegistry.stats().evict.resume_miss;
+        const deadline0 = registry.detachedRegistry.stats().evict.deadline;
+        const starts1 = state.startCalls;
+        const { state: deadlineState } = await runToCompletion(bodyB, ctx, {});
+        assert.equal(registry.detachedRegistry.stats().evict.ttl, ttl0,
+          'the retry must not evict the claim on TTL');
+        assert.equal(registry.detachedRegistry.stats().evict.resume_miss, miss0,
+          'the retry must not evict the claim as a resume miss');
+        assert.equal(registry.detachedRegistry.stats().evict.deadline - deadline0, 1,
+          'the claim is cleaned by its own deadline');
+        assert.equal(registry.detachedRegistry.lookup(keyB, ctx.callerKey), null);
+        assert.equal(state.startCalls, starts1 + 1);
+        assert.equal(contentOf(deadlineState), FULL_TEXT);
+        assert.equal(registry.detachedRegistry.release(keyB, claimB.token, { state: 'served' }), false,
+          'the deadline already ended the claim');
+      } finally {
+        registry.detachedRegistry.timers = realTimers;
+      }
 
-      registry.detachedRegistry.release(keyB, claimB.token, { state: 'served' });
       registry.detachedRegistry.release(key, claim.token, { state: 'served' });
     });
   });
