@@ -4,7 +4,7 @@
     "test/responses.test.js",
     "test/terminal-event-guard.test.js"
   ],
-  "expectBaselinePass": 63,
+  "expectBaselinePass": 64,
   "mutations": [
     {
       "name": "the original defect — no seal at tool-item creation, so post-tool text is appended to the first message item and done comes out [1,0]",
