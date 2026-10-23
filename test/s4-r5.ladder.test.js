@@ -39,7 +39,7 @@ async function run(pattern, env = {}, emittedInitially = false) {
     log: { info() {}, error() {} }, AbortController,
   };
   const body = `${topFunction('acquireConnectFailover')}\n${topFunction('connectFailoverMax')}\nreturn (async () => {
-    const connectParams = {}, connectMeta = {}, reqId = 'r', reqModelName = 'model', selector = 'model';
+    const connectParams = {}, connectMeta = {}, reqId = 'r', reqModelName = 'model', selector = 'model', connectDisplayModel = 'model';
     const ccStart = 0, ccAcct = accounts[0], callerKey = 'owner', connectMessages = [], incomingConnectReasoning = '';
     const abortController = new AbortController(), triedKeys = [], maxHops = connectFailoverMax(env);
     let emitted = emittedInitially;

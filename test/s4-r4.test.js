@@ -57,6 +57,10 @@ async function run(options = {}) {
     isBudgetExceededError: () => false,
     upstreamTransientErrorMessage: () => 'transient', upstreamDeadlineExceededMessage: () => 'deadline',
     sanitizeText: x => x, poolCheckin() {}, ttlHintFromCachePolicy() {},
+    // The P2-4 restore gate lives OUTSIDE the extracted slice (defined in the
+    // enclosing handler). The harness supplies the same fail-open contract the
+    // real closure has when there is nothing to restore.
+    restoreCheckedOutReuse: () => false,
     pathStreamText: { flush() { visited.push('egress'); if (options.pathFail) boom(); return ''; } },
     thinkClassifier: { flush() { visited.push('think'); return ''; } },
     reasoningDedup: { release() { visited.push('dedup'); if (options.dedupFail) boom(); return ''; } },
