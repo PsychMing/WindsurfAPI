@@ -1611,6 +1611,7 @@ window._firebaseOAuth = async function(provider) {
               <tbody></tbody>
             </table>
           </div>
+          <div id="account-stats-note" class="text-mute" style="margin-top:8px;font-size:12px"></div>
         </div>
       </div>
     </div>
@@ -3325,6 +3326,18 @@ const App = {
       <td>${a.requests}</td><td>${a.success}</td><td>${a.errors}</td>
       <td>${a.successRate}%</td>
     </tr>`).join('') || `<tr class="empty-row"><td colspan="5">no account data yet</td></tr>`;
+
+    // Per-account rows only cover requests that carried an account id;
+    // global/unauthenticated paths still count in the total. State the
+    // remainder so the table does not silently sum short of the total card.
+    const attribution = r.accountAttribution || {};
+    const unattributed = Number(attribution.unattributed) || 0;
+    const noteEl = document.getElementById('account-stats-note');
+    if (noteEl) {
+      noteEl.textContent = unattributed > 0
+        ? `${unattributed} of ${total} requests have no account attribution (global/unauthenticated paths); they are counted in the total and excluded from the rows above.`
+        : '';
+    }
 
     // 30s auto-refresh — production UI keeps this running so the panel
     // stays live without manual reload.

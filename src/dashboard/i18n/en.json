@@ -592,7 +592,8 @@
       "desc": "Same filtered window as the request log; table and totals share one denominator — no estimates.",
       "byModel": "By model",
       "byAccount": "By account",
-      "byDay": "By day"
+      "byDay": "By day",
+      "unattributedNote": "{{count}} of {{total}} requests in this window have no account attribution (global/unauthenticated paths). They are included in the log total and excluded from the account rows above."
     },
     "devin": {
       "runtime": {
