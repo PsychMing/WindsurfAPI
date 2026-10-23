@@ -5,7 +5,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { WindsurfClient, contentToString, isCascadeTransportError, acquireLsUseOrThrow } from '../client.js';
-import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, markSelectorIneligible, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
+import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountInternal, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, markSelectorIneligible, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
 import { isStickyEnabled, setStickyBinding, peekStickyBinding } from '../account/sticky-session.js';
 import { resolveModel, getModelInfo, pickRateLimitFallback, isModelDisabledUpstream, getModelCaps } from '../models.js';
 import { getLsFor, ensureLs, beginLsUse, endLsUse, getLsEntryByPort } from '../langserver.js';
@@ -2560,12 +2560,28 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
     recordRequest(model, !err, Date.now() - startTime, null);
     return;
   }
+  // The attempt belongs to the IMMUTABLE id, never to the apiKey snapshot. An
+  // account can be removed while its request is still in flight (dashboard
+  // delete / replace), and the replacement may legitimately be created with the
+  // SAME synthetic key. `currentApiKeyForId(id, fallback)` cannot express
+  // "gone" — its fallback exists for the env-token shape — so a removed id
+  // would re-key every mark*/report* below onto whoever now holds that key:
+  // A's late UNAUTHORIZED charged B's error budget, and a late success cleared
+  // B's errors. Resolve the pool account FIRST and drop the outcome when it is
+  // gone; a removed identity's verdict belongs to nobody.
+  const live = acct.id ? getAccountInternal(acct.id) : null;
+  if (acct.id && !live) {
+    // The request itself still happened — record it globally with no account
+    // attribution, exactly like the env-token path above.
+    recordRequest(model, !err, Date.now() - startTime, null);
+    return;
+  }
   // REF-1/REF-2: acct.apiKey is a snapshot taken at acquire time. A background
   // re-login (UNAUTHORIZED path below) swaps the pool object's apiKey in place
   // without touching this snapshot, so every mark*/report*/release keyed on the
   // stale snapshot would silently no-op — leaking the in-flight slot and losing
   // the cooldown/health signal. Resolve the account's CURRENT apiKey via its
-  // immutable id (falls back to the snapshot when the id is unknown), and
+  // immutable id (a snapshot with no id keeps the snapshot key), and
   // release by id so the counter always finds its account.
   //
   // Credential-scoped verdicts are the exception: `apiKey` is the live key and
