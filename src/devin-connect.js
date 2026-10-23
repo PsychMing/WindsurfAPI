@@ -2753,22 +2753,59 @@ export function mapFinishReason(finish, env = process.env) {
 }
 
 /**
+ * Apply the caller's output cap to a terminal finish reason.
+ *
+ * LIVE FINDING (evidence/ToolMatrixLive.md, flag 2): `gemini-3-6-flash-medium`
+ * max_tokens does not bound thinking. Probes returned completion_tokens 105
+ * under max_tokens:64 and 271 under 128 while the visible answer was a short
+ * string — the upstream counts thinking inside completion_tokens but spends it
+ * OUTSIDE the cap. The old check here used strict equality (`completion === cap`),
+ * so every overrun sailed past it and the turn reported a clean 'stop': a budget
+ * overrun indistinguishable from a complete answer. GPT overran the same way at
+ * 16 (32 > 16), so the rule is model-agnostic, not Gemini-specific.
+ *
+ * `>=` is the honest test: the caller asked for at most `cap` output tokens and
+ * the upstream produced at least that many. The equality half keeps the older,
+ * narrower truncation signal.
+ *
+ * Why this reports instead of enforces: the only EXACT token count is the
+ * upstream's, and it arrives on the terminal frame after every delta has been
+ * delivered. The proxy has no tokenizer (chars/4 is an estimate), so cutting the
+ * stream at the cap would drop delivered content mid-answer and could label a
+ * complete answer truncated — the failure mode this same comment has warned
+ * about since the paid stop-reason calibration. Reporting 'length' leaves the
+ * answer intact and tells the client its budget was exceeded.
+ *
+ * Only a clean 'stop' can be upgraded: tool_calls / content_filter / error are
+ * stronger statements about what the turn did. An explicit operator override in
+ * resolveFinishReason still wins over this inference.
+ *
+ * @param {string} finishReason  already-mapped OpenAI finish_reason
+ * @param {object|null} usage    normalized usage ({completion_tokens})
+ * @param {number|null} maxTokens  output cap the caller requested, if any
+ * @returns {string} the reason to report
+ */
+export function applyOutputCap(finishReason, usage, maxTokens) {
+  if (finishReason !== 'stop') return finishReason;
+  const cap = Number(maxTokens);
+  const completion = Number(usage?.completion_tokens);
+  if (Number.isFinite(cap) && cap > 0 && Number.isFinite(completion) && completion >= cap) {
+    return 'length';
+  }
+  return finishReason;
+}
+
+/**
  * Resolve the OpenAI finish_reason for a completed connect turn.
  *
  * The descriptor now pins the enum (see STOP_REASON_DEFAULT), so MAX_TOKENS (3)
  * reports 'length' without inference. The usage check stays as a second line of
  * defense for the values the descriptor calls a clean stop (2/4): a turn that
- * consumed the caller's whole output budget is still truncated, and that signal
- * does not depend on the enum at all — it is the same test an OpenAI client
- * would apply itself.
- *
- * The check is deliberately conservative — equality with the cap, not >=, and only
- * when the caller set an explicit cap:
- *   - `max_tokens` is NOT enforced upstream on every tier (a free-tier probe varied
- *     16 → 1000 with byte-identical output), so a turn that never approaches the cap
- *     is unaffected either way;
- *   - reporting a complete answer as truncated is the more harmful error (clients
- *     that auto-continue on 'length' loop forever), so ambiguity resolves to 'stop'.
+ * reached or overran the caller's output budget is still truncated, and that
+ * signal does not depend on the enum at all — it is the same test an OpenAI
+ * client would apply itself. See applyOutputCap for why the comparison is `>=`
+ * rather than equality (thinking is counted in completion_tokens but not bounded
+ * by the cap on every tier).
  *
  * An explicit DEVIN_CONNECT_STOP_REASON_MAP override always wins: an operator who
  * HAS captured the real integers is a better authority than this inference.
@@ -2788,16 +2825,7 @@ export function resolveFinishReason(finish, usage, maxTokens, env = process.env)
   const { overrides } = stopReasonMapAndOverrides(env);
   const key = typeof finish === 'bigint' ? Number(finish) : finish;
   if (finish != null && overrides.has(key)) return mapped;
-  // Only a clean stop can be upgraded to 'length'. tool_calls / content_filter /
-  // error are stronger signals about what the turn actually did and must not be
-  // overwritten.
-  if (mapped !== 'stop') return mapped;
-  const cap = Number(maxTokens);
-  const completion = Number(usage?.completion_tokens);
-  if (Number.isFinite(cap) && cap > 0 && Number.isFinite(completion) && completion === cap) {
-    return 'length';
-  }
-  return mapped;
+  return applyOutputCap(mapped, usage, maxTokens);
 }
 
 

@@ -19,7 +19,7 @@
 
 import { randomUUID } from 'crypto';
 import { filterToolCallsByAllowlist } from './handlers/chat.js';
-import { streamChat as realStreamChat, isRetryable, messageText } from './devin-connect.js';
+import { streamChat as realStreamChat, isRetryable, messageText, applyOutputCap } from './devin-connect.js';
 import { ToolCallStreamParser, parseToolCallsFromText, isWeakEmulationModel } from './handlers/tool-emulation.js';
 import { log } from './config.js';
 import { safeLogValue } from './log-safety.js';
@@ -724,6 +724,19 @@ export async function toChatCompletion(params, opts = {}) {
     finishReason = 'tool_calls';
   }
 
+  // Budget honesty (live finding: gemini-3-6-flash-medium). Thinking is counted
+  // in completion_tokens but the upstream does not bound it by max_tokens, so a
+  // turn can overrun the caller's cap and still claim a clean 'stop'. Report
+  // 'length' when the upstream's own count reached or passed the requested cap.
+  // NOT a local truncation: every delta has already been delivered above, and
+  // the exact count only exists on the terminal frame — see applyOutputCap.
+  //
+  // A turn cut by the CLIENT's stop sequence keeps 'stop': the caller asked for
+  // that terminal cause and the Messages route carries it as `stop_sequence`
+  // (the carrier below is gated on 'stop'). Tool calls / content_filter are
+  // stronger states and applyOutputCap leaves them alone.
+  if (!stopHit) finishReason = applyOutputCap(finishReason, usage, params.completion?.maxTokens);
+
   // #236 log-only detector — AFTER emulation and the stop gate, on the text and
   // calls the client actually receives. `stopHit` means a local stop sequence
   // cut the answer, which is not a model stall.
@@ -1020,6 +1033,13 @@ export async function streamChatCompletion(params, send, opts = {}) {
       delivered += tail;
     }
   }
+
+  // Budget honesty — same rule and same reasons as the non-stream twin above.
+  // Applied only after the gate's held tail has been released, so the terminal
+  // frame still follows every delivered delta: the answer is reported as over
+  // budget, never retracted or cut mid-chunk. A local stop sequence keeps
+  // 'stop' (the caller asked for that cause; the carrier below depends on it).
+  if (!stopHit) finishReason = applyOutputCap(finishReason, usage, params.completion?.maxTokens);
 
   // #236 log-only detector — AFTER emulation and the stop gate, on what the
   // client actually received. A delivered call (emulated or native) sets
