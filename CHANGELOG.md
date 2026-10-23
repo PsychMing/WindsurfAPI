@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 211 份发布说明</a> ·
+  <a href="docs/releases/">全部 212 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **211** 份,v2.0.6 → v3.9.60 |
+| 发布说明 | **212** 份,v2.0.6 → v3.10.0 |
 | git tag | 214 个（2026-10-23 实测；以 `git tag \| wc -l` 为准） |
-| 当前 | **v3.9.60**(2026-10-23) |
+| 当前 | **v3.10.0**(2026-10-23) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -42,7 +42,12 @@ flowchart LR
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
 
-### [v3.9.60](docs/releases/RELEASE_NOTES_3.9.60.md) · 2026-10-23
+### [v3.10.0](docs/releases/RELEASE_NOTES_3.10.0.md) · 2026-10-23
+
+大版本：detached cache P1（默认关）+ 四个 P2 修复、账号页 P2（调色板/尺度/排序/改名）、
+SEC 三项（空白密码、runtime-config/proxy ACL、nginx Referer）、#245 `teams_tier` 行、
+smoke 137 flows / 24 families、真实 Docker one-click E2E 4/4。
+### [v3.9.60](docs/releases/RELEASE_NOTES_3.9.60.md) · 2026-10-23（已发布）
 
 detached cache P1（惰性恢复，默认关）：快照 v2 四字段、可声明 registry、请求级租约、两个计费陷阱；
 #245 `teams_tier` 日志行（raw + mapped）。新增 48 条测试，flag-off 与既有 cascade 套件 150/150 一致。
