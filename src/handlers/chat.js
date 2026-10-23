@@ -60,7 +60,7 @@ import { acpVisionEnabled } from '../devin-acp.js';
 import { selectBackend, usesCascadeFlow } from '../backend-router.js';
 import { toChatCompletion as _toChatCompletion, streamChatCompletion as _streamChatCompletion } from '../devin-connect-openai.js';
 import { resolveConnectSelector, DROUGHT_SAFE_SELECTORS } from '../devin-connect-models.js';
-import { getToolDefTags, parseToolCallTagMap } from '../devin-connect.js';
+import { getToolDefTags, parseToolCallTagMap, isParallelToolCallsUnsupported } from '../devin-connect.js';
 import { recordRateLimitBurstEvent, RATE_LIMIT_BURST_WINDOW_MS } from '../rate-limit-burst.js';
 import { isRouterModel, assignModel as _assignModel } from '../devin-connect-catalog.js';
 import { bumpConnect } from '../devin-connect-metrics.js';
@@ -3523,6 +3523,33 @@ async function _handleChatCompletionsInner(body, context = {}) {
         } },
       };
     }
+    // `parallel_tool_calls:false` is a caller CORRECTNESS hint ("emit at most one
+    // tool call per turn"), not a preference, and the connect upstream can only be
+    // told about it through #11 `disable_parallel_tool_calls` — an opt-in field
+    // whose tag is unconfirmed. With DEVIN_CONNECT_TOOL_CHOICE unset the field is
+    // not emitted and the hint used to be dropped in silence: the live matrix
+    // measured 4/4 connect models still returning two calls with the flag set
+    // false (evidence/ToolMatrixLive.md §8). Serialising here is not an option —
+    // the upstream decides the call count inside one turn, so emitting only the
+    // first of N would discard work the model already did. Refuse instead, and
+    // name the switch that makes the hint honourable.
+    //
+    // Scoped to the connect flow on purpose: the switch and the wire field are
+    // connect-only, so a Cascade request must never be refused over a connect
+    // knob. Placed with the other request-shape gates (after model resolution,
+    // before the drought/capacity checks and before any account is touched).
+    if (isParallelToolCallsUnsupported(body.parallel_tool_calls, process.env)) {
+      log.warn(`Chat[${reqId}]: DEVIN_CONNECT rejecting parallel_tool_calls:false — the #11 passthrough is off (DEVIN_CONNECT_TOOL_CHOICE is not "1")`);
+      return {
+        status: 400,
+        body: { error: {
+          message: 'This proxy cannot honour parallel_tool_calls:false on the DEVIN_CONNECT route: the upstream field that disables parallel tool calls is opt-in and currently off, so the hint would be silently ignored and the model could still return several tool calls in one turn. Remove parallel_tool_calls (or set it to true), or set DEVIN_CONNECT_TOOL_CHOICE=1 to forward disable_parallel_tool_calls upstream.',
+          type: 'invalid_request_error',
+          param: 'parallel_tool_calls',
+          code: 'unsupported_parameter',
+        } },
+      };
+    }
     // Drought gate (#234). It has to live INSIDE this short-circuit block: every
     // exit path of this block returns, so the Cascade-path gate further down
     // (isModelBlockedByDrought, ~line 3700) is structurally unreachable whenever
@@ -3787,7 +3814,18 @@ async function _handleChatCompletionsInner(body, context = {}) {
       }
     }
     const ccAcct = __sHit ? null : await acquireConnectAccount(context.signal, callerKey, selector, context.budget || null);
-    const connectParams = { messages: connectMessages, model: selector };
+    const connectParams = {
+      messages: connectMessages,
+      model: selector,
+      // Opt-in tool fields (#11 disable_parallel_tool_calls / #12 tool_choice).
+      // buildGetChatMessageRequest ignores both unless DEVIN_CONNECT_TOOL_CHOICE=1,
+      // so the default wire stays byte-identical. They are threaded here because the
+      // handler is the only layer that knows what the caller asked for — before
+      // this, streamChat() did not even accept them, so the live switch was inert
+      // for every request that came through /v1/chat/completions.
+      parallelToolCalls: body.parallel_tool_calls,
+      toolChoice: tool_choice,
+    };
     // Session continuity (opt-in, DEVIN_CONNECT_SESSION_REUSE, default OFF). Derive
     // a stable protobuf session_id (#16) from the conversation's completed request/
     // response pair chain so a multi-turn dialog reuses ONE session_id instead of

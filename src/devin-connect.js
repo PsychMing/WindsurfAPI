@@ -1170,6 +1170,26 @@ export function isToolChoicePassthroughEnabled(env = process.env) {
   return String(env.DEVIN_CONNECT_TOOL_CHOICE ?? '').trim() === '1';
 }
 
+/**
+ * True when the caller demanded sequential tool calls (`parallel_tool_calls:false`)
+ * and this build would silently drop that demand.
+ *
+ * The hint can only be honoured natively, through #11 `disable_parallel_tool_calls`,
+ * which is opt-in because its tag is unconfirmed (see the header above). With the
+ * switch off the field is not emitted, so the request goes upstream unchanged and
+ * the model is free to return N calls in one turn — the live matrix measured 4/4
+ * models doing exactly that with the flag set false (evidence/ToolMatrixLive.md §8).
+ *
+ * Serialising at the proxy is NOT an alternative: the upstream decides the call
+ * count inside one turn, so emitting only the first of N would discard work the
+ * model already performed and the client would never learn the rest existed.
+ * Callers therefore get an explicit 400 (handlers/chat.js) rather than a silent
+ * downgrade of a correctness requirement.
+ */
+export function isParallelToolCallsUnsupported(parallelToolCalls, env = process.env) {
+  return parallelToolCalls === false && !isToolChoicePassthroughEnabled(env);
+}
+
 // Top-level tags GetChatMessageRequest already occupies. An override that lands on
 // one of these does not "win" — protobuf permits a repeated appearance of a
 // non-repeated field and decoders take the LAST, so pointing `choice` at #1 emits a
@@ -2826,7 +2846,7 @@ export function resolveFinishReason(finish, usage, maxTokens, env = process.env)
 export async function* streamChat({
   messages, model, sessionId, completion, tools,
   token, signal, timeoutMs, deadlineMs, host, env = process.env, nativeToolCall = false, traceId = null,
-  deviceSeed, sessionModelConfig, continuityTrail,
+  deviceSeed, sessionModelConfig, continuityTrail, toolChoice, parallelToolCalls,
 } = {}) {
   if (signal?.aborted) {
     const err = new Error('The operation was aborted');
@@ -2891,7 +2911,7 @@ export async function* streamChat({
   const wireMessages = imageTag
     ? await inlineRemoteImages(messages, { signal })
     : messages;
-  const proto = buildGetChatMessageRequest({ token: sessionToken, messages: wireMessages, model, sessionId, completion, tools, nativeToolCall, deviceSeed, userJwt, env, sessionModelConfig, continuityTrail });
+  const proto = buildGetChatMessageRequest({ token: sessionToken, messages: wireMessages, model, sessionId, completion, tools, nativeToolCall, deviceSeed, userJwt, env, sessionModelConfig, continuityTrail, toolChoice, parallelToolCalls });
   // Request envelope is sent UNCOMPRESSED (flag 0). The live calibration showed
   // the server rejects a gzipped request frame with an opaque "internal" error;
   // it still streams gzipped frames back, which the parser handles.

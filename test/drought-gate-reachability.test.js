@@ -211,9 +211,16 @@ describe('drought gate structure — escape points (#234)', () => {
     //                                selector predicate would be wrong.
     //   - strict-model 400        -> the model does not resolve at all; a precise
     //                                model_not_found beats a misleading 503.
+    //   - parallel_tool_calls 400 -> the request can never be honoured on this
+    //                                build (the #11 passthrough is off); a 400 is
+    //                                permanent, so answering 503 "retry later"
+    //                                would send the client into a retry loop that
+    //                                can never succeed. Refused before any account
+    //                                is touched, so no quota is consumed.
     const ACCEPTED_ESCAPES = [
       { match: /handleSpecialAgentChatCompletion/, why: 'ACP vision reroute → special_agent namespace' },
       { match: /code: 'model_not_found'/, why: 'unresolvable model name → precise 400' },
+      { match: /code: 'unsupported_parameter'/, why: 'unhonourable parallel_tool_calls:false → permanent 400, no account touched' },
     ];
 
     const escapes = [];
