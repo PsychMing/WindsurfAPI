@@ -583,6 +583,62 @@ describe('chatToResponse', () => {
     }
   });
 
+  it('rejects_versioned_hosted_search_before_model_dispatch', async () => {
+    // OpenAI ships dated snapshots of the same hosted tool next to the
+    // unversioned aliases. They ask THIS SERVER to execute the search just the
+    // same, so every position that can carry a tool declaration must refuse
+    // them before the model runs — an exact-match set used to let them through
+    // and flattenResponseTool then dropped them silently.
+    const versionedTypes = ['web_search_preview_2025_03_11', 'web_search_2025_08_26'];
+    for (const type of versionedTypes) {
+      const cases = [
+        {
+          position: 'top-level tools',
+          body: { tools: [{ type, description: 'Search the web' }] },
+          param: 'tools',
+        },
+        {
+          position: 'additional_tools',
+          body: {
+            input: [
+              { type: 'additional_tools', tools: [{ type }] },
+              { type: 'message', role: 'user', content: 'search' },
+            ],
+          },
+          param: 'input',
+        },
+        {
+          position: 'namespace child',
+          body: { tools: [{ type: 'namespace', name: 'web', tools: [{ type }] }] },
+          param: 'tools',
+        },
+        {
+          position: 'tool_choice',
+          body: { tool_choice: { type } },
+          param: 'tool_choice',
+        },
+      ];
+      for (const stream of [false, true]) {
+        for (const { position, body, param } of cases) {
+          let modelCalled = false;
+          const result = await handleResponses({ model: 'claude-sonnet-4.6', input: 'search', stream, ...body }, {
+            async handleChatCompletions() {
+              modelCalled = true;
+              throw new Error('must not call the model for a versioned hosted tool');
+            },
+          });
+          assert.equal(result.status, 400, `${type} in ${position} stream=${stream}`);
+          assert.equal(result.stream, undefined, 'a rejected request never opens an SSE stream');
+          assert.equal(result.body.error.type, 'invalid_request_error');
+          assert.equal(result.body.error.code, 'unsupported_hosted_tool');
+          assert.equal(result.body.error.param, param, `${type} in ${position}`);
+          assert.match(result.body.error.message, /does not execute server-side searches/);
+          assert.equal(modelCalled, false, 'no model turn runs for a hosted search this proxy cannot execute');
+        }
+      }
+    }
+  });
+
   it('keeps a client-declared function tool named web_search as a normal function_call', async () => {
     // The reviewer's control: an ordinary client function keeps the original
     // semantics. Only the HOSTED tool type is rejected.

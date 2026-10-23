@@ -131,12 +131,24 @@ const UNBRIDGED_SERVER_SIDE_TYPES = new Set([
 ]);
 
 const HOSTED_SEARCH_TYPES = new Set(['web_search', 'web_search_preview']);
+// Hosted search is a VERSIONED tool family: OpenAI ships dated snapshots of the
+// same hosted tool (`web_search_preview_2025_03_11`, `web_search_2025_08_26`)
+// next to the unversioned aliases. Every spelling asks THIS SERVER to execute
+// the search, so the gate matches the family. An exact-match list forwards the
+// next snapshot to the model and then drops it in flattenResponseTool — the
+// silent non-execution this rejection exists to prevent.
+const HOSTED_SEARCH_VERSIONED_TYPE = /^web_search(?:_preview)?_\d{4}_\d{2}_\d{2}$/;
+
+function isHostedSearchType(type) {
+  return typeof type === 'string'
+    && (HOSTED_SEARCH_TYPES.has(type) || HOSTED_SEARCH_VERSIONED_TYPE.test(type));
+}
 
 function hostedSearchUnsupported(param) {
   const err = new Error(
     'Hosted web_search is not supported by this proxy: it does not execute server-side searches. '
-    + 'Remove the hosted web_search/web_search_preview tool and, if the client will run the search itself, '
-    + 'declare a normal function tool named "web_search".',
+    + 'Remove the hosted web_search/web_search_preview tool (including its versioned aliases) and, '
+    + 'if the client will run the search itself, declare a normal function tool named "web_search".',
   );
   err.param = param;
   err.code = 'unsupported_hosted_tool';
@@ -150,7 +162,7 @@ function hostedSearchUnsupported(param) {
 function assertNoHostedSearchTools(tools, param = 'tools') {
   for (const tool of tools || []) {
     if (!tool || typeof tool !== 'object') continue;
-    if (HOSTED_SEARCH_TYPES.has(tool.type)) throw hostedSearchUnsupported(param);
+    if (isHostedSearchType(tool.type)) throw hostedSearchUnsupported(param);
     if (tool.type === 'namespace') {
       const childKey = ['tools', 'children', 'functions', 'items'].find(key => Array.isArray(tool[key]));
       if (childKey) assertNoHostedSearchTools(tool[childKey], param);
@@ -422,7 +434,7 @@ export function responsesToChat(body) {
   // proposal as a completed search is exactly the false execution receipt this
   // gate removes. `tool_choice` alone can also force a hosted search.
   assertNoHostedSearchInRequest(body);
-  if (body.tool_choice && typeof body.tool_choice === 'object' && HOSTED_SEARCH_TYPES.has(body.tool_choice.type)) {
+  if (body.tool_choice && typeof body.tool_choice === 'object' && isHostedSearchType(body.tool_choice.type)) {
     throw hostedSearchUnsupported('tool_choice');
   }
   const tools = flattenResponseTools(requestedTools);
