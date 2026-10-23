@@ -57,7 +57,7 @@
     {
       "name": "M8 billing: resume bills acct (no owner branch)",
       "file": "src/handlers/chat.js",
-      "anchor": "                } else if (resumeBillingAccountId) {\n                  const ownerKey = currentApiKeyForId(resumeBillingAccountId);\n                  if (ownerKey) {\n                    recordAccountSpend(ownerKey, usage);\n                    detachedRegistry.noteBilled();\n                  }\n                }",
+      "anchor": "                } else if (resumeBillingAccountId) {\n                  const ownerKey = currentApiKeyForId(resumeBillingAccountId);\n                  if (ownerKey) {\n                    recordAccountSpend({ accountId: resumeBillingAccountId, apiKey: ownerKey }, usage);\n                    detachedRegistry.noteBilled();\n                  }\n                }",
       "replacement": "                }"
     },
     {
