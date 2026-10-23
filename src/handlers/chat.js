@@ -4313,7 +4313,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 break;
               }
               // r.kind === 'dead' — guaranteed !emitted, so a fresh account is safe.
-              if (acct) reportDeadToken(acct.apiKey);
+              if (acct) reportDeadToken(currentApiKeyForId(acct.id, acct.apiKey));
               bumpConnect('dead_tokens');
               // SessionReauth: a chat 401 is NOT proof the token was retired —
               // the non-stream path documents an entitlement wall that is
@@ -4530,7 +4530,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
         return { status, body: { error: { message: r.err.message, type, code: r.err.code || null } } };
       }
       // r.kind === 'dead' — the session token couldn't be revived on this account.
-      if (acct) reportDeadToken(acct.apiKey);
+      if (acct) reportDeadToken(currentApiKeyForId(acct.id, acct.apiKey));
       bumpConnect('dead_tokens');
       // Two-signal rule (same as the stream path): the free GetUserStatus probe
       // decides whether the token is really retired, and only that verdict
@@ -5967,8 +5967,20 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
       }
     }
 
-    reportSuccess(apiKey);
-    updateCapability(apiKey, modelKey, true, 'success');
+    // P2-1: Cascade's twin of the connect lane's REF-1/REF-2 identity fix
+    // (finalizeConnectAccount, 2593). `apiKey` is the acquire-time snapshot and
+    // every report*/updateCapability helper in auth.js resolves the account with
+    // `accounts.find(a => a.apiKey === apiKey)`, so a mid-flight rotation
+    // (dashboard token replace, or a connect re-login on the same shared
+    // account) turned these writes into silent no-ops. The ACCOUNT owns its
+    // capability/health state, so target the id's CURRENT key (the env-token
+    // shape has no id and keeps the snapshot). The success verdict stays on the
+    // credential's epoch, exactly like finalizeConnectAccount: an old-key
+    // success does not prove the NEW credential works.
+    const liveApiKey = currentApiKeyForId(accountId, apiKey);
+    const credentialCurrent = credentialEpochCurrent({ id: accountId, apiKey }, apiKey);
+    if (credentialCurrent) reportSuccess(liveApiKey);
+    updateCapability(liveApiKey, modelKey, true, 'success');
     recordRequest(model, true, Date.now() - startTime, accountId);
 
     // Store in cache for next identical request. Skip caching tool_call
@@ -6099,9 +6111,15 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     // account toward eviction on a purely transient blip. Transients must never
     // reach reportError (the invariant reliability rests on). A genuine auth
     // failure (no transient/rate-limit/internal marker) still penalizes as before.
-    if (isAuthFail && !isRateLimit && !isInternal && !isTransient) reportError(apiKey);
-    if (isRateLimit) { markRateLimited(apiKey, rateLimitCooldownMs(err.message), modelKey); err.isRateLimit = true; err.isModelError = true; err.kind ||= 'model_error'; }
-    if (isInternal) { reportInternalError(apiKey); err.isModelError = true; err.kind ||= 'transient_stall'; }
+    // P2-1: same identity split as the connect finalizer (2593/2594). The
+    // account-level cooldown/capability writes target the id's CURRENT key,
+    // while a verdict about the credential that failed stays on the epoch that
+    // produced it (a retired key's 401 must not charge the fresh key).
+    const liveApiKey = currentApiKeyForId(accountId, apiKey);
+    const credentialCurrent = credentialEpochCurrent({ id: accountId, apiKey }, apiKey);
+    if (isAuthFail && !isRateLimit && !isInternal && !isTransient && credentialCurrent) reportError(liveApiKey);
+    if (isRateLimit) { markRateLimited(liveApiKey, rateLimitCooldownMs(err.message), modelKey); err.isRateLimit = true; err.isModelError = true; err.kind ||= 'model_error'; }
+    if (isInternal) { if (credentialCurrent) reportInternalError(liveApiKey); err.isModelError = true; err.kind ||= 'transient_stall'; }
     if (isTransport) { err.isModelError = true; err.kind ||= 'transient_stall'; }
     if (isPolicyBlocked) { err.isPolicyBlocked = true; err.isModelError = true; err.kind = 'policy_blocked'; }
     // v2.0.56: ban-shaped error → reportBanSignal handles the 2-strike
@@ -6112,11 +6130,11 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     // (e.g. "authentication ... failed"), and promoting that to a permanent
     // ban would burn a healthy account — transient-first must win here.
     if (!isRateLimit && !isInternal && !isTransient && looksLikeBanSignal(err.message)) {
-      reportBanSignal(apiKey, err.message);
+      if (credentialCurrent) reportBanSignal(liveApiKey, err.message);
       err.isModelError = true; err.kind ||= 'auth_error';
     }
     if (err.isModelError && err.kind !== 'transient_stall' && !isRateLimit && !isInternal) {
-      updateCapability(apiKey, modelKey, false, 'model_error');
+      updateCapability(liveApiKey, modelKey, false, 'model_error');
     }
     recordRequest(model, false, Date.now() - startTime, accountId);
     log.error('Chat error:', err.message);
@@ -7695,9 +7713,15 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 setStickyBinding(callerKey, modelKey, acct.id, acct.apiKey);
               }
             }
-            // success
-            if (hadSuccess) reportSuccess(currentApiKey);
-            updateCapability(currentApiKey, modelKey, true, 'success');
+            // success — P2-1: same identity split as the non-stream twin
+            // (nonStreamResponse). `currentApiKey` is the per-attempt snapshot;
+            // the capability/health write belongs to the account's live key,
+            // while the success verdict stays on the credential's epoch (an
+            // old-key success does not prove the new key works).
+            const liveApiKey = currentApiKeyForId(currentAccountId, currentApiKey);
+            const credentialCurrent = credentialEpochCurrent({ id: currentAccountId, apiKey: currentApiKey }, currentApiKey);
+            if (hadSuccess && credentialCurrent) reportSuccess(liveApiKey);
+            updateCapability(liveApiKey, modelKey, true, 'success');
             recordRequest(model, true, Date.now() - startTime, currentAccountId);
             if (!rolePrinted) {
               await send({ id, object: 'chat.completion.chunk', created, model,
@@ -7922,8 +7946,13 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // internal error / rate-limit wrapped in a 401/403 auth shell must
             // NOT count against the account's error budget — transients never
             // reach reportError. A genuine auth failure still penalizes.
-            if (isAuthFail && !isRateLimit && !isInternal && !isTransient) reportError(currentApiKey);
-            if (isRateLimit) { recordRateLimited(); markRateLimited(currentApiKey, rateLimitCooldownMs(err.message), modelKey); err.isRateLimit = true; err.isModelError = true; err.kind ||= 'model_error'; }
+            // P2-1: same identity split as the non-stream twin — the account
+            // cooldown targets the id's live key, credential verdicts stay on
+            // the epoch that produced them.
+            const liveApiKey = currentApiKeyForId(currentAccountId, currentApiKey);
+            const credentialCurrent = credentialEpochCurrent({ id: currentAccountId, apiKey: currentApiKey }, currentApiKey);
+            if (isAuthFail && !isRateLimit && !isInternal && !isTransient && credentialCurrent) reportError(liveApiKey);
+            if (isRateLimit) { recordRateLimited(); markRateLimited(liveApiKey, rateLimitCooldownMs(err.message), modelKey); err.isRateLimit = true; err.isModelError = true; err.kind ||= 'model_error'; }
             // v2.0.91 — IP-level rate limit circuit breaker (stream path).
             // Same logic as non-stream: ≥3 accounts rate-limited for the
             // same model within 8s → Windsurf is doing IP-wide cooldown,
@@ -7950,7 +7979,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 break;
               }
             }
-            if (isInternal) { reportInternalError(currentApiKey); err.isModelError = true; err.kind ||= 'transient_stall'; }
+            if (isInternal) { if (credentialCurrent) reportInternalError(liveApiKey); err.isModelError = true; err.kind ||= 'transient_stall'; }
             if (isPolicyBlocked) { recordPolicyBlocked(buildPolicyBlockSample(messages, model, acct?.id || null, deps.context?.traceId || null)); err.isPolicyBlocked = true; err.isModelError = true; err.kind = 'policy_blocked'; }
             if (isTransport) { err.isModelError = true; err.kind ||= 'transient_stall'; }
             // v2.0.56 stream-path ban detection — same 2-strike logic as
@@ -7958,11 +7987,11 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // transient-first guard (internal/transient errors wrapped in an
             // auth-shaped shell must not be promoted to a permanent ban).
             if (!isRateLimit && !isInternal && !isTransient && looksLikeBanSignal(err.message)) {
-              reportBanSignal(currentApiKey, err.message);
+              if (credentialCurrent) reportBanSignal(liveApiKey, err.message);
               err.isModelError = true; err.kind ||= 'auth_error';
             }
             if (err.isModelError && err.kind !== 'transient_stall' && !isRateLimit && !isInternal) {
-              updateCapability(currentApiKey, modelKey, false, 'model_error');
+              updateCapability(liveApiKey, modelKey, false, 'model_error');
             }
             if (isRateLimit && strictReuse && checkedOutReuseEntry && fpBefore && checkedOutReuseEntry.apiKey === currentApiKey) {
               log.info(`Chat[${reqId}]: strict reuse preserved cascade after rate limit`);
