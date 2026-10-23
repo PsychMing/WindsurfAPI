@@ -56,8 +56,8 @@
     {
       "name": "H1-M8: drop assistant-role images silently again",
       "file": "src/devin-connect.js",
-      "anchor": "    const dropped = extractInlineImages(msg.content);\n    if (!dropped.length) return 0;\n    bumpConnect('assistant_images_dropped', dropped.length);",
-      "replacement": "    const dropped = extractInlineImages(msg.content);\n    if (!dropped.length) return 0;",
+      "anchor": "    bumpConnect('assistant_images_dropped', dropped);\n    log.warn(`DEVIN_CONNECT: dropped ${dropped} inline image(s) from an assistant turn (#272) — the upstream ignores image fields on role=assistant, so they are not encoded; put the image on a user turn to have the model see it`);\n    return dropped;",
+      "replacement": "    return dropped;",
       "expectCaught": true
     }
   ]

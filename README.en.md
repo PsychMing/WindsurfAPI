@@ -456,9 +456,14 @@ upstream explicitly supplies true or false. A missing field remains unknown rath
 invented as false. Models carrying upstream `disabled #4` do not enter the live catalog.
 
 `DEVIN_CONNECT_IMAGE_INNER_TAGS` can still override the inner `base64,mime` tags (default `1,2`)
-as an emergency calibration surface for a future wire change. The synchronous builder does not
-download remote `https://` image URLs; use data URLs/base64, or explicitly enable
-`DEVIN_ACP_VISION=1` to route vision through a locally installed Devin CLI ACP transport.
+as an emergency calibration surface for a future wire change. Remote `http(s)://` image URLs are
+now downloaded by `streamChat` before the proto is assembled, through the same bounded
+`fetchImageUrl` the Cascade path uses (8 s total budget, 5 MB cap, `image/*` allowlist, and a
+private/loopback rejection on every redirect hop), then inlined as data URLs in `#10`. A failed,
+oversized, or wrong-type fetch logs a warning (host only — never a possibly signed full URL) and
+drops just that image; the text still goes upstream. With `DEVIN_CONNECT_IMAGE_TAG=0` nothing is
+downloaded. Alternatively, explicitly enable `DEVIN_ACP_VISION=1` to route vision through a
+locally installed Devin CLI ACP transport.
 
 ## Dashboard Features
 

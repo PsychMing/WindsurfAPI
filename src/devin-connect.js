@@ -46,6 +46,15 @@ import { recordSchemaNormalized } from './handlers/cc-compat.js';
 // Observability only, same rationale as recordSchemaNormalized above: the
 // metrics module has no imports of its own, so it cannot create a cycle.
 import { bumpConnect } from './devin-connect-metrics.js';
+// Bounded remote-image fetch (deadline, byte cap, MIME allowlist, per-hop SSRF
+// lookup hook). image.js imports only config/pdf/net-safety/vendor codecs, so this
+// cannot create a cycle back into the connect pipeline.
+import {
+  fetchImageUrl,
+  MAX_SIZE as MAX_IMAGE_BYTES,
+  MAX_BASE64_LEN as MAX_IMAGE_BASE64_LEN,
+  MIME_OK as IMAGE_MIME_ALLOWLIST,
+} from './image.js';
 
 const HOST = 'server.codeium.com';
 const PATH = '/exa.api_server_pb.ApiServerService/GetChatMessage';
@@ -330,8 +339,9 @@ export function getImageFieldTag(env = process.env) {
  * Pull data-URL / base64 image blocks out of OpenAI-style message content,
  * yielding the same { base64_data, mime_type } shape the Cascade ImageData
  * encoder consumes. Synchronous: only inline data-URL / base64 sources are
- * handled here (remote https image URLs would need an async fetch and are out
- * of scope for the wire builder — extract those upstream if needed).
+ * handled here. http(s) sources are resolved BEFORE the builder runs, by
+ * `inlineRemoteImages` in streamChat(); a URL that still reaches this function
+ * is named by the builder's unresolved-URL pass instead of vanishing silently.
  */
 export function extractInlineImages(content) {
   if (!Array.isArray(content)) return [];
@@ -353,6 +363,162 @@ export function extractInlineImages(content) {
     }
   }
   return images;
+}
+
+// ─── Remote image_url resolution (http/https) ───────────────────────────────
+//
+// `extractInlineImages` is SYNCHRONOUS and only understands data: URLs, so an
+// ordinary OpenAI `image_url` block pointing at https://… used to be discarded
+// without a trace: the text reached the model, the picture did not, and nothing
+// was logged. Measured 2026-10-23 on all four connect families
+// (evidence/ToolMatrixLive.md §images): inline PNG answered "Red"/"Green" while
+// the same PNG behind an HTTPS URL answered "Unknown"/"cannot see".
+//
+// The wire builder has to stay synchronous (dozens of call sites and wire tests
+// depend on that), so the fetch happens once, here, in streamChat() — the only
+// production caller of the builder — before the proto is assembled. Each URL is
+// resolved through image.js's `fetchImageUrl`, which already carries every bound
+// this needs: an 8 s absolute deadline shared across redirect hops, a 5 MB body
+// cap, an image/* content-type allowlist, http(s)-only, and a DNS lookup hook
+// that refuses private/loopback/link-local targets on EVERY hop (net-safety.js
+// `isPrivateIp`). Reusing it keeps one SSRF policy in the tree instead of a
+// second, subtly different one on the connect route.
+//
+// Bounds beyond the per-fetch ones: at most REMOTE_IMAGE_MAX_PER_REQUEST fetches
+// per request, sequential, sharing one REMOTE_IMAGE_FETCH_BUDGET_MS wall-clock
+// budget — a caller cannot turn one chat request into an unbounded stream of
+// outbound connections. Failures are logged (host only: URLs may carry signed
+// query strings), counted, and the image is dropped; the text still goes
+// upstream.
+export const REMOTE_IMAGE_MAX_PER_REQUEST = 20;
+export const REMOTE_IMAGE_FETCH_BUDGET_MS = 8000;
+
+function imageAbortError() {
+  const err = new Error('The operation was aborted');
+  err.name = 'AbortError';
+  err.code = 'ABORT_ERR';
+  return err;
+}
+
+/** The http(s) URL of an image_url block, or '' for every other block shape. */
+function remoteImageUrl(block) {
+  if (!block || typeof block !== 'object' || block.type !== 'image_url') return '';
+  const url = block.image_url?.url;
+  return typeof url === 'string' && /^https?:\/\//i.test(url) ? url : '';
+}
+
+/** Host only — never log a full URL, which may carry a signed query string. */
+function imageUrlHost(url) {
+  try { return new URL(url).host || '(unparseable)'; } catch { return '(unparseable)'; }
+}
+
+// Reject with AbortError as soon as the caller aborts, without waiting for the
+// fetch's own deadline. The underlying fetch keeps its promise handlers attached
+// (no unhandled rejection) and still tears its socket down at the 8 s deadline.
+function withAbort(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(imageAbortError());
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(imageAbortError());
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (err) => { signal.removeEventListener('abort', onAbort); reject(err); },
+    );
+  });
+}
+
+/**
+ * Replace every http(s) `image_url` block with an equivalent data URL, fetching
+ * it through a bounded transport. Returns a NEW messages array when anything was
+ * fetched or dropped (the caller's array and message objects are never mutated —
+ * the same params are re-passed on retry/failover), otherwise the input as-is.
+ *
+ * `fetchImpl` is injectable for tests; it must resolve { base64_data, mime_type }.
+ *
+ * @param {Array} messages OpenAI-shaped messages
+ * @param {{ signal?: AbortSignal, fetchImpl?: Function }} [opts]
+ * @returns {Promise<Array>}
+ */
+export async function inlineRemoteImages(messages, { signal, fetchImpl = fetchImageUrl } = {}) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  if (signal?.aborted) throw imageAbortError();
+
+  const deadline = Date.now() + REMOTE_IMAGE_FETCH_BUDGET_MS;
+  let fetched = 0;
+  let out = null; // copy-on-write: untouched arrays stay shared with the caller
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    // System turns are hoisted into field #2 as text; they have no image slot.
+    if (!msg || msg.role === 'system' || !Array.isArray(msg.content)) continue;
+    if (!msg.content.some((b) => remoteImageUrl(b))) continue;
+
+    const blocks = [];
+    let changed = false;
+    for (const block of msg.content) {
+      const url = remoteImageUrl(block);
+      if (!url) { blocks.push(block); continue; }
+
+      if (fetched >= REMOTE_IMAGE_MAX_PER_REQUEST) {
+        log.warn(`DEVIN_CONNECT: more than ${REMOTE_IMAGE_MAX_PER_REQUEST} remote image_url blocks in one request — image from ${imageUrlHost(url)} not fetched and dropped`);
+        bumpConnect('remote_image_fetch_failed');
+        changed = true;
+        continue;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        log.warn(`DEVIN_CONNECT: remote image fetch budget (${REMOTE_IMAGE_FETCH_BUDGET_MS} ms) exhausted — image from ${imageUrlHost(url)} dropped`);
+        bumpConnect('remote_image_fetch_failed');
+        changed = true;
+        continue;
+      }
+      fetched++;
+      let img;
+      try {
+        img = await withAbort(
+          fetchImpl(url, Math.min(remaining, REMOTE_IMAGE_FETCH_BUDGET_MS)),
+          signal,
+        );
+      } catch (err) {
+        if (err?.name === 'AbortError') throw err;
+        log.warn(`DEVIN_CONNECT: remote image_url fetch failed (${imageUrlHost(url)}): ${err.message} — image dropped, text preserved`);
+        bumpConnect('remote_image_fetch_failed');
+        changed = true;
+        continue;
+      }
+
+      const mime = String(img?.mime_type || '').toLowerCase();
+      const data = typeof img?.base64_data === 'string' ? img.base64_data : '';
+      // fetchImageUrl already enforces both, but this helper also accepts an
+      // injected transport: re-check the RESULT so a different/regressed fetcher
+      // cannot smuggle non-image bytes or an oversized payload onto the wire.
+      if (!data || !IMAGE_MIME_ALLOWLIST.has(mime)) {
+        log.warn(`DEVIN_CONNECT: remote image_url returned unsupported type "${mime || 'none'}" (${imageUrlHost(url)}) — image dropped`);
+        bumpConnect('remote_image_fetch_failed');
+        changed = true;
+        continue;
+      }
+      if (data.length > MAX_IMAGE_BASE64_LEN) {
+        log.warn(`DEVIN_CONNECT: remote image_url exceeds ${MAX_IMAGE_BYTES} bytes (${imageUrlHost(url)}) — image dropped`);
+        bumpConnect('remote_image_fetch_failed');
+        changed = true;
+        continue;
+      }
+
+      blocks.push({
+        ...block,
+        image_url: { ...(block.image_url || {}), url: `data:${mime};base64,${data}` },
+      });
+      bumpConnect('remote_images_inlined');
+      changed = true;
+    }
+
+    if (!changed) continue;
+    if (!out) out = messages.slice();
+    out[i] = { ...msg, content: blocks };
+  }
+  return out || messages;
 }
 
 /** Encode one ImageData sub-message. Inner tags are calibratable via
@@ -1095,7 +1261,7 @@ export function buildToolChoice(toolChoice, env = process.env) {
   return Buffer.concat(parts);
 }
 
-// ─── Explicit prompt caching (#13), opt-in ──────────────────────────────────
+// ─── Explicit prompt caching (#13) ──────────────────────────────────────────
 //
 // WHAT IS MEASURED (repo history, paid Teams account):
 //   - A cache HIT costs ~17.8% of a miss (#220). The upside is real and large.
@@ -1106,8 +1272,9 @@ export function buildToolChoice(toolChoice, env = process.env) {
 //     on the connect path until b0f8330, a day later), and chat.js:2004 records the
 //     three-account experiment — identical body on a second account is a WRITE, a
 //     repeat on the first is a READ.
-//   - So we already get IMPLICIT caching, and the sticky-session subsystem already
-//     pins a caller to one account, which is the condition that makes it work.
+//   - So Claude-family selectors already get IMPLICIT caching, and the
+//     sticky-session subsystem pins a caller to one account, which is the condition
+//     that makes it work.
 //
 // WHAT IS NOT MEASURED: that field #13 is the tag for system_prompt_cache_options,
 // or that requesting EPHEMERAL improves on what we get implicitly. #13 comes from
@@ -1115,14 +1282,40 @@ export function buildToolChoice(toolChoice, env = process.env) {
 // tag gaps, so declaration order is not a wire tag. Same epistemic position as the
 // billing tags above: we know where to look, not what is true.
 //
-// Hence default-OFF (DEVIN_CONNECT_PROMPT_CACHE=1). Off → no #13 on the wire and
-// the request is unchanged. An operator turns it on with a capture in hand, and can
-// confirm the effect with DEVIN_CONNECT_BILLING_TAGS=cache_read_tokens=5 (already
+// WHY THE gpt-6 FAMILY DEFAULTS ON (2026-10-23): the live matrix
+// (evidence/ToolMatrixLive.md §cache) sent five identical gpt-6-luna-max requests.
+// Every one reported fresh prompt=3, cache_write=3984, and ZERO cache reads — a
+// write on every round, never a hit — while Claude served 6884 cached tokens on
+// every warm round and Gemini 2031. So the implicit-caching argument above does
+// NOT hold for this family as observed. Two explanations survive the data:
+// (a) the upstream only serves GPT reads when asked (this hint is the only
+// cache-control field the wire exposes), or (b) the usage map's read tag (5,
+// calibrated on Claude) is wrong for GPT and the reads exist but are invisible.
+// Defaulting the hint ON for this family makes the next live sample settle (a):
+// reads appear → hint required; reads stay 0 with writes still counted → the next
+// suspect is (b), the tag map, not the hint. The field carries a single enum and
+// no prompt bytes, so the experiment is bounded and reversible.
+//
+// Defaults: UNSET → ON for the gpt-6 family only, OFF everywhere else (historical
+// wire unchanged). "1" → ON for every family. Any other non-empty value
+// ("0", "false", …) → OFF, preserving the exact-"1" opt-in rule for operators.
+// Confirm the effect with DEVIN_CONNECT_BILLING_TAGS=cache_read_tokens=5 (already
 // calibrated) showing a higher read share.
 const PROMPT_CACHE_EPHEMERAL = 1;
 
-export function isPromptCacheEnabled(env = process.env) {
-  return String(env.DEVIN_CONNECT_PROMPT_CACHE ?? '').trim() === '1';
+// Selectors the catalog exposes for this family: gpt-6-luna-*, gpt-6-sol-*,
+// gpt-6-astra-*, and the 6.1 sol variants. Dotted aliases are accepted too so a
+// caller that passes the raw name (not the resolved selector) still matches.
+const GPT6_CACHE_DEFAULT = /^(?:gpt-6|gpt6)(?:[.-]1)?-(?:luna|sol|astra)(?:-|$)/i;
+
+/**
+ * @param {object} [env]
+ * @param {string} [model] resolved model selector; decides the family default
+ */
+export function isPromptCacheEnabled(env = process.env, model = '') {
+  const raw = String(env.DEVIN_CONNECT_PROMPT_CACHE ?? '').trim();
+  if (raw) return raw === '1';
+  return GPT6_CACHE_DEFAULT.test(String(model || ''));
 }
 
 /**
@@ -1133,10 +1326,11 @@ export function isPromptCacheEnabled(env = process.env) {
  *
  * @param {string} systemPrompt  the prompt the cache would key on
  * @param {object} [env]
+ * @param {string} [model] resolved model selector; decides the family default
  * @returns {Buffer|null}
  */
-export function buildSystemPromptCacheOptions(systemPrompt, env = process.env) {
-  if (!isPromptCacheEnabled(env)) return null;
+export function buildSystemPromptCacheOptions(systemPrompt, env = process.env, model = '') {
+  if (!isPromptCacheEnabled(env, model)) return null;
   // Nothing to cache: an absent or trivially short system prompt cannot pay for a
   // cache write. Upstream bills a write at roughly an order of magnitude more than
   // a read (chat.js:2004), so asking to cache a 20-byte prompt is a pure loss.
@@ -1228,11 +1422,17 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
   // the upstream throws away.
   const noteDroppedAssistantImages = (msg) => {
     if (!imageTag) return 0;
-    const dropped = extractInlineImages(msg.content);
-    if (!dropped.length) return 0;
-    bumpConnect('assistant_images_dropped', dropped.length);
-    log.warn(`DEVIN_CONNECT: dropped ${dropped.length} inline image(s) from an assistant turn (#272) — the upstream ignores image fields on role=assistant, so they are not encoded; put the image on a user turn to have the model see it`);
-    return dropped.length;
+    // Remote URLs count too: a direct builder caller can reach this branch with
+    // one, and that drop must be named for the same reason (#272 is about the
+    // silence, not the drop). streamChat resolves them first, so in production
+    // this is the data-URL count.
+    const inline = extractInlineImages(msg.content);
+    const remote = Array.isArray(msg.content) ? msg.content.filter((b) => remoteImageUrl(b)).length : 0;
+    const dropped = inline.length + remote;
+    if (!dropped) return 0;
+    bumpConnect('assistant_images_dropped', dropped);
+    log.warn(`DEVIN_CONNECT: dropped ${dropped} inline image(s) from an assistant turn (#272) — the upstream ignores image fields on role=assistant, so they are not encoded; put the image on a user turn to have the model see it`);
+    return dropped;
   };
 
   const consumeCollapsedSystem = (text = '') => {
@@ -1286,6 +1486,24 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
       continue;
     }
     mergedMessages.push(m);
+  }
+
+  // Name any remote image_url that reached the SYNC builder unresolved. In
+  // production streamChat() has already turned those into data URLs
+  // (inlineRemoteImages), so this fires only for a direct caller of this
+  // function — and it fires instead of the old silent drop. Assistant turns are
+  // excluded: their images are dropped on purpose and already reported by
+  // noteDroppedAssistantImages (#272), so warning here too would double-report.
+  if (imageTag) {
+    for (const msg of mergedMessages) {
+      if (msg.role === 'system' || msg.role === 'assistant') continue;
+      for (const block of Array.isArray(msg.content) ? msg.content : []) {
+        const url = remoteImageUrl(block);
+        if (!url) continue;
+        log.warn(`DEVIN_CONNECT: remote image_url (${imageUrlHost(url)}) reached the wire builder unresolved — the image is NOT sent; streamChat() inlines http(s) images, direct buildGetChatMessageRequest() callers must resolve them first`);
+        bumpConnect('remote_image_unresolved');
+      }
+    }
   }
 
   for (const msg of mergedMessages) {
@@ -1453,8 +1671,9 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
     writeVarintField(3, 4),
   ]);
 
-  // Null unless DEVIN_CONNECT_PROMPT_CACHE=1 and the prompt is worth caching.
-  const cacheOptionsBuf = buildSystemPromptCacheOptions(systemPrompt, env);
+  // Null unless the switch resolves ON for this model (gpt-6 defaults on; every
+  // other family needs DEVIN_CONNECT_PROMPT_CACHE=1) and the prompt is worth caching.
+  const cacheOptionsBuf = buildSystemPromptCacheOptions(systemPrompt, env, model);
   // Both null unless DEVIN_CONNECT_TOOL_CHOICE=1. `disableParallel` is only emitted
   // when the caller explicitly said parallel_tool_calls:false — protobuf omits a
   // false bool anyway, so sending it for the default (true) would be a no-op field.
@@ -2662,7 +2881,17 @@ export async function* streamChat({
   const userJwt = isUserJwtEnabled(env)
     ? await mintUserJwt(sessionToken, { host: HOST, signal, deviceSeed })
     : undefined;
-  const proto = buildGetChatMessageRequest({ token: sessionToken, messages, model, sessionId, completion, tools, nativeToolCall, deviceSeed, userJwt, env, sessionModelConfig, continuityTrail });
+  // Remote (http/https) image_url blocks are fetched HERE, before the synchronous
+  // wire builder, because extractInlineImages cannot fetch. Gated on the image
+  // field being emitted at all: DEVIN_CONNECT_IMAGE_TAG=0 means images are off,
+  // so spending network time on them would be pure waste. The returned array is
+  // new only when something changed; the caller's messages are never mutated
+  // (they are re-passed on retry/failover).
+  const imageTag = getImageFieldTag(env);
+  const wireMessages = imageTag
+    ? await inlineRemoteImages(messages, { signal })
+    : messages;
+  const proto = buildGetChatMessageRequest({ token: sessionToken, messages: wireMessages, model, sessionId, completion, tools, nativeToolCall, deviceSeed, userJwt, env, sessionModelConfig, continuityTrail });
   // Request envelope is sent UNCOMPRESSED (flag 0). The live calibration showed
   // the server rejects a gzipped request frame with an opaque "internal" error;
   // it still streams gzipped frames back, which the parser handles.

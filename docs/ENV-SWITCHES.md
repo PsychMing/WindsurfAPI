@@ -210,18 +210,18 @@ checkout 账号（`acct === null`），成功尾必须把 usage 记到条目 own
 | `WINDSURFAPI_WEAK_MODEL_TOOL_LIMIT` | `8` | 弱模型最多带几个工具定义（`handlers/tool-emulation.js`，非有限值或 ≤0 回落 8）。工具多了弱模型会选错。 |
 | `DEVIN_CONNECT_RELOGIN_MAX_CONCURRENT` | `2` | 同时最多几个账号并发重登（`auth.js`，`>= 1` 才生效否则回落 2，且会 `Math.floor`）。调大会更快恢复但更容易撞上游限流。 |
 
-## 未经抓包证实的 wire 坐标（全部默认关，开之前先读这段）
+## 未经抓包证实的 wire 坐标（默认关，开之前先读这段）
 
 这几个开关控制**往上游 protobuf 里写新字段**。它们的 tag 号来自第三方 `.proto`
 文件里的**声明顺序**，不是抓包测出来的 —— 而 prost 允许 tag 跳号，所以
 **声明顺序 ≠ wire tag**。写错 tag 的表现不是报错，而是上游按别的字段解读那段字节。
 
-所以：**默认关是刻意的，不要因为"看起来该开"就打开**。一次真实付费抓包能一起
-解锁这一组；在那之前，开了就得自己承担猜错 tag 的后果。
+所以：**除表中明确注明的家族级例外外，默认关是刻意的，不要因为"看起来该开"就打开**。
+一次真实付费抓包能一起解锁这一组；在那之前，开了就得自己承担猜错 tag 的后果。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DEVIN_CONNECT_PROMPT_CACHE` | 关 | 往请求里写 prompt 缓存字段（`devin-connect.js`，`=== '1'`）。tag `#13` 猜自声明顺序。 |
+| `DEVIN_CONNECT_PROMPT_CACHE` | gpt-6 家族开，其余关 | 往请求里写 prompt 缓存字段（`devin-connect.js`）。tag `#13` 猜自声明顺序。`1` = 所有家族开；`0`/其他非空值 = 全关；**未设置**时只对 gpt-6 家族（`gpt-6-{luna,sol,astra}`、`gpt-6-1-sol`）默认开 —— 2026-10-23 实测五次相同 `gpt-6-luna-max` 请求每轮都报 cache-write 3984、cache-read 0，而 Claude 每轮读 6884，所以先让这个家族带上唯一的缓存控制字段去验证「是否必须」；读仍为 0 且写继续计数时，下一个怀疑对象是 tag 映射而不是本开关。 |
 | `DEVIN_CONNECT_TOOL_CHOICE` | 关 | 发送 `tool_choice`（`=== '1'`）。tag `#12`/`#11` 同样猜自声明顺序。 |
 | `DEVIN_CONNECT_TOOL_CHOICE_TAGS` | 空（= 用内置默认 tag） | 覆盖上面两个 tag，格式 `choice=N,parallel=M`（`getToolChoiceTags`）。**只认 `choice`/`parallel` 两个键**，其他键、非正整数、以及**撞上已占用 tag 的值**都会被跳过并打 warn，然后保留默认 —— 不是报错。撞 tag 的后果很隐蔽：`choice=1` 会和 814 字节的 `ClientMetadata` 同占 `#1`，protobuf 解码器取最后一个，等于**用 tool_choice 覆盖上游认证元数据**，表现为**认证失败**而不是"配置写错了"。这个防护是修过的真实缺陷，别绕过它。 |
 | `DEVIN_CONNECT_SIGNATURE_TAG` | 空（= 整个解码关闭） | thinking `delta_signature` 的 tag。**这个是这组的总开关**：没设或不是 `(0, 2^29)` 内的整数时 `parseSignatureTagMap()` 返回 `null`，下面两个一起失效。 |

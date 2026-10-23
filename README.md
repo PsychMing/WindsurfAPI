@@ -556,8 +556,11 @@ ToolDef，也不再按 `swe-*` 名字硬判定“无视觉”。
 实时目录。
 
 `DEVIN_CONNECT_IMAGE_INNER_TAGS` 仍可覆盖内部 `base64,mime` tag（默认 `1,2`），仅用于未来
-wire 变更的应急校准。远程 `https://` 图片 URL 仍不会由同步 wire builder 主动下载；请使用
-data URL / base64，或显式开启 `DEVIN_ACP_VISION=1` 走本机 Devin CLI 的 ACP 视觉通道。
+wire 变更的应急校准。远程 `http(s)://` 图片 URL 会在 `streamChat` 组装 proto 之前，用与
+Cascade 相同的 `fetchImageUrl` 有界下载（8 秒总预算、5MB 上限、`image/*` 白名单、每一跳都
+拒绝私网/回环地址），转成 data URL 后写进 `#10`；下载失败、超限或类型不符会打 warn（只记
+host，不记可能带签名的完整 URL）并只丢这一张图，文本照常发送。`DEVIN_CONNECT_IMAGE_TAG=0`
+时不做任何下载。也可以显式开启 `DEVIN_ACP_VISION=1` 走本机 Devin CLI 的 ACP 视觉通道。
 
 ## Dashboard 功能面板
 
