@@ -9,7 +9,16 @@
 //
 //   running --claim--> claimed --release(served)--> deleted
 //                          \----release(running)--> running (re-detach)
-//   running --evict--> deleted
+//   running --evict(entry)--> deleted
+//   claimed --evict(token) / deadline--> deleted
+//
+// The TTL is an ADMISSION bound: it says how long a detached entry can be
+// claimed, not how long a claim lives. Once claimed, the entry is owned by the
+// claim token until the original request's `deadline`; TTL sweeps and lookups
+// must never delete it, because the resumer's token-checked release would then
+// fail (serve=0 while the turn is still billed) and a same-key successor could
+// be deleted by the stale owner. Every eviction names the instance it means:
+// a token for a claim, the entry object for a running entry.
 //
 // `admit` freezes an entry. Nothing mutates it while it is `running`, so there
 // is no read cursor to race and no byte-accounting to reconcile.
@@ -213,26 +222,56 @@ export class DetachedRegistry {
     this.#clearTimer(entry);
     const delay = Math.max(1, delayMs);
     entry.timer = setTimeout(() => {
-      const current = this.entries.get(entry.key);
-      if (current === entry && entry.state === 'running') this.evict(entry.key, 'ttl');
+      // Identity check: the key may already hold a successor.
+      if (this.entries.get(entry.key) !== entry) return;
+      if (entry.state === 'running') {
+        // TTL is an ADMISSION bound; the request deadline bounds the entry's
+        // whole life, including the window in which it can still be claimed.
+        if (entry.expiresAt <= this.now()) this.evict(entry.key, 'ttl', entry);
+        else if (entry.deadline <= this.now()) this.evict(entry.key, 'deadline', entry);
+      } else if (entry.state === 'claimed' && entry.deadline <= this.now()) {
+        // A claim is owned by its token until the original request deadline.
+        this.evict(entry.key, 'deadline', entry.token);
+      }
     }, delay);
     entry.timer.unref?.();
   }
 
   #delete(entry, cause) {
     this.#clearTimer(entry);
-    if (this.entries.get(entry.key) === entry) this.entries.delete(entry.key);
+    // Identity check: a caller may still hold an entry object after a same-key
+    // successor replaced it. Deleting by key would drop the successor and
+    // subtract bytes that were already returned.
+    if (this.entries.get(entry.key) !== entry) return false;
+    this.entries.delete(entry.key);
     this.totalBytes = Math.max(0, this.totalBytes - entry.bytes);
     if (cause) this.counters.evict[cause] = (this.counters.evict[cause] || 0) + 1;
+    return true;
   }
 
-  /** Drop expired entries without waiting on a timer. Returns the count. */
+  /**
+   * Drop entries whose admission window closed without waiting on a timer.
+   * Returns the count.
+   *
+   * TTL is an ADMISSION bound only: a running entry that missed it can no
+   * longer be claimed. A claimed entry is owned by its token until the
+   * original request's deadline — sweeping it on TTL would make a live
+   * resumer's token-checked release return false (serve=0 while the turn is
+   * still billed), and once the key was reused it would let the stale owner
+   * delete the successor. The deadline is the owner's own bound, so it still
+   * cleans up a claim whose request never returned.
+   */
   sweepExpired(now = this.now()) {
     let evicted = 0;
     for (const entry of [...this.entries.values()]) {
+      if (entry.state === 'claimed') {
+        if (entry.deadline <= now && this.#delete(entry, 'deadline')) evicted++;
+        continue;
+      }
       if (entry.expiresAt <= now) {
-        this.#delete(entry, 'ttl');
-        evicted++;
+        if (this.#delete(entry, 'ttl')) evicted++;
+      } else if (entry.deadline <= now) {
+        if (this.#delete(entry, 'deadline')) evicted++;
       }
     }
     return evicted;
@@ -352,7 +391,7 @@ export class DetachedRegistry {
     };
     this.entries.set(key, entry);
     this.totalBytes += bytes;
-    this.#armTimer(entry, this.ttlMs);
+    this.#armTimer(entry, Math.min(this.ttlMs, entry.deadline - now));
     this.counters.admit++;
     return { token };
   }
@@ -364,8 +403,27 @@ export class DetachedRegistry {
       this.counters.lookup.miss++;
       return null;
     }
-    if (entry.expiresAt <= this.now()) {
+    const now = this.now();
+    if (entry.state === 'claimed') {
+      // The claim owns the entry until release or the original deadline. TTL
+      // no longer applies: deleting here would invalidate the resumer's
+      // token-checked release and could hand the key to a successor while the
+      // old resumer still holds the token.
+      if (entry.deadline <= now) {
+        this.#delete(entry, 'deadline');
+        this.counters.lookup.miss++;
+        return null;
+      }
+      this.counters.lookup.hit++;
+      return entry;
+    }
+    if (entry.expiresAt <= now) {
       this.#delete(entry, 'ttl');
+      this.counters.lookup.miss++;
+      return null;
+    }
+    if (entry.deadline <= now) {
+      this.#delete(entry, 'deadline');
       this.counters.lookup.miss++;
       return null;
     }
@@ -376,6 +434,11 @@ export class DetachedRegistry {
   /**
    * CAS running → claimed. Synchronous by design: the expiry timer cannot
    * interleave between the state check and the assignment.
+   *
+   * The TTL check is an ADMISSION gate: it decides whether this claim may be
+   * taken at all. After the assignment the entry is owned by `token` until
+   * `release`, the original request `deadline`, or a token-conditioned
+   * eviction — never by the TTL.
    */
   claim(key, callerKey) {
     const entry = this.entries.get(key);
@@ -401,6 +464,10 @@ export class DetachedRegistry {
     this.#clearTimer(entry);
     entry.state = 'claimed';
     entry.token = randomUUID();
+    // From here the claim is bounded by the original request deadline, not by
+    // the TTL. Keep a timer so a resumer that never returns is still cleaned
+    // up (token-conditioned in #armTimer).
+    this.#armTimer(entry, entry.deadline - now);
     this.counters.claim.ok++;
     return { entry, token: entry.token };
   }
@@ -444,16 +511,28 @@ export class DetachedRegistry {
     entry.state = 'running';
     entry.token = null;
     // Remaining TTL, not a fresh window: a re-detach must not buy extra time.
-    this.#armTimer(entry, entry.expiresAt - now);
+    // The request deadline can be earlier than the TTL; #armTimer labels the
+    // eviction by the bound that actually fired.
+    this.#armTimer(entry, Math.min(entry.expiresAt, entry.deadline) - now);
     this.counters.re_detach++;
     return true;
   }
 
-  evict(key, cause = 'capacity') {
+  /**
+   * Evict exactly the entry the caller holds.
+   *
+   * A claimed entry is identified by its token; a running entry by the entry
+   * object returned from `lookup`. A bare key is NOT an identity: a same-key
+   * successor may have been admitted since the caller looked (ABA), and a
+   * stale owner would then delete a live entry. Refusals return false without
+   * touching counters, so `entries === admits - deletes` stays exact.
+   */
+  evict(key, cause = 'capacity', identity = null) {
     const entry = this.entries.get(key);
     if (!entry) return false;
-    this.#delete(entry, cause);
-    return true;
+    const owned = entry.state === 'claimed' ? entry.token : entry;
+    if (!identity || identity !== owned) return false;
+    return this.#delete(entry, cause);
   }
 
   evictForAccount(accountId) {
@@ -461,6 +540,9 @@ export class DetachedRegistry {
     let evicted = 0;
     for (const entry of [...this.entries.values()]) {
       if (entry.pin?.accountId !== accountId) continue;
+      // Deliberate global drop: the account is gone. Unlike TTL cleanup this
+      // is an explicit administrative action, so it may drop a claimed entry;
+      // a later stale key-only evict still cannot touch the successor.
       this.#delete(entry, 'account_removed');
       evicted++;
     }

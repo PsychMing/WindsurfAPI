@@ -6172,8 +6172,41 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       // the producer cannot leak `activeRequests` (which would pin the entry
       // from idle reaping and maintenance).
       let resumeLeasePort = null;
+      // Delivery ledger: every tool call that reached the client — native
+      // bridge, emulated <tool_call> markup, NLU recovery, or a tail lift from
+      // thinking — is pushed here before its delta is written. The producer
+      // only sees raw chunks, so markup is invisible to it; detach admission
+      // must ask this handler (D2).
+      const collectedToolCalls = [];
+      const turnDeliveredToolCalls = () => collectedToolCalls.length > 0;
+      // Release a claim that survived to an abort/throw. A resumed turn that
+      // already delivered a tool call is NOT re-frozen: the frozen prefix
+      // predates the call, so a retry would replay it under a fresh id and
+      // re-execute it. Drop the entry instead; the retry goes upstream.
+      const releaseResumeClaim = (snapshot) => {
+        if (!resumeClaim) return;
+        if (turnDeliveredToolCalls()) {
+          detachedRegistry.evict(resumeClaim.key, 'resume_miss', resumeClaim.token);
+        } else {
+          detachedRegistry.release(resumeClaim.key, resumeClaim.token, {
+            state: 'running',
+            snapshot,
+          });
+        }
+        resumeClaim = null;
+      };
       const detachHandle = detachEnabled ? {
+        // Read by the producer before it freezes anything. A turn that already
+        // delivered a tool call must never enter the no-tool cache: the replay
+        // presents the same call under a fresh id, and a client that executed
+        // the first one can execute it again.
+        hasToolCalls: turnDeliveredToolCalls,
         admit: (snapshot, pin) => {
+          // Defence in depth: the producer checks hasToolCalls first, but the
+          // admission boundary refuses on its own authority too. This covers
+          // the resume re-detach path: the frozen prefix predates the call, so
+          // re-freezing it would replay that call under a new id.
+          if (turnDeliveredToolCalls()) return { refused: 'tools' };
           if (resumeClaim) {
             // A resumed request may only re-detach on a genuine client-gone;
             // a shutdown/drain is handled by the registry drain.
@@ -6524,7 +6557,6 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         provider,
         route: deps?.route || 'chat',
       }) : null;
-      const collectedToolCalls = [];
       const completedNativeReadUrlResults = [];
       let usedNativeReadUrlFallback = false;
       const bridgeDiagCascadeSeen = new Set();
@@ -6860,14 +6892,16 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               // never evict it and never take its lease. Record the refused
               // CAS and stay foreground with a fresh upstream turn.
               detachedRegistry.claim(detachKeyValue, callerKey);
-            } else if (now > Math.min(found.expiresAt, found.deadline)) {
-              detachedRegistry.evict(detachKeyValue, 'ttl');
+            } else if (now > found.deadline) {
+              detachedRegistry.evict(detachKeyValue, 'deadline', found);
+            } else if (now > found.expiresAt) {
+              detachedRegistry.evict(detachKeyValue, 'ttl', found);
             } else {
               const lsEntry = getLsEntryByPortFn(found.pin.lsPort);
               const generationMismatch = lsEntry && found.pin.lsGeneration != null
                 && lsEntry.generation !== found.pin.lsGeneration;
               if (!lsEntry || generationMismatch) {
-                detachedRegistry.evict(detachKeyValue, 'resume_miss');
+                detachedRegistry.evict(detachKeyValue, 'resume_miss', found);
               } else {
                 // The request lease covers this request only. The entry itself
                 // pins no lease, so between detach and claim the LS is free to
@@ -6882,7 +6916,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                     endLsUseFn(found.pin.lsPort);
                     resumeLeasePort = null;
                   }
-                  detachedRegistry.evict(detachKeyValue, 'resume_miss');
+                  detachedRegistry.evict(detachKeyValue, 'resume_miss', found);
                 } else {
                   const claimed = detachedRegistry.claim(detachKeyValue, callerKey);
                   if (claimed.entry) {
@@ -7116,7 +7150,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               )
             : null;
           if (resumeAttempt && !(resumeMaxWaitMs > 0)) {
-            detachedRegistry.evict(resumeClaim.key, 'deadline');
+            detachedRegistry.evict(resumeClaim.key, 'deadline', resumeClaim.token);
             resumeClaim = null;
             // The claim acquired this request's lease; no producer ran to
             // release it.
@@ -7658,15 +7692,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             if (abortController.signal.aborted || err?.name === 'AbortError' || err?.code === 'ABORT_ERR') {
               log.info(`Chat[${reqId}]: stream aborted (client gone) — not retrying`);
               if (resumeClaim) {
-                // F21/F22: re-detach with the turn's own snapshot when the
+                // F21/F22/F24: re-detach with the turn's own snapshot when the
                 // producer managed one; otherwise keep the frozen snapshot.
                 // release() is idempotent: the producer may already have
-                // released this token.
-                detachedRegistry.release(resumeClaim.key, resumeClaim.token, {
-                  state: 'running',
-                  snapshot: resumeClaim.entry.snapshot,
-                });
-                resumeClaim = null;
+                // released this token. A turn that delivered a tool call is
+                // dropped instead of re-frozen (see releaseResumeClaim).
+                releaseResumeClaim(resumeClaim.entry.snapshot);
               }
               return;
             }
@@ -7675,7 +7706,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               // not_found/expired) or the resume failed before any byte was
               // written. Drop the entry and fall through to a normal upstream
               // attempt; nothing was committed to the client.
-              detachedRegistry.evict(resumeClaim.key, 'resume_miss');
+              detachedRegistry.evict(resumeClaim.key, 'resume_miss', resumeClaim.token);
               resumeClaim = null;
               // The fallback attempt checks out a NEW account (only attempt 0
               // uses the reuse key). Passing the checked-out pool cascade on
@@ -7691,7 +7722,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             if (resumeAttempt && resumeClaim) {
               // Bytes were already on the wire; a completed-entry replay does
               // not exist in P1, so this claim cannot be served later.
-              detachedRegistry.evict(resumeClaim.key, 'resume_miss');
+              detachedRegistry.evict(resumeClaim.key, 'resume_miss', resumeClaim.token);
               resumeClaim = null;
             }
             lastErr = err;
@@ -8049,14 +8080,9 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         // Safety net: every normal path above releases its claim (served or
         // running). A claim that survives to here means an early return or a
         // throw took a path that did not; re-detach with the frozen snapshot
-        // rather than leaving the entry claimed until TTL.
-        if (resumeClaim) {
-          detachedRegistry.release(resumeClaim.key, resumeClaim.token, {
-            state: 'running',
-            snapshot: resumeClaim.entry.snapshot,
-          });
-          resumeClaim = null;
-        }
+        // rather than leaving the entry claimed until its deadline. A turn
+        // that delivered a tool call is dropped instead (releaseResumeClaim).
+        if (resumeClaim) releaseResumeClaim(resumeClaim.entry.snapshot);
         unregisterSse();
         stopHeartbeat();
       }

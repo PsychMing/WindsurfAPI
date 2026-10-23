@@ -1092,10 +1092,13 @@ export class WindsurfClient {
         usageByStep = new Map();
       }
       let resumeFirstReadPending = !!resumeTurn;
-      // Detach is a producer decision, but the handler owns the key, tenancy
-      // and cause. `admit` is called at most once per turn, only while the
-      // client is gone, and only for a turn P1 can serve: buffered output, no
-      // tool/native chunk, and every counted step consumed.
+      // Detach is a producer decision, but the handler owns the key, tenancy,
+      // cause, and the delivered-tool-call ledger. `admit` is called at most
+      // once per turn, only while the client is gone, and only for a turn P1
+      // can serve: buffered output, no tool/native chunk, every counted step
+      // consumed, and no tool call delivered as native bridge OR emulated
+      // <tool_call> markup (the latter is parsed downstream and is invisible
+      // to this raw chunk scan).
       let detachAttempted = false;
       tryDetach = () => {
         if (detachAttempted || !detach || !turn) return null;
@@ -1103,6 +1106,7 @@ export class WindsurfClient {
         if (!turn.chunks.length) return null;
         if (turn.chunks.some(chunk => chunk?.nativeToolCall || chunk?.nativeToolResult)) return null;
         if (toolCalls.length) return null;
+        if (detach.hasToolCalls?.()) return null;
         let snapshot;
         try {
           snapshot = turn.snapshot();

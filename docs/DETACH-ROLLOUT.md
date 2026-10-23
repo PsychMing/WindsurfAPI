@@ -130,7 +130,8 @@ jq -s '
   的冻结换不回足够的恢复，默认开是净亏）。
 - 分母必须写清：窗口内 `admit` 至少 100；流量不足就延长窗口直到 100 个 admit
   或 14 天（取更晚者），报告实际天数与 `admit`。
-- 同时报告 `restarts`、`evict` 合计、`refuse` 合计、`billed`（应等于 `serve`）。
+- 同时报告 `restarts`、`evict` 合计、`refuse` 合计、`billed`（正常应等于 `serve`；
+  claim 在 deadline 边界被清理的样本可能少一次 serve，TTL 清理不应造成差异）。
 - 测量期间 `enabled=false` 的样本不计入窗口。
 
 ### 2.4 立即停止/回滚条件
@@ -140,7 +141,8 @@ jq -s '
 - 跨 tenant 命中（`hasPerUserScope` 之外的 scope 拿到 entry）；
 - `billed_detached != serve`，或账单落到非 owner 账号；
 - 恢复轮把整条 cascade 历史重复计费（metadata RPC 不是从 `generatorOffset` 起）；
-- 120s TTL 后 `entries/bytes` 不归零（泄漏）；
+- 120s TTL 后**未 claim** 的 `entries/bytes` 不归零（泄漏）；claimed entry 由原请求
+  deadline 约束，deadline 前不归零是正常；
 - 归因于 detach 的 `ls_pool_exhausted`（gate 2 回归）；
 - 进程 RSS 随 `entries` 单调上涨。
 

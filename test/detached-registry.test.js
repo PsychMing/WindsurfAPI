@@ -188,6 +188,85 @@ describe('DetachedRegistry ownership', () => {
     assert.equal(timed.registry.stats().evict.ttl, 1);
   });
 
+  it('R5b TTL is an admission bound: a claimed entry survives sweep and lookup, and still releases served', () => {
+    // Review D1: claim at t=119999, sweep at t=120001 used to delete the
+    // claimed entry; the original token's release then returned false
+    // (serve=0 while the turn was still billed).
+    const { registry, clock } = makeRegistry({ ttlMs: 120_000 });
+    registry.admit({
+      key: 'k1',
+      callerKey: 'session:a',
+      snapshot: snapshot(),
+      pin: pin(clock.now(), { deadline: clock.now() + 600_000 }),
+    });
+    const claim = registry.claim('k1', 'session:a');
+    assert.ok(claim.entry, 'precondition: the claim wins');
+
+    clock.advance(120_001);
+    assert.equal(registry.sweepExpired(), 0, 'TTL must not evict a claim');
+    assert.equal(registry.stats().evict.ttl, 0);
+    assert.equal(registry.lookup('k1', 'session:a')?.state, 'claimed',
+      'lookup must not evict a claim past its admission window');
+
+    assert.equal(registry.release('k1', claim.token, { state: 'served' }), true,
+      'the original token still owns the entry past the TTL');
+    assert.equal(registry.stats().serve, 1);
+    assert.equal(registry.stats().entries, 0);
+  });
+
+  it('R5c a claim is bounded by the original request deadline, not by TTL', () => {
+    const { registry, clock } = makeRegistry({ ttlMs: 120_000 });
+    registry.admit({
+      key: 'k1',
+      callerKey: 'session:a',
+      snapshot: snapshot(),
+      pin: pin(clock.now(), { deadline: clock.now() + 1_000 }),
+    });
+    const claim = registry.claim('k1', 'session:a');
+    assert.ok(claim.entry);
+    clock.advance(1_001);
+    assert.equal(registry.sweepExpired(), 1,
+      'the deadline still cleans up a claim whose request never returned');
+    assert.equal(registry.stats().evict.deadline, 1);
+    assert.equal(registry.stats().evict.ttl, 0);
+    assert.equal(registry.release('k1', claim.token, { state: 'served' }), false);
+  });
+
+  it('R7c a claimed entry is only evictable with its own token', () => {
+    const { registry, clock } = makeRegistry();
+    assert.ok(admit(registry, clock).token);
+    const claim = registry.claim('k1', 'session:a');
+    assert.ok(claim.entry);
+
+    assert.equal(registry.evict('k1', 'resume_miss'), false,
+      'a key-only evict must not drop a live claim');
+    assert.equal(registry.evict('k1', 'resume_miss', 'not-the-token'), false);
+    assert.equal(registry.lookup('k1', 'session:a')?.state, 'claimed');
+    assert.equal(registry.evict('k1', 'resume_miss', claim.token), true);
+    assert.equal(registry.lookup('k1', 'session:a'), null);
+  });
+
+  it('R7d evict is identity-checked: a stale key or token cannot delete a same-key successor (ABA)', () => {
+    const { registry, clock } = makeRegistry();
+    assert.ok(admit(registry, clock).token);
+    const first = registry.claim('k1', 'session:a');
+    assert.ok(first.entry);
+    // The owner re-detaches (token cleared), then a new admission supersedes
+    // the entry under the same key — the old handler still holds `first.token`.
+    assert.equal(registry.release('k1', first.token, { state: 'running', snapshot: snapshot('grown') }), true);
+    assert.ok(admit(registry, clock, { key: 'k1', snap: snapshot('next') }).token);
+
+    assert.equal(registry.evict('k1', 'resume_miss'), false,
+      'a bare key is not an identity');
+    assert.equal(registry.evict('k1', 'resume_miss', first.token), false,
+      'a stale claim token is not the successor');
+    const current = registry.lookup('k1', 'session:a');
+    assert.ok(current, 'the successor survives');
+    assert.equal(registry.evict('k1', 'resume_miss', current), true,
+      'the instance the caller holds is evictable');
+    assert.equal(registry.lookup('k1', 'session:a'), null);
+  });
+
   it('R6 byte cap refuses admission (no truncation state)', () => {
     const { registry, clock } = makeRegistry({ maxEntryBytes: 2048 });
     const big = snapshot('x'.repeat(4096));
