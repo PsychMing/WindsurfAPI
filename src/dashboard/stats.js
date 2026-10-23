@@ -3,6 +3,7 @@
  */
 
 import { readFileSync, existsSync } from 'fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { writeJsonAtomic } from '../fs-atomic.js';
 import { join } from 'path';
 import { config } from '../config.js';
@@ -187,6 +188,74 @@ const _state = createStatsState();
 
 const RECENT_REQ_CAP = 500;
 
+// ─── Per-HTTP-request accounting scope ─────────────────────────────────
+// recordRequest (the attempt row) and recordTokenUsage (the usage block) are
+// called from different depths of a chat handler and, depending on the route,
+// in either order. A module-level "last row" pointer would attribute tokens to
+// whichever concurrent request happened to finish last, so the two calls are
+// joined through the async context the HTTP server establishes per request.
+// Outside such a scope (unit tests, direct handler calls) both functions keep
+// their pre-existing aggregate-only behaviour and the log row gets the
+// success-derived status.
+const _requestScope = new AsyncLocalStorage();
+
+/**
+ * Run `fn` inside a per-request accounting scope. Returns fn's own result.
+ * Re-entrant: an existing scope is reused, so wrapping a handler twice never
+ * splits one request across two scopes.
+ */
+export function withStatsScope(fn) {
+  const existing = _requestScope.getStore();
+  if (existing) return fn(existing);
+  const scope = { rows: [], pendingUsage: null, status: null };
+  return _requestScope.run(scope, () => fn(scope));
+}
+
+/**
+ * Close a scope. The last attempt row is the one the client actually received,
+ * so it gets the real HTTP status; earlier failover attempts keep the
+ * success-derived 200/500 they were recorded with. Rows are the same objects
+ * held in recentRequests, so this patch persists with the next scheduled save.
+ */
+export function finalizeStatsScope(scope) {
+  if (!scope) return;
+  const row = scope.rows[scope.rows.length - 1];
+  if (row && Number.isFinite(scope.status)) row.status = scope.status;
+}
+
+/** Non-negative finite number or 0 — rows come from persisted JSON too. */
+function nonNeg(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * Normalize an OpenAI-shaped usage block into the four counters the request
+ * log stores. `tokensIn` is the full billable input (fresh + cache read +
+ * cache write), matching what tokenTotals.total counts, so a row's
+ * tokensIn + tokensOut always reconciles with the lifetime token card.
+ */
+function usageTokenCounts(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const bd = usage.cascade_breakdown || null;
+  const prompt = nonNeg(usage.prompt_tokens);
+  const cacheRead = nonNeg(bd?.cache_read_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens);
+  const cacheWrite = nonNeg(bd?.cache_write_tokens ?? usage.cache_creation_input_tokens);
+  const fresh = nonNeg(bd?.fresh_input_tokens ?? Math.max(0, prompt - cacheRead));
+  const tokensOut = nonNeg(bd?.output_tokens ?? usage.completion_tokens ?? usage.output_tokens);
+  if (!fresh && !cacheRead && !cacheWrite && !tokensOut) return null;
+  return { tokensIn: fresh + cacheRead + cacheWrite, tokensOut, cacheRead, cacheWrite };
+}
+
+function applyUsageToRow(row, usage) {
+  const counts = usageTokenCounts(usage);
+  if (!counts) return;
+  row.tokensIn = counts.tokensIn;
+  row.tokensOut = counts.tokensOut;
+  row.cacheRead = counts.cacheRead;
+  row.cacheWrite = counts.cacheWrite;
+}
+
 // Load persisted stats
 try {
   if (existsSync(STATS_FILE)) {
@@ -242,8 +311,13 @@ function requestCreditCost(model) {
 
 /**
  * Record a completed request.
+ *
+ * `extra` is optional and additive: `{ status, usage }`. `status` is the real
+ * HTTP status when the caller knows it; otherwise the row carries the
+ * success-derived 200/500. `usage` lets a caller that already holds the usage
+ * block attach it directly; normally recordTokenUsage joins it via the scope.
  */
-export function recordRequest(model, success, durationMs, accountId) {
+export function recordRequest(model, success, durationMs, accountId, extra = {}) {
   _state.totalRequests++;
   if (success) _state.successCount++;
   else _state.errorCount++;
@@ -318,11 +392,24 @@ export function recordRequest(model, success, durationMs, accountId) {
     pruneKeyed(_state.creditsByDay, 90);
   }
   if (!Array.isArray(_state.recentRequests)) _state.recentRequests = [];
-  _state.recentRequests.push({
+  const scope = _requestScope.getStore();
+  const row = {
     ts: Date.now(), model, success: !!success, ms: durationMs || 0,
     account: accountId ? (typeof accountId === 'string' ? accountId.slice(0, 8) : String(accountId)) : null,
     credit,
-  });
+    status: Number.isFinite(extra?.status) ? extra.status : (success ? 200 : 500),
+    tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0,
+  };
+  // Usage can legitimately arrive before its row (the DEVIN_CONNECT non-stream
+  // path bills inside the attempt, then finalizes the account). The scope holds
+  // it until the row exists; a usage block handed in directly wins over it.
+  const usage = extra.usage || scope?.pendingUsage || null;
+  if (usage) applyUsageToRow(row, usage);
+  if (scope) {
+    scope.rows.push(row);
+    scope.pendingUsage = null;
+  }
+  _state.recentRequests.push(row);
   if (_state.recentRequests.length > RECENT_REQ_CAP) {
     _state.recentRequests.splice(0, _state.recentRequests.length - RECENT_REQ_CAP);
   }
@@ -581,6 +668,16 @@ export function recordTokenUsage(usage, model = null) {
     tm.total += fresh + cacheR + cacheW + output;
     tm.requests_with_usage += 1;
   }
+  // Per-request attribution. The scope is the only safe join: a concurrent
+  // request for the same model must never inherit these counts. When the usage
+  // arrives before the attempt row (connect non-stream), hold it until
+  // recordRequest creates that row.
+  const scope = _requestScope.getStore();
+  if (scope) {
+    const row = scope.rows[scope.rows.length - 1];
+    if (row) applyUsageToRow(row, usage);
+    else scope.pendingUsage = usage;
+  }
   scheduleSave();
 }
 
@@ -600,4 +697,161 @@ export function recordPolicyBlocked(sample = null) {
 export function recordRateLimited() {
   _state.rateLimitedCount = (_state.rateLimitedCount || 0) + 1;
   scheduleSave();
+}
+
+// ─── Request log query ─────────────────────────────────────────────────
+// Read-only view over the persisted per-request ring (recentRequests). Every
+// number is computed from the rows that pass the filters, so the table and the
+// aggregates below it always share one denominator. Retention is bounded and
+// stated in the response (retention.stored/capacity); the panel labels the
+// window instead of implying full history.
+const LOG_PAGE_MAX = 200;
+
+function logRowView(row) {
+  const ts = Number(row?.ts);
+  const rawStatus = row?.status;
+  const derived = row?.success ? 200 : 500;
+  const status = rawStatus == null || rawStatus === ''
+    ? derived
+    : (Number.isFinite(Number(rawStatus)) ? Number(rawStatus) : derived);
+  return {
+    ts: Number.isFinite(ts) ? ts : 0,
+    model: typeof row?.model === 'string' ? row.model : '',
+    account: typeof row?.account === 'string' ? row.account : null,
+    status,
+    success: !!row?.success,
+    ms: nonNeg(row?.ms),
+    tokensIn: nonNeg(row?.tokensIn),
+    tokensOut: nonNeg(row?.tokensOut),
+    cacheRead: nonNeg(row?.cacheRead),
+    cacheWrite: nonNeg(row?.cacheWrite),
+    credit: nonNeg(row?.credit),
+  };
+}
+
+function emptyAggregate(extra) {
+  return {
+    ...extra,
+    requests: 0, success: 0, errors: 0,
+    tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, credits: 0, totalMs: 0,
+    _latencies: [],
+  };
+}
+
+function addToAggregate(agg, row) {
+  agg.requests += 1;
+  if (row.success) agg.success += 1;
+  else agg.errors += 1;
+  agg.tokensIn += row.tokensIn;
+  agg.tokensOut += row.tokensOut;
+  agg.cacheRead += row.cacheRead;
+  agg.cacheWrite += row.cacheWrite;
+  agg.credits += row.credit;
+  agg.totalMs += row.ms;
+  if (row.ms > 0) agg._latencies.push(row.ms);
+}
+
+function finishAggregate(agg) {
+  const latencies = agg._latencies || [];
+  agg.avgMs = agg.requests > 0 ? Math.round(agg.totalMs / agg.requests) : 0;
+  agg.p50Ms = percentileOf(latencies, 0.5);
+  agg.p95Ms = percentileOf(latencies, 0.95);
+  delete agg.totalMs;
+  delete agg._latencies;
+  return agg;
+}
+
+/** Nearest-rank percentile over an unsorted sample; 0 when empty. */
+function percentileOf(values, p) {
+  if (!values.length) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+}
+
+/**
+ * Newest-first page of request-log rows plus aggregates over the whole
+ * filtered window (not just the page). Filters: `from`/`to` epoch ms, exact
+ * `model`/`account`, numeric `status`.
+ */
+export function getRequestLog({
+  from = null, to = null, model = null, account = null, status = null,
+  limit = 50, offset = 0,
+} = {}) {
+  const rows = Array.isArray(_state.recentRequests) ? _state.recentRequests : [];
+  const fromNum = from == null || from === '' ? null : Number(from);
+  const toNum = to == null || to === '' ? null : Number(to);
+  const fromMs = Number.isFinite(fromNum) ? fromNum : null;
+  const toMs = Number.isFinite(toNum) ? toNum : null;
+  const statusNum = status == null || status === '' ? null : Number(status);
+  const modelFilter = typeof model === 'string' && model ? model : null;
+  const accountFilter = typeof account === 'string' && account ? account : null;
+
+  const filtered = [];
+  for (const raw of rows) {
+    if (!raw || typeof raw !== 'object') continue;
+    const row = logRowView(raw);
+    if (fromMs != null && row.ts < fromMs) continue;
+    if (toMs != null && row.ts > toMs) continue;
+    if (modelFilter && row.model !== modelFilter) continue;
+    if (accountFilter && row.account !== accountFilter) continue;
+    if (statusNum != null && (!Number.isFinite(statusNum) || row.status !== statusNum)) continue;
+    filtered.push(row);
+  }
+
+  const n = Math.max(1, Math.min(LOG_PAGE_MAX, Number(limit) || 50));
+  const off = Math.max(0, Math.floor(Number(offset) || 0));
+  const newestFirst = filtered.slice().reverse();
+  const items = newestFirst.slice(off, off + n);
+
+  const summary = emptyAggregate({});
+  const byModel = new Map();
+  const byAccount = new Map();
+  const byDay = new Map();
+  for (const row of filtered) {
+    addToAggregate(summary, row);
+    if (row.model) {
+      const agg = byModel.get(row.model) || emptyAggregate({ model: row.model });
+      addToAggregate(agg, row);
+      byModel.set(row.model, agg);
+    }
+    if (row.account) {
+      const agg = byAccount.get(row.account) || emptyAggregate({ account: row.account });
+      addToAggregate(agg, row);
+      byAccount.set(row.account, agg);
+    }
+    const day = new Date(row.ts).toISOString().slice(0, 10);
+    const agg = byDay.get(day) || emptyAggregate({ day });
+    addToAggregate(agg, row);
+    byDay.set(day, agg);
+  }
+  finishAggregate(summary);
+
+  const models = [...byModel.values()]
+    .map(finishAggregate)
+    .sort((a, b) => b.requests - a.requests || a.model.localeCompare(b.model));
+  const accounts = [...byAccount.values()]
+    .map(finishAggregate)
+    .sort((a, b) => b.requests - a.requests || String(a.account).localeCompare(String(b.account)));
+  const days = [...byDay.values()]
+    .map(finishAggregate)
+    .sort((a, b) => a.day.localeCompare(b.day));
+
+  const all = rows.map(logRowView);
+  return {
+    items,
+    total: filtered.length,
+    limit: n,
+    offset: off,
+    hasMore: off + items.length < filtered.length,
+    retention: { stored: all.length, capacity: RECENT_REQ_CAP },
+    filters: {
+      models: [...new Set(all.map(r => r.model).filter(Boolean))].sort(),
+      accounts: [...new Set(all.map(r => r.account).filter(Boolean))].sort(),
+      statuses: [...new Set(all.map(r => r.status).filter(Number.isFinite))].sort((a, b) => a - b),
+    },
+    summary,
+    byModel: models,
+    byAccount: accounts,
+    byDay: days,
+  };
 }

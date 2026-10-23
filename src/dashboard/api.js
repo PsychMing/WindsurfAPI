@@ -33,7 +33,7 @@ import {
 } from '../auth.js';
 import { restartLsForProxy } from '../langserver.js';
 import { getLsStatus, stopLanguageServerAndWait, startLanguageServer, isLanguageServerRunning, getLsAdmissionStatus } from '../langserver.js';
-import { getStats, resetStats, recordRequest, exportStats, importStats } from './stats.js';
+import { getStats, getRequestLog, resetStats, recordRequest, exportStats, importStats } from './stats.js';
 import { getConnectMetrics, resetConnectMetrics } from '../devin-connect-metrics.js';
 import { detachedRegistry, cascadeDetachEnabled } from '../detached-registry.js';
 import { getStickyStats, isStickyEnabled } from '../account/sticky-session.js';
@@ -2023,6 +2023,30 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   if (subpath === '/stats' && method === 'GET') {
     const stats = getStats();
     return json(res, 200, { ...stats, modelBilling: buildModelBillingIndex(stats.modelCounts) });
+  }
+
+  // GET /stats/log — newest-first request-log page + aggregates over the whole
+  // filtered window. Filters are server-side and every aggregate is computed
+  // from the same rows the table pages through, so the numbers reconcile.
+  // `from`/`to` are epoch milliseconds (the browser sends them); limit is
+  // clamped to 200, offset >= 0. Retention is stated in the response.
+  if (subpath === '/stats/log' && method === 'GET') {
+    const u = dashboardUrl(req);
+    const num = (key) => {
+      const raw = u.searchParams.get(key);
+      if (raw == null || raw === '') return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    };
+    return json(res, 200, getRequestLog({
+      from: num('from'),
+      to: num('to'),
+      model: u.searchParams.get('model') || null,
+      account: u.searchParams.get('account') || null,
+      status: u.searchParams.has('status') ? num('status') : null,
+      limit: num('limit') ?? 50,
+      offset: num('offset') ?? 0,
+    }), NO_STORE);
   }
 
   // Account usage from app.devin.ai (quota burn-down card). GET-only reads
