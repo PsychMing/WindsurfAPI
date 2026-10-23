@@ -59,6 +59,9 @@ import { registerReauthFlows } from './smoke-matrix/flows-reauth.mjs';
 import { registerAcuFlows } from './smoke-matrix/flows-acu.mjs';
 import { registerAccountDrawerFlows } from './smoke-matrix/flows-account-drawer.mjs';
 import { registerRuntimeFlows } from './smoke-matrix/flows-runtime.mjs';
+import { registerFleetFlows } from './smoke-matrix/flows-fleet.mjs';
+import { registerDetachFlows } from './smoke-matrix/flows-detach.mjs';
+import { registerDocsFlows } from './smoke-matrix/flows-docs.mjs';
 
 const DATA_DIR = mkdtempSync(join(tmpdir(), 'windsurfapi-smoke-matrix-'));
 const ACP_DIR = mkdtempSync(join(tmpdir(), 'windsurfapi-smoke-matrix-acp-'));
@@ -573,6 +576,10 @@ async function main() {
     getLiveCatalog,
     liveness,
     installFetch: seams.fetch,
+    // The fleet cancel flow needs to stretch one upstream read so a cancel can
+    // land while an item is genuinely in flight; re-installing is the same seam
+    // the transport was armed with.
+    installPostJson: seams.postJson,
     resetReadCache: seams.resetReadCache,
     resetEmailFlows: seams.resetEmailFlows,
     resetEmailLockout: seams.resetEmailLockout,
@@ -590,15 +597,23 @@ async function main() {
   // pool, so it must run before any family that parks an account (reauth).
   registerAccountDrawerFlows(ctx);
   registerAcuFlows(ctx);
+  // Fleet + KPI need the pool the login family built and the org identities the
+  // ACU reader learned, and they must run BEFORE reauth parks an account (a
+  // parked account is excluded from a fleet run by design).
+  registerFleetFlows(ctx);
   registerReauthFlows(ctx);
   registerLiveFlows(ctx);
   registerRuntimeFlows(ctx);
+  // Detach flips its own switch per request and restores it; the docs family
+  // runs the repo guard in a child process.
+  registerDetachFlows(ctx);
+  registerDocsFlows(ctx);
 
   // Hygiene flows are ordinary members of the flow list so the family census
   // sees them. The leak scan is last on purpose: it must run even when an
   // earlier family failed, because a leak must never be hidden by a red line.
   addFlow('hygiene', 'hygiene.flow-manifest', async () => {
-    requireThat(flows.length >= 120, `only ${flows.length} flows registered`);
+    requireThat(flows.length >= 130, `only ${flows.length} flows registered`);
     const declared = new Set(MATRIX_FAMILIES);
     for (const flow of flows) requireThat(declared.has(flow.family), `flow ${flow.name} has an undeclared family`);
     for (const family of MATRIX_FAMILIES) {

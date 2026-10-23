@@ -7,6 +7,8 @@
  * replayed flow, wrong password, batch partial failure.
  */
 
+import { readFileSync } from 'node:fs';
+
 export function registerLoginFlows(ctx) {
   const { http, requireThat, addFlow, state, SMOKE, MATRIX, deps } = ctx;
 
@@ -533,5 +535,116 @@ export function registerLoginFlows(ctx) {
     });
     requireThat(missing.status === 404, `unknown account status ${missing.status}`);
     return 're-auth required; explicit confirmation reveals the key';
+  });
+
+  // ─── login modal structure + one action, one verb (3.9.54, 7b23aa0) ──
+  // Two P0s from the UI review: the login tab stacked four competing sections
+  // instead of asking for ONE method, and the entry buttons used a different
+  // word than the tab they opened (添加 vs 粘贴凭证). Both are copy/structure
+  // regressions a passing login flow cannot see, so they are asserted against
+  // the HTML and the locale files the browser actually receives.
+  addFlow('login', 'login.steps-and-verbs', async () => {
+    const html = await http('GET', '/dashboard', { auth: 'none' });
+    requireThat(html.status === 200, `dashboard status ${html.status}`);
+    const doc = html.text;
+    const slice = (from, to) => {
+      const start = doc.indexOf(from);
+      requireThat(start >= 0, `marker ${from} is missing from the served dashboard`);
+      if (to === null) return doc.slice(start);
+      const end = doc.indexOf(to, start);
+      requireThat(end > start, `marker ${to} is missing after ${from}`);
+      return doc.slice(start, end);
+    };
+
+    // Step 1 is a chooser: two method cards plus one secondary token link.
+    const panel = slice('<div class="add-panel active" id="add-panel-login"', '<div class="add-panel" id="add-panel-paste"');
+    const chooser = slice('id="wl-method-step"', 'id="wl-panel-oauth"');
+    requireThat((chooser.match(/class="login-method"/g) || []).length === 2, `the first screen offers ${(chooser.match(/class="login-method"/g) || []).length} method cards, not 2`);
+    requireThat((chooser.match(/class="btn btn-ghost btn-sm login-method-token"/g) || []).length === 1, 'the token link is not a single secondary action');
+    requireThat(!chooser.includes('oauth-google-btn'), 'provider buttons are on the first screen');
+    requireThat(!chooser.includes('id="wl-email"'), 'the email field is on the first screen');
+
+    // The proxy, saved password and login history live behind 高级选项, closed.
+    const advancedAt = panel.indexOf('<details class="login-advanced"');
+    requireThat(advancedAt > 0, 'the 高级选项 disclosure is missing');
+    const advancedTag = panel.slice(advancedAt, panel.indexOf('>', advancedAt) + 1);
+    requireThat(!/\bopen\b/.test(advancedTag), 'the advanced disclosure is open by default');
+    const advanced = panel.slice(advancedAt);
+    for (const id of ['wl-proxy-section', 'wl-store-cred', 'wl-history-table']) {
+      requireThat(advanced.includes(id), `${id} escaped the advanced disclosure`);
+    }
+
+    // Every token step has its own action button.
+    const tokenStep = panel.slice(panel.indexOf('id="oauth-token-step"'));
+    const steps = tokenStep.split(/<li>/).slice(1).map((item) => item.slice(0, item.indexOf('</li>')));
+    requireThat(steps.length === 3, `the token path has ${steps.length} steps, not 3`);
+    for (const [index, step] of steps.entries()) requireThat(step.includes('<button'), `token step ${index + 1} has no action`);
+    requireThat(steps[0].includes('App.fetchWindsurfToken()'), 'step 1 does not open the sign-in page');
+    requireThat(steps[1].includes('App.pasteOAuthTokenFromClipboard()'), 'step 2 does not paste from the clipboard');
+    requireThat(steps[2].includes('App.submitOAuthToken()'), 'step 3 does not add the token');
+
+    // One action, one verb: the entry button names the tab it opens.
+    for (const [id, tab, key] of [
+      ['accounts-login-btn', 'login', 'accounts.add.login'],
+      ['accounts-import-btn', 'import', 'accounts.add.import'],
+      ['accounts-add-btn', 'paste', 'accounts.add.paste'],
+    ]) {
+      const tag = (doc.match(new RegExp(`<button[^>]*id="${id}"[^>]*>`)) || [])[0];
+      requireThat(tag, `${id} is missing`);
+      requireThat(tag.includes(`openAddAccountModal('${tab}')`), `${id} does not open the ${tab} tab`);
+      requireThat(tag.includes(`data-i18n="${key}"`), `${id} is not labelled with ${key}`);
+    }
+
+    const en = await http('GET', '/dashboard/i18n/en.json', { auth: 'none' });
+    const zh = await http('GET', '/dashboard/i18n/zh-CN.json', { auth: 'none' });
+    requireThat(en.status === 200 && zh.status === 200, `locale status ${en.status}/${zh.status}`);
+    const enValue = (key) => ctx.readPath(en.json, key);
+    const zhValue = (key) => ctx.readPath(zh.json, key);
+    for (const [locale, value] of [['en', enValue], ['zh-CN', zhValue]]) {
+      requireThat(value('accounts.add.paste') === value('accounts.add.tab.paste'),
+        `${locale}: the entry button (${value('accounts.add.paste')}) and its tab (${value('accounts.add.tab.paste')}) disagree`);
+    }
+    requireThat(zhValue('accounts.add.paste') !== '添加', 'the paste entry fell back to the generic 添加');
+
+    // Canonical action strings: 检查 / 刷新余额, and 配额 vs 余额 stay distinct.
+    const zhVerbs = {
+      'batchOps.probe': '检查',
+      'accounts.toolbar.probeAll': '全部检查',
+      'accounts.row.probe': '检查层级与模型',
+      'action.probe': '检查',
+      'batchOps.refresh': '刷新余额',
+      'accounts.row.refreshBalance': '刷新余额',
+      'accounts.toolbar.refreshAll': '刷新全部余额',
+      'table.header.quota': '配额',
+      'table.header.credits': '余额',
+    };
+    for (const [key, want] of Object.entries(zhVerbs)) {
+      requireThat(zhValue(key) === want, `zh-CN ${key} = ${JSON.stringify(zhValue(key))}, expected ${want}`);
+    }
+    const enVerbs = {
+      'batchOps.probe': 'Check',
+      'accounts.toolbar.probeAll': 'Check all',
+      'accounts.row.probe': 'Check tier and models',
+      'action.probe': 'Check',
+      'batchOps.refresh': 'Refresh balances',
+      'accounts.row.refreshBalance': 'Refresh balance',
+      'accounts.toolbar.refreshAll': 'Refresh all balances',
+    };
+    for (const [key, want] of Object.entries(enVerbs)) {
+      requireThat(enValue(key) === want, `en ${key} = ${JSON.stringify(enValue(key))}, expected ${want}`);
+    }
+
+    // The lint judges the account/usage scope of both locales and the shipped
+    // template; the served bytes must be the linted bytes.
+    const { lintDashboardCopy } = await import('../../scripts/check-dashboard-copy.mjs');
+    const lint = lintDashboardCopy();
+    requireThat(lint.ok === true && lint.problems.length === 0, `copy lint: ${lint.problems.slice(0, 3).join(' | ')}`);
+    const disk = (file) => JSON.parse(readFileSync(new URL(`../../src/dashboard/i18n/${file}`, import.meta.url), 'utf8'));
+    const stable = (value) => JSON.stringify(value, (_key, val) => (val && typeof val === 'object' && !Array.isArray(val)
+      ? Object.fromEntries(Object.keys(val).sort().map((k) => [k, val[k]]))
+      : val));
+    requireThat(stable(en.json) === stable(disk('en.json')), 'the served en.json is not the file the lint reads');
+    requireThat(stable(zh.json) === stable(disk('zh-CN.json')), 'the served zh-CN.json is not the file the lint reads');
+    return 'chooser + 3 token steps; entry verbs match their tabs; copy lint clean on the served bytes';
   });
 }

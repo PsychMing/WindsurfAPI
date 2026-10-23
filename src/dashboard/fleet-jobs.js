@@ -194,7 +194,10 @@ async function runFleetJob(job, ops) {
  */
 export function startFleetJob({ op, ids = null, force = false, ops = null, now = Date.now() } = {}) {
   pruneJobs(now);
-  const { targets, excluded, excludedAccounts, requested } = selectTargets(op, ids);
+  // selectTargets takes the id list. It used to be called as (op, ids), which
+  // silently dropped the caller's selection: "run on the checked rows" ran the
+  // whole pool instead, and only the pool-wide case had a test.
+  const { targets, excluded, excludedAccounts, requested } = selectTargets(ids);
   const job = {
     id: `fleet-${randomUUID()}`,
     op,

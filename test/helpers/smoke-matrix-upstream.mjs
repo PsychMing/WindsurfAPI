@@ -15,6 +15,8 @@
  * scripts/mutation-network-deny.mjs as an independent egress barrier.
  */
 
+import { setTimeout as delay } from 'node:timers/promises';
+
 import { SMOKE_SECRETS } from './dashboard-smoke-upstream.mjs';
 
 export {
@@ -100,6 +102,15 @@ export const MATRIX = Object.freeze({
     reasoning: 'SMOKE_MARKER_REASONING',
     fail: 'SMOKE_MARKER_FAIL',
     echo: 'SMOKE_MARKER_ECHO',
+    // Two content chunks separated by a real pause, so a client can hang up
+    // AFTER content is on the wire (the detach admission scenario).
+    slow: 'SMOKE_MARKER_SLOW',
+  }),
+
+  // The two halves of the paused answer, distinct so a replay can be counted.
+  slow: Object.freeze({
+    prefix: 'DETACH_SLOW_PREFIX_5c1a',
+    growth: 'DETACH_SLOW_GROWTH_8f2b',
   }),
 
   text: 'Hello from the smoke upstream.',
@@ -184,6 +195,15 @@ export function scriptedConnectEvents() {
       yield { type: 'finish', reason: 'stop', usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 } };
       return;
     }
+    if (text.includes(MATRIX.marker.slow)) {
+      // Two chunks with a real pause between them: the client can read the
+      // prefix, hang up, and still have a turn that was genuinely mid-flight.
+      yield { type: 'content', text: MATRIX.slow.prefix };
+      await delay(250);
+      yield { type: 'content', text: MATRIX.slow.growth };
+      yield { type: 'finish', reason: 'stop', usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 } };
+      return;
+    }
     yield { type: 'content', text: MATRIX.text };
     yield { type: 'finish', reason: 'stop', usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } };
   }
@@ -262,4 +282,10 @@ export const MATRIX_FAMILIES = Object.freeze([
   'devin-cards',
   'engines',
   'docker',
+  // 3.9.54–3.9.60 additions: each shipped a user-visible behaviour that had no
+  // smoke family before it.
+  'fleet',
+  'kpi',
+  'detach',
+  'docs',
 ]);
