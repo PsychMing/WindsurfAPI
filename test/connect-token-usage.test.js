@@ -48,7 +48,9 @@ describe('B1: the DEVIN_CONNECT paths are actually wired to recordTokenUsage', (
   const chat = readFileSync(join(REPO_ROOT, 'src/handlers/chat.js'), 'utf-8');
 
   it('non-stream connect choke point records usage from r.out.body.usage', () => {
-    assert.match(chat, /recordTokenUsage\(r\.out\?\.body\?\.usage\)/,
+    // `[,)]` accepts the per-model second argument added for per-model token
+    // stats; the WIRING is what this guards, not the arity.
+    assert.match(chat, /recordTokenUsage\(r\.out\?\.body\?\.usage[,)]/,
       'non-stream connect ok-path must feed recordTokenUsage');
   });
 
@@ -57,7 +59,7 @@ describe('B1: the DEVIN_CONNECT paths are actually wired to recordTokenUsage', (
     // now each is captured into _sr* and recorded. Q5 removed the handler-owned
     // transient replay, so the two remaining ok paths are the initial attempt
     // and the re-login retry.
-    const matches = chat.match(/recordTokenUsage\(_sr\d?\?\.usage\)/g) || [];
+    const matches = chat.match(/recordTokenUsage\(_sr\d?\?\.usage[,)]/g) || [];
     assert.ok(matches.length >= 2, `expected >=2 stream usage-record sites, found ${matches.length}`);
     // And ensure NO ok-return stream path discards the result (both the direct
     // `(params, send, connectMeta)` site and the re-login `({...token}, …)` site
