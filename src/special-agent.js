@@ -35,6 +35,7 @@ import { runDevinAcpProcess, probeDevinCliAvailable, acpVisionEnabled } from './
 import { extractInlineImages as extractImagesFromContent } from './devin-connect.js';
 import { systemFingerprint } from './system-fingerprint.js';
 import { getBackendSwitch, strictUsageTotal } from './runtime-config.js';
+import { toClientToolCallId } from './tool-ids.js';
 
 const SPECIAL_BACKEND = 'special_agent';
 const DEFAULT_SPECIAL_MODELS = new Set([
@@ -532,8 +533,11 @@ export async function runDevinPrint(prompt, { modelKey = '', apiKey = '', signal
 // synthesized result — the tool's output stays out of the egress).
 function openAiToolCalls(toolCalls) {
   if (!Array.isArray(toolCalls) || !toolCalls.length) return null;
-  return toolCalls.map(tc => ({
-    id: tc.id,
+  return toolCalls.map((tc, index) => ({
+    // ACP's toolCallId is the CLI's own dialect (the raw id still keys the
+    // tool_call/tool_call_update notifications inside the pump). The client
+    // only ever sees the OpenAI `call_<opaque>` shape.
+    id: toClientToolCallId(tc.id, `call_${index}_${Date.now().toString(36)}`),
     type: 'function',
     function: {
       name: tc.name,

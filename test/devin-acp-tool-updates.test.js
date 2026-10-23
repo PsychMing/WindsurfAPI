@@ -5,6 +5,12 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { handleChatCompletions } from '../src/handlers/chat.js';
 import { handleMessages } from '../src/handlers/messages.js';
+import { toClientToolCallId } from '../src/tool-ids.js';
+
+// The ACP runner's toolCallId is its own dialect (`tc1` here). The client-visible
+// id must still be the OpenAI `call_<opaque>` shape; the raw id is only used
+// internally to key the tool_call/tool_call_update notifications.
+const CLIENT_TC1 = toClientToolCallId('tc1');
 
 // GFHarness gap: ACP `tool_call` / `tool_call_update` notifications were dropped
 // and `stopReason:"tool_use"` silently degraded to finish_reason:"stop". These
@@ -134,7 +140,7 @@ describe('ACP tool updates → OpenAI tool_calls', () => {
     assert.equal(result.status, 200);
     const choice = result.body.choices[0];
     assert.deepEqual(choice.message.tool_calls, [{
-      id: 'tc1',
+      id: CLIENT_TC1,
       type: 'function',
       function: { name: 'Bash', arguments: '{"command":"ls"}' },
     }]);
@@ -158,7 +164,8 @@ describe('ACP tool updates → OpenAI tool_calls', () => {
     const deltas = chunks.flatMap(c => c.choices?.[0]?.delta?.tool_calls || []);
     assert.equal(deltas.length, 1);
     assert.equal(deltas[0].index, 0);
-    assert.equal(deltas[0].id, 'tc1');
+    assert.equal(deltas[0].id, CLIENT_TC1);
+    assert.match(deltas[0].id, /^call_[A-Za-z0-9_-]+$/);
     assert.equal(deltas[0].type, 'function');
     assert.equal(deltas[0].function.name, 'Bash');
     assert.equal(deltas[0].function.arguments, '{"command":"ls"}');
@@ -188,7 +195,7 @@ describe('ACP tool updates → Anthropic tool_use', () => {
     const toolUse = result.body.content.find(b => b.type === 'tool_use');
     assert.deepEqual(toolUse, {
       type: 'tool_use',
-      id: 'tc1',
+      id: CLIENT_TC1,
       name: 'Bash',
       input: { command: 'ls' },
     });
@@ -207,7 +214,7 @@ describe('ACP tool updates → Anthropic tool_use', () => {
     await streamed.handler(res);
     const joined = res.joined();
     assert.match(joined, /"type":"tool_use"/);
-    assert.match(joined, /"id":"tc1"/);
+    assert.match(joined, new RegExp(`"id":"${CLIENT_TC1}"`));
     assert.match(joined, /"name":"Bash"/);
     assert.match(joined, /"partial_json":"\{\\"command\\":\\"ls\\"\}"/);
     assert.match(joined, /"stop_reason":"tool_use"/);

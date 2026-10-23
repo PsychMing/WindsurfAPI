@@ -30,6 +30,7 @@ import { normalizeToolCallArgs, recordArgRepair } from './handlers/cline-compat.
 import { ThinkTextClassifier } from './response-classifier.js';
 import { budgetExceededError } from './request-budget.js';
 import { bumpConnect } from './devin-connect-metrics.js';
+import { toClientToolCallId, restoreUpstreamToolIds } from './tool-ids.js';
 
 // Gate for the leading think-tag reroute (Item 1, loop break). The classifier
 // lives HERE, in the connect layer, so the DEVIN_CONNECT_ prefix is accurate:
@@ -246,6 +247,19 @@ function reportProseToolIntent({ params, text, finishEv, reasoning }) {
 // guard aimed at it guards code that cannot be reached (the exact shape of the v3.9.13 medium
 // defect). If a caller ever genuinely needs to opt out, add the option back THEN, with a test
 // that passes `false` — that test is what makes it a knob rather than decoration.
+
+// Egress/ingress boundary for tool-call ids. The client received a normalized
+// `call_…` id (see toClientToolCallId); the upstream issued its own dialect
+// (`get_weather:0#<uuid>` on swe-2). Restore the original id on a COPY of the
+// request right before the wire encode, so native history replay (#6
+// ChatToolCall / #7 tool_call_id) is byte-identical to what the upstream
+// issued. Everything upstream of this point — session continuity, cache keys,
+// the response body — sees the client-visible id.
+function withUpstreamToolIds(params) {
+  const messages = restoreUpstreamToolIds(params?.messages);
+  return messages === params?.messages ? params : { ...params, messages };
+}
+
 async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opts = {}) {
   // Route-owned request budget. Each internal attempt is one upstream turn; the
   // cap is per REQUEST, shared with the handler's account failover, so the
@@ -372,19 +386,20 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
           : `request upstream-turn cap reached before DEVIN_CONNECT attempt (${budget.describe()})`,
       );
     }
+    const upstreamParams = withUpstreamToolIds(attemptParams);
     const callParams = budget
       ? {
-        ...attemptParams,
+        ...upstreamParams,
         // devin-connect.js treats deadlineMs as the total wall clock for THIS
         // stream. Give it what the request has left, never more.
         deadlineMs: Math.min(
-          Number.isFinite(attemptParams?.deadlineMs) && attemptParams.deadlineMs > 0
-            ? attemptParams.deadlineMs
+          Number.isFinite(upstreamParams?.deadlineMs) && upstreamParams.deadlineMs > 0
+            ? upstreamParams.deadlineMs
             : Infinity,
           budget.remainingMs(),
         ),
       }
-      : attemptParams;
+      : upstreamParams;
     for await (const ev of streamChatImpl(callParams)) {
       if ((ev.type === 'content' || ev.type === 'reasoning') && leakTraceEnabled(env)) {
         log.info('LEAK_TRACE stream-event', {
@@ -714,7 +729,7 @@ export async function toChatCompletion(params, opts = {}) {
   if (reasoning && !promotedReasoning) message.reasoning_content = reasoning;
   if (toolCalls.length) {
     message.tool_calls = toolCalls.map((tc, i) => ({
-      id: tc.id || `call_${i}_${Date.now().toString(36)}`,
+      id: toClientToolCallId(tc.id, `call_${i}_${Date.now().toString(36)}`),
       type: 'function',
       function: { name: tc.name || 'unknown', arguments: compatArgs(tc.argumentsJson || tc.arguments, clineCompat) },
     }));
@@ -865,13 +880,20 @@ export async function streamChatCompletion(params, send, opts = {}) {
     for (const tc of calls || []) {
       prime(); // a tool_call is a real delta — open the message before it
       const idx = collectedToolCalls.length;
-      collectedToolCalls.push(tc);
+      // Normalize once, before the call is recorded: the emitted delta AND the
+      // returned toolCalls (session-continuity commit, cache) must agree with
+      // what the client saw, or the next turn's echoed id no longer matches.
+      const emitted = {
+        ...tc,
+        id: toClientToolCallId(tc.id, `call_${idx}_${Date.now().toString(36)}`),
+      };
+      collectedToolCalls.push(emitted);
       send({ ...base, choices: [{ index: 0, delta: {
         tool_calls: [{
           index: idx,
-          id: tc.id || `call_${idx}_${Date.now().toString(36)}`,
+          id: emitted.id,
           type: 'function',
-          function: { name: tc.name || 'unknown', arguments: compatArgs(tc.argumentsJson, clineCompat) },
+          function: { name: emitted.name || 'unknown', arguments: compatArgs(emitted.argumentsJson, clineCompat) },
         }],
       }, finish_reason: null }] });
     }
