@@ -5,7 +5,7 @@
 ## detached cache P1（`WINDSURFAPI_CASCADE_DETACH=1`，默认关，需 `CASCADE_TURN=1`）
 
 - 惰性恢复：快照 v2（`generatorOffset`/`sawActive`/`usageByStep`/`consumedThrough`）、registry CAS/TTL/容量上限、请求级租约、两个计费陷阱（offset-0 过度计费、`acct === null` 少计）。
-- soak（假上游、真实 handler）：10 次 detach/resume、120s TTL、caps、abort×3、3 次 claim 竞态、账号删除/drain，**9/9 PASS**；mutation 表 **12 caught + 1 documented equivalent**。
+- soak（假上游、真实 handler；`DETACH_SOAK=1` 显式开启，默认套件跳过，因为 SOAK-2 真等 120s TTL）：10 次 detach/resume、120s TTL、caps、abort×3、3 次 claim 竞态、账号删除/drain，**9/9 PASS**；mutation 表 **12 caught + 1 documented equivalent**。
 - Review 后的四个 P2 已修：拒绝的 admission 不再先删旧 entry；resume 租约在同步异常下释放并结束响应；resume-miss 清 `reuseEntry`；`lookup` 不驱逐 claimed entry。
 - **默认关**：设计 §7.4 的 gate 1/5/6 未满足（两周计数、维护者签字、live 60s soak），go/no-go = **NO-GO**。
 
