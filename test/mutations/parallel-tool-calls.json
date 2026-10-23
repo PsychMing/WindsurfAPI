@@ -2,7 +2,7 @@
   "tests": [
     "test/parallel-tool-calls-connect.test.js"
   ],
-  "expectBaselinePass": 9,
+  "expectBaselinePass": 10,
   "mutations": [
     {
       "name": "the rejection gate is removed — parallel_tool_calls:false is silently ignored again, which is exactly the live defect (4/4 connect models still emitted two calls)",
@@ -33,6 +33,12 @@
       "file": "src/handlers/chat.js",
       "anchor": "      parallelToolCalls: body.parallel_tool_calls,\n      toolChoice: tool_choice,",
       "replacement": "      parallelToolCalls: body.parallel_tool_calls,\n      toolChoice: undefined,"
+    },
+    {
+      "name": "the /v1/messages remap is dropped — the refusal reaches an Anthropic client as the opaque generic 'Invalid request' (the internal message contains the backend name, so clientFacingMessage() replaces it) and the client cannot tell which parameter to change",
+      "file": "src/handlers/messages.js",
+      "anchor": "  const message = err.param === 'parallel_tool_calls'",
+      "replacement": "  const message = false"
     }
   ]
 }

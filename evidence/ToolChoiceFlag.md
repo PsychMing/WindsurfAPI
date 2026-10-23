@@ -94,16 +94,22 @@ What each side pins:
 
 ## 5. Mutation check
 
-`node scripts/mutate-verify.mjs test/mutations/parallel-tool-calls.json`
-(baseline asserted at exactly 9 passing):
+The repo's harness (`scripts/mutate-verify.mjs`) **cannot start on this Windows host**:
+`scripts/mutation-harness-utils.mjs:16-21` hard-requires a POSIX `/usr/bin/git` and
+throws `mutation harness requires git at a trusted absolute path` before reading the
+spec. The five mutations were therefore run by hand with the harness's own mechanism —
+exact-once anchor replacement, suite run, restore from `HEAD:<file>` — and the spec is
+committed in the harness's format so a Linux runner (HMC / CI) can execute it unchanged.
 
-1. gate removed (`return false`) — the live defect returns;
-2. gate ignores the switch — the honourable path becomes unreachable;
-3. `streamChat` stops forwarding — switch inert on the live route again;
-4. handler stops threading `parallel_tool_calls` — accepted then dropped one layer down;
-5. handler stops threading `tool_choice`.
+Baseline asserted at exactly 9 passing. All five were **CAUGHT**:
 
-Results are recorded in §7 after the run.
+| Mutation | Result |
+|---|---|
+| gate removed (`return false`) — the live defect returns | CAUGHT (8 pass / 1 fail) |
+| gate ignores the switch — the honourable path becomes unreachable | CAUGHT (8/1) |
+| `streamChat` stops forwarding — switch inert on the live route again | CAUGHT (8/1) |
+| handler stops threading `parallel_tool_calls` — accepted, then dropped one layer down | CAUGHT (7/2) |
+| handler stops threading `tool_choice` — the other field stays inert | CAUGHT (8/1) |
 
 ## 6. Residuals (explicitly out of scope)
 

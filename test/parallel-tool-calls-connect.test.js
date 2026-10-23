@@ -23,6 +23,7 @@ import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { handleChatCompletions, __setConnectDeps, __resetConnectDeps } from '../src/handlers/chat.js';
+import { handleMessages } from '../src/handlers/messages.js';
 import { streamChat, __setRequestImpl } from '../src/devin-connect.js';
 import { endOfStreamEnvelope } from '../src/connect.js';
 import { parseFields } from '../src/proto.js';
@@ -145,6 +146,32 @@ describe('parallel_tool_calls:false is never silently dropped (connect route)', 
     // that it is NOT the connect-only parallel_tool_calls gate.
     assert.notEqual(r.body?.error?.code, 'unsupported_parameter',
       'a connect switch must not refuse a Cascade request');
+  });
+});
+
+describe('/v1/messages: the same hint is refused in Anthropic vocabulary', () => {
+  it('names tool_choice.disable_parallel_tool_use instead of the internal field', async () => {
+    process.env.DEVIN_CONNECT = '1';
+    delete process.env.DEVIN_CONNECT_TOOL_CHOICE;
+
+    // Real chain: handleMessages → handleChatCompletions → the connect gate. The
+    // gate fires before any account is acquired, so no network turn is possible.
+    const r = await handleMessages({
+      model: 'claude-sonnet-4.6',
+      max_tokens: 16,
+      tools: [{ name: 'Read', description: 'read files', input_schema: { type: 'object' } }],
+      tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    assert.equal(r.status, 400, JSON.stringify(r?.body));
+    assert.equal(r.body.error.type, 'invalid_request_error');
+    assert.match(r.body.error.message, /disable_parallel_tool_use/,
+      'the client must be told which parameter it actually sent');
+    assert.doesNotMatch(r.body.error.message, /parallel_tool_calls:false on the/i,
+      'the OpenAI-shaped internal message must not leak through verbatim');
+    assert.notEqual(r.body.error.message, 'Invalid request',
+      'the internal backend name must not trip the leak filter into an opaque generic error');
   });
 });
 
