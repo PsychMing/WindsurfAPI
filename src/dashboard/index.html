@@ -2074,6 +2074,22 @@ tbody tr:hover td { background: var(--surface-2); }
 .mdi-label { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
 .mdi-val { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--text); }
 
+/* Stats request log: filter bar, numeric columns, bounded cells. */
+.stats-log-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.stats-filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.stats-filter-bar label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.stats-filter-bar .select { width: auto; min-width: 140px; max-width: 260px; }
+#stats-log-table .numeric, .stats-agg-table .numeric { text-align: right; font-variant-numeric: tabular-nums; }
+.cell-ellipsis { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+
 .bars {
   display: flex;
   align-items: flex-end;
@@ -3899,34 +3915,81 @@ tbody tr:hover td { background: var(--surface-2); }
       </div>
       <div class="chart-legend" id="stats-legend"></div>
     </div>
-    <div class="section">
+    <div class="section" id="stats-log-section">
       <div class="section-header">
         <div>
-          <div class="section-title" data-i18n="section.modelStats.title">模型使用统计</div>
-          <div class="section-desc" data-i18n="section.modelStats.desc">按模型聚合：请求量与成功率。点击一行展开延迟分位数、请求占比与花销明细。</div>
+          <div class="section-title" data-i18n="section.statsLog.title">请求日志</div>
+          <div class="section-desc" data-i18n="section.statsLog.desc">逐请求明细：时间、模型、账号、状态、延迟、Token 与费用。每次上游尝试一行，费用单位为 Devin credits。</div>
         </div>
+        <div class="stats-log-meta">
+          <span id="stats-log-summary" class="text-sm text-muted"></span>
+          <button class="btn btn-ghost btn-xs" onclick="App.loadStatsLog()" data-i18n-title="action.refresh" title="刷新">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.24-2.52L3 21"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.24 2.52L21 3"/><path d="M21 3v6h-6"/><path d="M3 21v-6h6"/></svg>
+            <span data-i18n="action.refresh">刷新</span>
+          </button>
+        </div>
+      </div>
+      <div class="stats-filter-bar">
+        <label><span data-i18n="section.statsLog.filters.model">模型</span>
+          <select class="select" id="stats-log-model" onchange="App.setStatsLogFilter('model', this.value)"></select>
+        </label>
+        <label><span data-i18n="section.statsLog.filters.account">账号</span>
+          <select class="select" id="stats-log-account" onchange="App.setStatsLogFilter('account', this.value)"></select>
+        </label>
+        <label><span data-i18n="section.statsLog.filters.status">状态</span>
+          <select class="select" id="stats-log-status" onchange="App.setStatsLogFilter('status', this.value)"></select>
+        </label>
+        <button class="btn btn-ghost btn-xs" onclick="App.resetStatsLogFilters()" data-i18n="section.statsLog.filters.reset">清除筛选</button>
+        <span class="text-sm text-muted" id="stats-log-retention"></span>
       </div>
       <div class="section-body tight">
         <div class="table-wrap">
-          <table id="model-stats-table">
-            <thead><tr><th data-i18n="table.header.model">模型</th><th data-i18n="table.header.requests">请求</th><th data-i18n="table.header.success">成功</th><th data-i18n="table.header.errors">错误</th><th data-i18n="table.header.successRate">成功率</th></tr></thead>
-            <tbody></tbody>
+          <table id="stats-log-table" aria-label="请求日志表格" data-i18n-aria-label="aria.statsLog">
+            <thead><tr>
+              <th data-i18n="table.header.time">时间</th>
+              <th data-i18n="table.header.model">模型</th>
+              <th data-i18n="table.header.account">账号</th>
+              <th data-i18n="table.header.status">状态</th>
+              <th class="numeric" data-i18n="table.header.duration">耗时</th>
+              <th class="numeric" data-i18n="table.header.tokensIn">输入 Token</th>
+              <th class="numeric" data-i18n="table.header.tokensOut">输出 Token</th>
+              <th class="numeric" data-i18n="table.header.cost">费用 (credits)</th>
+            </tr></thead>
+            <tbody id="stats-log-body">
+              <tr class="empty-row"><td colspan="8" data-i18n="table.empty.noRequestData">暂无请求数据</td></tr>
+            </tbody>
           </table>
+        </div>
+        <div class="table-pagination" id="stats-log-pagination">
+          <button class="btn btn-ghost btn-xs" id="stats-log-prev" onclick="App.setStatsLogPage(App.statsLogPage - 1)" data-i18n="action.prev">上一页</button>
+          <span class="page-label" id="stats-log-page-label">-</span>
+          <select class="select" id="stats-log-page-size" onchange="App.setStatsLogPageSize(this.value)">
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+          <button class="btn btn-ghost btn-xs" id="stats-log-next" onclick="App.setStatsLogPage(App.statsLogPage + 1)" data-i18n="action.next">下一页</button>
         </div>
       </div>
     </div>
-    <div class="section">
+    <div class="section" id="stats-agg-section">
       <div class="section-header">
         <div>
-          <div class="section-title" data-i18n="section.accountStats.title">账号维度统计</div>
-          <div class="section-desc" data-i18n="section.accountStats.desc">每个账号 ID 前 8 位的请求量与成功率</div>
+          <div class="section-title" data-i18n="section.statsAgg.title">聚合统计</div>
+          <div class="section-desc" data-i18n="section.statsAgg.desc">与请求日志同一筛选窗口；表内合计与日志共用同一分母，不做估算。</div>
+        </div>
+        <div class="seg-group" role="radiogroup" aria-label="聚合维度" data-i18n-aria-label="aria.statsAggGroup">
+          <button class="seg-btn stats-agg-tab active" role="radio" aria-checked="true" data-agg="model" onclick="App.setStatsAggTab('model')" data-i18n="section.statsAgg.byModel">按模型</button>
+          <button class="seg-btn stats-agg-tab" role="radio" aria-checked="false" data-agg="account" onclick="App.setStatsAggTab('account')" data-i18n="section.statsAgg.byAccount">按账号</button>
+          <button class="seg-btn stats-agg-tab" role="radio" aria-checked="false" data-agg="day" onclick="App.setStatsAggTab('day')" data-i18n="section.statsAgg.byDay">按天</button>
         </div>
       </div>
       <div class="section-body tight">
         <div class="table-wrap">
-          <table id="account-stats-table">
-            <thead><tr><th data-i18n="table.header.accountId">账号 ID</th><th data-i18n="table.header.requests">请求</th><th data-i18n="table.header.success">成功</th><th data-i18n="table.header.errors">错误</th><th data-i18n="table.header.successRate">成功率</th></tr></thead>
-            <tbody></tbody>
+          <table id="stats-agg-table" class="stats-agg-table">
+            <thead id="stats-agg-head"></thead>
+            <tbody id="stats-agg-body"></tbody>
           </table>
         </div>
       </div>
@@ -11265,6 +11328,19 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   statsChartType: 'bar',
   statsMetrics: { requests: true, success: true, errors: true },
   _lastStatsData: null,
+  // Request-log view state. The time window follows statsRange/statsCustomRange
+  // so the chart's range control drives both views; model/account/status are
+  // log-only filters. Page size is per-session (no localStorage: the log is a
+  // diagnostic view, not a workspace preference).
+  statsLogPage: 1,
+  statsLogPageSize: 25,
+  statsLogModel: '',
+  statsLogAccount: '',
+  statsLogStatus: '',
+  statsAggTab: 'model',
+  _statsLogSeq: 0,
+  _lastStatsLog: null,
+  _statsModelBilling: {},
   // v2.0.59 — warmer, less saturated palette. Old indigo/emerald/rose
   // read as "alarming" against the dark plot background; the new tones
   // are still readable but feel calmer (warm amber for requests, soft
@@ -11290,6 +11366,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this._syncRadioGroup('.stats-range-btn', b => String(b.dataset.range) === String(value));
     this.closeCustomRange();
     if (this._lastStatsData) this.renderMainChart(this._lastStatsData);
+    // The request log + its aggregates share this window.
+    this.statsLogPage = 1;
+    this.loadStatsLog();
   },
 
   openCustomRange() {
@@ -11332,6 +11411,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this.closeCustomRange();
     this._syncRadioGroup('.stats-range-btn', b => b.dataset.range === 'custom');
     if (this._lastStatsData) this.renderMainChart(this._lastStatsData);
+    this.statsLogPage = 1;
+    this.loadStatsLog();
   },
 
   setChartType(type) {
@@ -11346,6 +11427,227 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     if (!tryOff.requests && !tryOff.success && !tryOff.errors) return;
     this.statsMetrics = tryOff;
     if (this._lastStatsData) this.renderMainChart(this._lastStatsData);
+  },
+
+  // ─── Stats: request log + filtered aggregates ────────────────
+  // The log window follows the chart's range control (statsRange), so the
+  // chart and the table describe the same period. Model/account/status are
+  // log-only filters and are applied server-side; aggregates come back from
+  // the same query, so table and totals share one denominator.
+  statsLogWindow() {
+    if (this.statsRange === 'custom' && this.statsCustomRange) {
+      return { from: this.statsCustomRange.start.getTime(), to: this.statsCustomRange.end.getTime() };
+    }
+    if (this.statsRange === 'all' || this.statsRange === -1) return { from: null, to: null };
+    const hours = Number(this.statsRange);
+    if (!Number.isFinite(hours) || hours <= 0) return { from: null, to: null };
+    const to = Date.now();
+    return { from: to - hours * 3600_000, to };
+  },
+
+  statsLogUrl() {
+    const qs = new URLSearchParams();
+    const { from, to } = this.statsLogWindow();
+    if (from != null) qs.set('from', String(from));
+    if (to != null) qs.set('to', String(to));
+    if (this.statsLogModel) qs.set('model', this.statsLogModel);
+    if (this.statsLogAccount) qs.set('account', this.statsLogAccount);
+    if (this.statsLogStatus !== '') qs.set('status', String(this.statsLogStatus));
+    qs.set('limit', String(this.statsLogPageSize));
+    qs.set('offset', String((this.statsLogPage - 1) * this.statsLogPageSize));
+    return `/stats/log?${qs.toString()}`;
+  },
+
+  async loadStatsLog() {
+    const seq = ++this._statsLogSeq;
+    const d = await this.api('GET', this.statsLogUrl()).catch(() => null);
+    // A newer range/filter/page request has been issued; drop this response so
+    // an older page can never overwrite a newer one.
+    if (seq !== this._statsLogSeq) return;
+    this._lastStatsLog = d;
+    this._renderStatsLog(d);
+  },
+
+  _fillStatsLogSelect(id, values, current) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const list = Array.isArray(values) ? values.map(String) : [];
+    const cur = current == null ? '' : String(current);
+    // Keep an active value selectable even if it fell out of the retained ring.
+    if (cur && !list.includes(cur)) list.unshift(cur);
+    el.innerHTML = `<option value="">${this.esc(I18n.t('section.statsLog.filters.all'))}</option>`
+      + list.map(v => `<option value="${this.esc(v)}"${v === cur ? ' selected' : ''}>${this.esc(v)}</option>`).join('');
+    el.value = cur;
+  },
+
+  setStatsLogFilter(key, value) {
+    if (key === 'model') this.statsLogModel = value || '';
+    else if (key === 'account') this.statsLogAccount = value || '';
+    else if (key === 'status') this.statsLogStatus = value === '' ? '' : String(value);
+    this.statsLogPage = 1;
+    this.loadStatsLog();
+  },
+
+  resetStatsLogFilters() {
+    this.statsLogModel = '';
+    this.statsLogAccount = '';
+    this.statsLogStatus = '';
+    this.statsLogPage = 1;
+    this.loadStatsLog();
+  },
+
+  setStatsLogPage(page) {
+    const next = Math.max(1, Number(page) || 1);
+    if (next === this.statsLogPage) return;
+    this.statsLogPage = next;
+    this.loadStatsLog();
+  },
+
+  setStatsLogPageSize(value) {
+    const next = Math.max(1, Math.min(200, Number(value) || 25));
+    this.statsLogPageSize = next;
+    this.statsLogPage = 1;
+    this.loadStatsLog();
+  },
+
+  setStatsAggTab(tab) {
+    if (!['model', 'account', 'day'].includes(tab)) return;
+    this.statsAggTab = tab;
+    this._syncRadioGroup('.stats-agg-tab', b => b.dataset.agg === tab);
+    if (this._lastStatsLog) this._renderStatsAgg(this._lastStatsLog);
+  },
+
+  _statsFreeLabel(model) {
+    const b = this._statsModelBilling?.[model];
+    if (!b || b.freeNow !== true) return '';
+    const date = b.promoEndsAt ? String(b.promoEndsAt).slice(0, 10) : '';
+    return date ? I18n.t('model.freeBadgePromo', { date }) : I18n.t('model.freeBadge');
+  },
+
+  fmtTokenCount(n) {
+    const v = Math.max(0, Number(n) || 0);
+    if (v >= 1_000_000_000) return (v / 1_000_000_000).toFixed(1) + 'B';
+    if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + 'M';
+    if (v >= 1_000) return (v / 1_000).toFixed(1) + 'K';
+    return String(Math.round(v));
+  },
+
+  fmtCredit(n) {
+    return (Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  },
+
+  _statsTokenTitle(row) {
+    return I18n.t('section.statsLog.tokenTitle', {
+      fresh: this.fmtTokenCount((Number(row.tokensIn) || 0) - (Number(row.cacheRead) || 0) - (Number(row.cacheWrite) || 0)),
+      read: this.fmtTokenCount(row.cacheRead),
+      write: this.fmtTokenCount(row.cacheWrite),
+    });
+  },
+
+  _renderStatsLog(d) {
+    const body = document.getElementById('stats-log-body');
+    if (!body) return;
+    const summaryEl = document.getElementById('stats-log-summary');
+    const retentionEl = document.getElementById('stats-log-retention');
+    const label = document.getElementById('stats-log-page-label');
+    const prev = document.getElementById('stats-log-prev');
+    const next = document.getElementById('stats-log-next');
+    const size = document.getElementById('stats-log-page-size');
+
+    if (!d || d.success === false || !Array.isArray(d.items)) {
+      if (summaryEl) summaryEl.textContent = '';
+      if (retentionEl) retentionEl.textContent = '';
+      body.innerHTML = `<tr class="empty-row"><td colspan="8">${I18n.t('section.statsLog.unavailable')}</td></tr>`;
+      if (label) label.textContent = '-';
+      if (prev) prev.disabled = true;
+      if (next) next.disabled = true;
+      return;
+    }
+
+    const filters = d.filters || {};
+    this._fillStatsLogSelect('stats-log-model', filters.models, this.statsLogModel);
+    this._fillStatsLogSelect('stats-log-account', filters.accounts, this.statsLogAccount);
+    this._fillStatsLogSelect('stats-log-status', filters.statuses, this.statsLogStatus);
+
+    if (retentionEl) {
+      const r = d.retention || {};
+      retentionEl.textContent = I18n.t('section.statsLog.retention', {
+        stored: Number(r.stored) || 0,
+        capacity: Number(r.capacity) || 0,
+      });
+    }
+    const s = d.summary || {};
+    if (summaryEl) {
+      summaryEl.textContent = I18n.t('section.statsLog.summary', {
+        count: Number(d.total) || 0,
+        in: this.fmtTokenCount(s.tokensIn),
+        out: this.fmtTokenCount(s.tokensOut),
+        credit: this.fmtCredit(s.credits),
+      });
+    }
+
+    const items = d.items.filter(r => r && typeof r === 'object');
+    body.innerHTML = items.map((r) => {
+      const when = new Date(Number(r.ts) || 0);
+      const status = Number(r.status);
+      const hasStatus = Number.isFinite(status);
+      const badge = hasStatus ? (status < 400 ? 'success' : 'error') : 'muted';
+      return `<tr>`
+        + `<td class="text-sm" title="${this.esc(when.toLocaleString())}">${this.esc(when.toLocaleString())}</td>`
+        + `<td class="text-sm"><span class="cell-ellipsis" title="${this.esc(r.model || '')}">${this.esc(r.model || '-')}</span></td>`
+        + `<td class="text-sm"><code>${this.esc(r.account || '-')}</code></td>`
+        + `<td><span class="badge ${badge} no-dot">${this.esc(hasStatus ? status : '-')}</span></td>`
+        + `<td class="text-sm numeric">${this.esc(this.fmtMs(r.ms))}</td>`
+        + `<td class="text-sm numeric" title="${this.esc(this._statsTokenTitle(r))}">${this.esc(this.fmtTokenCount(r.tokensIn))}</td>`
+        + `<td class="text-sm numeric">${this.esc(this.fmtTokenCount(r.tokensOut))}</td>`
+        + `<td class="text-sm numeric">${this.esc(this.fmtCredit(r.credit))}</td>`
+        + `</tr>`;
+    }).join('') || `<tr class="empty-row"><td colspan="8">${I18n.t('section.statsLog.empty')}</td></tr>`;
+
+    const total = Number(d.total) || 0;
+    const offset = Number(d.offset) || 0;
+    const count = items.length;
+    const from = total === 0 || count === 0 ? 0 : offset + 1;
+    const to = total === 0 || count === 0 ? 0 : Math.min(total, offset + count);
+    if (label) label.textContent = `${from}-${to} / ${total}`;
+    if (prev) prev.disabled = offset <= 0;
+    if (next) next.disabled = !d.hasMore;
+    if (size) size.value = String(Number(d.limit) || this.statsLogPageSize);
+
+    this._renderStatsAgg(d);
+  },
+
+  _renderStatsAgg(d) {
+    const head = document.getElementById('stats-agg-head');
+    const body = document.getElementById('stats-agg-body');
+    if (!head || !body) return;
+    const tab = this.statsAggTab;
+    const rows = tab === 'account' ? (d.byAccount || []) : tab === 'day' ? (d.byDay || []) : (d.byModel || []);
+    const nameKey = tab === 'account' ? 'table.header.account' : tab === 'day' ? 'table.header.day' : 'table.header.model';
+    const th = (key) => `<th class="numeric">${this.esc(I18n.t(key))}</th>`;
+    head.innerHTML = `<tr><th>${this.esc(I18n.t(nameKey))}</th>`
+      + th('table.header.requests') + th('table.header.successRate') + th('table.header.errors')
+      + th('table.header.avg') + th('table.header.p95')
+      + th('table.header.tokensIn') + th('table.header.tokensOut') + th('table.header.cost') + `</tr>`;
+
+    body.innerHTML = rows.map((r) => {
+      const rate = r.requests > 0 ? ((r.success / r.requests) * 100).toFixed(1) : '0.0';
+      const rateColor = Number(rate) >= 95 ? 'var(--success)' : Number(rate) >= 80 ? 'var(--warn)' : 'var(--error)';
+      const name = tab === 'account' ? (r.account || '-') : tab === 'day' ? (r.day || '-') : (r.model || '-');
+      const free = tab === 'model' ? this._statsFreeLabel(r.model) : '';
+      const freeHtml = free ? ` <span class="chip-badge free">${this.esc(free)}</span>` : '';
+      return `<tr>`
+        + `<td>${tab === 'day' ? this.esc(name) : `<code>${this.esc(name)}</code>`}${freeHtml}</td>`
+        + `<td class="numeric">${this.esc(r.requests)}</td>`
+        + `<td class="numeric" style="color:${rateColor};font-weight:600">${rate}%</td>`
+        + `<td class="numeric" style="color:${r.errors > 0 ? 'var(--error)' : 'inherit'}">${this.esc(r.errors)}</td>`
+        + `<td class="numeric">${this.esc(this.fmtMs(r.avgMs))}</td>`
+        + `<td class="numeric">${this.esc(this.fmtMs(r.p95Ms))}</td>`
+        + `<td class="numeric" title="${this.esc(this._statsTokenTitle(r))}">${this.esc(this.fmtTokenCount(r.tokensIn))}</td>`
+        + `<td class="numeric">${this.esc(this.fmtTokenCount(r.tokensOut))}</td>`
+        + `<td class="numeric">${this.esc(this.fmtCredit(r.credits))}</td>`
+        + `</tr>`;
+    }).join('') || `<tr class="empty-row"><td colspan="9">${I18n.t('section.statsLog.empty')}</td></tr>`;
   },
 
   async loadStats() {
@@ -11379,18 +11681,10 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     // credits (integers per request), not USD — we don't fabricate a $ figure.
     const creditsTotal = d.creditsTotal || 0;
     const creditsByModel = d.creditsByModel || {};
-    // Per-model tokens + price annotation. `tokensByModel` is the same request
-    // stream split by model; `modelBilling` is resolved server-side from the live
-    // billing sync (freeNow is tri-state, so null renders no badge rather than
-    // claiming a price nobody reported).
-    const tokensByModel = d.tokensByModel || {};
-    const modelBilling = d.modelBilling || {};
-    const modelFreeLabel = (model) => {
-      const b = modelBilling[model];
-      if (!b || b.freeNow !== true) return '';
-      const date = b.promoEndsAt ? String(b.promoEndsAt).slice(0, 10) : '';
-      return date ? I18n.t('model.freeBadgePromo', { date }) : I18n.t('model.freeBadge');
-    };
+    // Price annotation for the filtered model aggregate: resolved server-side
+    // from the live billing sync (freeNow is tri-state, so null renders no badge
+    // rather than claiming a price nobody reported).
+    this._statsModelBilling = d.modelBilling || {};
     const topCredits = Object.entries(creditsByModel).sort(([, a], [, b]) => b - a).slice(0, 5);
     const maxCredit = topCredits.length ? topCredits[0][1] : 0;
     const todayCredits = (d.creditsByDay || {})[new Date().toISOString().slice(0, 10)] || 0;
@@ -11410,7 +11704,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const fmtCreditsFull = (n) => (Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
     const creditsBars = topCredits.map(([m, c]) => {
       const pct = maxCredit > 0 ? Math.round((c / maxCredit) * 100) : 0;
-      const freeLabel = modelFreeLabel(m);
+      const freeLabel = this._statsFreeLabel(m);
       return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
         <div style="width:40%;font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${this.esc(m)}">${this.esc(m)}${freeLabel ? ` <span class="chip-badge free">${this.esc(freeLabel)}</span>` : ''}</div>
         <div style="flex:1;height:8px;background:var(--surface-3);border-radius:4px;overflow:hidden"><div style="width:${pct}%;height:100%;background:var(--accent);border-radius:4px"></div></div>
@@ -11465,74 +11759,10 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       </div>
     `;
 
-    const models = d.modelCounts || {};
-    const sortedModels = Object.entries(models).sort(([,a],[,b]) => b.requests - a.requests);
-    const tbody = document.querySelector('#model-stats-table tbody');
-    // creditsByModel + totalReq already declared above in this scope (credits
-    // card + stats KPI). Reuse them for the per-model share / credit detail.
-    const modelReqTotal = sortedModels.reduce((a, [, s]) => a + (s.requests || 0), 0);
-    tbody.innerHTML = sortedModels.map(([m, s], i) => {
-      const rate = s.requests > 0 ? ((s.success/s.requests)*100).toFixed(1) : '0.0';
-      const rateColor = Number(rate) >= 95 ? 'var(--success)' : Number(rate) >= 80 ? 'var(--warn)' : 'var(--error)';
-      const share = modelReqTotal > 0 ? ((s.requests / modelReqTotal) * 100).toFixed(1) : '0.0';
-      const credit = creditsByModel[m] || 0;
-      const tokenRow = tokensByModel[m] || null;
-      const billing = modelBilling[m] || null;
-      const freeLabel = modelFreeLabel(m);
-      const freeHint = billing && billing.freeNow === true
-        ? [I18n.t('table.detail.freeHint'), billing.promoLabel,
-          billing.pricingStale ? I18n.t('model.pricingStale') : ''].filter(Boolean).join(' · ')
-        : '';
-      const freeBadgeHtml = freeLabel
-        ? `<span class="chip-badge free"${freeHint ? ` title="${this.esc(freeHint)}"` : ''}>${this.esc(freeLabel)}</span>`
-        : '';
-      const tokenTitle = tokenRow
-        ? `${fmtTok(tokenRow.fresh_input)} in · ${fmtTok(tokenRow.cache_read)} cached · ${fmtTok(tokenRow.cache_write)} cache-write · ${fmtTok(tokenRow.output)} out`
-        : '';
-      const rid = 'mrow-' + i;
-      // Main row is a toggle: click / Enter / Space expands the detail row below
-      // with latency percentiles + tokens + credit spend + request share (moved
-      // out of the main row to keep the overview scannable — details on demand).
-      return `
-      <tr class="model-row" role="button" tabindex="0" aria-expanded="false" data-detail="${rid}"
-          onclick="App.toggleModelRow('${rid}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.toggleModelRow('${rid}')}">
-        <td><span class="row-chevron" aria-hidden="true">▸</span> <code>${this.esc(m)}</code>${freeBadgeHtml}</td>
-        <td>${s.requests}</td>
-        <td style="color:var(--success)">${s.success}</td>
-        <td style="color:${s.errors > 0 ? 'var(--error)' : 'inherit'}">${s.errors}</td>
-        <td style="color:${rateColor};font-weight:600">${rate}%</td>
-      </tr>
-      <tr id="${rid}" class="model-detail-row" hidden>
-        <td colspan="5">
-          <div class="model-detail">
-            <div class="model-detail-item"><span class="mdi-label">${I18n.t('table.detail.avg')}</span><span class="mdi-val">${s.avgMs || 0} ms</span></div>
-            <div class="model-detail-item"><span class="mdi-label">${I18n.t('table.detail.p50')}</span><span class="mdi-val">${s.p50Ms || 0} ms</span></div>
-            <div class="model-detail-item"><span class="mdi-label">${I18n.t('table.detail.p95')}</span><span class="mdi-val">${s.p95Ms || 0} ms</span></div>
-            <div class="model-detail-item"><span class="mdi-label">${I18n.t('table.detail.share')}</span><span class="mdi-val">${share}%</span></div>
-            <div class="model-detail-item"><span class="mdi-label">${I18n.t('table.detail.tokens')}</span><span class="mdi-val" title="${this.esc(tokenTitle)}">${tokenRow ? fmtTok(tokenRow.total) : '—'}</span></div>
-            <div class="model-detail-item"><span class="mdi-label">${I18n.t('table.detail.credit')}</span><span class="mdi-val">${credit ? credit.toFixed(1) : '0'}</span></div>
-          </div>
-        </td>
-      </tr>`;
-    }).join('') || `<tr class="empty-row"><td colspan="5">${I18n.t('table.empty.noRequestData')}</td></tr>`;
-
-    const accounts = d.accountCounts || {};
-    const sortedAccts = Object.entries(accounts).sort(([,a],[,b]) => b.requests - a.requests);
-    const acctBody = document.querySelector('#account-stats-table tbody');
-    if (acctBody) {
-      acctBody.innerHTML = sortedAccts.map(([aid, s]) => {
-        const rate = s.requests > 0 ? ((s.success/s.requests)*100).toFixed(1) : '0.0';
-        return `<tr>
-          <td><code>${this.esc(aid)}</code></td>
-          <td>${s.requests}</td>
-          <td style="color:var(--success)">${s.success}</td>
-          <td style="color:${s.errors > 0 ? 'var(--error)' : 'inherit'}">${s.errors}</td>
-          <td>${rate}%</td>
-        </tr>`;
-      }).join('') || `<tr class="empty-row"><td colspan="5">${I18n.t('table.empty.noAccountRequestData')}</td></tr>`;
-    }
-
     this.renderMainChart(d);
+    // Same poll cadence as the cards/chart; the log is a bounded in-memory
+    // ring, so this is a local read with no upstream cost.
+    this.loadStatsLog();
 
     this.poll('stats', () => this.loadStats(), 30000);
   },

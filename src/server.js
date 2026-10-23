@@ -38,6 +38,7 @@ import { isExperimentalEnabled, getBackendSwitch } from './runtime-config.js';
 import { resolveModel, getModelInfo } from './models.js';
 import { handleDashboardApi, parseProxyUrl, validateProxyHost, verifyAdminRequest } from './dashboard/api.js';
 import { recordRequest, updateRequest } from './dashboard/request-ring.js';
+import { withStatsScope, finalizeStatsScope } from './dashboard/stats.js';
 import { setAccountProxy } from './dashboard/proxy-config.js';
 import { config, log } from './config.js';
 import { getVersionInfo } from './version.js';
@@ -1234,7 +1235,22 @@ export function startServer() {
     activeRequests.add(res);
     res.on('close', () => activeRequests.delete(res));
     try {
-      await route(req, res);
+      // One accounting scope per HTTP request: it joins the attempt row
+      // (recordRequest, called at various depths of the chat handlers) with the
+      // usage block (recordTokenUsage, called at a different depth and possibly
+      // before the row) without relying on a shared "last row" pointer that
+      // concurrent requests would race. The final response status is stamped on
+      // the last attempt before the scope closes.
+      await withStatsScope(async (scope) => {
+        try {
+          await route(req, res);
+        } finally {
+          // A throw before headers is answered by the outer catch below; only a
+          // response that actually went out carries a status worth recording.
+          if (res.headersSent || res.writableEnded) scope.status = res.statusCode;
+          finalizeStatsScope(scope);
+        }
+      });
     } catch (err) {
       log.error('Handler error:', err);
       if (!res.headersSent) {

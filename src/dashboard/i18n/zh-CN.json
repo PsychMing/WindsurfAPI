@@ -173,7 +173,9 @@
     "statsRangeGroup": "统计时间范围",
     "statsChart": "请求量时间序列图",
     "dialog": "对话框",
-    "recentRequests": "最近请求表格"
+    "recentRequests": "最近请求表格",
+    "statsLog": "请求日志表格",
+    "statsAggGroup": "聚合维度"
   },
   "action": {
     "checkUpdate": "检查更新",
@@ -565,6 +567,29 @@
       "refreshTitle": "重新加载最近请求",
       "unavailable": "请求环形缓冲不可用 — 下次概览轮询将重试",
       "meta": "环形缓冲 {{total}} / {{capacity}}"
+    },
+    "statsLog": {
+      "title": "请求日志",
+      "desc": "逐请求明细：时间、模型、账号、状态、延迟、Token 与费用。每次上游尝试一行，费用单位为 Devin credits。",
+      "empty": "当前筛选无请求",
+      "unavailable": "请求日志不可用",
+      "retention": "保留最近 {{stored}} / {{capacity}} 条",
+      "summary": "{{count}} 条请求 · 输入 {{in}} · 输出 {{out}} · 费用 {{credit}}",
+      "tokenTitle": "新增输入 {{fresh}} · 缓存读取 {{read}} · 缓存写入 {{write}}",
+      "filters": {
+        "model": "模型",
+        "account": "账号",
+        "status": "状态",
+        "all": "全部",
+        "reset": "清除筛选"
+      }
+    },
+    "statsAgg": {
+      "title": "聚合统计",
+      "desc": "与请求日志同一筛选窗口；表内合计与日志共用同一分母，不做估算。",
+      "byModel": "按模型",
+      "byAccount": "按账号",
+      "byDay": "按天"
     }
   },
   "help": {
@@ -716,7 +741,11 @@
       "note": "说明",
       "duration": "耗时",
       "class": "分类",
-      "caller": "调用方"
+      "caller": "调用方",
+      "tokensIn": "输入 Token",
+      "tokensOut": "输出 Token",
+      "cost": "费用 (credits)",
+      "day": "日期"
     },
     "detail": {
       "avg": "平均延迟",

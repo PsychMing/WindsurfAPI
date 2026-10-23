@@ -173,7 +173,9 @@
     "statsRangeGroup": "Statistics time range",
     "statsChart": "Request volume time-series chart",
     "dialog": "Dialog",
-    "recentRequests": "Recent requests table"
+    "recentRequests": "Recent requests table",
+    "statsLog": "Request log table",
+    "statsAggGroup": "Aggregate dimension"
   },
   "action": {
     "checkUpdate": "Check Update",
@@ -565,6 +567,29 @@
       "refreshTitle": "Reload the recent request ring",
       "unavailable": "Request ring unavailable — retrying on the next overview poll",
       "meta": "{{total}} / {{capacity}} in ring"
+    },
+    "statsLog": {
+      "title": "Request log",
+      "desc": "Per-request detail: time, model, account, status, latency, tokens and cost. One row per upstream attempt; cost is in Devin credits.",
+      "empty": "No requests match these filters",
+      "unavailable": "Request log unavailable",
+      "retention": "Retaining the latest {{stored}} of {{capacity}} rows",
+      "summary": "{{count}} requests · in {{in}} · out {{out}} · cost {{credit}}",
+      "tokenTitle": "fresh {{fresh}} · cache read {{read}} · cache write {{write}}",
+      "filters": {
+        "model": "Model",
+        "account": "Account",
+        "status": "Status",
+        "all": "All",
+        "reset": "Clear filters"
+      }
+    },
+    "statsAgg": {
+      "title": "Aggregates",
+      "desc": "Same filtered window as the request log; table and totals share one denominator — no estimates.",
+      "byModel": "By model",
+      "byAccount": "By account",
+      "byDay": "By day"
     }
   },
   "help": {
@@ -716,7 +741,11 @@
       "note": "Note",
       "duration": "Duration",
       "class": "Class",
-      "caller": "Caller"
+      "caller": "Caller",
+      "tokensIn": "Tokens In",
+      "tokensOut": "Tokens Out",
+      "cost": "Cost (credits)",
+      "day": "Day"
     },
     "detail": {
       "avg": "Avg latency",
