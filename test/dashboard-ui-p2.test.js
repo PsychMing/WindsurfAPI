@@ -76,6 +76,21 @@ describe('provider swatches (P2-12 / AC-COLOR-1)', () => {
     assert.equal(PROVIDERS.length, 11);
   });
 
+  it('measures text tokens on the raised surfaces, not only --surface', () => {
+    // Mutation check: the old light --text-dim (#71717a) cleared --surface
+    // (4.83) but sat at 4.10 on --surface-2, where the DevIn panel paints its
+    // 10px .dm-stat-label / .dm-req-num. A gate that only reads --surface must
+    // report that mutation, or it certifies a pair it never measured.
+    const mutated = HTML.replace(/--text-dim:\s*#[0-9a-f]{6};/, '--text-dim: #71717a;');
+    assert.notEqual(mutated, HTML, 'the mutation must land on the light token');
+    const { ok, problems } = lintDashboardContrast(mutated);
+    assert.equal(ok, false);
+    assert.ok(
+      problems.some((p) => /^light: --text-dim is .* on --surface-2/.test(p)),
+      `expected a --surface-2 failure, got:\n${problems.join('\n')}`,
+    );
+  });
+
   it('renders swatches from tokens, not an inline hex map', () => {
     assert.ok(!/providerColors/.test(HTML), 'the hardcoded colour map is gone');
     assert.ok(!/provider-swatch" style="background:/.test(HTML), 'no inline background on the swatch');

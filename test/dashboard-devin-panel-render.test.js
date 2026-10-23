@@ -65,12 +65,19 @@ function renderer(name) {
   return new Function('I18n', 'self', '...args', `return (function ${name}${params} ${body}).apply(self, args);`);
 }
 
+function asyncRenderer(name) {
+  const { params, body } = methodParts(name);
+  // eslint-disable-next-line no-new-func -- executing the shipped source is the point
+  return new Function('I18n', '...args', `return (async function ${name}${params} ${body}).apply(this, args);`);
+}
+
 let renderDevinKpis;
 let renderDevinRuntime;
 let renderDevinSessions;
 let renderDevinCatalog;
 let renderDevinQuota;
 let renderDevinSettings;
+let loadDevin;
 before(() => {
   renderDevinKpis = renderer('renderDevinKpis');
   renderDevinRuntime = renderer('renderDevinRuntime');
@@ -78,6 +85,57 @@ before(() => {
   renderDevinCatalog = renderer('renderDevinCatalog');
   renderDevinQuota = renderer('renderDevinQuota');
   renderDevinSettings = renderer('renderDevinSettings');
+  loadDevin = asyncRenderer('loadDevin');
+});
+
+describe('panel snapshot acceptance', () => {
+  const okPanel = { ok: true, runtime: {}, sessions: {}, quota: {} };
+
+  it('rejects the dashboard 500 envelope instead of painting it as an empty snapshot', async () => {
+    // _apiRaw forces success:false onto a non-2xx body; the 500 envelope itself
+    // carries {error:{message}} and no `ok`. It must become the failure card.
+    const ctx = {
+      api: async () => ({ error: { message: 'Internal error', type: 'server_error' }, success: false }),
+      renderDevin() { this.rendered = true; },
+    };
+    await loadDevin.call(ctx);
+    assert.equal(ctx._devinPanel.ok, false);
+    assert.equal(ctx._devinPanel.error, 'Internal error', 'the reason must survive, not [object Object]');
+    assert.equal(ctx.rendered, true, 'the page still repaints, into the failure card');
+  });
+
+  it('rejects an error-shaped body that has no ok/success flag', async () => {
+    const ctx = {
+      api: async () => ({ error: { message: 'boom' } }),
+      renderDevin() {},
+    };
+    await loadDevin.call(ctx);
+    assert.equal(ctx._devinPanel.ok, false);
+    assert.equal(ctx._devinPanel.error, 'boom');
+  });
+
+  it('turns a transport failure into the generic reason', async () => {
+    const ctx = {
+      api: async () => { throw new Error('network down'); },
+      renderDevin() {},
+    };
+    await loadDevin.call(ctx);
+    assert.equal(ctx._devinPanel.ok, false);
+    assert.equal(ctx._devinPanel.error, 'failed');
+  });
+
+  it('accepts the real snapshot and keeps the on-demand reads null', async () => {
+    const ctx = {
+      api: async (method, path) => (path === '/devin/panel'
+        ? okPanel
+        : path === '/models' ? { models: [{ id: 'swe-2' }] } : { synced: true }),
+      renderDevin() {},
+    };
+    await loadDevin.call(ctx);
+    assert.equal(ctx._devinPanel, okPanel);
+    assert.deepEqual(ctx._devinModels, [{ id: 'swe-2' }]);
+    assert.deepEqual(ctx._devinCatalog, { synced: true });
+  });
 });
 
 function runtimePayload(over = {}) {
@@ -230,14 +288,15 @@ describe('sessions section', () => {
     assert.match(html, /i18n:devin\.sessions\.lastHour[\s\S]*?>1</);
   });
 
-  it('shows the pool total and names the scan cap when it bites', () => {
+  it('shows the pool total and names the scanned count in the scan cap', () => {
     const payload = JSON.parse(JSON.stringify(base));
     payload.sessions.turns.scanned = 2;
     payload.sessions.turns.totalAccounts = 600;
     payload.sessions.turns.capped = true;
     const html = renderDevinSessions(I18n, self, payload);
     assert.match(html, /i18n:devin\.sessions\.scanned[\s\S]*?>2 \/ 600</);
-    assert.match(html, /i18n:devin\.sessions\.scanCapped\|total=600/);
+    // The note must say how many were SCANNED (2), not repeat the pool size (600).
+    assert.match(html, /i18n:devin\.sessions\.scanCapped\|scanned=2,total=600/);
   });
 
   it('escapes hostile model text', () => {
@@ -337,6 +396,31 @@ describe('quota section', () => {
     assert.match(html, /13%/, '12.5 rounds to 13%');
     assert.match(html, /swe-2/);
     assert.match(html, /i18n:devin\.quota\.acu\.idle/);
+  });
+
+  it('says the drought was not assessed when coverage is below the threshold', () => {
+    // isDroughtMode() forces active=false when coverage is insufficient
+    // (auth.js:234-240); rendering that as "Clear" contradicts the KPI.
+    const low = {
+      ok: true,
+      quota: {
+        drought: { active: false, coverageMet: false, lowestWeeklyPercent: null, lowestDailyPercent: null },
+        knobs: [],
+      },
+    };
+    const html = renderDevinQuota(I18n, self, low, null);
+    assert.match(html, /i18n:devin\.quota\.unknown/);
+    assert.doesNotMatch(html, /i18n:devin\.quota\.ok/);
+  });
+
+  it('says clear only when coverage is sufficient', () => {
+    const clear = {
+      ok: true,
+      quota: { drought: { active: false, coverageMet: true }, knobs: [] },
+    };
+    const html = renderDevinQuota(I18n, self, clear, null);
+    assert.match(html, /i18n:devin\.quota\.ok/);
+    assert.doesNotMatch(html, /i18n:devin\.quota\.unknown/);
   });
 
   it('renders the workspace ACU cards when the operator loaded them', () => {
