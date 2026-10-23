@@ -40,6 +40,7 @@ import {
   refreshAccountBilling,
   refreshAllBilling,
   removeAccount,
+  trySyncModelCatalog,
   __waitForModelCatalogSync,
 } from '../src/auth.js';
 
@@ -267,6 +268,33 @@ describe('periodic refresh (refreshAccountBilling)', () => {
     const retried = await refreshAccountBilling(account.id, { now: t0 + 1_000 });
     assert.equal(retried.ok, true);
     assert.equal(fetchCalls, 1);
+  });
+});
+
+describe('the catalog latch does not gate billing', () => {
+  // _modelCatalogSyncedKeys exists so a repeated trySyncModelCatalog does not
+  // re-spend the RPC. The billing refresh must NOT ride that latch (that is the
+  // bug this feature fixes), and must not SET it either — otherwise a billing
+  // refresh would convince the catalog sync it had already run.
+  it('a second catalog sync stays latched while the billing refresh still fetches', async () => {
+    const account = seedAccount();
+    await settle();
+    fetchResponse = { configs: [config('swe-2-medium', { credit: 6 })] };
+
+    trySyncModelCatalog();
+    await __waitForModelCatalogSync();
+    assert.equal(fetchCalls, 0, 'the per-key latch still short-circuits a repeat catalog sync');
+
+    const refreshed = await refreshAccountBilling(account.id, { force: true, now: 1_800_000_000_000 });
+    assert.equal(refreshed.ok, true);
+    assert.equal(fetchCalls, 1, 'the billing path is independent of the catalog latch');
+
+    // And the billing refresh did not latch the catalog: a fresh key-less account
+    // sync still runs (proved by the count going up once the key changes).
+    getAccountInternal(account.id).apiKey = `${account.apiKey}-rotated`;
+    trySyncModelCatalog();
+    await __waitForModelCatalogSync();
+    assert.equal(fetchCalls, 2, 'a rotated key is a new catalog identity, not a latched one');
   });
 });
 

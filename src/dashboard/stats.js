@@ -85,7 +85,8 @@ function boundedModelKey(model) {
  * No-op when MAX_MODELS is 0 (unbounded).
  */
 function enforceModelCap(reserveSlot = true, modelCounts = _state.modelCounts) {
-  if (MAX_MODELS <= 0) return;
+  const evicted = [];
+  if (MAX_MODELS <= 0) return evicted;
   while (realModelKeyCount(modelCounts) > MAX_MODELS - (reserveSlot ? 1 : 0)) {
     let coldestKey = null;
     let coldestTs = Infinity;
@@ -97,24 +98,32 @@ function enforceModelCap(reserveSlot = true, modelCounts = _state.modelCounts) {
     if (coldestKey == null) break;
     foldIntoOther(modelCounts[coldestKey], modelCounts);
     delete modelCounts[coldestKey];
+    evicted.push(coldestKey);
   }
-  // Only the live state owns the live token map; an import validates its own copy.
-  if (modelCounts === _state.modelCounts) pruneTokensToModelCounts(modelCounts);
+  // Only the live state owns the live token map, and only the keys THIS call
+  // evicted may be folded: a token row can legitimately exist before its request
+  // row (recordTokenUsage runs first on several chat paths), so sweeping every
+  // key absent from modelCounts would misfile a live model under '(other)'.
+  if (modelCounts === _state.modelCounts && evicted.length) {
+    pruneTokensToModelCounts(evicted, modelCounts);
+  }
+  return evicted;
 }
 
 /**
- * Keep the per-model token map inside the same key set as the request table.
+ * Fold the given models' token rows into '(other)'.
  *
- * Evicting a model from modelCounts must not leave its token row behind: the
- * dashboard joins the two by key, and an orphan would render a model that "moved
- * 2M tokens" while the request table says it never ran. Folded into '(other)',
- * which is where the request counts went.
+ * Used for keys the request table actually lost (LRU eviction, or an imported
+ * snapshot whose cap dropped them). The dashboard joins the two maps by key, and
+ * an orphan would render a model that "moved 2M tokens" while the request table
+ * says it never ran.
  */
-function pruneTokensToModelCounts(modelCounts = _state.modelCounts, tokens = _state.tokensByModel) {
+function pruneTokensToModelCounts(keys, modelCounts = _state.modelCounts, tokens = _state.tokensByModel) {
   if (!tokens || typeof tokens !== 'object') return;
-  for (const key of Object.keys(tokens)) {
+  for (const key of keys || []) {
     if (key === OTHER_MODEL_KEY) continue;
     if (Object.hasOwn(modelCounts, key)) continue;
+    if (!Object.hasOwn(tokens, key)) continue;
     const dst = tokens[OTHER_MODEL_KEY] || {
       fresh_input: 0, cache_read: 0, cache_write: 0, output: 0, total: 0, requests_with_usage: 0,
     };
@@ -491,7 +500,7 @@ export function importStats(snap, { mode = 'merge' } = {}) {
     pruneKeyed(next.creditsByHour, 720);
     pruneKeyed(next.creditsByDay, 90);
     enforceModelCap(false, next.modelCounts);
-    pruneTokensToModelCounts(next.modelCounts, next.tokensByModel);
+    pruneTokensToModelCounts(Object.keys(next.tokensByModel || {}), next.modelCounts, next.tokensByModel);
     next = normalizeStatsSnapshot(next); // Also reject numeric overflow from merging.
   } catch {
     return { ok: false, error: 'invalid snapshot' };

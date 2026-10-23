@@ -4987,6 +4987,26 @@ export async function refreshAllBilling({ force = false, now = Date.now() } = {}
   return results;
 }
 
+/**
+ * Arm the periodic billing refresh. Returns the interval handle, or null when the
+ * cadence is disabled (BILLING_SYNC_INTERVAL_MS=0).
+ *
+ * Split out of initAuth so the "0 disables it" contract is testable without
+ * booting a server: the property that matters is that NOTHING is scheduled, and a
+ * test seam for setInterval is the only way to assert an absence.
+ */
+export function armBillingSyncTimer({
+  setIntervalImpl = setInterval,
+  intervalMs = billingSyncIntervalMs(),
+  refresh = refreshAllBilling,
+} = {}) {
+  if (!(intervalMs > 0)) return null;
+  refresh().catch(e => log.warn(`Initial billing sync: ${e.message}`));
+  return setIntervalImpl(() => {
+    refresh().catch(e => log.warn(`Scheduled billing sync: ${e.message}`));
+  }, intervalMs);
+}
+
 /** Test seam: forget the per-account cadence stamps. */
 export function __resetBillingSyncState() {
   _billingSyncAt.clear();
@@ -5806,13 +5826,7 @@ export async function initAuth() {
   // once per API key, so without this a promotion starting after the first sync
   // was never seen. Cadence is its own knob so an operator can slow it down (or
   // disable it with 0) without touching credit refresh.
-  const BILLING_SYNC_INTERVAL = billingSyncIntervalMs();
-  if (BILLING_SYNC_INTERVAL > 0) {
-    refreshAllBilling().catch(e => log.warn(`Initial billing sync: ${e.message}`));
-    setInterval(() => {
-      refreshAllBilling().catch(e => log.warn(`Scheduled billing sync: ${e.message}`));
-    }, BILLING_SYNC_INTERVAL).unref?.();
-  }
+  armBillingSyncTimer()?.unref?.();
 
   // Fetch live model catalog from cloud and merge into hardcoded catalog.
   // Fire-and-forget — the hardcoded catalog is sufficient until this completes.
