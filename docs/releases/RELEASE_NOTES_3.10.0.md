@@ -40,8 +40,8 @@
 ## 工程与门禁
 
 - 合入分支：`fix/sec-310` `1dae047`、`fix/ui-p2` `b0c2b27`、`test/detach-soak-patches` `6a2e40c`、`test/smoke-expand` `2715b61`、`fix/detach-p2` `5cd6271`。
-- Windows `npm run gate`：**PASS**；`npm run test:release` **6,238 pass / 0 fail / 95 skip（513 文件）**。
-- Linux `npm run test:release`（HMC，Node v24.21.0，513 文件）：**6,328 pass / 0 fail / 5 skip**。
+- Windows `npm run gate`：**PASS**；`npm run test:release` **6,346 pass / 0 fail / 97 skip（525 文件）**。
+- Linux `npm run test:release`（HMC，Node v24.21.0，525 文件）：**6,439 pass / 0 fail / 5 skip**。
 - Node 22.23.4 矩阵（HMC，同一 clone）：**6,328 pass / 0 fail / 5 skip**，与 Node 24 完全一致。
 - wire：对 `v3.9.60`（`d449895`）比较 **270/270**。
 - mutation：全部 **88 个规格 exit 0**（含 detach soak/addendum；无 survivor）。
