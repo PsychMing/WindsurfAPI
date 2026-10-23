@@ -571,7 +571,6 @@
       "unavailable": "请求环形缓冲不可用 — 下次概览轮询将重试",
       "meta": "环形缓冲 {{total}} / {{capacity}}"
     },
-<<<<<<< HEAD
     "statsLog": {
       "title": "请求日志",
       "desc": "逐请求明细：时间、模型、账号、状态、延迟、Token 与费用。每次上游尝试一行，费用单位为 Devin credits。",
@@ -594,7 +593,7 @@
       "byModel": "按模型",
       "byAccount": "按账号",
       "byDay": "按天"
-=======
+    },
     "devin": {
       "runtime": {
         "title": "运行时",
@@ -616,7 +615,6 @@
         "title": "设置",
         "desc": "Devin 相关开关的实际生效值与来源；写入入口在全局设置页。配额/按量策略可直接在此保存。"
       }
->>>>>>> feat/devin-panel
     }
   },
   "help": {

@@ -571,7 +571,6 @@
       "unavailable": "Request ring unavailable — retrying on the next overview poll",
       "meta": "{{total}} / {{capacity}} in ring"
     },
-<<<<<<< HEAD
     "statsLog": {
       "title": "Request log",
       "desc": "Per-request detail: time, model, account, status, latency, tokens and cost. One row per upstream attempt; cost is in Devin credits.",
@@ -594,7 +593,7 @@
       "byModel": "By model",
       "byAccount": "By account",
       "byDay": "By day"
-=======
+    },
     "devin": {
       "runtime": {
         "title": "Runtime",
@@ -616,7 +615,6 @@
         "title": "Settings",
         "desc": "Effective values and sources of the Devin switches; the write path stays on the Settings page. Quota/on-demand policy can be saved here."
       }
->>>>>>> feat/devin-panel
     }
   },
   "help": {
