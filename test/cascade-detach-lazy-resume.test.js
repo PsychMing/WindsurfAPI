@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import http2 from 'node:http2';
 import { endOfStreamEnvelope, unwrapRequest, wrapEnvelope } from '../src/connect.js';
 import { getField, parseFields, writeMessageField, writeStringField, writeVarintField } from '../src/proto.js';
+import { createRequestBudget } from '../src/request-budget.js';
 
 // Module-level env (client.js snapshots CASCADE_TIMEOUTS, grpc.js snapshots
 // GRPC_PROTOCOL). Both switches are on for this file; the flag-off parity test
@@ -137,6 +138,7 @@ function cascadeUpstream({ initialText = PREFIX, toolCall = null, thinkingOnly =
     status: 'active',
     failNextSteps: 0,
     resumeDelayMs: 0,
+    metadataDelayMs: 0,
     firstResumeRead: true,
     stepsFor: null, // optional (offset) => Buffer
   };
@@ -150,6 +152,19 @@ function cascadeUpstream({ initialText = PREFIX, toolCall = null, thinkingOnly =
       const respond = (body) => {
         stream.respond({ ':status': 200, 'content-type': contentType });
         stream.end(responseBody(body, headers));
+      };
+      // A delayed reply can outlive the caller's budget: the producer bounds
+      // the trajectory read by the remaining request time, so it cancels the
+      // RPC and Node rejects respond() on the closed stream. That is the
+      // expected shape of the deadline tests, not a fake-server bug.
+      const respondLater = (delay, body) => {
+        const timer = setTimeout(() => {
+          if (stream.destroyed || stream.closed) return;
+          try { respond(body); } catch { /* stream already cancelled */ }
+        }, delay);
+        // A cancelled read must not keep the test process alive for the full
+        // delay; an awaited metadata read keeps the loop alive on its own.
+        timer.unref?.();
       };
 
       if (method === 'StartCascade') {
@@ -185,7 +200,7 @@ function cascadeUpstream({ initialText = PREFIX, toolCall = null, thinkingOnly =
           return rawStepsResponse(offset === 0 ? [step] : []);
         };
         if (delay > 0) {
-          setTimeout(() => respond(bodyFor()), delay);
+          respondLater(delay, bodyFor());
         } else {
           respond(bodyFor());
         }
@@ -203,9 +218,11 @@ function cascadeUpstream({ initialText = PREFIX, toolCall = null, thinkingOnly =
         // Offset 0 reports THREE records (the whole cascade history); offset 7
         // reports ONE (the current turn only). A resume that forgets the
         // snapshot offset over-bills by the difference.
-        respond(metadataResponse(offset === 0
+        const body = metadataResponse(offset === 0
           ? [metadataEntry(100, 10), metadataEntry(100, 10), metadataEntry(100, 10)]
-          : [metadataEntry(100, 10)]));
+          : [metadataEntry(100, 10)]);
+        if (state.metadataDelayMs > 0) respondLater(state.metadataDelayMs, body);
+        else respond(body);
         return;
       }
       respond(Buffer.alloc(0));
@@ -415,6 +432,28 @@ function detachKeyOf(body, callerKey = 'session:detach-lazy-resume') {
     stop: [],
     displayModel: body.model,
   });
+}
+
+/**
+ * Replace the entry under `key` with the same frozen snapshot but a new
+ * absolute deadline. Admission arms the registry timer at that deadline;
+ * mutating `entry.deadline` afterwards would leave the old timer armed.
+ */
+function readmitWithDeadline(key, callerKey, frozen, deadlineMs) {
+  const current = registry.detachedRegistry.lookup(key, callerKey);
+  if (current) {
+    assert.equal(registry.detachedRegistry.evict(key, 'resume_miss', current), true,
+      'precondition: the current entry is the one being replaced');
+  }
+  const admitted = registry.detachedRegistry.admit({
+    key,
+    callerKey,
+    snapshot: frozen.snapshot,
+    cause: 'client_gone',
+    pin: { ...frozen.pin, deadline: Date.now() + deadlineMs, startedAt: Date.now() },
+  });
+  assert.ok(admitted.token, `re-admission refused: ${admitted.refused}`);
+  return admitted;
 }
 
 function contentOf(state) {
@@ -1145,6 +1184,168 @@ describe('Detach P1 claim discipline', () => {
       assert.equal(registry.detachedRegistry.stats().serve, 0);
       assert.equal(lsFake.activeRequests, 0, 'the claim lease must be released on the deadline path');
       void state;
+    });
+  });
+});
+
+// ── T27–T29: claim deadline races (GPT review F1) ───────────
+// The registry timer deletes a claim at the original request deadline. The
+// producer must observe that loss: a read bounded by the remaining budget, an
+// ownership check after the await and at the replay boundary, and a terminal
+// commit gated on release() returning true. Billing still follows the entry's
+// stable account id even when the claim died mid-turn.
+describe('Detach P1 claim deadline races', () => {
+  it('claim_deadline_during_delayed_first_trajectory_read_never_commits_success_without_ownership', async () => {
+    const acct = seedAccount('t27');
+    createdIds.push(acct.id);
+    const { state, handler } = cascadeUpstream();
+    await withFakeLanguageServer(handler, async (port) => {
+      const lsFake = makeLsFake(port);
+      const body = bodyFor('t27');
+      const ctx = handlerContext(port, acct, lsFake);
+      await runToCompletion(body, ctx, { closeAfterWrites: 2 });
+      assert.equal(registry.detachedRegistry.stats().admit, 1, 'precondition: a snapshot was frozen');
+
+      const key = detachKeyOf(body);
+      const frozen = registry.detachedRegistry.lookup(key, ctx.callerKey);
+      assert.ok(frozen);
+      // 120 ms is all the claim has; the first resume read takes 450 ms.
+      readmitWithDeadline(key, ctx.callerKey, frozen, 120);
+
+      state.status = 'idle';
+      state.grown = true;
+      state.firstResumeRead = true;
+      state.resumeDelayMs = 450;
+
+      const deadline0 = registry.detachedRegistry.stats().evict.deadline;
+      const serve0 = registry.detachedRegistry.stats().serve;
+      const billed0 = registry.detachedRegistry.stats().billed_detached;
+      const starts0 = state.startCalls;
+      // No fallback turn: the only possible answer is the claim, and its
+      // deadline ends while the trajectory read is in flight.
+      const budget = createRequestBudget({ deadlineMs: 5_000, upstreamTurnCap: 0 });
+      const { state: resState } = await runToCompletion(
+        body, handlerContext(port, acct, lsFake, { budget }), {},
+      );
+
+      assert.equal(registry.detachedRegistry.stats().serve - serve0, 0,
+        'a claim past its deadline must never be served');
+      assert.equal(registry.detachedRegistry.stats().evict.deadline - deadline0, 1,
+        'the deadline ends the claim exactly once');
+      assert.equal(registry.detachedRegistry.stats().entries, 0);
+      assert.equal(state.startCalls, starts0,
+        'a lost claim must not be replaced by a fresh upstream turn in this request');
+      assert.ok(!resState.body.includes('[DONE]'),
+        'no success sentinel may be written for a claim the registry no longer owns');
+      assert.ok(!contentOf(resState).includes(GROWTH),
+        'the delayed read must not replay growth after the deadline');
+      assert.equal(resState.writableEnded, true);
+      assert.equal(lsFake.activeRequests, 0, 'the request lease is released');
+      // The read was cancelled by the remaining budget, so there is no server
+      // usage to settle here; the completed-turn settlement is pinned by the
+      // metadata-race test below.
+      assert.equal(registry.detachedRegistry.stats().billed_detached - billed0, 0);
+
+      // Positive control: the same snapshot with a live deadline is served,
+      // and the 330-token settlement still lands on the owner.
+      state.firstResumeRead = true;
+      state.resumeDelayMs = 0;
+      readmitWithDeadline(key, ctx.callerKey, frozen, 60_000);
+      const spend0 = spendOf(acct);
+      const { state: servedState } = await runToCompletion(body, handlerContext(port, acct, lsFake), {});
+      assert.equal(registry.detachedRegistry.stats().serve - serve0, 1,
+        'the in-time control is served');
+      assert.equal(contentOf(servedState), FULL_TEXT);
+      assert.equal(spendOf(acct) - spend0, 330,
+        'the in-time resume still bills the owner by stable identity');
+    });
+  });
+
+  it('claim_evicted_during_first_trajectory_read_never_replays', async () => {
+    const acct = seedAccount('t29');
+    createdIds.push(acct.id);
+    const { state, handler } = cascadeUpstream();
+    await withFakeLanguageServer(handler, async (port) => {
+      const lsFake = makeLsFake(port);
+      const body = bodyFor('t29');
+      const ctx = handlerContext(port, acct, lsFake);
+      await runToCompletion(body, ctx, { closeAfterWrites: 2 });
+      const key = detachKeyOf(body);
+      assert.ok(registry.detachedRegistry.lookup(key, ctx.callerKey));
+
+      state.status = 'idle';
+      state.grown = true;
+      state.firstResumeRead = true;
+      state.resumeDelayMs = 200;
+
+      const serve0 = registry.detachedRegistry.stats().serve;
+      const removed0 = registry.detachedRegistry.stats().evict.account_removed;
+      const starts0 = state.startCalls;
+      const budget = createRequestBudget({ deadlineMs: 5_000, upstreamTurnCap: 0 });
+      const run = runToCompletion(body, handlerContext(port, acct, lsFake, { budget }), {});
+      // Evict the claim while the read is in flight. The post-await ownership
+      // check must stop the producer before the prefix replay.
+      const evicted = await waitFor(() => {
+        if (registry.detachedRegistry.lookup(key, ctx.callerKey)?.state !== 'claimed') return false;
+        return registry.detachedRegistry.evictForAccount(acct.id) === 1;
+      }, 1000);
+      assert.equal(evicted, true, 'precondition: the claim was evicted during the read');
+      const { state: resState } = await run;
+
+      assert.equal(registry.detachedRegistry.stats().serve - serve0, 0);
+      assert.equal(registry.detachedRegistry.stats().evict.account_removed - removed0, 1);
+      assert.equal(state.startCalls, starts0, 'no fresh upstream turn (turn cap 0)');
+      assert.ok(!resState.body.includes(PREFIX),
+        'not one byte of the frozen prefix may be replayed without ownership');
+      assert.ok(!resState.body.includes('[DONE]'));
+      assert.equal(lsFake.activeRequests, 0);
+    });
+  });
+
+  it('claim_deadline_after_last_read_still_settles_usage_without_committing_success', async () => {
+    const acct = seedAccount('t28');
+    createdIds.push(acct.id);
+    const { state, handler } = cascadeUpstream();
+    await withFakeLanguageServer(handler, async (port) => {
+      const lsFake = makeLsFake(port);
+      const body = bodyFor('t28');
+      const ctx = handlerContext(port, acct, lsFake);
+      await runToCompletion(body, ctx, { closeAfterWrites: 2 });
+      const key = detachKeyOf(body);
+      const frozen = registry.detachedRegistry.lookup(key, ctx.callerKey);
+      assert.ok(frozen);
+      readmitWithDeadline(key, ctx.callerKey, frozen, 120);
+
+      state.status = 'idle';
+      state.grown = true;
+      state.firstResumeRead = true;
+      state.resumeDelayMs = 0;
+      // The trajectory reads finish inside the deadline; the post-loop usage
+      // RPC outlives it. The claim dies after the turn completed upstream.
+      state.metadataDelayMs = 300;
+
+      const deadline0 = registry.detachedRegistry.stats().evict.deadline;
+      const serve0 = registry.detachedRegistry.stats().serve;
+      const billed0 = registry.detachedRegistry.stats().billed_detached;
+      const spend0 = spendOf(acct);
+      const budget = createRequestBudget({ deadlineMs: 5_000, upstreamTurnCap: 0 });
+      const { state: resState } = await runToCompletion(
+        body, handlerContext(port, acct, lsFake, { budget }), {},
+      );
+
+      assert.equal(registry.detachedRegistry.stats().serve - serve0, 0,
+        'the deadline ended the claim before the success commit');
+      assert.equal(registry.detachedRegistry.stats().evict.deadline - deadline0, 1);
+      assert.equal(registry.detachedRegistry.stats().billed_detached - billed0, 1,
+        'the completed upstream turn is still settled');
+      assert.equal(spendOf(acct) - spend0, 330,
+        'the 330-token settlement must not be dropped by the ownership gate');
+      assert.ok(contentOf(resState).includes(GROWTH),
+        'precondition: the turn streamed before its claim ended');
+      assert.ok(!resState.body.includes('[DONE]'),
+        'no success sentinel after the claim deadline');
+      assert.equal(registry.detachedRegistry.stats().entries, 0);
+      assert.equal(lsFake.activeRequests, 0);
     });
   });
 });

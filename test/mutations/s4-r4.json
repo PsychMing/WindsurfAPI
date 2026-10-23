@@ -6,7 +6,7 @@
     {
       "name": "Independent DONE stage is disabled",
       "file": "src/handlers/chat.js",
-      "anchor": "          if (emittedClientPayload) writeRaw('data: [DONE]\\n\\n');",
+      "anchor": "          if (emittedClientPayload && !claimLost) writeRaw('data: [DONE]\\n\\n');",
       "replacement": "          // Mutant: omit terminal sentinel.",
       "expectCaught": true
     },
