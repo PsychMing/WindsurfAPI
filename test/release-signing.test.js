@@ -74,7 +74,7 @@ function writeDownload(dir, { tamper = null, manifestExtra = '' } = {}) {
     writeFileSync(join(dir, name), body);
   }
   for (const name of [...RELEASE_ASSETS, MANIFEST_NAME]) {
-    for (const suffix of ['.sig', '.pem', '.sigstore.json']) {
+    for (const suffix of ['.sigstore.json']) {
       writeFileSync(join(dir, `${name}${suffix}`), `signature material for ${name}\n`);
     }
   }
@@ -125,16 +125,16 @@ describe('release signing workflow', () => {
     assert.match(signStep, /--yes\b/, 'keyless signing is non-interactive');
     assert.match(signStep, /--bundle\s+"\$\{base\}\.sigstore\.json"/,
       'the bundle carries the Rekor proof that survives certificate expiry');
-    assert.match(signStep, /--output-signature\s+"\$\{base\}\.sig"/);
-    assert.match(signStep, /--output-certificate\s+"\$\{base\}\.pem"/);
-    assert.match(signStep, /\[ -s "\$f" \]/, 'empty signature artifacts must fail the release');
+    assert.doesNotMatch(signStep, /--output-signature|--output-certificate/,
+      'cosign v3 warns these flags away and ignores them; the bundle is the artifact');
+    assert.match(signStep, /\[ -s "\$f" \]/, 'empty signature bundles must fail the release');
     assert.doesNotMatch(signStep, /--key\b/,
       'keyless signing must not reference a private key');
   });
 
-  it('uploads .sig, .pem and .sigstore.json for every signed file', () => {
+  it('uploads the .sigstore.json bundle for every signed file', () => {
     const files = /files: \|([\s\S]*)$/.exec(release)[1];
-    for (const pattern of ['*.sig', '*.pem', '*.sigstore.json']) {
+    for (const pattern of ['*.sigstore.json']) {
       assert.ok(files.includes(pattern), `the release must publish ${pattern}`);
     }
     for (const [path] of SIGNED_FILES) {
@@ -259,10 +259,10 @@ describe('verify-release-assets directory verification', () => {
 
   it('rejects an incomplete download before trusting any signature', async () => {
     const dir = fixture();
-    unlinkSync(join(dir, 'windsurfapi.exe.pem'));
+    unlinkSync(join(dir, 'windsurfapi.exe.sigstore.json'));
     await assert.rejects(
       verifyDirectory(dir, { runCosign: () => {} }),
-      /missing release files .*windsurfapi\.exe\.pem/,
+      /missing release files .*windsurfapi\.exe\.sigstore\.json/,
     );
   });
 

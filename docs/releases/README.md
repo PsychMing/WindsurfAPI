@@ -109,8 +109,9 @@ comes from the matching file in this folder.
 ### Release assets and verification
 
 The release job attaches four assets plus `SHA256SUMS`, and — from v3.10.0 —
-cosign keyless signatures for each of the five signed blobs (`<name>.sig`,
-`<name>.pem`, `<name>.sigstore.json`). The manifest uses the **flat asset names**
+cosign keyless signature bundles for each of the five signed blobs
+(`<name>.sigstore.json` — signature, Fulcio certificate and Rekor proof in one
+file; since v3.10.0 this is the only signature artifact attached). The manifest uses the **flat asset names**
 (`windsurfapi.exe`, `windsurfapi-windows.zip`, `windsurfapi-macos-arm64`,
 `windsurfapi-macos.zip`), so `sha256sum -c SHA256SUMS` works in the directory
 where the files were downloaded. Do not change it back to build-tree paths
