@@ -149,14 +149,14 @@
     {
       "name": "the static whitelist becomes a union again over live cost-tier data",
       "file": "src/auth.js",
-      "anchor": "  } else if (hasLiveCostData || rateFree) {",
-      "replacement": "  } else if (rateFree) {"
+      "anchor": "  if (costFree === null && rateFree === null) return [...FREE_REACHABLE_SELECTORS];",
+      "replacement": "  if (costFree === null || rateFree === null) return [...FREE_REACHABLE_SELECTORS];"
     },
     {
       "name": "the cost tier is ignored when deciding whether a selector is free",
       "file": "src/auth.js",
-      "anchor": "  const costFree = costInfo ? isCostTierFreeNow(costInfo) : false;",
-      "replacement": "  const costFree = false;"
+      "anchor": "  const costFree = getCloudCostTierFreeSelectors();",
+      "replacement": "  const costFree = null;"
     },
     {
       "name": "a promo end date is ignored — an expired promotion stays free",
