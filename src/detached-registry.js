@@ -304,6 +304,21 @@ export class DetachedRegistry {
       this.counters.refuse.busy++;
       return { refused: 'busy' };
     }
+
+    // Validate the NEW snapshot's size BEFORE mutating anything. A refused
+    // admission must not delete the same-key entry (supersede) or evict
+    // capacity entries: those belong to live callers whose retries depend on
+    // them, and destroying them for an entry that is never admitted turns a
+    // refusal into a second caller's resume miss. The total check credits the
+    // bytes the superseded entry would free; capacity evictions are NOT
+    // credited because they must not run for an admission that is refused.
+    const bytes = snapshotBytes(snapshot, pin);
+    const existingBytes = existing ? existing.bytes : 0;
+    if (bytes > this.maxEntryBytes || this.totalBytes - existingBytes + bytes > this.maxTotalBytes) {
+      this.counters.refuse.over_bytes++;
+      return { refused: 'over_bytes' };
+    }
+
     if (existing) this.#delete(existing, 'superseded');
 
     if (this.#callerCount(callerKey) >= this.maxPerCaller) {
@@ -319,12 +334,6 @@ export class DetachedRegistry {
         this.counters.refuse.over_entries++;
         return { refused: 'over_entries' };
       }
-    }
-
-    const bytes = snapshotBytes(snapshot, pin);
-    if (bytes > this.maxEntryBytes || this.totalBytes + bytes > this.maxTotalBytes) {
-      this.counters.refuse.over_bytes++;
-      return { refused: 'over_bytes' };
     }
 
     const token = randomUUID();

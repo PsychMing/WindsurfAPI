@@ -10,11 +10,12 @@ async function run(options = {}) {
     .replace(/\r\n/g, '\n');
   const start = source.indexOf('        // All attempts failed\n');
   // Detach P1 added a claim-release safety net at the TOP of the enclosing
-  // finally (before unregisterSse). Anchor on the NEW finally block so the
-  // slice still ends exactly where the failure continuation ends and executes
-  // the real code, not a stale copy.
+  // finally (before unregisterSse). The detach P2 fix then added a catch that
+  // closes the socket on a synchronous throw, so the failure continuation now
+  // ends at that catch. Anchor on it so the slice still ends exactly where the
+  // failure continuation ends and executes the real code, not a stale copy.
   const end = source.indexOf(
-    '      } finally {\n        // Safety net: every normal path above releases its claim (served or',
+    '      } catch (err) {\n        // A synchronous throw before any terminal frame',
     start,
   );
   assert.ok(start >= 0 && end > start, 'execute the actual failure continuation, not a copied decision tree');
