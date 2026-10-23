@@ -193,6 +193,27 @@ describe('fleet job payload (AC-FLEET-2)', () => {
     assert.ok(snapshot.items.every((item) => Number.isFinite(item.at) && item.at > 0),
       'every attempt carries the time it ran');
   });
+
+  it('runs only the caller-selected ids, and de-dupes them', async () => {
+    // "Run on the checked rows" must not become "run on the pool": the route
+    // forwards `ids` from the selection bar, and a dropped list would refresh
+    // every account behind the operator's back.
+    const picked = add('ids-picked');
+    const other = add('ids-other');
+    const seen = [];
+    const job = startFleetJob({
+      op: 'refresh',
+      ids: [picked.id, picked.id, 'ghost-id'],
+      ops: { refresh: async (a) => { seen.push(a.id); return { ok: true, email: a.email }; } },
+    });
+    await job.promise;
+
+    assert.deepEqual(seen, [picked.id], 'only the selected, existing account runs (once)');
+    assert.ok(!seen.includes(other.id), 'an unselected account was refreshed');
+    assert.equal(job.total, 1);
+    assert.equal(job.requested, 3, 'the requested count is what the caller sent');
+    assert.equal(job.excluded, 0, 'an explicit selection is not a pool sweep');
+  });
 });
 
 describe('fleet routes', () => {
