@@ -14,58 +14,60 @@
 <style>
 :root {
   color-scheme: light;     /* native controls (date pickers, scrollbars) = light */
-  /* ── Workshop Paper · light (workbuddy tokens via UIResearch §2.1 / UIPlan
-     card A). Ratios measured 2026-10-22 with WCAG 2.2 sRGB math; see
-     evidence/AccountUI.md for the badge-pair proof. ── */
-  --paper:      #efebe0;
-  --paper-2:    #e9e5d6;
-  --paper-3:    #e0dbc9;
-  --ink:        #1f1e1b;
-  --ink-soft:   #3a3833;
-  --mid-gray:   #6a675e;
+  /* ── Cool-neutral light theme (pre-workbuddy KiroStudio palette: zinc
+     greys, clay accent — no warm cast). Ratios measured 2026-10-23 with
+     WCAG 2.2 sRGB math; see evidence/ThemeRevert.md for the restored /
+     AA-adjusted pairs. ── */
+  --paper:      #f4f4f5;   /* neutral grey-white main background */
+  --paper-2:    #ececee;   /* secondary surface */
+  --paper-3:    #e2e2e5;   /* faint zone base */
+  --ink:        #18181b;   /* neutral near-black (zinc-900) */
+  --ink-soft:   #3f3f46;
+  --mid-gray:   #a1a1aa;
 
   /* legacy var names kept (referenced site-wide), remapped to new semantics */
   --bg: var(--paper);
-  --bg-elev: var(--paper-2);
-  --surface: #ffffff;      /* 1.19 vs paper */
-  --surface-2: #e9e5d6;    /* 1.26 vs surface */
-  --surface-3: #e0dbc9;    /* 1.10 vs surface-2 */
-  --border: #d5cfbc;
-  --border-strong: #c5bfab;
-  --text: var(--ink);      /* 16.67 on surface */
-  --text-muted: #5c5a52;   /* 6.91 on surface */
-  --text-dim: #6a675e;     /* 5.65 on surface — was #a1a1aa (2.56 FAIL) */
-  --text-faint: #a19d92;   /* disabled + decorative only, never body copy */
+  --bg-elev: var(--paper);
+  --surface: #ffffff;
+  --surface-2: var(--paper-2);
+  --surface-3: var(--paper-3);
+  --border: rgba(24,24,27,.10);
+  --border-strong: rgba(24,24,27,.18);
+  --text: var(--ink);
+  --text-muted: #52525b;
+  --text-dim: #71717a;     /* 4.83 on surface — was #a1a1aa (2.56 FAIL) */
+  --text-faint: #a1a1aa;   /* disabled + decorative only, never body copy */
 
-  --accent: #a14427;       /* 6.23 surface / 5.06 accent-soft */
-  --accent-hover: #8a3a20;
-  --accent-soft: rgba(161,68,39,.14);
-  --on-accent: #ffffff;    /* 6.23 on accent */
-  --blue: #4a6f96;
-  --green: #3f6428;
-  --success: #3f6428;      /* 6.85 */
-  --success-soft: rgba(63,100,40,.14);
-  --warn: #8a5a12;         /* 5.91 */
-  --warn-soft: rgba(138,90,18,.14);
-  --error: #a33a2f;        /* 6.56 */
-  --error-soft: rgba(163,58,47,.14);
-  --info: #3f6389;         /* 6.25 */
-  --info-soft: rgba(63,99,137,.14);
-  --think: #6f4f7c;        /* 6.81 */
-  --think-soft: rgba(111,79,124,.12);
-  --tip-bg: #1f1e1b;
-  --tip-fg: #f6f2ea;
-  --tip-border: rgba(246,242,234,.16);
-  /* Overlay scrims — warm ink, not the old slate rgba(15,23,42). */
-  --scrim: rgba(31,30,27,.45);
-  --scrim-strong: rgba(31,30,27,.70);
+  /* Anthropic accent — signature clay orange */
+  --accent: #d06b49;       /* 3.57 surface / 3.04 accent-soft */
+  --accent-hover: #c86543;
+  --accent-soft: rgba(208,107,73,.14);
+  --on-accent: #18181b;    /* 4.96 on accent — white would be 3.57 */
+  --blue: #6a9bcc;
+  --green: #788c5d;
+  --success: #788c5d;      /* 4.82 with --on-accent */
+  --success-soft: rgba(120,140,93,.16);
+  --warn: #b07d1c;         /* 3.21 on warn-soft */
+  --warn-soft: rgba(217,162,87,.16);
+  --error: #cc6658;        /* 3.14 on error-soft */
+  --error-soft: rgba(198,93,78,.14);
+  --info: #5b8cc0;         /* 3.04 on info-soft */
+  --info-soft: rgba(106,155,204,.16);
+  --think: #6b5b95;
+  --think-soft: rgba(107,91,149,.12);
+  --tip-bg: rgba(24,24,27,.98);
+  --tip-fg: #fafafa;
+  --tip-border: rgba(250,250,250,.14);
+  /* Overlay scrims — cool ink, matching the zinc ladder. */
+  --scrim: rgba(24,24,27,.45);
+  --scrim-strong: rgba(24,24,27,.70);
 
   /* data-viz palette: req = blue line+area, succ = green rate, err = red. */
-  --chart-req:  #4a6f96;
-  --chart-succ: #3f6428;
-  --chart-err:  #a33a2f;
-  --chart-blue: #4a6f96;
-  --grid: rgba(31,30,27,.10);
+  --chart-req:  #4c9aff;
+  --chart-succ: #4a9d6a;
+  --chart-err:  #e0524a;
+  --chart-blue: #4c9aff;
+  --grid: rgba(24,24,27,.09);
 
   /* geometry — 12 card / 8 control / 14 section */
   --radius: 12px;
@@ -114,7 +116,7 @@
      Brand-adjacent hues tuned to ≥3:1 against --surface in THIS theme
      (graphical-object rule, WCAG 1.4.11) — the old hardcoded set was 2.4–2.9
      on one theme or the other. The dark block carries the lighter ramp because
-     the dark surface is #2d2c25. Recomputed by
+     the dark surface is #141414. Recomputed by
      scripts/check-dashboard-contrast.mjs; the swatch never carries information
      alone (the provider name sits next to it). */
   --prov-anthropic: #b45309;
@@ -136,9 +138,9 @@
   --brand-github-bg: #24292e;
   --brand-github-fg: #ffffff;
   --brand-github-bg-hover: #1b1f23;
-  --shadow-sm: 0 1px 2px rgba(31,30,27,.05), 0 1px 3px rgba(31,30,27,.07);
-  --shadow: 0 2px 4px rgba(31,30,27,.04), 0 4px 14px rgba(31,30,27,.06);
-  --shadow-lg: 0 8px 24px rgba(31,30,27,.10), 0 2px 8px rgba(31,30,27,.06);
+  --shadow-sm: 0 1px 2px rgba(24,24,27,.05), 0 1px 3px rgba(24,24,27,.08);
+  --shadow: 0 2px 4px rgba(24,24,27,.04), 0 4px 12px rgba(24,24,27,.06);
+  --shadow-lg: 0 8px 24px rgba(24,24,27,.10), 0 2px 8px rgba(24,24,27,.06);
   --ink-shadow-soft: var(--shadow-sm);
 
   /* font stacks — local system sans (no Google Fonts dependency) */
@@ -152,51 +154,49 @@
 /* ── Dark theme (toggle via [data-theme="dark"] on <html>) ── */
 [data-theme="dark"] {
   color-scheme: dark;      /* native controls follow the dark theme */
-  /* ── Workshop Paper · dark (same warm ladder; default theme) ── */
-  --paper: #1f1e1b;
-  --paper-2: #2d2c25;
-  --paper-3: #38362f;
-  --ink: #edebe3;
-  --ink-soft: #d6d3c9;
-  --mid-gray: #96938a;
+  /* ── Cool-neutral dark theme (Vercel-style near-black, zero warm cast;
+     default theme). Each surface step keeps ≥1.08 separation from the one
+     below it so a card still reads as a card on near-black. ── */
+  --paper: #080808;
+  --paper-2: #141414;
+  --paper-3: #1f1f1f;
+  --ink: #ededed;
+  --ink-soft: #c4c4c6;
+  --mid-gray: #8a8a8f;
   --bg: var(--paper);
   --bg-elev: var(--paper-2);
-  --surface: #2d2c25;      /* 1.19 vs paper */
-  --surface-2: #38362f;    /* 1.16 */
-  --surface-3: #433f37;    /* 1.15 */
-  --border: #4f4b42;
-  --border-strong: #5d584e;
-  --text: var(--ink);      /* 11.74 */
-  --text-muted: #b5b2a8;   /* 6.61 */
-  --text-dim: #9a978e;     /* 4.80 — was #71717a (3.81 FAIL) */
-  --text-faint: #6f6c63;
-  --accent: #e88a68;       /* 5.52 */
-  --accent-hover: #f0967a;
-  --accent-soft: rgba(232,138,104,.16);
-  --on-accent: #1f1e1b;    /* 6.56 — white would be 2.54 (workbuddy's bug) */
-  --success: #8fae78;      /* 5.67 */
-  --success-soft: rgba(143,174,120,.16);
-  --warn: #d9b25f;         /* 7.00 */
-  --warn-soft: rgba(217,178,95,.16);
-  --error: #d97b72;        /* 4.69 */
-  --error-soft: rgba(217,123,114,.16);
-  --info: #8ab4d9;         /* 6.41 */
-  --info-soft: rgba(138,180,217,.16);
-  --think: #bfa3cc;
-  --think-soft: rgba(191,163,204,.16);
-  --blue: #8ab4d9;
-  --green: #8fae78;
-  --chart-req: #8ab4d9;
-  --chart-succ: #8fae78;
-  --chart-err: #d97b72;
-  --chart-blue: #8ab4d9;
-  --grid: rgba(237,235,227,.10);
-  --tip-bg: #2d2c25;
-  --tip-fg: #edebe3;
-  --tip-border: rgba(237,235,227,.16);
+  --surface: #141414;
+  --surface-2: #1d1d1d;
+  --surface-3: #262626;
+  --border: rgba(255,255,255,.10);
+  --border-strong: rgba(255,255,255,.18);
+  --text: var(--ink);
+  --text-muted: #a1a1aa;
+  --text-dim: #90909a;     /* 5.83 on surface — was #71717a (3.81 FAIL) */
+  --text-faint: #71717a;
+  --accent: #d97757;       /* 5.90 */
+  --accent-hover: #c86543;
+  --accent-soft: rgba(217,119,87,.20);
+  --on-accent: #141414;    /* 5.86 — white would be 3.12 */
+  --success: #788c5d;      /* 5.01 */
+  --success-soft: rgba(120,140,93,.22);
+  --warn: #d9a257;         /* 8.12 */
+  --warn-soft: rgba(217,162,87,.22);
+  --error: #cc6658;        /* 4.92 */
+  --error-soft: rgba(198,93,78,.22);
+  --info: #6a9bcc;         /* 6.29 */
+  --info-soft: rgba(106,155,204,.22);
+  --think: #b3a4d0;
+  --think-soft: rgba(179,164,208,.16);
+  --blue: #6a9bcc;
+  --green: #788c5d;
+  --grid: rgba(255,255,255,.09);
+  --tip-bg: rgba(28,28,30,.98);
+  --tip-fg: var(--text);
+  --tip-border: rgba(255,255,255,.14);
   --scrim: rgba(0,0,0,.55);
   --scrim-strong: rgba(0,0,0,.70);
-  /* Provider swatches: lighter ramp for the dark surface (≥3:1 on #2d2c25). */
+  /* Provider swatches: lighter ramp for the dark surface (≥3:1 on #141414). */
   --prov-anthropic: #f0a86e;
   --prov-openai: #6ee7b7;
   --prov-google: #93c5fd;
@@ -1489,10 +1489,10 @@ tbody tr:hover td { background: var(--surface-2); }
   font-weight: 600;
   line-height: 1.5;
   border: 1px solid transparent;
-  /* AA rule (UIResearch §2.4): the LABEL is --text on a 14/16% soft wash
-     (8.44–13.69:1 both themes); the HUE lives in the 6 px dot, where 3:1 is
-     the graphical-object floor. workbuddy's hue-on-soft labels measured
-     3.69–5.58 and failed AA in four pairs — do not restore that. */
+  /* AA rule (UIResearch §2.4): the LABEL is --text on a soft wash (14/16% in
+     light, 20/22% in dark; 10.49–15.70:1 both themes); the HUE lives in the
+     6 px dot, where 3:1 is the graphical-object floor. workbuddy's hue-on-soft
+     labels measured 3.69–5.58 and failed AA in four pairs — do not restore that. */
   color: var(--text);
   background: var(--surface-3);
   --badge-dot: var(--text-dim);
@@ -2571,7 +2571,7 @@ tbody tr:hover td { background: var(--surface-2); }
   position: sticky; bottom: 0; z-index: 4;
   margin: 0; padding: var(--space-10) var(--space-12); border-radius: 0;
   border: 0; border-top: 1px solid var(--border);
-  background: var(--surface-2); box-shadow: 0 -8px 18px -14px rgba(31,30,27,.55);
+  background: var(--surface-2); box-shadow: 0 -8px 18px -14px rgba(24,24,27,.55);
   flex-wrap: wrap;
 }
 #accounts-batch-bar .batch-scope { font-size: var(--fs-sm); color: var(--text-muted); }
