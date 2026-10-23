@@ -22,6 +22,17 @@ describe('nginx access log', () => {
     assert.equal(name, 'main_no_query');
   });
 
+  it('never logs the Referer header, which is itself a URL that can carry ?key=', () => {
+    const match = conf.match(/log_format\s+(\w+)\s+([\s\S]*?);/);
+    assert.ok(match, 'expected a log_format definition');
+    const [, , body] = match;
+    assert.doesNotMatch(
+      body,
+      /\$http_referer\b/,
+      'Referer is a URL: a link from a ?key= page copies the query into the access log'
+    );
+  });
+
   it('applies that format to the server instead of falling back to combined', () => {
     assert.match(conf, /access_log\s+\S+\s+main_no_query\s*;/);
     assert.doesNotMatch(conf, /access_log\s+[^;]*\bcombined\b/);

@@ -11,7 +11,7 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { scryptSync, randomBytes, timingSafeEqual } from 'crypto';
-import { writeJsonAtomic } from './fs-atomic.js';
+import { writeJsonAtomic, restrictFileToOwnerSync } from './fs-atomic.js';
 import { resolve } from 'path';
 import { config, log } from './config.js';
 
@@ -207,6 +207,12 @@ function load() {
 function persist() {
   try {
     writeJsonAtomic(FILE, _state);
+    // SEC-03 follow-up: runtime-config.json holds the plaintext runtime API
+    // key and the scrypt dashboard-password hash. `mode: 0o600` is a POSIX
+    // contract; on Windows the renamed file keeps the inherited directory ACL
+    // (Users/Authenticated Users). Same best-effort icacls pass as
+    // accounts.json — the helper warns and never throws past this point.
+    restrictFileToOwnerSync(FILE, { warn: (m) => log.warn(m) });
   } catch (e) {
     log.warn(`runtime-config: failed to persist: ${e.message}`);
   }
@@ -764,10 +770,14 @@ export function setRuntimeApiKey(plain) {
 
 /**
  * Set the runtime dashboard password (plaintext input → scrypt hash on
- * disk). Empty string clears the runtime override.
+ * disk). The value is trimmed before hashing for the same reason
+ * setRuntimeApiKey trims: the dashboard form and terminal input both pick up
+ * stray leading/trailing whitespace, and a hash of " pw " can never be
+ * reproduced from a login header that arrives as "pw". Empty (or
+ * whitespace-only, which trims to empty) clears the runtime override.
  */
 export function setRuntimeDashboardPassword(plain) {
-  const v = typeof plain === 'string' ? plain : '';
+  const v = typeof plain === 'string' ? plain.trim() : '';
   if (!_state.credentials) _state.credentials = {};
   _state.credentials.dashboardPasswordHash = v ? hashPassword(v) : '';
   persist();

@@ -20,11 +20,14 @@ only `/v1beta/models/*`; the Gemini routes are simply why it exists. A header
 always wins when both are present.
 
 The bundled `nginx.conf` defines `log_format main_no_query` and logs `$uri` —
-the normalized path only — so query parameters never reach its access log. That
-property is pinned by `test/nginx-access-log.test.js` (`$request_uri` and `$args`
-are forbidden in the format). The application itself does not log the raw
-request line; the places that derive a path from `req.url` slice at `?`
-(`src/server.js`).
+the normalized path only — so the query string from the request line never
+reaches its access log. The format also omits the `Referer` header: a `Referer`
+is itself a URL, so a link clicked on a page that was opened with `?key=` would
+copy that query into the log even when the request line is clean. Both
+properties are pinned by `test/nginx-access-log.test.js` (`$request_uri`, `$args`
+and `$http_referer` are forbidden in the format). The application itself does not
+log the raw request line; the places that derive a path from `req.url` slice at
+`?` (`src/server.js`).
 
 ## Why it is discouraged
 
@@ -35,7 +38,7 @@ header is not:
 |---|---|
 | Reverse-proxy access logs | nginx's default `combined` format logs `$request_uri`; the bundled config no longer does, but proxies you add are yours to configure |
 | Browser history / bookmarks | opening a Gemini URL in a browser stores the key |
-| `Referer` | a URL used as a link can leak the query to the next site (browsers usually strip it cross-origin, but not every client does) |
+| `Referer` | a URL used as a link can leak the query to the next site (browsers usually strip it cross-origin, but not every client does); a proxy that logs the `Referer` header records it too — the bundled nginx does not log that header |
 | Packet captures / support bundles | full request lines travel in both |
 | Upstream logs | outside this project's control |
 
@@ -43,8 +46,10 @@ The chat key is the only credential on the API surface: it unlocks chat,
 `/auth/status` and every model. It is not scoped to Gemini. The dashboard API
 (`/dashboard/api/*`) uses its own operator credential; `?key=` is not one.
 
-The app never logs the query string, and the bundled nginx no longer does. That
-reduces the blast radius; it does not make the URL a safe carrier.
+The app never logs the query string, and the bundled nginx no longer logs either
+the request-line query or the `Referer` header that could repeat it. That reduces
+the blast radius; it does not make the URL a safe carrier — browser history,
+captures and any proxy you add still see the full URL.
 
 ## Use a header instead
 
@@ -84,8 +89,9 @@ client = genai.Client(
 
 If a client can only build `?key=` URLs:
 
-- keep it behind the bundled nginx (query-free access log) and accept the
-  residual exposure in browser history and captures; or
+- keep it behind the bundled nginx (no request-line query, no `Referer` in the
+  access log) and accept the residual exposure in browser history and captures;
+  or
 - put a small proxy in front that moves the parameter into `x-goog-api-key` and
   strips the query before forwarding.
 
@@ -122,5 +128,6 @@ Rules that keep the removal from surprising anyone:
 
 - `Authorization: Bearer`, `x-api-key` and `x-goog-api-key` keep working.
 - The dashboard API keeps its own auth; this plan does not touch it.
-- The nginx `$uri` format stays. Do not restore query logging for debugging;
-  log a dedicated non-secret parameter instead.
+- The nginx `$uri` format stays, and it must keep omitting `$http_referer` — a
+  `Referer` URL can carry the query even when `$uri` is clean. Do not restore
+  query logging for debugging; log a dedicated non-secret parameter instead.
