@@ -2302,6 +2302,29 @@ export function classifyUpstreamError(text, code = null, status = null) {
       || /run(?:ning)? out of (credit|quota|balance|funds|usage)/i.test(lc)) {
     return { code: 'QUOTA_EXHAUSTED', message: body || 'DEVIN_CONNECT: account out of credit/quota' };
   }
+  // ── MODEL-LEVEL rejection scoped to (ACCOUNT, SELECTOR) ──────────────────
+  // Measured body: "This model is no longer available for your account",
+  // carried on gRPC `permission_denied` / HTTP 401. The session token is ALIVE
+  // — the same account serves every other selector — so this must NOT reach
+  // the UNAUTHORIZED arm below. Before this branch existed it did, and the
+  // whole chain was wrong for it:
+  //   (a) finalizeConnectAccount charged the account's error budget, so three
+  //       requests for one retired selector flipped a perfectly healthy
+  //       account to status='error' (persisted) — a pool-wide blackout for
+  //       every OTHER model the account could still serve;
+  //   (b) the same arm fired a re-login for a token that was never dead, and
+  //       the handler's dead-token path ran requestReauthCheck, i.e. an
+  //       account-scoped reauth verdict from a selector-scoped fact;
+  //   (c) the request never failed over, because isAccountFailoverError only
+  //       knew QUOTA_EXHAUSTED / RATE_LIMITED.
+  // The honest scope is the PAIR: this canonical selector is no longer
+  // entitled for THIS account, while the account stays healthy for the rest.
+  // Checked BEFORE the /upgrade tier-wall arm so a per-account signal wins
+  // over an inferred tier wall (a tier wall is shared by every account of a
+  // tier; this one is not, so a peer may well serve it).
+  if (/(?:this |the )?(?:model|selector)[^.]{0,60}?(?:no longer |not )(?:available|entitled|enabled|offered) (?:for|to|on) your (?:account|plan|tier|subscription|workspace)/i.test(lc)) {
+    return { code: 'SELECTOR_NOT_ELIGIBLE', message: body || 'DEVIN_CONNECT: model not available for this account' };
+  }
   if (/\/upgrade|upgrade to access|insufficient.*entitlement|requires? .*(paid|pro|team|enterprise)/i.test(lc)) {
     return { code: 'MODEL_BLOCKED', message: body || 'model requires a paid Devin entitlement' };
   }

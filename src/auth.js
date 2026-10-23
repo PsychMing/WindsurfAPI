@@ -765,9 +765,10 @@ export function __isRateLimitedForModel(account, modelKey = null, now = Date.now
   return isRateLimitedForModel(account, modelKey, now);
 }
 
-/** Test seam: would tripping this account leave the pool with no usable account? */
-export function __isLastUsableAccount(account, now = Date.now()) {
-  return isLastUsableAccount(account, now);
+/** Test seam: would tripping this account leave the pool with no usable account
+ *  FOR `selector`? Pass the selector to exercise the selector-aware exemption. */
+export function __isLastUsableAccount(account, now = Date.now(), selector = null) {
+  return isLastUsableAccount(account, now, selector);
 }
 
 // Serialize concurrent saveAccounts calls — multiple async paths
@@ -2008,6 +2009,78 @@ export function isConnectSelectorAllowedForAccount(account, selector) {
   });
 }
 
+// ─── SELECTOR-SCOPED eligibility latch (account × canonical selector) ───────
+//
+// A DEVIN_CONNECT model can be retired for ONE account while that account's
+// session token keeps serving every other selector: upstream answers
+// `permission_denied` / HTTP 401 with "This model is no longer available for
+// your account" (classified as SELECTOR_NOT_ELIGIBLE in devin-connect.js).
+// That is a fact about the PAIR, so it must not touch status / errorCount /
+// reauth — but it must also not be forgotten, or every later request for the
+// selector pays one doomed upstream call on this account before failing over.
+//
+// Deliberately a THIRD dimension, separate from both existing ones:
+//   - `_modelRateLimits` is a throttle: the dashboard renders it as
+//     "capacity throttled", isRateLimitedForModel treats it as time-based
+//     load-shedding, and CAPACITY/RATE_LIMITED write it. Reusing it here would
+//     mislabel a permanent-ish entitlement fact as capacity pressure.
+//   - `blockedModels` is durable OPERATOR intent and gates the catalog/UI
+//     views; the upstream is not the operator, and this observation expires.
+// It is in-memory only (not persisted): a restart re-probes the selector once,
+// which is the conservative direction — the alternative would carry a stale
+// "unavailable" verdict across an upstream catalog change.
+//
+// 30 minutes mirrors the CAPACITY selector cooldown's precedent (a hardcoded
+// selector-scoped window written by finalizeConnectAccount) and is short
+// enough that a re-enabled model comes back on its own. No operator knob: the
+// latch can only ever affect one selector for one account and expires.
+const SELECTOR_INELIGIBLE_TTL_MS = 30 * 60 * 1000;
+
+/** True when the upstream has told us THIS selector is not available to THIS account. */
+export function isSelectorIneligible(account, selector, now = Date.now()) {
+  if (!account || !selector) return false;
+  const until = account._selectorIneligible?.[selector];
+  if (!until) return false;
+  if (until > now) return true;
+  // Self-heal: drop the expired entry so the map cannot grow across a long uptime.
+  delete account._selectorIneligible[selector];
+  return false;
+}
+
+/**
+ * Record that `selector` is not available for this account.
+ *
+ * LATCH ONLY WHEN A PEER COULD TAKE OVER. With no other account eligible for
+ * the selector, latching this one turns an honest 403 (the upstream's own
+ * verdict) into "pool exhausted" for every later request — the account was
+ * never the problem, the selector simply cannot run anywhere in this pool.
+ * In that case keep the pool selectable and let each request surface the real
+ * upstream rejection.
+ *
+ * Returns true when the latch was written.
+ */
+export function markSelectorIneligible(apiKey, selector) {
+  if (!selector) return false;
+  const account = accounts.find(a => a.apiKey === apiKey);
+  if (!account || account.status !== 'active') return false;
+  const now = Date.now();
+  // "Could take over" means servable for the NEXT request, not merely entitled:
+  // an eligible-but-cooled/RPM-full peer would leave getApiKey with no candidate,
+  // and acquireConnectAccount then queues for QUEUE_MAX_WAIT_MS before failing.
+  const hasPeer = accounts.some(a => a !== account
+    && a.status === 'active'
+    && isConnectSelectorAllowedForAccount(a, selector)
+    && !isSelectorIneligible(a, selector, now)
+    && !isCooledForRequest(a, null, selector, now)
+    && rpmLimitFor(a) > 0
+    && pruneRpmHistory(a, now) < rpmLimitFor(a));
+  if (!hasPeer) return false;
+  if (!account._selectorIneligible) account._selectorIneligible = {};
+  account._selectorIneligible[selector] = now + SELECTOR_INELIGIBLE_TTL_MS;
+  log.warn(`Account ${safeAccountRef(account)} cannot serve ${selector} (upstream: model no longer available for this account) — selector-scoped, account stays active`);
+  return true;
+}
+
 // True if at least one active account is entitled to this connect selector.
 export function hasConnectEntitledAccount(selector) {
   return accounts.some(a => a.status === 'active' && isConnectSelectorAllowedForAccount(a, selector));
@@ -2734,6 +2807,9 @@ function pickDegradedFallback(now, excludeKeys, modelKey, connectSelector) {
     if (pruneRpmHistory(a, now) >= rpmLimitFor(a)) continue;   // RPM full — don't compound
     if (modelKey && !isModelAllowedForAccount(a, modelKey)) continue;
     if (connectSelector && !isConnectSelectorAllowedForAccount(a, connectSelector)) continue;
+    // A selector-scoped upstream rejection is not a throttle: degraded-serve must
+    // not re-send a request the upstream already refused for this account.
+    if (connectSelector && isSelectorIneligible(a, connectSelector, now)) continue;
     // Must be gated ONLY by a transient throttle (global or per-model). If it has
     // no cooldown at all it would have passed the hard filter — so its presence
     // here means the caller already returned it; skip (defensive).
@@ -3247,6 +3323,10 @@ export function acquireAccountByKey(apiKey, modelKey = null, connectSelector = n
   if (used >= limit) return null;
   if (modelKey && !isModelAllowedForAccount(a, modelKey)) return null;
   if (connectSelector && !isConnectSelectorAllowedForAccount(a, connectSelector)) return null;
+  // Selector-scoped upstream verdict (see isSelectorIneligible): the account is
+  // healthy, but not for this selector, so a pinned re-acquire must refuse it the
+  // same way the general selection path does.
+  if (connectSelector && isSelectorIneligible(a, connectSelector, now)) return null;
   const reservationTimestamp = nextReservationToken(now);
   a._rpmHistory.push(reservationTimestamp);
   a.lastUsed = now;
@@ -3584,6 +3664,16 @@ function degradedServeEnabled() { return getBreakerTunable('degradedServe'); }
 //   - two same-tier peers (e.g. unknown+unknown) are mutual fallbacks → breaker
 //     trips normally, exactly as before this fix.
 // Object identity (a !== account) is immune to a mid-flight re-login re-keying.
+//
+// SELECTOR-AWARE (reviewer #1): the tier bucket is a NECESSARY but not
+// sufficient fallback test. Two same-tier peers can differ per selector — a
+// per-account catalog that lacks the selector, an operator blocklist entry, or
+// an upstream "no longer available for your account" verdict. Counting such a
+// peer as a fallback made the breaker disable the only account that could
+// serve the selector: three rejections for one retired model removed the
+// account from rotation for EVERY model. So when the caller knows which
+// selector is in play, a peer must also be entitled to it (and not latched
+// out of it) to disqualify `account` from the exemption.
 function tierBucketRank(tier) {
   switch (tierBucket(tier)) {
     case 'pro': return 2;
@@ -3592,13 +3682,18 @@ function tierBucketRank(tier) {
     default: return -1; // expired / anything else — never a capability fallback
   }
 }
-function isLastUsableAccount(account, now = Date.now()) {
+function isLastUsableAccount(account, now = Date.now(), selector = null) {
   if (!account) return false;
   const ownRank = tierBucketRank(account.tier);
   for (const a of accounts) {
     if (a === account) continue;
     if (a.status !== 'active') continue;
     if (isRateLimitedForModel(a, null, now)) continue;
+    // Selector scope: a peer that cannot serve the selector in question is not a
+    // fallback for it (see the SELECTOR-AWARE note above). `selector == null`
+    // keeps every existing caller's account-wide meaning byte-identical.
+    if (selector && (!isConnectSelectorAllowedForAccount(a, selector)
+        || isSelectorIneligible(a, selector, now))) continue;
     // Only a peer that can serve AT LEAST what `account` serves is a real
     // fallback (same-or-higher tier bucket). A lower-tier peer (e.g. free when
     // `account` is pro) cannot cover this account's paid selectors, so it does
@@ -3817,6 +3912,11 @@ function isCooledForRequest(account, modelKey, connectSelector, now) {
   if (isRateLimitedForModel(account, modelKey, now)) return true;
   if (connectSelector && connectSelector !== modelKey
       && isRateLimitedForModel(account, connectSelector, now)) return true;
+  // Selector-scoped upstream verdict ("no longer available for your account"):
+  // not a throttle, but for THIS selector the account is just as unusable, so
+  // selection must skip it exactly like a cooled one while keeping it fully
+  // available for every other selector.
+  if (connectSelector && isSelectorIneligible(account, connectSelector, now)) return true;
   return false;
 }
 
@@ -3847,7 +3947,7 @@ function isRateLimitedForModel(account, modelKey, now) {
  * a Windsurf deploy — must NOT permanently disable a healthy key. Only three
  * failures inside `windowMs` (with no success resetting them) disable it.
  */
-export function reportError(apiKey, { windowMs = getBreakerTunable('errorWindowMs') } = {}) {
+export function reportError(apiKey, { windowMs = getBreakerTunable('errorWindowMs'), selector = null } = {}) {
   const account = accounts.find(a => a.apiKey === apiKey);
   if (!account) return;
   // SessionReauth: the token is retired upstream and out of rotation. Counting
@@ -3867,8 +3967,8 @@ export function reportError(apiKey, { windowMs = getBreakerTunable('errorWindowM
     // climbing above, so the moment a healthy peer exists the next error flips
     // it normally with full history — this only defers the terminal removal in a
     // single-account pool, where disabling means a guaranteed pool-wide 529.
-    if (lastAccountExemptEnabled() && isLastUsableAccount(account, now)) {
-      log.warn(`Account ${safeAccountRef(account)} hit ${account.errorCount} errors in ${Math.round(windowMs / 60000)}m but is the LAST usable account — kept in rotation (single-account exemption); surfacing upstream errors instead of a pool-wide 529`);
+    if (lastAccountExemptEnabled() && isLastUsableAccount(account, now, selector)) {
+      log.warn(`Account ${safeAccountRef(account)} hit ${account.errorCount} errors in ${Math.round(windowMs / 60000)}m but is the LAST usable account${selector ? ` for ${selector}` : ''} — kept in rotation (single-account exemption); surfacing upstream errors instead of a pool-wide 529`);
       return;
     }
     account.status = 'error';
@@ -4093,7 +4193,7 @@ export function recordAccountSpend(apiKey, usage, { creditCost = 0, acuCost = 0,
  * them until we stop using it. Quarantine the key for 5 minutes after 2
  * consecutive hits so we stop burning user-visible retries on a dead key.
  */
-export function reportInternalError(apiKey) {
+export function reportInternalError(apiKey, { selector = null } = {}) {
   const account = accounts.find(a => a.apiKey === apiKey);
   if (!account) return;
   recordHealthEvent(account, 'e');
@@ -4105,8 +4205,8 @@ export function reportInternalError(apiKey) {
     // stays elevated, so once a healthy peer exists the next hit quarantines
     // normally. A degraded sole account serving what it can beats guaranteed
     // pool-wide failure.
-    if (lastAccountExemptEnabled() && isLastUsableAccount(account, now)) {
-      log.warn(`Account ${safeAccountRef(account)} hit ${account.internalErrorStreak} consecutive upstream internal errors but is the LAST usable account — NOT quarantined (single-account exemption)`);
+    if (lastAccountExemptEnabled() && isLastUsableAccount(account, now, selector)) {
+      log.warn(`Account ${safeAccountRef(account)} hit ${account.internalErrorStreak} consecutive upstream internal errors but is the LAST usable account${selector ? ` for ${selector}` : ''} — NOT quarantined (single-account exemption)`);
       return;
     }
     // cool-01: Math.max so a shorter internal-error quarantine never SHORTENS a
