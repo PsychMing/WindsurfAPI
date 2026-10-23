@@ -503,6 +503,24 @@ async function main() {
       return `row served, caller hashed, ring total ${r.json.ring.total}`;
     }],
 
+    ['devin-panel', async () => {
+      const r = await http('GET', '/dashboard/api/devin/panel');
+      requireThat(r.status === 200 && r.json?.ok === true, `status ${r.status} error ${r.json?.error || '?'}`);
+      const runtime = r.json.runtime || {};
+      requireThat(Array.isArray(runtime.switches) && runtime.switches.length === 6, 'runtime switch rows missing');
+      requireThat(runtime.credentials?.writable === false, 'credential-store switches must stay read-only');
+      const sources = r.json.sessions?.sources || [];
+      const byId = Object.fromEntries(sources.map((s) => [s.id, s]));
+      requireThat(byId.proxyTurns?.available === true, 'proxy turn source must be available');
+      requireThat(byId.cascadeTrajectories?.reason === 'ls_only', 'cascade trajectory source must state ls_only');
+      requireThat(byId.acpSessions?.reason === 'not_tracked', 'ACP source must state not_tracked');
+      requireThat(Array.isArray(r.json.sessions?.turns?.items), 'turns.items missing');
+      requireThat(Array.isArray(r.json.quota?.knobs) && r.json.quota.knobs.length === 5, 'quota knobs missing');
+      requireThat(!r.text.includes(SMOKE.sessionTokenAdded), 'pasted session token in panel body');
+      requireThat(!r.text.includes(SMOKE.sessionTokenEmail), 'email session token in panel body');
+      return `4 sections, ${sources.length} sources, ${r.json.sessions.turns.retained} retained turns`;
+    }],
+
     ['usage', async () => {
       const r = await http('GET', `/dashboard/api/usage?account=${encodeURIComponent(tokenAccountId)}&refresh=1`);
       requireThat(r.status === 200 && r.json?.ok === true, `status ${r.status} error ${r.json?.error || '?'}`);
