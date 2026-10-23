@@ -90,7 +90,7 @@ describe('parallel_tool_calls:false is never silently dropped (connect route)', 
 
     const r = await handleChatCompletions(request({ parallel_tool_calls: false }));
 
-    assert.notEqual(r.status, 400, `the honoured path must not be rejected: ${JSON.stringify(r?.body)}`);
+    assert.equal(r.status, 200, `the honoured path must not be rejected: ${JSON.stringify(r?.body)}`);
     assert.equal(seen.length, 1, 'exactly one connect turn');
     assert.equal(seen[0].parallelToolCalls, false,
       'the flag must reach buildGetChatMessageRequest, not stop at the handler');
@@ -115,7 +115,7 @@ describe('parallel_tool_calls:false is never silently dropped (connect route)', 
 
     const r = await handleChatCompletions(request({ parallel_tool_calls: true }));
 
-    assert.notEqual(r.status, 400, JSON.stringify(r?.body));
+    assert.equal(r.status, 200, JSON.stringify(r?.body));
     assert.equal(seen.length, 1);
     assert.equal(seen[0].parallelToolCalls, true);
   });
@@ -127,7 +127,7 @@ describe('parallel_tool_calls:false is never silently dropped (connect route)', 
 
     const r = await handleChatCompletions(request({}));
 
-    assert.notEqual(r.status, 400, JSON.stringify(r?.body));
+    assert.equal(r.status, 200, JSON.stringify(r?.body));
     assert.equal(seen.length, 1);
   });
 
