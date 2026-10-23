@@ -116,15 +116,60 @@ function normalizeMessageContent(content, { toolOutput = false } = {}) {
 // can't bridge these — each needs its own service implementation — so
 // drop them silently rather than 500-ing the whole request.
 //
-// `web_search` / `web_search_preview` are NOT in this set: they get
-// translated by flattenResponseTool below into a regular function tool
-// with a `query` param so the model can still drive the search loop
-// through normal function calls.
+// Hosted search (web_search / web_search_preview) is NOT silently dropped and
+// is NOT flattened into a function tool: a client that declares it is asking
+// THIS SERVER to run searches, and this proxy has no hosted-search executor
+// (no GetWebSearchResults call is made for a model turn). Accepting the tool
+// could only produce a `web_search_call` with status `completed` for a search
+// that never ran. It is rejected up front with an actionable 400; a normal
+// client-declared `function` tool named web_search keeps ordinary
+// function-call semantics (the client executes it).
 const UNBRIDGED_SERVER_SIDE_TYPES = new Set([
   'file_search',
   'computer_use_preview',
   'mcp',
 ]);
+
+const HOSTED_SEARCH_TYPES = new Set(['web_search', 'web_search_preview']);
+
+function hostedSearchUnsupported(param) {
+  const err = new Error(
+    'Hosted web_search is not supported by this proxy: it does not execute server-side searches. '
+    + 'Remove the hosted web_search/web_search_preview tool and, if the client will run the search itself, '
+    + 'declare a normal function tool named "web_search".',
+  );
+  err.param = param;
+  err.code = 'unsupported_hosted_tool';
+  return err;
+}
+
+/**
+ * Walk a tool list (namespaces included) and refuse hosted search.
+ * Called for `body.tools` and for every `additional_tools` input item.
+ */
+function assertNoHostedSearchTools(tools, param = 'tools') {
+  for (const tool of tools || []) {
+    if (!tool || typeof tool !== 'object') continue;
+    if (HOSTED_SEARCH_TYPES.has(tool.type)) throw hostedSearchUnsupported(param);
+    if (tool.type === 'namespace') {
+      const childKey = ['tools', 'children', 'functions', 'items'].find(key => Array.isArray(tool[key]));
+      if (childKey) assertNoHostedSearchTools(tool[childKey], param);
+    }
+  }
+}
+
+/**
+ * Scan the RAW request. `collectResponseTools` filters `additional_tools`
+ * through responseLiteClientTool, which drops unknown types — a hosted search
+ * hidden there must still be rejected, not silently discarded.
+ */
+function assertNoHostedSearchInRequest(body) {
+  assertNoHostedSearchTools(body?.tools);
+  if (!Array.isArray(body?.input)) return;
+  for (const item of body.input) {
+    if (item?.type === 'additional_tools') assertNoHostedSearchTools(item.tools, 'input');
+  }
+}
 
 function encodeToolName(name, namespace = '') {
   const toolName = name || 'unknown';
@@ -185,32 +230,6 @@ function flattenResponseTool(tool, inheritedNamespace = '') {
         type: 'custom',
         namespace: inheritedNamespace || '',
         originalName,
-      },
-    }];
-  }
-
-  if (tool.type === 'web_search' || tool.type === 'web_search_preview') {
-    return [{
-      type: 'function',
-      function: {
-        name: encodeToolName('web_search', inheritedNamespace),
-        description: tool.description || 'Search the web.',
-        parameters: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            query: {
-              type: 'string',
-              description: 'Search query.',
-            },
-          },
-          required: ['query'],
-        },
-      },
-      __response_tool: {
-        type: 'web_search',
-        namespace: inheritedNamespace || '',
-        originalName: 'web_search',
       },
     }];
   }
@@ -322,7 +341,7 @@ function normalizeResponseToolChoice(toolChoice) {
   if (toolChoice == null) return toolChoice;
   if (toolChoice === 'auto' || toolChoice === 'required' || toolChoice === 'none') return toolChoice;
   if (typeof toolChoice !== 'object') return toolChoice;
-  if (toolChoice.type === 'web_search' || toolChoice.type === 'tool_search') return 'auto';
+  if (toolChoice.type === 'tool_search') return 'auto';
   if (toolChoice.type === 'function' && (toolChoice.function?.name || toolChoice.name)) {
     return {
       type: 'function',
@@ -350,7 +369,6 @@ function requestedResponseToolChoiceName(toolChoice) {
   if (toolChoice.type === 'custom' || toolChoice.type === 'namespace') {
     return encodeToolName(toolChoice.name || toolChoice.function?.name || '', toolChoice.namespace || toolChoice.function?.namespace || '');
   }
-  if (toolChoice.type === 'web_search' || toolChoice.type === 'web_search_preview') return 'web_search';
   if (toolChoice.type === 'tool_search') return 'tool_search';
   return toolChoice.name || toolChoice.function?.name || toolChoice.type || '';
 }
@@ -398,7 +416,16 @@ function normalizeResponseTextFormat(format) {
 
 export function responsesToChat(body) {
   const messages = [];
-  const tools = flattenResponseTools(collectResponseTools(body));
+  const requestedTools = collectResponseTools(body);
+  // No hosted-search executor exists on this route (see HOSTED_SEARCH_TYPES).
+  // Refuse BEFORE calling the model: letting the turn run and then reporting the
+  // proposal as a completed search is exactly the false execution receipt this
+  // gate removes. `tool_choice` alone can also force a hosted search.
+  assertNoHostedSearchInRequest(body);
+  if (body.tool_choice && typeof body.tool_choice === 'object' && HOSTED_SEARCH_TYPES.has(body.tool_choice.type)) {
+    throw hostedSearchUnsupported('tool_choice');
+  }
+  const tools = flattenResponseTools(requestedTools);
   const toolNameMap = toolHygieneEnabled()
     ? buildToolNameMap(tools.map((t) => t.function?.name || t.name).filter(Boolean))
     : null;
@@ -594,7 +621,7 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = [], t
   const name = restoreToolName(wireName, toolNameMap) || wireName;
   const argsText = toolCall.function?.arguments || '';
   const requestedTool = Array.isArray(requestedTools)
-    ? requestedTools.find(t => (t?.function?.name || t?.name || (t?.__response_tool?.type === 'web_search' ? 'web_search' : null)) === wireName)
+    ? requestedTools.find(t => (t?.function?.name || t?.name) === wireName)
     : null;
   const responseTool = requestedTool?.__response_tool || null;
   // Upstream may reuse one call id for two distinct calls; the client must
@@ -618,31 +645,10 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = [], t
       status,
     };
   }
-  if (responseTool?.type === 'web_search' || responseTool?.type === 'tool_search') {
-    const parsed = safeJsonParse(argsText) || {};
-    return {
-      type: responseTool.type === 'web_search' ? 'web_search_call' : 'function_call',
-      ...(responseTool.type === 'web_search'
-        ? { id: callId || `ws_${randomUUID().replace(/-/g, '').slice(0, 24)}` }
-        : {
-            id: genFunctionCallId(),
-            call_id: callId || `call_${randomUUID().slice(0, 8)}`,
-            name: responseTool.originalName || name,
-            ...(responseTool.namespace ? { namespace: responseTool.namespace } : {}),
-          }),
-      status,
-      ...(responseTool.type === 'web_search'
-        ? {
-            action: {
-              type: 'search',
-              query: typeof parsed.query === 'string' ? parsed.query : argsText,
-            },
-          }
-        : {
-            arguments: argsText,
-          }),
-    };
-  }
+  // Hosted web_search is rejected in responsesToChat, so `__response_tool` with
+  // type 'web_search' is never produced. If an older shape ever reaches here,
+  // it falls through to the generic function_call below: a client-executed call
+  // is truthful, a `web_search_call` claiming a completed search is not.
   return {
     type: 'function_call',
     id: genFunctionCallId(),
@@ -815,7 +821,7 @@ class ResponsesStreamTranslator {
     if (!name) return false;
     if (this.toolNameMap?.toClient?.has(name)) return true;
     return this.requestedTools.some((t) => {
-      const n = t?.function?.name || t?.name || (t?.__response_tool?.type === 'web_search' ? 'web_search' : null);
+      const n = t?.function?.name || t?.name;
       return n === name;
     });
   }
@@ -832,7 +838,7 @@ class ResponsesStreamTranslator {
   }
 
   resolveRequestedTool(name) {
-    return this.requestedTools.find(t => (t?.function?.name || t?.name || (t?.__response_tool?.type === 'web_search' ? 'web_search' : null)) === name) || null;
+    return this.requestedTools.find(t => (t?.function?.name || t?.name) === name) || null;
   }
 
   start() {
@@ -1016,28 +1022,21 @@ class ResponsesStreamTranslator {
           input: '',
           status: 'in_progress',
         }
-      : responseTool?.type === 'web_search'
-        ? {
-            type: 'web_search_call',
-            id: tc.callId || `ws_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
-            status: 'in_progress',
-            action: { type: 'search', query: '' },
-          }
-        : {
-            type: 'function_call',
-            id: genFunctionCallId(),
-            call_id: tc.callId || `call_${randomUUID().slice(0, 8)}`,
-            name: responseTool?.originalName || clientName,
-            ...(responseTool?.namespace ? { namespace: responseTool.namespace } : {}),
-            arguments: '',
-            status: 'in_progress',
-          };
+      : {
+          type: 'function_call',
+          id: genFunctionCallId(),
+          call_id: tc.callId || `call_${randomUUID().slice(0, 8)}`,
+          name: responseTool?.originalName || clientName,
+          ...(responseTool?.namespace ? { namespace: responseTool.namespace } : {}),
+          arguments: '',
+          status: 'in_progress',
+        };
     tc.item = item;
     this.send('response.output_item.added', { output_index: tc.outputIndex, item });
     // Arguments buffered while the name was unsettled belong to this item. Emit
     // them now in their original chunk boundaries and mark them sent, or
     // finishToolCalls would replay the same deltas a second time.
-    if (!tc.custom && !tc.webSearch && tc.pendingArgDeltas?.length) {
+    if (!tc.custom && !tc.suppressArgDeltas && tc.pendingArgDeltas?.length) {
       for (const delta of tc.pendingArgDeltas) {
         this.send('response.function_call_arguments.delta', {
           item_id: item.id,
@@ -1061,7 +1060,7 @@ class ResponsesStreamTranslator {
         emittedArgsLength: 0,
         done: false,
         custom: false,
-        webSearch: false,
+        suppressArgDeltas: false,
         responseTool: null,
         callId: toolCall.id ? this.allocateCallId(toolCall.id) : null,
         rawId: toolCall.id || null,
@@ -1094,7 +1093,9 @@ class ResponsesStreamTranslator {
       if (responseTool) {
         existing.responseTool = responseTool;
         existing.custom = responseTool.type === 'custom';
-        existing.webSearch = responseTool.type === 'web_search' || responseTool.type === 'tool_search';
+        // Only tool_search suppresses argument deltas. Hosted web_search never
+        // reaches the translator any more (rejected in responsesToChat).
+        existing.suppressArgDeltas = responseTool.type === 'tool_search';
       }
       if (this.knownToolName(wireName)) {
         // The name is final: publish now. When an earlier fragment deferred the
@@ -1131,13 +1132,9 @@ class ResponsesStreamTranslator {
     if (!existing.item && !existing.toolName) return;
     if (!existing.item) this.openToolItem(existing);
 
-    if (existing.item.type === 'web_search_call') {
-      if (existing.callId) existing.item.id = existing.callId;
-    } else if (existing.callId) {
-      existing.item.call_id = existing.callId;
-    }
+    if (existing.callId) existing.item.call_id = existing.callId;
 
-    if (!existing.custom && !existing.webSearch) {
+    if (!existing.custom && !existing.suppressArgDeltas) {
       const allArgs = existing.argChunks.join('');
       const pendingArgs = allArgs.slice(existing.emittedArgsLength);
       if (pendingArgs) {
@@ -1167,20 +1164,6 @@ class ResponsesStreamTranslator {
           ? stringifyMaybe(parsed.input)
           : args;
         const complete = { ...tc.item, input, status: 'completed' };
-        this.send('response.output_item.done', { output_index: tc.outputIndex, item: complete });
-        this.outputItems[tc.outputIndex] = complete;
-        continue;
-      }
-      if (tc.item.type === 'web_search_call') {
-        const parsed = safeJsonParse(args) || {};
-        const complete = {
-          ...tc.item,
-          status: 'completed',
-          action: {
-            type: 'search',
-            query: typeof parsed.query === 'string' ? parsed.query : args,
-          },
-        };
         this.send('response.output_item.done', { output_index: tc.outputIndex, item: complete });
         this.outputItems[tc.outputIndex] = complete;
         continue;
@@ -1660,6 +1643,8 @@ export async function handleResponses(body, deps = {}) {
         error: {
           message: err?.message || 'Invalid Responses request',
           type: 'invalid_request_error',
+          ...(err?.param ? { param: err.param } : {}),
+          ...(err?.code ? { code: err.code } : {}),
         },
       },
     };

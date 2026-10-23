@@ -455,13 +455,12 @@ describe('chatToResponse', () => {
     assert.deepEqual(response.incomplete_details, { reason: 'max_output_tokens' });
   });
 
-  it('preserves flattened metadata for custom, web_search, and namespace tools', async () => {
+  it('preserves flattened metadata for custom and namespace tools', async () => {
     const result = await handleResponses({
       model: 'claude-sonnet-4.6',
       input: 'Use native tools',
       tools: [
         { type: 'custom', name: 'runner', description: 'Run shell' },
-        { type: 'web_search', description: 'Search the web' },
         {
           type: 'namespace',
           name: 'mcp__desktop_commander',
@@ -473,8 +472,7 @@ describe('chatToResponse', () => {
     }, {
       async handleChatCompletions(body) {
         assert.equal(body.tools[0].function.name, 'runner');
-        assert.equal(body.tools[1].function.name, 'web_search');
-        assert.equal(body.tools[2].function.name, 'mcp__desktop_commander__read_file');
+        assert.equal(body.tools[1].function.name, 'mcp__desktop_commander__read_file');
         return {
           status: 200,
           body: {
@@ -487,7 +485,6 @@ describe('chatToResponse', () => {
                 content: null,
                 tool_calls: [
                   { id: 'call_custom', type: 'function', function: { name: 'runner', arguments: '{"input":"echo hi"}' } },
-                  { id: 'call_search', type: 'function', function: { name: 'web_search', arguments: '{"query":"codex"}' } },
                   { id: 'call_ns', type: 'function', function: { name: 'mcp__desktop_commander__read_file', arguments: '{"path":"README.md"}' } },
                 ],
               },
@@ -502,11 +499,131 @@ describe('chatToResponse', () => {
     assert.equal(response.output[0].type, 'custom_tool_call');
     assert.equal(response.output[0].name, 'runner');
     assert.equal(response.output[0].input, 'echo hi');
-    assert.equal(response.output[1].type, 'web_search_call');
-    assert.equal(response.output[1].action.query, 'codex');
-    assert.equal(response.output[2].type, 'function_call');
-    assert.equal(response.output[2].name, 'read_file');
-    assert.equal(response.output[2].namespace, 'mcp__desktop_commander');
+    assert.equal(response.output[1].type, 'function_call');
+    assert.equal(response.output[1].name, 'read_file');
+    assert.equal(response.output[1].namespace, 'mcp__desktop_commander');
+  });
+
+  it('rejects hosted web_search (both stream modes) instead of reporting an unexecuted search as completed', async () => {
+    // The reviewer's counterexample: no executor runs, yet the response used to
+    // carry web_search_call.status=completed (and a completed terminal). There is
+    // no dispatch loop on this route, so the request must fail up front with an
+    // actionable error — never reach the model at all.
+    for (const type of ['web_search', 'web_search_preview']) {
+      for (const stream of [false, true]) {
+        let modelCalled = false;
+        const result = await handleResponses({
+          model: 'claude-sonnet-4.6',
+          input: 'search',
+          stream,
+          tools: [{ type, description: 'Search the web' }],
+        }, {
+          async handleChatCompletions() {
+            modelCalled = true;
+            throw new Error('must not call the model for an unsupported hosted tool');
+          },
+        });
+        assert.equal(result.status, 400, `${type} stream=${stream}`);
+        assert.equal(result.stream, undefined, 'a rejected request never opens an SSE stream');
+        assert.equal(result.body.error.type, 'invalid_request_error');
+        assert.equal(result.body.error.param, 'tools');
+        assert.equal(result.body.error.code, 'unsupported_hosted_tool');
+        assert.match(result.body.error.message, /does not execute server-side searches/);
+        assert.equal(modelCalled, false, 'no credits are spent on a turn the proxy cannot serve truthfully');
+      }
+    }
+  });
+
+  it('rejects a hosted-search tool_choice even when no tool declaration is present', async () => {
+    const result = await handleResponses({
+      model: 'claude-sonnet-4.6',
+      input: 'search',
+      tool_choice: { type: 'web_search' },
+    }, {
+      async handleChatCompletions() {
+        throw new Error('must not call the model');
+      },
+    });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.error.param, 'tool_choice');
+    assert.equal(result.body.error.code, 'unsupported_hosted_tool');
+  });
+
+  it('rejects hosted search hidden in additional_tools or a namespace', async () => {
+    const cases = [
+      {
+        body: {
+          input: [
+            { type: 'additional_tools', tools: [{ type: 'web_search_preview' }] },
+            { type: 'message', role: 'user', content: 'search' },
+          ],
+        },
+        param: 'input',
+      },
+      {
+        body: {
+          input: 'search',
+          tools: [{ type: 'namespace', name: 'web', tools: [{ type: 'web_search' }] }],
+        },
+        param: 'tools',
+      },
+    ];
+    for (const { body, param } of cases) {
+      let modelCalled = false;
+      const result = await handleResponses({ model: 'claude-sonnet-4.6', ...body }, {
+        async handleChatCompletions() {
+          modelCalled = true;
+          throw new Error('must not call the model');
+        },
+      });
+      assert.equal(result.status, 400);
+      assert.equal(result.body.error.code, 'unsupported_hosted_tool');
+      assert.equal(result.body.error.param, param);
+      assert.equal(modelCalled, false);
+    }
+  });
+
+  it('keeps a client-declared function tool named web_search as a normal function_call', async () => {
+    // The reviewer's control: an ordinary client function keeps the original
+    // semantics. Only the HOSTED tool type is rejected.
+    const result = await handleResponses({
+      model: 'claude-sonnet-4.6',
+      input: 'search',
+      tools: [{
+        type: 'function',
+        name: 'web_search',
+        description: 'Client-run search',
+        parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+      }],
+    }, {
+      async handleChatCompletions(body) {
+        assert.equal(body.tools[0].function.name, 'web_search');
+        return {
+          status: 200,
+          body: {
+            created: 123,
+            model: body.model,
+            choices: [{
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [
+                  { id: 'call_search', type: 'function', function: { name: 'web_search', arguments: '{"query":"codex"}' } },
+                ],
+              },
+              finish_reason: 'tool_calls',
+            }],
+          },
+        };
+      },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.output[0].type, 'function_call');
+    assert.equal(result.body.output[0].name, 'web_search');
+    assert.equal(result.body.output[0].call_id, 'call_search');
+    assert.equal(result.body.output[0].arguments, '{"query":"codex"}');
+    assert.ok(result.body.output.every(item => item.type !== 'web_search_call'));
   });
 
   it('round-trips Responses Lite additional_tools metadata', async () => {
@@ -663,31 +780,6 @@ describe('handleResponses streaming', () => {
     assert.equal(forwarded.tool_choice, undefined);
   });
 
-  it('translates web_search_preview to a function tool the same way as web_search', async () => {
-    let forwarded = null;
-    await handleResponses({
-      model: 'claude-sonnet-4.6',
-      input: 'search',
-      stream: false,
-      tools: [{ type: 'web_search_preview' }],
-    }, {
-      async handleChatCompletions(chatBody) {
-        forwarded = chatBody;
-        return {
-          status: 200,
-          body: {
-            id: 'c', object: 'chat.completion', created: 1, model: chatBody.model,
-            choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-          },
-        };
-      },
-    });
-    assert.equal(forwarded.tools.length, 1);
-    assert.equal(forwarded.tools[0].function.name, 'web_search');
-    assert.equal(forwarded.tools[0].__response_tool.type, 'web_search');
-  });
-
   it('emits the Responses text event sequence and response.completed', async () => {
     const result = await handleResponses({ model: 'claude-sonnet-4.6', input: 'Hello', stream: true }, {
       async handleChatCompletions(body) {
@@ -784,7 +876,6 @@ describe('handleResponses streaming', () => {
       stream: true,
       tools: [
         { type: 'custom', name: 'runner', description: 'Run shell' },
-        { type: 'web_search', description: 'Search the web' },
         {
           type: 'namespace',
           name: 'mcp__desktop_commander',
@@ -800,8 +891,7 @@ describe('handleResponses streaming', () => {
           stream: true,
           async handler(res) {
             res.write(chatChunk({ id: 'chat_1', created: 123, model: body.model, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_custom', type: 'function', function: { name: 'runner', arguments: '{"input":"echo hi"}' } }] }, finish_reason: null }] }));
-            res.write(chatChunk({ id: 'chat_1', created: 123, model: body.model, choices: [{ index: 0, delta: { tool_calls: [{ index: 1, id: 'call_search', type: 'function', function: { name: 'web_search', arguments: '{"query":"codex"}' } }] }, finish_reason: null }] }));
-            res.write(chatChunk({ id: 'chat_1', created: 123, model: body.model, choices: [{ index: 0, delta: { tool_calls: [{ index: 2, id: 'call_ns', type: 'function', function: { name: 'mcp__desktop_commander__read_file', arguments: '{"path":"README.md"}' } }] }, finish_reason: null }] }));
+            res.write(chatChunk({ id: 'chat_1', created: 123, model: body.model, choices: [{ index: 0, delta: { tool_calls: [{ index: 1, id: 'call_ns', type: 'function', function: { name: 'mcp__desktop_commander__read_file', arguments: '{"path":"README.md"}' } }] }, finish_reason: null }] }));
             res.end('data: [DONE]\n\n');
           },
         };
@@ -815,11 +905,58 @@ describe('handleResponses streaming', () => {
     assert.equal(doneItems[0].type, 'custom_tool_call');
     assert.equal(doneItems[0].name, 'runner');
     assert.equal(doneItems[0].input, 'echo hi');
-    assert.equal(doneItems[1].type, 'web_search_call');
-    assert.equal(doneItems[1].action.query, 'codex');
-    assert.equal(doneItems[2].type, 'function_call');
-    assert.equal(doneItems[2].name, 'read_file');
-    assert.equal(doneItems[2].namespace, 'mcp__desktop_commander');
+    assert.equal(doneItems[1].type, 'function_call');
+    assert.equal(doneItems[1].name, 'read_file');
+    assert.equal(doneItems[1].namespace, 'mcp__desktop_commander');
+  });
+
+  it('streams a client-declared function named web_search as a normal function_call', async () => {
+    // Control for the rejection above: the HOSTED tool type is refused, but an
+    // ordinary client function called web_search keeps the normal wire shape.
+    const result = await handleResponses({
+      model: 'claude-sonnet-4.6',
+      input: 'search',
+      stream: true,
+      tools: [{
+        type: 'function',
+        name: 'web_search',
+        description: 'Client-run search',
+        parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+      }],
+    }, {
+      async handleChatCompletions(body) {
+        return {
+          status: 200,
+          stream: true,
+          async handler(res) {
+            res.write(chatChunk({ id: 'chat_1', created: 123, model: body.model, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_search', type: 'function', function: { name: 'web_search', arguments: '{"query":"codex"}' } }] }, finish_reason: null }] }));
+            res.write(chatChunk({ id: 'chat_1', created: 123, model: body.model, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }));
+            res.end('data: [DONE]\n\n');
+          },
+        };
+      },
+    });
+    const res = fakeRes();
+    await result.handler(res);
+    const events = parseEvents(res.body);
+    assertSequenceNumbers(events);
+    const added = events.find(e => e.event === 'response.output_item.added').data.item;
+    assert.equal(added.type, 'function_call');
+    assert.equal(added.call_id, 'call_search');
+    const done = events.find(e => e.event === 'response.output_item.done').data.item;
+    assert.equal(done.type, 'function_call');
+    assert.equal(done.name, 'web_search');
+    assert.equal(done.arguments, '{"query":"codex"}');
+    const deltas = events
+      .filter(e => e.event === 'response.function_call_arguments.delta')
+      .map(e => e.data.delta)
+      .join('');
+    assert.equal(deltas, '{"query":"codex"}', 'arguments stream through the normal function-call channel');
+    const allItems = events.flatMap(e => (e.data?.item
+      ? [e.data.item]
+      : (Array.isArray(e.data?.response?.output) ? e.data.response.output : [])));
+    assert.ok(allItems.every(item => item.type !== 'web_search_call'), 'no hosted search is reported as executed');
+    assert.equal(events.at(-1).data.response.status, 'completed');
   });
 
   it('recovers Responses-native metadata when the streaming tool name arrives later', async () => {
