@@ -562,6 +562,12 @@ Cascade 相同的 `fetchImageUrl` 有界下载（8 秒总预算、5MB 上限、`
 host，不记可能带签名的完整 URL）并只丢这一张图，文本照常发送。`DEVIN_CONNECT_IMAGE_TAG=0`
 时不做任何下载。也可以显式开启 `DEVIN_ACP_VISION=1` 走本机 Devin CLI 的 ACP 视觉通道。
 
+远程图片默认只接受 `https://`：明文 `http://` 的图片字节可被链路上任何中间人替换，而它会
+原样进入模型上下文（`#10` / Cascade 图片块）。被拒时只丢这一张图、文本照发，并打一条只含
+host 的 warn（完整 URL 可能带签名 query，不记录）。若确实要从可信内网镜像取图，显式设
+`WINDSURFAPI_ALLOW_HTTP_IMAGES=1` 恢复旧行为（http 与 https 都收）；默认或任何其他值都只收
+https。该检查在 `fetchImageUrl` 的每一跳上执行，所以 https 首跳重定向到 http 同样会被拒。
+
 ## Dashboard 功能面板
 
 打开 `http://你的IP:3003/dashboard`：
