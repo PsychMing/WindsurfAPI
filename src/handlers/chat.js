@@ -2806,7 +2806,7 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
     // still record the request.
     reportSuccess(apiKey);
   }
-  recordRequest(model, !err, Date.now() - startTime, apiKey);
+  recordRequest(model, !err, Date.now() - startTime, acct.id);
   releaseAccountById(acct.id);
 }
 
@@ -5931,7 +5931,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
 
     reportSuccess(apiKey);
     updateCapability(apiKey, modelKey, true, 'success');
-    recordRequest(model, true, Date.now() - startTime, apiKey);
+    recordRequest(model, true, Date.now() - startTime, accountId);
 
     // Store in cache for next identical request. Skip caching tool_call
     // responses — they're inherently contextual and the cache doesn't
@@ -6080,7 +6080,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     if (err.isModelError && err.kind !== 'transient_stall' && !isRateLimit && !isInternal) {
       updateCapability(apiKey, modelKey, false, 'model_error');
     }
-    recordRequest(model, false, Date.now() - startTime, apiKey);
+    recordRequest(model, false, Date.now() - startTime, accountId);
     log.error('Chat error:', err.message);
     // v2.0.61 — policy block surfaces as 451 Unavailable For Legal Reasons,
     // which is exactly the semantic clients need (the model refuses the
@@ -6536,6 +6536,10 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       let hadSuccess = false;
       let rolePrinted = false;
       let currentApiKey = null;
+      // Stable attribution for the request-log row: `currentApiKey` is the
+      // credential the attempt presented and may rotate mid-flight; the
+      // immutable id is what the ledger and the log must key on.
+      let currentAccountId = null;
       let lastErr = null;
       // Same purpose as nonStreamResponse's internalCount: track upstream
       // internal_error hits across attempts so we can (a) back off
@@ -7145,8 +7149,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           if (acct) {
             tried.push(acct.apiKey);
             currentApiKey = acct.apiKey;
+            currentAccountId = acct.id;
           } else {
             currentApiKey = null;
+            // A synthetic resume has no checked-out account; the stable owner
+            // id is the claim's pin, the same identity settleUsage() bills.
+            currentAccountId = resumeAttempt ? (resumeClaim?.entry?.pin?.accountId || null) : null;
           }
 
           try {
@@ -7612,7 +7620,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               settleUsage();
               // The turn is not a success: count it as a failed request, but
               // keep the spend (settleUsage above) because it ran upstream.
-              recordRequest(model, false, Date.now() - startTime, currentApiKey);
+              recordRequest(model, false, Date.now() - startTime, currentAccountId);
               await awaitWriter();
               if (!res.writableEnded) {
                 await send(chatStreamError(
@@ -7652,7 +7660,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // success
             if (hadSuccess) reportSuccess(currentApiKey);
             updateCapability(currentApiKey, modelKey, true, 'success');
-            recordRequest(model, true, Date.now() - startTime, currentApiKey);
+            recordRequest(model, true, Date.now() - startTime, currentAccountId);
             if (!rolePrinted) {
               await send({ id, object: 'chat.completion.chunk', created, model,
                 choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
@@ -8004,7 +8012,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           log.error('Stream error after retries:', lastErr?.message || String(lastErr || 'account queue timed out without an error object'));
         });
         await failureStage('request-stats', () => {
-          recordRequest(model, false, Date.now() - startTime, currentApiKey);
+          recordRequest(model, false, Date.now() - startTime, currentAccountId);
         });
         const failure = await failureStage('classify', () => {
           const temporaryUnavailable = isAllTemporarilyUnavailable(modelKey);

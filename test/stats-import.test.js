@@ -8,6 +8,7 @@ process.env.STATS_MAX_MODELS = '3';
 process.env.POLICY_BLOCK_RING = '20';
 const { exportStats, getStats, importStats, recordRequest, recordTokenUsage, resetStats } =
   await import('../src/dashboard/stats.js');
+const { accountRef } = await import('../src/log-safety.js');
 const snapshot = () => {
   const out = structuredClone(exportStats());
   delete out._exportedAt;
@@ -36,8 +37,8 @@ describe('statistics snapshot import', () => {
     assert.equal(stats.modelCounts['model-a'].requests, 2);
     assert.equal(stats.modelCounts['model-a'].totalMs, 300);
     assert.deepEqual(stats.modelCounts['model-a'].recentMs, [200, 100]);
-    assert.deepEqual(stats.accountCounts['acct-aaa'], { requests: 2, success: 1, errors: 1 });
-    assert.deepEqual(stats.accountCounts['acct-bbb'], { requests: 1, success: 1, errors: 0 });
+    assert.deepEqual(stats.accountCounts[accountRef('acct-aaa')], { requests: 2, success: 1, errors: 1 });
+    assert.deepEqual(stats.accountCounts[accountRef('acct-bbb')], { requests: 1, success: 1, errors: 0 });
     assert.equal(stats.hourlyBuckets.length, 1);
     assert.equal(stats.hourlyBuckets[0].requests, 3);
     assert.equal(stats.hourlyBuckets[0].errors, 1);
@@ -135,7 +136,7 @@ describe('statistics snapshot import', () => {
     const stats = snapshot();
     assert.equal(stats.creditsByModel.toString, 1);
     assert.equal(stats.modelCounts.toString.requests, 1);
-    assert.equal(stats.accountCounts.toString.requests, 1);
+    assert.equal(stats.accountCounts[accountRef('toString')].requests, 1);
     assert.deepEqual(Object.getOwnPropertyDescriptors(Object.prototype.toString), original);
   });
 

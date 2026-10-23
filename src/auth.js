@@ -4160,8 +4160,9 @@ export function fullBillableTokens(usage) {
 
 // ─── Per-account request history ─────────────────────────────────────────
 // Neither existing request log can answer "what has THIS account served":
-//   • stats.recentRequests is fed the upstream KEY at most chat call sites, so
-//     its `account` field is a credential prefix, not an account id;
+//   • stats.recentRequests is a bounded global ring (500 rows) that now carries
+//     an opaque account ref, so it can say which account served a recent
+//     request but cannot retain or query a per-account history;
 //   • request-ring rows are keyed by a caller hash, with no account attribution.
 // This ring is written from recordAccountSpend, which already holds the account
 // record, so a row can only exist for a request actually billed to that account.

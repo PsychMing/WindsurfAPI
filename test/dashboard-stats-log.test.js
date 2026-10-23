@@ -19,6 +19,7 @@ import {
   withStatsScope,
 } from '../src/dashboard/stats.js';
 import { handleDashboardApi } from '../src/dashboard/api.js';
+import { accountRef } from '../src/log-safety.js';
 import { _resetRuntimeConfigForTests } from '../src/runtime-config.js';
 
 const originalDashboardPassword = config.dashboardPassword;
@@ -108,10 +109,10 @@ describe('request log scope join', () => {
     ]);
     const page = getRequestLog({ model: 'same-model' });
     const byAccount = Object.fromEntries(page.items.map(r => [r.account, r]));
-    assert.equal(byAccount['acct-a'].tokensIn, 11);
-    assert.equal(byAccount['acct-a'].tokensOut, 1);
-    assert.equal(byAccount['acct-b'].tokensIn, 22);
-    assert.equal(byAccount['acct-b'].tokensOut, 2);
+    assert.equal(byAccount[accountRef('acct-a')].tokensIn, 11);
+    assert.equal(byAccount[accountRef('acct-a')].tokensOut, 1);
+    assert.equal(byAccount[accountRef('acct-b')].tokensIn, 22);
+    assert.equal(byAccount[accountRef('acct-b')].tokensOut, 2);
   });
 
   it('counts cache read/write as billable input and keeps the breakdown', () => {
@@ -182,7 +183,8 @@ describe('GET /stats/log query', () => {
 
   it('filters by model, account, status and time window', () => {
     assert.deepEqual(getRequestLog({ model: 'alpha' }).items.map(r => r.model), ['alpha', 'alpha']);
-    assert.deepEqual(getRequestLog({ account: 'acct0002' }).items.map(r => r.account), ['acct0002', 'acct0002']);
+    assert.deepEqual(getRequestLog({ account: accountRef('acct0002') }).items.map(r => r.account),
+      [accountRef('acct0002'), accountRef('acct0002')]);
     assert.deepEqual(getRequestLog({ status: 200 }).items.map(r => r.status), [200, 200]);
     const from = 1_700_000_000_000 + 2 * 1000;
     const to = 1_700_000_000_000 + 3 * 1000;
@@ -214,7 +216,7 @@ describe('GET /stats/log query', () => {
     assert.equal(alpha.credits, 4);
     assert.equal(alpha.errors, 0);
 
-    const acct2 = page.byAccount.find(a => a.account === 'acct0002');
+    const acct2 = page.byAccount.find(a => a.account === accountRef('acct0002'));
     assert.equal(acct2.requests, 2);
     assert.equal(acct2.errors, 1);
 
@@ -226,7 +228,7 @@ describe('GET /stats/log query', () => {
   it('keeps filter options stable while a filter is active', () => {
     const page = getRequestLog({ model: 'alpha' });
     assert.deepEqual(page.filters.models, ['alpha', 'beta', 'gamma']);
-    assert.deepEqual(page.filters.accounts, ['acct0001', 'acct0002']);
+    assert.deepEqual(page.filters.accounts, [accountRef('acct0001'), accountRef('acct0002')].sort());
     assert.deepEqual(page.filters.statuses, [200, 429, 500]);
   });
 });
