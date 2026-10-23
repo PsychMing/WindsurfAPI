@@ -3937,7 +3937,7 @@ tbody tr:hover td { background: var(--surface-2); }
     <div class="page-header">
       <div>
         <h1 class="page-title" data-i18n="page.credits">致谢</h1>
-        <div class="page-subtitle" data-i18n="page.credits.sub">感谢以下朋友为项目提交 PR / 审计代码 / 修复问题</div>
+        <div class="page-subtitle" data-i18n="pageSubtitle.credits">感谢以下朋友为项目提交 PR / 审计代码 / 修复问题</div>
       </div>
     </div>
     <div class="section">
@@ -3950,7 +3950,7 @@ tbody tr:hover td { background: var(--surface-2); }
     </div>
     <div class="section">
       <div class="section-header">
-        <div class="section-title" data-i18n="credits.cta">想加入这份名单？</div>
+        <div class="section-title" data-i18n="credits.cta.title">想加入这份名单？</div>
       </div>
       <div class="section-body">
         <div class="section-desc" data-i18n="credits.cta.desc">欢迎到 GitHub 提 issue 或 pull request — 不管是修 bug、加模型、改 UI 还是发现安全问题，都会被记录在这里。</div>
@@ -10522,9 +10522,15 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       // to showing it unless the backend clearly says it can't work here.
       if (a && a.available === false) {
         // Public bind: "local Windsurf" is on the remote server, not the user's
-        // machine — the feature can never work here, so hide the button entirely.
+        // machine — the feature can never work here, so hide the button and
+        // explain why instead of leaving the tab blank.
         btn.classList.add('hidden');
-        if (hint) hint.classList.add('hidden');
+        if (hint) {
+          hint.textContent = a.reason === 'public_bind'
+            ? I18n.t('accounts.add.localUnavailable')
+            : (a.hint || '');
+          hint.classList.remove('hidden');
+        }
         return;
       }
       // Loopback deploy (or unknown): show the button.
@@ -12993,6 +12999,11 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     if (!body) return;
     const list = await this.fetchContributors();
     const groups = this.groupContributors(list);
+    // The author row is not a PR (pr: 0). Linking it produced a dead
+    // github.com/.../pull/0 URL; render a plain label instead.
+    const prLink = (pr) => (Number(pr) > 0
+      ? `<a class="pr-link" target="_blank" rel="noopener" href="https://github.com/dwgx/WindsurfAPI/pull/${pr}">PR #${pr}</a>`
+      : `<span class="pr-link">${I18n.t('credits.author')}</span>`);
     body.innerHTML = `<div class="contributor-list">${groups.map(g => {
       const latest = g.latest;
       const count = g.prs.length;
@@ -13005,7 +13016,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         return `
           <li class="history-item">
             <div class="history-head">
-              <a class="pr-link" target="_blank" rel="noopener" href="https://github.com/dwgx/WindsurfAPI/pull/${p.pr}">PR #${p.pr}</a>
+              ${prLink(p.pr)}
               <span class="merged-at">${this.esc(p.mergedAt || '')}</span>
               ${p.weight ? `<span class="rarity-badge rarity-${this.esc(r)}" title="${this.esc(p.weightLabel || '')}">${this.esc(r)}</span>` : ''}
               ${p.weightLabel ? `<span class="history-rarity-label">${this.esc(p.weightLabel)}</span>` : ''}
@@ -13025,7 +13036,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
                 <span class="contribution-count">×${count}</span>
               </div>
               <div class="links">
-                <a class="pr-link" target="_blank" rel="noopener" href="https://github.com/dwgx/WindsurfAPI/pull/${latest.pr}">PR #${latest.pr}</a>
+                ${prLink(latest.pr)}
                 <span class="merged-at">${this.esc(latest.mergedAt || '')}</span>
               </div>
             </div>
@@ -13123,6 +13134,19 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     return String(s == null ? "" : s).replace(/[\\'"<>&\r\n\u2028\u2029]/g, c => map[c]);
   },
 };
+
+// Browser Back/Forward changes location.hash without re-running init().
+// Without this listener the URL moves but the visible panel does not.
+window.addEventListener('hashchange', () => {
+  const panel = location.hash.slice(1);
+  if (!panel) return;
+  const target = document.getElementById('p-' + panel);
+  const active = document.querySelector('.panel.active');
+  // navigate() writes location.hash itself; ignore the echo for the panel
+  // that is already visible so the listener cannot loop.
+  if (target && active === target) return;
+  App.navigate(panel);
+});
 
 window.addEventListener('DOMContentLoaded', () => App.init());
 </script>

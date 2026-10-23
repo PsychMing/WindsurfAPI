@@ -889,6 +889,7 @@
     "contributors": "Core Contributors",
     "history": "Contributions · {{count}}",
     "contributionDetails": "Details",
+    "author": "Author",
     "cta": {
       "title": "Want to join this list?",
       "desc": "Open an issue or pull request on GitHub — bug fixes, new models, UI improvements, or security findings all get recognised here.",
@@ -1182,6 +1183,7 @@
       },
       "localTitle": "Import from this machine's Windsurf",
       "localDesc": "Read accounts already signed in on the Windsurf app on this computer (this computer only)",
+      "localUnavailable": "Local scan is unavailable: this dashboard is bound to a public interface, so \"this machine\" is the server, not your computer. Deploy on localhost to import credentials from the local Windsurf app.",
       "reloginHint": "Email prefilled from the row. A successful login adds or reuses that account."
     },
     "login": {

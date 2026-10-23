@@ -889,6 +889,7 @@
     "contributors": "核心贡献者",
     "history": "贡献历史 · {{count}} 项",
     "contributionDetails": "贡献详情",
+    "author": "作者",
     "cta": {
       "title": "想加入这份名单？",
       "desc": "欢迎到 GitHub 提 issue 或 pull request — 不管是修 bug、加模型、改 UI 还是发现安全问题，都会被记录在这里。",
@@ -1182,6 +1183,7 @@
       },
       "localTitle": "从本机 Windsurf 导入",
       "localDesc": "读取这台电脑上 Windsurf 客户端已登录的账号（只允许本机访问）",
+      "localUnavailable": "本机扫描不可用：此控制台绑定在公网接口上，所以“本机”是服务器而不是你的电脑。请改用 localhost 部署，才能导入本机 Windsurf 客户端的凭证。",
       "reloginHint": "已填入该账号邮箱；登录成功后会新增或复用该账号。"
     },
     "login": {
