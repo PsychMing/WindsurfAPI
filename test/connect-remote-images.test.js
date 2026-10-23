@@ -44,6 +44,10 @@ const { log } = await import('../src/config.js');
 
 const TOKEN = 'devin-session-token$test.jwt.sig';
 const URL_A = 'https://img.example.test/a.png';
+const HTTP_URL = 'http://img.example.test/a.png?signature=secret';
+const HTTP_REDIRECT = 'http://cdn.example.test/b.png?signature=secret';
+const ALLOW_HTTP = 'WINDSURFAPI_ALLOW_HTTP_IMAGES';
+const originalAllowHttp = process.env[ALLOW_HTTP];
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
 const PNG_HEADERS = { 'content-type': 'image/png' };
 
@@ -95,8 +99,15 @@ async function collect(gen) {
   return events;
 }
 
-beforeEach(() => transport.reset());
-afterEach(() => __setRequestImpl(null));
+beforeEach(() => {
+  transport.reset();
+  delete process.env[ALLOW_HTTP];
+});
+afterEach(() => {
+  __setRequestImpl(null);
+  if (originalAllowHttp === undefined) delete process.env[ALLOW_HTTP];
+  else process.env[ALLOW_HTTP] = originalAllowHttp;
+});
 
 describe('inlineRemoteImages — success', () => {
   it('fetches an https image_url, returns a new tree, and the bytes reach #10', async () => {
@@ -248,6 +259,107 @@ describe('inlineRemoteImages — bounded rejection paths', () => {
       (err) => err.name === 'AbortError' && err.code === 'ABORT_ERR',
     );
     assert.equal(transport.hops.length, 0);
+  });
+});
+
+describe('inlineRemoteImages — plaintext http gate', () => {
+  it('rejects a plaintext http image by default: no dial, text preserved, host-only warn', async () => {
+    const cap = captureWarns();
+    const before = getConnectMetrics().remote_image_fetch_failed;
+    try {
+      const pending = inlineRemoteImages(messagesWith(HTTP_URL));
+      // A dialed hop means the gate regressed: answer it so the assertions fail
+      // fast instead of waiting out the 8 s fetch deadline.
+      const dialed = transport.hops.length;
+      if (dialed) {
+        const res = transport.respond(transport.hops[0], { status: 200, headers: PNG_HEADERS });
+        res.chunk(PNG);
+        res.end();
+      }
+      const out = await pending;
+
+      assert.equal(dialed, 0, 'the URL must be rejected before any connection is opened');
+      assert.equal(out[0].content.length, 1, 'only the image is dropped');
+      assert.equal(out[0].content[0].text, 'what color?', 'text survives');
+      assert.equal(getConnectMetrics().remote_image_fetch_failed - before, 1,
+        'the rejection must be counted like every other failed fetch');
+      const text = cap.warnings.join('\n');
+      assert.match(text, /plaintext http/i);
+      assert.match(text, /WINDSURFAPI_ALLOW_HTTP_IMAGES=1/, 'the error must name the escape hatch');
+      assert.match(text, /img\.example\.test/, 'the log must name the host');
+      assert.doesNotMatch(text, /signature=secret|\/a\.png/,
+        'the full URL (possible signed query) must never be logged');
+    } finally { cap.restore(); }
+  });
+
+  it('fetches a plaintext http image when WINDSURFAPI_ALLOW_HTTP_IMAGES=1', async () => {
+    process.env[ALLOW_HTTP] = '1';
+    const messages = messagesWith(HTTP_URL);
+    const pending = inlineRemoteImages(messages);
+    assert.equal(transport.hops.length, 1, 'the escape hatch must restore the old behaviour');
+    assert.equal(transport.hops[0].url, HTTP_URL);
+
+    const res = transport.respond(transport.hops[0], { status: 200, headers: PNG_HEADERS });
+    res.chunk(PNG);
+    res.end();
+    const out = await pending;
+    assert.equal(out[0].content[1].image_url.url, `data:image/png;base64,${PNG.toString('base64')}`);
+    assert.equal(messages[0].content[1].image_url.url, HTTP_URL,
+      'the caller array must not be mutated');
+  });
+
+  it('rejects a redirect hop that downgrades https to plaintext http', async () => {
+    const cap = captureWarns();
+    try {
+      const pending = inlineRemoteImages(messagesWith(URL_A));
+      transport.respond(transport.hops[0], { status: 302, location: HTTP_REDIRECT });
+      await tick();
+      // Answer a dialed downgrade hop so a regressed gate fails fast.
+      if (transport.hops[1]) {
+        const res = transport.respond(transport.hops[1], { status: 200, headers: PNG_HEADERS });
+        res.chunk(PNG);
+        res.end();
+      }
+      const out = await pending;
+
+      assert.equal(transport.hops.length, 1, 'the downgraded hop must never be requested');
+      assert.equal(out[0].content.length, 1, 'image dropped');
+      assert.equal(out[0].content[0].text, 'what color?', 'text survives');
+      const text = cap.warnings.join('\n');
+      assert.match(text, /plaintext http/i);
+      assert.match(text, /WINDSURFAPI_ALLOW_HTTP_IMAGES=1/);
+      assert.match(text, /cdn\.example\.test/);
+      assert.doesNotMatch(text, /signature=secret|\/b\.png/);
+    } finally { cap.restore(); }
+  });
+
+  it('follows a redirect downgrade when the escape hatch is on', async () => {
+    process.env[ALLOW_HTTP] = '1';
+    const pending = inlineRemoteImages(messagesWith(URL_A));
+    transport.respond(transport.hops[0], { status: 302, location: HTTP_REDIRECT });
+    await tick();
+    assert.equal(transport.hops.length, 2, 'the downgraded hop must be followed');
+    assert.equal(transport.hops[1].url, HTTP_REDIRECT);
+
+    const res = transport.respond(transport.hops[1], { status: 200, headers: PNG_HEADERS });
+    res.chunk(PNG);
+    res.end();
+    const out = await pending;
+    assert.equal(out[0].content[1].image_url.url, `data:image/png;base64,${PNG.toString('base64')}`);
+  });
+
+  it('leaves https alone for non-1 flag values', async () => {
+    for (const value of ['0', 'true', '']) {
+      process.env[ALLOW_HTTP] = value;
+      transport.reset();
+      const pending = inlineRemoteImages(messagesWith(URL_A));
+      const res = transport.respond(transport.hops[0], { status: 200, headers: PNG_HEADERS });
+      res.chunk(PNG);
+      res.end();
+      const out = await pending;
+      assert.equal(out[0].content[1].image_url.url, `data:image/png;base64,${PNG.toString('base64')}`,
+        `https must stay allowed with ${ALLOW_HTTP}=${JSON.stringify(value)}`);
+    }
   });
 });
 

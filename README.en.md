@@ -465,6 +465,14 @@ drops just that image; the text still goes upstream. With `DEVIN_CONNECT_IMAGE_T
 downloaded. Alternatively, explicitly enable `DEVIN_ACP_VISION=1` to route vision through a
 locally installed Devin CLI ACP transport.
 
+Remote images are https-only by default: plaintext `http://` bytes can be replaced by any
+middlebox on the path, and those bytes are inlined verbatim into the model's context (`#10` /
+Cascade image blocks). A rejected fetch drops just that image and still sends the text, logging a
+warning with the host only (never the full URL, which may carry a signed query). To pull from a
+trusted LAN mirror, set `WINDSURFAPI_ALLOW_HTTP_IMAGES=1` explicitly to restore the old behaviour
+(both http and https); the default or any other value accepts https only. The check runs on every
+`fetchImageUrl` hop, so an https → http redirect is rejected too.
+
 ## Dashboard Features
 
 Open `http://YOUR_IP:3003/dashboard`:
