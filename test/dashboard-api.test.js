@@ -8,6 +8,7 @@ import {
   resetNativeBridgeStats,
 } from '../src/native-bridge-stats.js';
 import { _resetRuntimeConfigForTests } from '../src/runtime-config.js';
+import { detachedRegistry } from '../src/detached-registry.js';
 import { __resetReadCache, __setFetchImplForTest, __setNowForTest } from '../src/dashboard/devin-read.js';
 
 const originalDashboardPassword = config.dashboardPassword;
@@ -189,6 +190,53 @@ describe('dashboard batch import proxy binding', () => {
     assert.equal(raw.includes('secret-api-key'), false);
     assert.equal(raw.includes('secret-account'), false);
     assert.equal(raw.includes('secret-caller'), false);
+  });
+
+  it('exposes detach admit/serve counters for the gate-1 measurement', async () => {
+    _resetRuntimeConfigForTests();
+    config.dashboardPassword = 'dash-secret';
+    config.apiKey = '';
+    configureBindHost('0.0.0.0');
+    const previousTurn = process.env.WINDSURFAPI_CASCADE_TURN;
+    const previousDetach = process.env.WINDSURFAPI_CASCADE_DETACH;
+    process.env.WINDSURFAPI_CASCADE_TURN = '1';
+    process.env.WINDSURFAPI_CASCADE_DETACH = '1';
+    detachedRegistry.reset();
+    try {
+      const admitted = detachedRegistry.admit({
+        key: 'gate1-key',
+        callerKey: 'session:gate1',
+        snapshot: { version: 2, chunks: [{ text: 'gate1' }], consumedThrough: 0, stepOffset: 0 },
+        pin: { deadline: Date.now() + 60_000 },
+      });
+      assert.ok(admitted.token, 'precondition: the registry admitted the sample entry');
+
+      const first = fakeRes();
+      await handleDashboardApi('GET', '/overview', {}, { headers: { 'x-dashboard-password': 'dash-secret' } }, first);
+      const firstBody = first.json();
+      assert.equal(first.statusCode, 200);
+      assert.equal(firstBody.detach.enabled, true, 'gate 1 must be able to prove the switch is on');
+      assert.equal(firstBody.detach.admit, 1);
+      assert.equal(firstBody.detach.serve, 0);
+      assert.equal(typeof firstBody.detach.refuse.no_scope, 'number', 'refusal reasons are part of the measurement surface');
+
+      const claim = detachedRegistry.claim('gate1-key', 'session:gate1');
+      assert.ok(claim.entry, 'precondition: the entry is claimable');
+      detachedRegistry.release('gate1-key', claim.token, { state: 'served' });
+
+      const second = fakeRes();
+      await handleDashboardApi('GET', '/overview', {}, { headers: { 'x-dashboard-password': 'dash-secret' } }, second);
+      const secondBody = second.json();
+      assert.equal(secondBody.detach.admit, 1);
+      assert.equal(secondBody.detach.serve, 1, 'serve/admit is the gate-1 ratio');
+      assert.equal(secondBody.detach.entries, 0);
+    } finally {
+      detachedRegistry.reset();
+      if (previousTurn === undefined) delete process.env.WINDSURFAPI_CASCADE_TURN;
+      else process.env.WINDSURFAPI_CASCADE_TURN = previousTurn;
+      if (previousDetach === undefined) delete process.env.WINDSURFAPI_CASCADE_DETACH;
+      else process.env.WINDSURFAPI_CASCADE_DETACH = previousDetach;
+    }
   });
 
   it('exposes DEVIN_CONNECT recovery counters at /connect-metrics and resets on DELETE', async () => {

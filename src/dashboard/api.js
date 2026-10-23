@@ -35,6 +35,7 @@ import { restartLsForProxy } from '../langserver.js';
 import { getLsStatus, stopLanguageServerAndWait, startLanguageServer, isLanguageServerRunning, getLsAdmissionStatus } from '../langserver.js';
 import { getStats, resetStats, recordRequest, exportStats, importStats } from './stats.js';
 import { getConnectMetrics, resetConnectMetrics } from '../devin-connect-metrics.js';
+import { detachedRegistry, cascadeDetachEnabled } from '../detached-registry.js';
 import { getStickyStats, isStickyEnabled } from '../account/sticky-session.js';
 import { getResponseStoreStats } from '../response-store.js';
 import { cacheStats, cacheClear } from '../cache.js';
@@ -750,6 +751,14 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       cache: cacheStats(),
       nativeBridge: getNativeBridgeStats(),
       nativeBridgeConfig: getNativeBridgeConfigStatus(),
+      // Gate 1 (design §7.4) reads `admit` and `serve` from this block for the
+      // two-week measurement. `enabled` separates "switch off" from "switch on
+      // with no traffic"; the counters are process-lifetime and reset on
+      // restart, so a scrape must accumulate deltas (docs/DETACH-ROLLOUT.md).
+      detach: {
+        enabled: cascadeDetachEnabled(),
+        ...detachedRegistry.stats(),
+      },
       poolBalance: (() => {
         const s = getAccountListStats();
         return { total: s.balanceTotal, accounts: s.balanceAccounts };
