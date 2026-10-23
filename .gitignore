@@ -148,3 +148,9 @@ data/self-update-before.pending.json
 # Tracked baseline gate runtime dependencies (not audit scratch files).
 !scripts/spec-baseline-evidence.mjs
 !scripts/spec-baseline-platform-skips.json
+# SEC-05 history secret scan: the scan, its shared rule set, and the reviewed baseline.
+# Without these three lines the CI job's own files are absent from the commit and the job
+# fails with "Cannot find module" — the ignore-by-default trap described at the top.
+!scripts/secret-rules.mjs
+!scripts/history-secret-scan.mjs
+!scripts/history-secret-scan.baseline

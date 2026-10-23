@@ -134,6 +134,35 @@ jobs:
       - name: Secret scan (includes test/ — half of a typical diff lives there)
         run: node scripts/secret-scan.mjs
 
+  # The `specs` job scans the WORKING TREE. A credential that was committed and then
+  # deleted is invisible there and still present in every clone, so this job scans every
+  # blob reachable from any ref plus the unreachable objects an amend / rebase /
+  # force-push leaves behind (the objects a rewrite was meant to hide). fetch-depth: 0 is
+  # the whole point — a shallow clone would scan the tip and report it clean.
+  #
+  # A finding that is not in scripts/history-secret-scan.baseline fails this job. That
+  # file is a reviewed list, one line per accepted historical finding with its reason;
+  # it is not a mute button (the scan warns about stale entries, so a fixed leak leaves a
+  # line someone has to delete). The scan is ~15s on a 1.9k-commit history and needs no
+  # network, no binary download and no token — which is why it is the gate instead of
+  # gitleaks; see HistorySecretScan.md for the gitleaks cross-check.
+  history-secrets:
+    name: History secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Scan every blob in every ref
+        run: node scripts/history-secret-scan.mjs
+
   wire-identity:
     name: Default-path request bytes
     runs-on: ubuntu-latest
