@@ -31,10 +31,12 @@ import {
   removeCloudModelCatalog,
   forgetCloudModelCatalog,
   setActiveCloudCatalogAccounts,
-  getCloudCostTierInfo,
   getCloudCostTierFreeSelectors,
+  getCloudBillingSyncState,
+  getCloudSelectorPricing,
+  getCloudZeroRateSelectors,
   hasCloudCostTierData,
-  isCostTierFreeNow,
+  mergeCloudCostTiers,
 } from './models.js';
 import {
   FREE_REACHABLE_SELECTORS,
@@ -339,6 +341,15 @@ export function getCurrentlyFreeConnectSelectors() {
       if (typeof rate === 'number' && rate === 0) free.add(selector);
     }
   }
+  // The same statement in the other field: `creditMultiplier` on the catalog rows
+  // the billing sync already fetches. Without this, a deployment whose accounts
+  // never receive a GetUserStatus rate table (free plans) had NO rate-based free
+  // evidence at all, and only a cost tier could ever mark a model free.
+  const cloudZero = getCloudZeroRateSelectors();
+  if (cloudZero) {
+    sawTable = true;
+    for (const selector of cloudZero) free.add(selector);
+  }
   return sawTable ? free : null;
 }
 
@@ -422,7 +433,10 @@ function connectSelectorCatalogMembership(selector) {
  *      express a plan-scoped promotion: the live Pro account's rate table prices
  *      swe-2-medium at 6 credits, yet the catalog marks it MODEL_COST_TIER_FREE
  *      with a promo ending 2026-11-01, and six live calls left daily quota at 0.
- *   2. A zero entry in the account's paired rate table (rolling promotion, #235).
+ *   2. A zero credit rate — either `creditMultiplier` from that same catalog row
+ *      (models.js) or the account's paired GetUserStatus rate table (rolling
+ *      promotion, #235). The catalog row matters because a free account may never
+ *      receive the GetUserStatus rate table at all.
  *   3. FREE_REACHABLE_SELECTORS — the documented static FALLBACK, used only when
  *      NEITHER live source has data anywhere for this deployment. It is deliberately NOT a
  *      union any more: a live catalog/rate table that omits a selector is evidence
@@ -430,41 +444,63 @@ function connectSelectorCatalogMembership(selector) {
  *      to pick the one selector that 502s.
  *
  * `freeNow` is tri-state: true, false (live data says it bills), null (no data).
+ * `pricingFetchedAt`/`pricingStale` ride along so a badge built from a stopped
+ * sync is visibly old instead of silently trusted.
  */
 export function getConnectSelectorPricing(selector) {
+  return pricingForSelector(selector, pricingContext());
+}
+
+/**
+ * Pricing for MANY selectors in one pass.
+ *
+ * The per-selector entry point rebuilds the pool-wide free set and the freshness
+ * stamp on every call; a card that annotates a few hundred model rows would do
+ * that a few hundred times. Same answers, one snapshot of the inputs, so the rows
+ * on one screen cannot disagree about whether a selector is free.
+ */
+export function getConnectPricingMap(selectors = []) {
+  const ctx = pricingContext();
+  const out = {};
+  for (const selector of selectors || []) {
+    if (typeof selector !== 'string' || !selector) continue;
+    out[selector] = pricingForSelector(selector, ctx);
+  }
+  return out;
+}
+
+function pricingContext() {
+  return { rateFree: getCurrentlyFreeConnectSelectors(), fresh: billingFreshness() };
+}
+
+function pricingForSelector(selector, ctx) {
   const inLiveCatalog = connectSelectorCatalogMembership(selector);
+  const fresh = ctx.fresh;
   const blank = {
     freeNow: null,
     freeReason: null,
     costTier: null,
     promoEndsAt: null,
     promoLabel: null,
+    rate: null,
+    pricingFetchedAt: fresh.fetchedAt,
+    pricingStale: fresh.stale,
     inLiveCatalog,
   };
   if (!selector) return blank;
 
-  const hasLiveCostData = hasCloudCostTierData();
-  const costInfo = hasLiveCostData ? getCloudCostTierInfo(selector) : null;
-  const costFree = costInfo ? isCostTierFreeNow(costInfo) : false;
-  const rateFree = getCurrentlyFreeConnectSelectors();
+  const cloud = getCloudSelectorPricing(selector);
+  const rateFree = ctx.rateFree;
   const rateZero = rateFree ? rateFree.has(selector) : false;
 
-  let freeNow = null;
-  let freeReason = null;
-  if (costFree) {
-    freeNow = true;
-    freeReason = 'cost_tier_free';
-  } else if (rateZero) {
-    freeNow = true;
-    freeReason = 'rate_zero';
-  } else if (hasLiveCostData || rateFree) {
-    // Live pricing data exists for this deployment and does not name this
-    // selector free. Deliberately GLOBAL, not per-selector: once a live catalog is
-    // in hand, its silence about a selector is evidence the static list is stale —
-    // that is exactly how `swe-1-6-slow` (absent from the 240-selector catalog,
-    // 502 quota on call) kept a FREE badge on a deployment that had live data.
-    freeNow = false;
-  } else if (FREE_REACHABLE_SELECTORS.has(selector)) {
+  let freeNow = cloud.freeNow;
+  let freeReason = cloud.freeReason;
+  if (freeNow === null && rateFree) {
+    // The synced catalog said nothing about this selector, but the account rate
+    // tables are live and DO name a free set: silence is then evidence of "bills".
+    freeNow = rateZero;
+    freeReason = rateZero ? 'rate_zero' : null;
+  } else if (freeNow === null && FREE_REACHABLE_SELECTORS.has(selector)) {
     freeNow = true;
     freeReason = 'fallback_whitelist';
   }
@@ -472,10 +508,37 @@ export function getConnectSelectorPricing(selector) {
   return {
     freeNow,
     freeReason,
-    costTier: costInfo?.costTier || null,
-    promoEndsAt: costInfo?.promoEndsAt || null,
-    promoLabel: costInfo?.promoLabel || null,
+    costTier: cloud.costTier,
+    promoEndsAt: cloud.promoEndsAt,
+    promoLabel: cloud.promoLabel,
+    rate: cloud.rate,
+    pricingFetchedAt: cloud.fetchedAt && cloud.fetchedAt > (fresh.fetchedAt || 0)
+      ? cloud.fetchedAt
+      : fresh.fetchedAt,
+    pricingStale: fresh.stale,
     inLiveCatalog,
+  };
+}
+
+/**
+ * Age of the newest live billing fact this deployment holds.
+ *
+ * Both sources count: the synced catalog rows (cost tier + credit rate) and the
+ * per-account GetUserStatus rate tables, which carry their own fetch stamp. The
+ * dashboard shows this next to a FREE badge so "free" from a sync that stopped
+ * three days ago is not indistinguishable from one refreshed a minute ago.
+ */
+function billingFreshness(now = Date.now()) {
+  const cloud = getCloudBillingSyncState(now);
+  let fetchedAt = cloud.fetchedAt || 0;
+  for (const account of accounts) {
+    if (account.status !== 'active') continue;
+    const ts = Number(account.credits?.rateTableFetchedAt) || 0;
+    if (ts > fetchedAt) fetchedAt = ts;
+  }
+  return {
+    fetchedAt: fetchedAt || null,
+    stale: fetchedAt > 0 && now - fetchedAt > cloud.staleAfterMs,
   };
 }
 
@@ -4854,6 +4917,94 @@ async function _refreshCreditsImpl(account) {
   }
 }
 
+// ─── Periodic billing sync (cost tier / promo / rate) ──────────────────────
+//
+// The cost tier + promo + credit rate all ride GetCascadeModelConfigs, and that
+// RPC used to run exactly ONCE per API key: `_modelCatalogSyncedKeys` latches the
+// key after the first accepted catalog, and there is no other periodic catalog
+// refresh. So a promotion that STARTED after an account's first sync was invisible
+// forever (its END date still expired locally, which is why the failure looked
+// like "free models randomly disappear" instead of "sync stopped"). This refreshes
+// only the billing half on its own cadence; it never touches the UID filter
+// snapshot, so a transient shrunken catalog cannot re-advertise or hide models.
+const _billingSyncAt = new Map(); // account id → last successful billing snapshot (ms)
+const _billingSyncPromises = new Map(); // account id → in-flight promise
+
+/** Billing refresh cadence. 0 disables the periodic sync entirely. */
+export function billingSyncIntervalMs(env = process.env) {
+  const raw = Number(env.BILLING_SYNC_INTERVAL_MS);
+  if (Number.isFinite(raw) && raw >= 0) return raw;
+  return 30 * 60 * 1000;
+}
+
+/**
+ * Refresh one account's cost tier / promo / rate from GetCascadeModelConfigs.
+ *
+ * Read-only RPC (the same one the catalog sync uses), no chat, no billing fire.
+ * The response goes through mergeCloudCostTiers, which owns the replace rules and
+ * the freshness stamp; this function owns only the transport and the cadence.
+ */
+export async function refreshAccountBilling(id, { force = false, now = Date.now() } = {}) {
+  const account = accounts.find(a => a.id === id);
+  if (!account || account.status !== 'active') return { ok: false, error: 'account_not_active' };
+  if (_billingSyncPromises.has(id)) return _billingSyncPromises.get(id);
+  const interval = billingSyncIntervalMs();
+  if (!force && interval > 0) {
+    const last = _billingSyncAt.get(id) || 0;
+    if (now - last < interval) return { ok: true, skipped: true, reason: 'fresh' };
+  }
+  const promise = (async () => {
+    try {
+      const { getCascadeModelConfigs } = _modelCatalogDeps?.getCascadeModelConfigs
+        ? { getCascadeModelConfigs: _modelCatalogDeps.getCascadeModelConfigs }
+        : await import('./windsurf-api.js');
+      const proxy = getEffectiveProxy(account.id) || null;
+      const result = await getCascadeModelConfigs(account.apiKey, proxy);
+      const merged = mergeCloudCostTiers(result?.configs, { accountId: account.id, now });
+      if (merged.applied) _billingSyncAt.set(id, now);
+      return { ok: true, ...merged };
+    } catch (e) {
+      // Leave _billingSyncAt alone: the next round retries instead of waiting a
+      // full interval for a failure that lasted one second.
+      log.warn(`Billing sync ${safeAccountRef(account)} failed: ${e.message}`);
+      return { ok: false, error: e.message };
+    }
+  })().finally(() => {
+    if (_billingSyncPromises.get(id) === promise) _billingSyncPromises.delete(id);
+  });
+  _billingSyncPromises.set(id, promise);
+  return promise;
+}
+
+/** Refresh every active account's billing snapshot (fire-and-forget friendly). */
+export async function refreshAllBilling({ force = false, now = Date.now() } = {}) {
+  const results = [];
+  for (const account of accounts) {
+    if (account.status !== 'active') continue;
+    const r = await refreshAccountBilling(account.id, { force, now });
+    results.push({ id: account.id, ...r });
+  }
+  return results;
+}
+
+/** Test seam: forget the per-account cadence stamps. */
+export function __resetBillingSyncState() {
+  _billingSyncAt.clear();
+  _billingSyncPromises.clear();
+}
+
+/** Billing-sync health for the dashboard (freshness + row counts). */
+export function getBillingSyncSummary(now = Date.now()) {
+  const state = getCloudBillingSyncState(now);
+  const fresh = billingFreshness(now);
+  return {
+    ...state,
+    fetchedAt: fresh.fetchedAt,
+    stale: fresh.stale,
+    intervalMs: billingSyncIntervalMs(),
+  };
+}
+
 export async function refreshAllCredits({ skipBusy = false } = {}) {
   const results = [];
   for (const a of accounts) {
@@ -5649,6 +5800,19 @@ export async function initAuth() {
   setInterval(() => {
     refreshAllCredits({ skipBusy: skipBusyMaintenance }).catch(e => log.warn(`Scheduled credit refresh: ${e.message}`));
   }, CREDIT_INTERVAL).unref?.();
+
+  // Periodic billing sync (cost tier / promo / credit rate) from
+  // GetCascadeModelConfigs. Separate from the catalog latch above: that one runs
+  // once per API key, so without this a promotion starting after the first sync
+  // was never seen. Cadence is its own knob so an operator can slow it down (or
+  // disable it with 0) without touching credit refresh.
+  const BILLING_SYNC_INTERVAL = billingSyncIntervalMs();
+  if (BILLING_SYNC_INTERVAL > 0) {
+    refreshAllBilling().catch(e => log.warn(`Initial billing sync: ${e.message}`));
+    setInterval(() => {
+      refreshAllBilling().catch(e => log.warn(`Scheduled billing sync: ${e.message}`));
+    }, BILLING_SYNC_INTERVAL).unref?.();
+  }
 
   // Fetch live model catalog from cloud and merge into hardcoded catalog.
   // Fire-and-forget — the hardcoded catalog is sufficient until this completes.

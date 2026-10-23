@@ -723,7 +723,9 @@
       "p50": "p50 latency",
       "p95": "p95 latency",
       "share": "Request share",
-      "credit": "Credits spent"
+      "credit": "Credits spent",
+      "tokens": "Tokens",
+      "freeHint": "free now — this model does not debit quota"
     },
     "empty": {
       "loginHistory": "No login records",
@@ -1513,6 +1515,7 @@
         "notEntitled": "not entitled",
         "unknown": "unknown",
         "freeNow": "free now",
+        "freeNowPromo": "free now (promo until {{date}})",
         "tierListed": "tier list",
         "attention": "Needs attention",
         "allEntitled": "All {{total}} models are entitled.",
@@ -1715,6 +1718,8 @@
     "remove": "Remove model",
     "unreachableHint": "Not serveable right now: no account in the pool is entitled to it, or the name maps to nothing on the current backend. Still clickable, so you can add or remove it from the list.",
     "freeBadge": "FREE",
+    "freeBadgePromo": "FREE (promo until {{date}})",
+    "pricingStale": "pricing data is stale — the last successful billing sync is old",
     "paidBadge": "QUOTA",
     "costUnknownHint": "Cost unknown: no account has reported a service rate table yet, so this is neither confirmed free nor confirmed billable. Refresh an account's balance to populate it.",
     "dailyExhaustedBadge": "QUOTA · daily exhausted",

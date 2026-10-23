@@ -78,18 +78,49 @@ function uniqueSelectors(rows) {
 /**
  * Deterministic toggleable-version → selector ladder. No 19-row hardcode: the
  * mapping follows the documented name transformations and asks the same resolver
- * the chat path uses.
+ * the chat path uses, so a candidate is accepted ONLY when the authoritative
+ * catalog actually exposes it.
+ *
+ * Two kinds of transformation are allowed here:
+ *
+ *   1. Reorderings that preserve every token. The upstream writes the effort tier
+ *      LAST for these families — `swe-2-<effort>-lightning` and
+ *      `<family>-<effort>-priority` — while the toggleable-version names put the
+ *      qualifier first (`devin-swe-2-lightning-high`, `devin-swe-2-priority-low`).
+ *      Same words, same model; only the order differs.
+ *   2. The `claude-` family prefix the catalog adds to bare Anthropic families
+ *      (`fable-5-1` → `claude-fable-5-1`), which the alias map already owns.
+ *
+ * Everything else stays UNMAPPED on purpose, and the row still renders with
+ * `mapped:false` so an operator can see the version exists and that nothing
+ * claims it. Names such as `devin-2-5` (an agent release, not a model), `auto`
+ * (upstream routing, no selector), `lite`/`ultra` (plan tiers) and `fast-opus`
+ * (needs an effort tier the name does not carry) have no token-preserving
+ * selector. Guessing one would put a different model behind the operator's
+ * choice — worse than admitting the gap. A future catalog that adds `swe-2-low`,
+ * `auto` or `lite` as real selectors maps them automatically through the plain
+ * pass-through candidate, with no code change.
  */
 export function mapToggleableVersion(version) {
   const raw = typeof version === 'string' ? version.trim() : '';
   if (!raw) return { selector: null, mapped: false };
 
   const stripped = raw.replace(/^devin[-_]/, '').replace(/_/g, '-');
-  const candidates = [raw];
-  if (stripped && stripped !== raw) candidates.push(stripped);
-  if (/^(fable|opus|sonnet|haiku)-/.test(stripped)) candidates.push(`claude-${stripped}`);
-  const lightning = stripped.match(/^swe-2-lightning-(low|medium|high|max)$/);
-  if (lightning) candidates.push(`swe-2-${lightning[1]}-lightning`);
+  const candidates = [];
+  const push = (candidate) => {
+    if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
+  };
+  push(raw);
+  if (stripped && stripped !== raw) push(stripped);
+
+  for (const base of [...candidates]) {
+    if (/^(fable|opus|sonnet|haiku)-/.test(base)) push(`claude-${base}`);
+    // Effort tier reordering, preserving every token.
+    const lightning = base.match(/^(swe-\d+)-lightning-(low|medium|high|max)$/);
+    if (lightning) push(`${lightning[1]}-${lightning[2]}-lightning`);
+    const priority = base.match(/^(swe-\d+)-priority-(low|medium|high|max)$/);
+    if (priority) push(`${priority[1]}-${priority[2]}-priority`);
+  }
 
   for (const candidate of candidates) {
     const resolved = resolveConnectSelector(candidate, { warnOnFallback: false });

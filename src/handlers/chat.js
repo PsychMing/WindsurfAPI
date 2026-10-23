@@ -3939,7 +3939,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
               const _display = __sHit.displayModel || connectDisplayModel;
               recordRequest(_display, true, 0, null);
               const _use = __sHit.usage || cachedUsage(messages, _txt);
-              try { recordTokenUsage(_use); } catch {}
+              try { recordTokenUsage(_use, _display); } catch {}
               send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
                 choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
               if (__sHit.thinking) {
@@ -3978,7 +3978,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
               // Dashboard token-usage breakdown from the streaming connect path
               // (the return value carries the terminal usage). Was discarded
               // before → "Token 用量分布" empty on connect deployments.
-              try { recordTokenUsage(_sr?.usage); } catch {}
+              try { recordTokenUsage(_sr?.usage, reqModelName); } catch {}
               // K8: attribute the spend to THIS account (per-account lifetime total).
               try { recordAccountSpend(a?.apiKey, _sr?.usage, connectSpendOpts(_sr?.billing)); } catch {}
               finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
@@ -4010,7 +4010,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                   log.info(`Chat[${reqId}]: DEVIN_CONNECT re-login recovered token, replaying stream once`);
                   try {
                     const _sr3 = await streamChatCompletion({ ...connectParams, token: freshKey }, send, connectMeta);
-                    try { recordTokenUsage(_sr3?.usage); } catch {}
+                    try { recordTokenUsage(_sr3?.usage, reqModelName); } catch {}
                     try { recordAccountSpend(currentApiKeyForId(a.id, a.apiKey), _sr3?.usage, connectSpendOpts(_sr3?.billing)); } catch {}
                     finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
                     return { kind: 'ok', sr: _sr3 };
@@ -4276,8 +4276,8 @@ async function _handleChatCompletionsInner(body, context = {}) {
       const _nfinishReason = __sHit.finishReason || 'stop';
       const _ncachedStop = _nst.hit ? _nst.stop : (__sHit.stop || null);
       const _nuse = __sHit.usage || cachedUsage(messages, _ntxt);
-      try { recordTokenUsage(_nuse); } catch {}
       const _nmodel = __sHit.displayModel || connectDisplayModel;
+      try { recordTokenUsage(_nuse, _nmodel); } catch {}
       try { recordRequest(_nmodel, true, 0, null); } catch {}
       const _nmsg = { role: 'assistant', content: _ntxt };
       if (__sHit.thinking) _nmsg.reasoning_content = __sHit.thinking;
@@ -4311,7 +4311,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
         // recordTokenUsage (only the cascade paths did), so the "Token 用量分布"
         // card stayed empty on connect-only deployments (homecloud). Safe no-op
         // when usage is absent (recordTokenUsage guards null).
-        try { recordTokenUsage(r.out?.body?.usage); } catch {}
+        try { recordTokenUsage(r.out?.body?.usage, r.out?.body?.model || reqModelName); } catch {}
         // K8: per-account lifetime spend (non-stream connect path).
         try { recordAccountSpend(acct ? currentApiKeyForId(acct.id, acct.apiKey) : null, r.out?.body?.usage, connectSpendOpts(r.out?.body?._windsurf_billing)); } catch {}
         // Session continuity: commit the completed request→response pair so the
@@ -5879,7 +5879,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     const usage = buildUsageBody(serverUsage, messages, usageText, allThinking, cachePolicy);
     // v2.0.69 (#118): feed bucket totals into stats so dashboard can show
     // fresh_input vs cache_read vs cache_write breakdown.
-    try { recordTokenUsage(usage); } catch {}
+    try { recordTokenUsage(usage, model); } catch {}
     // K8: per-account lifetime spend (Cascade non-stream path).
     try { recordAccountSpend(apiKey, usage); } catch {}
     const finishReason = toolCalls.length ? 'tool_calls' : 'stop';
@@ -7524,7 +7524,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               // usage-only frame to the client when they opted in via
               // stream_options.include_usage (OpenAI omits it by default).
               const usage = buildUsageBody(cascadeResult?.usage || null, messages, accText, accThinking, cachePolicy);
-              try { recordTokenUsage(usage); } catch {}
+              try { recordTokenUsage(usage, model); } catch {}
               // K8: per-account lifetime spend (Cascade STREAM path).
               //
               // This call point was missing while the other three had it (connect stream,

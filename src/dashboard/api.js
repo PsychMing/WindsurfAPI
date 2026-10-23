@@ -51,7 +51,7 @@ import { getClineCompatStats } from '../handlers/cline-compat.js';
 import { getCcCompatStats } from '../handlers/cc-compat.js';
 import { getLogs, subscribeToLogs, unsubscribeFromLogs } from './logger.js';
 import { getProxyConfig, getProxyConfigMasked, setGlobalProxy, setAccountProxy, removeProxy, getEffectiveProxy } from './proxy-config.js';
-import { MODELS, MODEL_TIER_ACCESS as _TIER_TABLE, getTierModels as _getTierModels, filterModelKeysByCloudCatalog } from '../models.js';
+import { MODELS, MODEL_TIER_ACCESS as _TIER_TABLE, getTierModels as _getTierModels, filterModelKeysByCloudCatalog, resolveModel } from '../models.js';
 import { buildConnectReachability } from '../handlers/models.js';
 import { FREE_REACHABLE_SELECTORS, getLiveCatalog, getSnapshotSelectors, resolveConnectSelector } from '../devin-connect-models.js';
 import { buildCatalogDiff } from './catalog-diff.js';
@@ -231,6 +231,37 @@ function dashboardUrl(req) {
 
 // Authed billing/model/pool JSON must never be stored by the browser.
 const NO_STORE = Object.freeze({ 'Cache-Control': 'no-store' });
+
+/**
+ * Price annotation for the per-model usage table.
+ *
+ * The table is keyed by whatever model string the client sent, which is exactly
+ * what a bill shows — but the PRICE belongs to the selector that string resolves
+ * to, and only the live billing sync knows whether that selector is free right
+ * now. Resolving server-side keeps the UI from re-implementing the alias ladder,
+ * and keeps "0 credits" (a real free promo) distinct from "unknown" (no live
+ * data): `freeNow: null` renders no badge at all rather than a paid one.
+ */
+export function buildModelBillingIndex(modelCounts = {}) {
+  const out = {};
+  for (const model of Object.keys(modelCounts || {})) {
+    const key = resolveModel(model) || model;
+    const resolution = resolveConnectSelector(key, { warnOnFallback: false });
+    const selector = resolution?.mapped ? resolution.selector : null;
+    const pricing = selector ? getConnectSelectorPricing(selector) : null;
+    out[model] = {
+      selector,
+      freeNow: pricing ? pricing.freeNow : null,
+      freeReason: pricing ? pricing.freeReason : null,
+      costTier: pricing ? pricing.costTier : null,
+      promoEndsAt: pricing ? pricing.promoEndsAt : null,
+      promoLabel: pricing ? pricing.promoLabel : null,
+      pricingFetchedAt: pricing ? pricing.pricingFetchedAt : null,
+      pricingStale: pricing ? pricing.pricingStale : false,
+    };
+  }
+  return out;
+}
 
 function parseBoundedInt(value, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const n = Number.parseInt(String(value ?? ''), 10);
@@ -1981,7 +2012,8 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
 
   // ─── Stats ────────────────────────────────────────────
   if (subpath === '/stats' && method === 'GET') {
-    return json(res, 200, getStats());
+    const stats = getStats();
+    return json(res, 200, { ...stats, modelBilling: buildModelBillingIndex(stats.modelCounts) });
   }
 
   // Account usage from app.devin.ai (quota burn-down card). GET-only reads
@@ -2679,6 +2711,13 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         freeNow: pricing.freeNow,
         // Why freeNow is true: cost_tier_free | rate_zero | fallback_whitelist.
         freeReason: pricing.freeReason,
+        // Upstream's own promo text ("83% off"), null when it sent none.
+        promoLabel: pricing.promoLabel,
+        // When the live pricing behind these fields was last synced, and whether
+        // that is older than the staleness budget. The panel shows it next to a
+        // FREE badge so "free" from a stopped sync is visibly old.
+        pricingFetchedAt: pricing.pricingFetchedAt,
+        pricingStale: pricing.pricingStale,
         // free | blocked_daily | blocked_weekly | not_in_catalog | unknown | null.
         quotaState,
       };

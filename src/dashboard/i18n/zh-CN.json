@@ -723,7 +723,9 @@
       "p50": "p50 延迟",
       "p95": "p95 延迟",
       "share": "请求占比",
-      "credit": "花销"
+      "credit": "花销",
+      "tokens": "Token 用量",
+      "freeHint": "当前免费——该模型不消耗配额"
     },
     "empty": {
       "loginHistory": "暂无登录记录",
@@ -1513,6 +1515,7 @@
         "notEntitled": "未授权",
         "unknown": "未知",
         "freeNow": "当前免费",
+        "freeNowPromo": "当前免费（促销至 {{date}}）",
         "tierListed": "层级列表",
         "attention": "需要关注",
         "allEntitled": "全部 {{total}} 个模型均已授权。",
@@ -1715,6 +1718,8 @@
     "remove": "移除模型",
     "unreachableHint": "当前无法调用：池里没有账号有它的权限，或这个名字在当前后端上映射不到任何 selector。仍可点击，方便你把它加入或移出列表。",
     "freeBadge": "免费",
+    "freeBadgePromo": "免费（促销至 {{date}}）",
+    "pricingStale": "定价数据已过期——最近一次计费同步的时间较早",
     "paidBadge": "计费",
     "costUnknownHint": "费用未知：还没有账号上报过服务端费率表，所以既不能确认免费、也不能确认计费。在某个账号上刷新余额即可填上这张表。",
     "dailyExhaustedBadge": "额度 · 日额度耗尽",

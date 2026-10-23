@@ -9489,7 +9489,11 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const attention = Array.isArray(S.attention) ? S.attention : [];
     const rows = attention.map((m) => {
       const extra = [];
-      if (m.freeNow) extra.push(T('freeNow'));
+      if (m.freeNow) {
+        extra.push(m.promoEndsAt
+          ? T('freeNowPromo', { date: String(m.promoEndsAt).slice(0, 10) })
+          : T('freeNow'));
+      }
       if (m.tierListed) extra.push(T('tierListed'));
       const cls = statusCls[m.status] || 'muted';
       const label = T(statusKey[m.status] || 'unknown');
@@ -10967,7 +10971,13 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           const promo = free === true && m.promoEndsAt
             ? I18n.t('model.promoEndsHint', { date: String(m.promoEndsAt).slice(0, 10) })
             : '';
-          const badge = free === true ? `<span class="chip-badge free">${I18n.t('model.freeBadge')}</span>`
+          // A promotion is the reason the row is free, and its end date is the
+          // reason that will stop being true. Render both in the badge itself
+          // ("免费（促销至 2026-11-01）") instead of hiding the date in a tooltip:
+          // the badge is what the operator scans, and "free" with no horizon is
+          // how a promo quietly turns into a surprise bill.
+          const promoDate = free === true && m.promoEndsAt ? String(m.promoEndsAt).slice(0, 10) : '';
+          const badge = free === true ? `<span class="chip-badge free">${promoDate ? I18n.t('model.freeBadgePromo', { date: promoDate }) : I18n.t('model.freeBadge')}</span>`
             : state === 'blocked_daily' ? `<span class="chip-badge paid">${I18n.t('model.dailyExhaustedBadge')}</span>`
             : state === 'blocked_weekly' ? `<span class="chip-badge paid">${I18n.t('model.weeklyDroughtBadge')}</span>`
             : state === 'not_in_catalog' ? `<span class="chip-badge paid">${I18n.t('model.notInCatalogBadge')}</span>`
@@ -10983,7 +10993,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
                   ? I18n.t('model.weeklyDroughtHint')
                   : free === null
                     ? I18n.t('model.costUnknownHint')
-                    : [m.connectSelector ? `selector: ${m.connectSelector}` : '', reason, promo]
+                    : [m.connectSelector ? `selector: ${m.connectSelector}` : '', reason, promo,
+                      m.pricingStale ? I18n.t('model.pricingStale') : '']
                       .filter(Boolean).join(' · ');
           return `<span class="model-chip ${inList ? 'selected' : ''}${unreachable ? ' unreachable' : ''}"${title ? ` title="${this.esc(title)}"` : ''} onclick="App.toggleModelInList('${this.escJsAttr(m.id)}')">${this.esc(m.name)}${badge}</span>`;
         }).join('')}</div>
@@ -11368,6 +11379,18 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     // credits (integers per request), not USD — we don't fabricate a $ figure.
     const creditsTotal = d.creditsTotal || 0;
     const creditsByModel = d.creditsByModel || {};
+    // Per-model tokens + price annotation. `tokensByModel` is the same request
+    // stream split by model; `modelBilling` is resolved server-side from the live
+    // billing sync (freeNow is tri-state, so null renders no badge rather than
+    // claiming a price nobody reported).
+    const tokensByModel = d.tokensByModel || {};
+    const modelBilling = d.modelBilling || {};
+    const modelFreeLabel = (model) => {
+      const b = modelBilling[model];
+      if (!b || b.freeNow !== true) return '';
+      const date = b.promoEndsAt ? String(b.promoEndsAt).slice(0, 10) : '';
+      return date ? I18n.t('model.freeBadgePromo', { date }) : I18n.t('model.freeBadge');
+    };
     const topCredits = Object.entries(creditsByModel).sort(([, a], [, b]) => b - a).slice(0, 5);
     const maxCredit = topCredits.length ? topCredits[0][1] : 0;
     const todayCredits = (d.creditsByDay || {})[new Date().toISOString().slice(0, 10)] || 0;
@@ -11387,8 +11410,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const fmtCreditsFull = (n) => (Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
     const creditsBars = topCredits.map(([m, c]) => {
       const pct = maxCredit > 0 ? Math.round((c / maxCredit) * 100) : 0;
+      const freeLabel = modelFreeLabel(m);
       return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-        <div style="width:40%;font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${this.esc(m)}">${this.esc(m)}</div>
+        <div style="width:40%;font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${this.esc(m)}">${this.esc(m)}${freeLabel ? ` <span class="chip-badge free">${this.esc(freeLabel)}</span>` : ''}</div>
         <div style="flex:1;height:8px;background:var(--surface-3);border-radius:4px;overflow:hidden"><div style="width:${pct}%;height:100%;background:var(--accent);border-radius:4px"></div></div>
         <div style="width:48px;text-align:right;font-size:12px;font-weight:600">${fmtCredits(c)}</div>
       </div>`;
@@ -11452,14 +11476,27 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       const rateColor = Number(rate) >= 95 ? 'var(--success)' : Number(rate) >= 80 ? 'var(--warn)' : 'var(--error)';
       const share = modelReqTotal > 0 ? ((s.requests / modelReqTotal) * 100).toFixed(1) : '0.0';
       const credit = creditsByModel[m] || 0;
+      const tokenRow = tokensByModel[m] || null;
+      const billing = modelBilling[m] || null;
+      const freeLabel = modelFreeLabel(m);
+      const freeHint = billing && billing.freeNow === true
+        ? [I18n.t('table.detail.freeHint'), billing.promoLabel,
+          billing.pricingStale ? I18n.t('model.pricingStale') : ''].filter(Boolean).join(' · ')
+        : '';
+      const freeBadgeHtml = freeLabel
+        ? `<span class="chip-badge free"${freeHint ? ` title="${this.esc(freeHint)}"` : ''}>${this.esc(freeLabel)}</span>`
+        : '';
+      const tokenTitle = tokenRow
+        ? `${fmtTok(tokenRow.fresh_input)} in · ${fmtTok(tokenRow.cache_read)} cached · ${fmtTok(tokenRow.cache_write)} cache-write · ${fmtTok(tokenRow.output)} out`
+        : '';
       const rid = 'mrow-' + i;
       // Main row is a toggle: click / Enter / Space expands the detail row below
-      // with latency percentiles + credit spend + request share (moved out of the
-      // main row to keep the overview scannable — details on demand).
+      // with latency percentiles + tokens + credit spend + request share (moved
+      // out of the main row to keep the overview scannable — details on demand).
       return `
       <tr class="model-row" role="button" tabindex="0" aria-expanded="false" data-detail="${rid}"
           onclick="App.toggleModelRow('${rid}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.toggleModelRow('${rid}')}">
-        <td><span class="row-chevron" aria-hidden="true">▸</span> <code>${this.esc(m)}</code></td>
+        <td><span class="row-chevron" aria-hidden="true">▸</span> <code>${this.esc(m)}</code>${freeBadgeHtml}</td>
         <td>${s.requests}</td>
         <td style="color:var(--success)">${s.success}</td>
         <td style="color:${s.errors > 0 ? 'var(--error)' : 'inherit'}">${s.errors}</td>
@@ -11472,6 +11509,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
             <div class="model-detail-item"><span class="mdi-label">${I18n.t('table.detail.p50')}</span><span class="mdi-val">${s.p50Ms || 0} ms</span></div>
             <div class="model-detail-item"><span class="mdi-label">${I18n.t('table.detail.p95')}</span><span class="mdi-val">${s.p95Ms || 0} ms</span></div>
             <div class="model-detail-item"><span class="mdi-label">${I18n.t('table.detail.share')}</span><span class="mdi-val">${share}%</span></div>
+            <div class="model-detail-item"><span class="mdi-label">${I18n.t('table.detail.tokens')}</span><span class="mdi-val" title="${this.esc(tokenTitle)}">${tokenRow ? fmtTok(tokenRow.total) : '—'}</span></div>
             <div class="model-detail-item"><span class="mdi-label">${I18n.t('table.detail.credit')}</span><span class="mdi-val">${credit ? credit.toFixed(1) : '0'}</span></div>
           </div>
         </td>
