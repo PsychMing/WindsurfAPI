@@ -45,7 +45,7 @@ flowchart LR
 ### [v3.10.0](docs/releases/RELEASE_NOTES_3.10.0.md) · 2026-10-23
 
 大版本：detached cache P1（默认关）+ 四个 P2 修复、账号页 P2（调色板/尺度/排序/改名）、
-SEC 三项（空白密码、runtime-config/proxy ACL、nginx Referer）、#245 `teams_tier` 行、
+SEC 四项（空白密码、runtime-config/proxy ACL、nginx Referer、cosign keyless 发布签名）、#245 `teams_tier` 行、
 smoke 137 flows / 24 families、真实 Docker one-click E2E 4/4。
 ### [v3.9.60](docs/releases/RELEASE_NOTES_3.9.60.md) · 2026-10-23（已发布）
 

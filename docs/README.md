@@ -49,7 +49,7 @@ flowchart TD
 | Take `DEVIN_CONNECT` to production | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** — production runs with this ON while the code default is OFF, so this is not optional reading |
 | Log in / add an account (password, email code, token, Devin) | **[login-flows.md](login-flows.md)** — the probe-first rules, the exact click path for each account shape, and the CDP token capture |
 | Localise the dashboard | [dashboard-i18n.md](dashboard-i18n.md) |
-| Verify a release download / understand the OTA trust boundary | [RELEASE-SIGNING.md](RELEASE-SIGNING.md) — what `SHA256SUMS` proves (integrity, not origin), the git and Docker OTA checks, and the unsigned-release path (minisign / cosign; no key material in the repo) |
+| Verify a release download / understand the OTA trust boundary | [RELEASE-SIGNING.md](RELEASE-SIGNING.md) — cosign keyless signatures (GitHub OIDC, no key material in the repo), the exact `verify-blob` commands, what the signature does and does not prove, and why the git/Docker OTA paths are not covered |
 | See what changed in a version | [releases/](releases/) — one file per version, v2.0.6 → present |
 
 ## 🔬 Understand the internals
