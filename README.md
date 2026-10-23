@@ -784,15 +784,18 @@ MIT License. See [LICENSE](LICENSE).
 
 ## 发布与密钥边界
 
-发布流程会自动推 Docker 镜像和 GitHub Release，并为四个发布资产（Windows exe/zip、macOS
-arm64 二进制/zip）附上 `SHA256SUMS`。**它证明的是完整性，不是来源**：清单和二进制在同一个
-Release 下，能改 Release 的人也能一起改；当前发布**没有签名**，OTA 更新校验的是 tag/commit
-（GitHub 引用 + TLS），不是签名。下载后先校验再运行：`sha256sum -c SHA256SUMS`
-（macOS 用 `shasum -a 256 -c SHA256SUMS`；Windows 用 `Get-FileHash`）。清单使用**扁平
-文件名**，把五个资产下载到同一目录即可；v3.9.53（首个带清单的版本）的清单带
-`dist-windows/` / `dist-macos/` 前缀，需要先按目录摆放（更早的版本没有 `SHA256SUMS`）。
-信任边界、OTA 的具体校验步骤，以及未来的签名路径（minisign / cosign，仓库内不放任何密钥）
-见 [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md)。
+发布流程会自动推 Docker 镜像和 GitHub Release。从 v3.10.0 起，每个 Release 为四个发布资产
+（Windows exe/zip、macOS arm64 二进制/zip）生成 `SHA256SUMS`，并用 **cosign keyless**
+（GitHub OIDC，仓库内没有任何私钥或签名 secret）为四个资产和清单分别发布 `.sig`、`.pem` 与
+`.sigstore.json`。签名证明“这些字节由本仓库的 release workflow 在某个 `v*` tag 上产生”，
+不证明人工审阅或构建可复现；
+能改写仓库/tag 的人仍能重新签名，因此 tag/commit 的 out-of-band 核对依然重要。下载后先验签再
+校验哈希：`node scripts/verify-release-assets.mjs <下载目录>`（需要 cosign），或按
+[docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md) 用 `cosign verify-blob` 验证
+`SHA256SUMS.sigstore.json` 后再 `sha256sum -c SHA256SUMS`。清单使用**扁平文件名**，把资产
+放在同一目录即可；v3.9.53 的清单带 `dist-windows/` / `dist-macos/` 前缀，v3.10.0 之前的
+Release 没有签名。Dashboard 的 git 自更新与 Docker 更新不下载 Release 资产，cosign 签名不
+覆盖它们（Docker 可用 digest 固定），细节见 docs/RELEASE-SIGNING.md。
 
 **别把 token、API key、cookie、上游账号凭据
 写进 issue、PR、日志或提交的配置文件里。** 如果报告问题必须带上鉴权信息，只贴脱敏后的元数据

@@ -108,17 +108,24 @@ comes from the matching file in this folder.
 
 ### Release assets and verification
 
-The release job attaches four assets plus `SHA256SUMS`. The manifest uses the
-**flat asset names** (`windsurfapi.exe`, `windsurfapi-windows.zip`,
-`windsurfapi-macos-arm64`, `windsurfapi-macos.zip`), so `sha256sum -c SHA256SUMS`
-works in the directory where the five files were downloaded. Do not change it
-back to build-tree paths (`dist-windows/...`): v3.9.53, the first release with a
-manifest, shipped that shape, and it made the documented command fail for three
-of the four files. `test/release-workflow.test.js` pins the flat form.
+The release job attaches four assets plus `SHA256SUMS`, and — from v3.10.0 —
+cosign keyless signatures for each of the five signed blobs (`<name>.sig`,
+`<name>.pem`, `<name>.sigstore.json`). The manifest uses the **flat asset names**
+(`windsurfapi.exe`, `windsurfapi-windows.zip`, `windsurfapi-macos-arm64`,
+`windsurfapi-macos.zip`), so `sha256sum -c SHA256SUMS` works in the directory
+where the files were downloaded. Do not change it back to build-tree paths
+(`dist-windows/...`): v3.9.53, the first release with a manifest, shipped that
+shape, and it made the documented command fail for three of the four files.
+`test/release-workflow.test.js` pins the flat form; `test/release-signing.test.js`
+pins the signed file list and the upload globs.
 
-Releases are **unsigned**. `SHA256SUMS` proves integrity, not origin; the git and
-Docker OTA paths verify tags/ancestry and health, not signatures. The trust
-boundary and the future minisign/cosign path are in
+Releases from v3.10.0 are signed with cosign keyless (GitHub OIDC; no repository
+key or signing secret). Verify `SHA256SUMS.sigstore.json` first, then the hashes,
+or run `node scripts/verify-release-assets.mjs <download-dir>`. A signing failure
+fails the release job: never publish assets whose notes claim signatures but
+which carry no `.sigstore.json`. The git and Docker OTA paths still verify
+tags/ancestry and health, not these signatures, because they do not download
+release assets. The trust boundary and the exact commands are in
 [RELEASE-SIGNING.md](../RELEASE-SIGNING.md).
 
 ## House style for the notes themselves

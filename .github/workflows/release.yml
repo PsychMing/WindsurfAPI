@@ -316,6 +316,10 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      # SEC-04: keyless cosign signing exchanges this job's GitHub OIDC token
+      # for a short-lived Fulcio certificate. No repository secret or private
+      # key is involved; without this permission the signing step fails closed.
+      id-token: write
 
     steps:
       - name: Checkout
@@ -391,6 +395,51 @@ jobs:
           sha256sum windsurfapi-macos.zip >> SHA256SUMS
           cat SHA256SUMS
 
+      - name: Install cosign
+        # SEC-04/SEC-11: the signer is pinned by commit SHA (the tag is mutable)
+        # and to an exact cosign release, so the tool that produces the
+        # signatures cannot change under a release without a visible commit.
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.1.4'
+
+      - name: Sign the published assets and SHA256SUMS (keyless)
+        # SEC-04: SHA256SUMS alone is only an integrity check — it ships in the
+        # same release as the binaries, so whoever can rewrite the release can
+        # rewrite both. Sign every published blob with the workflow's GitHub
+        # OIDC identity (no key, no secret) and publish:
+        #   *.sig             detached signature
+        #   *.pem             Fulcio certificate carrying the workflow identity
+        #   *.sigstore.json   Sigstore bundle (cert + Rekor inclusion proof)
+        # The bundle is the durable proof: Fulcio certificates expire in
+        # minutes, and a detached certificate can only be checked against the
+        # current time. Verification instructions live in docs/RELEASE-SIGNING.md.
+        #
+        # Any signing failure fails this job. A release that claims signatures
+        # in its notes but ships none is worse than an explicitly unsigned one.
+        run: |
+          set -euo pipefail
+          for f in \
+            dist-windows/windsurfapi.exe \
+            dist-windows/windsurfapi-windows.zip \
+            dist-macos/windsurfapi-macos-arm64 \
+            windsurfapi-macos.zip \
+            SHA256SUMS; do
+            base="$(basename "$f")"
+            cosign sign-blob \
+              --yes \
+              --bundle "${base}.sigstore.json" \
+              --output-signature "${base}.sig" \
+              --output-certificate "${base}.pem" \
+              "$f"
+          done
+          # A missing or empty signature would otherwise be attached as a
+          # zero-byte asset and only discovered by the first user to verify.
+          for f in *.sig *.pem *.sigstore.json; do
+            [ -s "$f" ] || { echo "::error::signature artifact $f is empty"; exit 1; }
+          done
+          ls -l *.sig *.pem *.sigstore.json
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -400,6 +449,9 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
+            *.sig
+            *.pem
+            *.sigstore.json
             dist-windows/windsurfapi.exe
             dist-windows/windsurfapi-windows.zip
             dist-macos/windsurfapi-macos-arm64
