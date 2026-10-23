@@ -54,6 +54,70 @@ export function wireToolId(base, id, seed, slot, opts = {}) {
   return sanitizeToolId(id, opts) || (maxLen >= 1 ? synth.slice(0, maxLen) : '');
 }
 
+// ── Client-visible tool-call id shape (devin family) ────────────────────────
+//
+// OpenAI clients expect an opaque `call_<opaque>` id. The Devin Connect
+// upstream issues its own dialect (`get_weather:0#<uuid>` — live swe-2-medium
+// capture, ToolMatrixLive §7) and the ACP runner forwards its
+// toolCallId verbatim, so the devin adapters normalize at the CLIENT boundary.
+//
+// The mapping is REVERSIBLE and STATELESS: a non-conforming upstream id is
+// base64url-encoded behind a versioned `call_e1_` marker. No process-global
+// map, so a follow-up turn served by another worker (or after a restart) still
+// restores the exact upstream id before native history is re-encoded. Ids that
+// already match the OpenAI shape pass through untouched.
+export const CLIENT_TOOL_CALL_ID_RE = /^call_[A-Za-z0-9_-]+$/;
+const CLIENT_TOOL_CALL_ID_PREFIX = 'call_e1_';
+
+export function toClientToolCallId(rawId, fallback = '') {
+  if (typeof rawId !== 'string' || rawId === '') return fallback;
+  if (CLIENT_TOOL_CALL_ID_RE.test(rawId)) return rawId;
+  return CLIENT_TOOL_CALL_ID_PREFIX + Buffer.from(rawId, 'utf8').toString('base64url');
+}
+
+export function fromClientToolCallId(clientId) {
+  if (typeof clientId !== 'string' || !clientId.startsWith(CLIENT_TOOL_CALL_ID_PREFIX)) return clientId;
+  const encoded = clientId.slice(CLIENT_TOOL_CALL_ID_PREFIX.length);
+  if (!encoded || !ID_RE.test(encoded)) return clientId;
+  const decoded = Buffer.from(encoded, 'base64url').toString('utf8');
+  // Canonical round-trip only: an id that merely LOOKS like our encoding
+  // (bad length/padding/non-UTF-8) must not be rewritten.
+  if (!decoded || Buffer.from(decoded, 'utf8').toString('base64url') !== encoded) return clientId;
+  return decoded;
+}
+
+// Inverse of the adapter's egress normalization, applied to a request's history
+// immediately before it is encoded for the upstream. Only ids this proxy minted
+// are rewritten; every other id passes through byte-identically.
+export function restoreUpstreamToolIds(messages) {
+  if (!Array.isArray(messages)) return messages;
+  let changed = false;
+  const out = messages.map((m) => {
+    if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      let localChanged = false;
+      const calls = m.tool_calls.map((tc) => {
+        const id = fromClientToolCallId(tc?.id);
+        if (id === tc?.id) return tc;
+        localChanged = true;
+        return { ...tc, id };
+      });
+      if (localChanged) {
+        changed = true;
+        return { ...m, tool_calls: calls };
+      }
+    }
+    if (typeof m?.tool_call_id === 'string') {
+      const id = fromClientToolCallId(m.tool_call_id);
+      if (id !== m.tool_call_id) {
+        changed = true;
+        return { ...m, tool_call_id: id };
+      }
+    }
+    return m;
+  });
+  return changed ? out : messages;
+}
+
 export function foldOrphanResultText(content) {
   if (Array.isArray(content)) {
     const parts = content.map((part) => {
