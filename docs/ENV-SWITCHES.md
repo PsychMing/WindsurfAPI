@@ -159,6 +159,11 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 checkout 账号（`acct === null`），成功尾必须把 usage 记到条目 owner
 （`currentApiKeyForId(entry.accountId)`），否则静默不记账（under-bill）。
 
+**默认开关的门禁：** gate 2（`LS_MAX_INSTANCES=2` 下 N 并发 abort 不饿死 live
+请求）由 `test/detach-ls-pool-pressure.test.js` 覆盖；gate 1 的两周
+`serve/admit` 计数从 dashboard `/overview` 的 `detach` 块读取。测量步骤、判读
+阈值与回滚条件见 `docs/DETACH-ROLLOUT.md`。
+
 ## 默认开的功能开关
 
 这五个默认**开**，所以只能往「关」的方向调。它们都是「设 `0` 才关闭」的写法 ——
