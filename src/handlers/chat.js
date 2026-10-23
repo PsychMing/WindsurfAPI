@@ -5,7 +5,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { WindsurfClient, contentToString, isCascadeTransportError, acquireLsUseOrThrow } from '../client.js';
-import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
+import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, markSelectorIneligible, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
 import { isStickyEnabled, setStickyBinding, peekStickyBinding } from '../account/sticky-session.js';
 import { resolveModel, getModelInfo, pickRateLimitFallback, isModelDisabledUpstream, getModelCaps } from '../models.js';
 import { getLsFor, ensureLs, beginLsUse, endLsUse, getLsEntryByPort } from '../langserver.js';
@@ -578,6 +578,14 @@ function topLogprobsRequested(value) {
 export function connectErrorToHttp(code) {
   switch (code) {
     case 'MODEL_BLOCKED': return { status: 402, type: 'model_blocked' };
+    // SELECTOR_NOT_ELIGIBLE: the upstream refused this MODEL for THIS account
+    // ("This model is no longer available for your account") while the session
+    // token stays alive. 403 model_not_available is the same internal vocabulary
+    // the Cascade path uses for "this account cannot serve this model → try the
+    // next account", and it is what the failover loop above already did. It must
+    // NOT read as 401 authentication_error: the account's auth state was never
+    // in question, and a client that sees 401 re-authenticates for nothing.
+    case 'SELECTOR_NOT_ELIGIBLE': return { status: 403, type: 'model_not_available' };
     case 'QUOTA_EXHAUSTED': return { status: 402, type: 'insufficient_quota' };
     case 'UNAUTHORIZED': return { status: 401, type: 'authentication_error' };
     case 'RATE_LIMITED': return { status: 429, type: 'rate_limit_error' };
@@ -611,8 +619,17 @@ export function connectErrorToHttp(code) {
 //   - MODEL_BLOCKED: a tier/entitlement wall shared by every account of that tier
 //     (free→paid selector) — the next account would reject identically.
 //   - UNAUTHORIZED: already handled by the dead-token failover path (kind:'dead').
+//
+// SELECTOR_NOT_ELIGIBLE is the THIRD scope and must be here, not in the excluded
+// list: "This model is no longer available for your account" is scoped to the
+// (account, selector) PAIR, so a peer entitled to that selector can serve the
+// request. While it classified as UNAUTHORIZED the request did hop — but only via
+// the DEAD-TOKEN path, which charged the account's error budget, fired a re-login
+// and a reauth probe for a token that was alive, and with no eligible peer
+// surfaced as 401 "all accounts exhausted (dead session tokens)" instead of the
+// selector's own verdict.
 export function isAccountFailoverError(code) {
-  return code === 'QUOTA_EXHAUSTED' || code === 'RATE_LIMITED';
+  return code === 'QUOTA_EXHAUSTED' || code === 'RATE_LIMITED' || code === 'SELECTOR_NOT_ELIGIBLE';
 }
 
 // O10: official OpenAI error `type` vocabulary. Anything outside this set that
@@ -2659,6 +2676,25 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       // so it must not charge the error budget that evicts healthy accounts.
       /* no penalty — request configuration rejected, not an account fault */
     }
+    // SELECTOR_NOT_ELIGIBLE: "This model is no longer available for your account".
+    // The scope is the (account, canonical selector) PAIR — the session token is
+    // alive and this same account keeps serving every other selector — so NOTHING
+    // account-scoped may happen here:
+    //   - no reportError (the old behaviour: three requests for one retired
+    //     selector flipped a healthy account to status='error', persisted, and
+    //     blacked out every OTHER model it could still serve);
+    //   - no re-login (the token was never dead);
+    //   - no dead-token verdict and no reauth-confirmation probe (the handler's
+    //     dead-token path owns those, and it must never see this code).
+    // What DOES happen: latch the selector as ineligible for this account, but only
+    // when a peer could serve it right now (see markSelectorIneligible) — then the
+    // failover arm below moves the request to that peer. With no such peer the
+    // latch is skipped and the upstream verdict surfaces as 403, which is honest:
+    // the selector cannot run anywhere in this pool.
+    else if (err.code === 'SELECTOR_NOT_ELIGIBLE') {
+      markSelectorIneligible(apiKey, selector || model);
+      bumpConnect('selector_ineligible');
+    }
     else if (err.code === 'UNAUTHORIZED') {
       // A 401 from a credential the pool has already replaced is evidence
       // about the OLD epoch only. Charging the live key's error budget would
@@ -2666,7 +2702,7 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       // mint a third key over it — both penalize the new epoch for the old
       // one's failure.
       if (credentialCurrent) {
-        reportError(apiKey);
+        reportError(apiKey, { selector });
         // The DEVIN_CONNECT session token is an opaque session_id with no refresh
         // path — UNAUTHORIZED most likely means the server retired it. If the
         // account has stored credentials + auto-relogin is enabled, trigger a
@@ -2686,7 +2722,7 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       // 2 in a row — exactly the persistent backend-fault case) and records a
       // health-window error so selection de-prioritizes a genuinely sick
       // account, WITHOUT the errorCount eviction a plain reportError would cause.
-      if (credentialCurrent) reportInternalError(apiKey);
+      if (credentialCurrent) reportInternalError(apiKey, { selector });
       bumpConnect('upstream_internal');
     }
     else if (err.code === 'STREAM_TRUNCATED') {
@@ -2701,7 +2737,7 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       // above were added to remove. Record it as a health-window event so a
       // genuinely sick account is still de-prioritized by selection, but skip the
       // errorCount eviction.
-      if (credentialCurrent) reportInternalError(apiKey);
+      if (credentialCurrent) reportInternalError(apiKey, { selector });
       bumpConnect('stream_truncated');
     }
     // UPSTREAM_ERROR carries the gRPC `internal` class, which classifyUpstreamError
@@ -2717,7 +2753,7 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
     // errorCount eviction. (Verified by repro: 3 UPSTREAM_ERROR calls disabled a
     // healthy account whenever a peer existed to void the last-account exemption.)
     else if (err.code === 'UPSTREAM_ERROR') {
-      if (credentialCurrent) reportInternalError(apiKey);
+      if (credentialCurrent) reportInternalError(apiKey, { selector });
       bumpConnect('upstream_error');
     }
     else if (TRANSPORT_FAULT_CODES.has(err.code)) {
@@ -2737,10 +2773,10 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       // Measured before this branch: 3 calls of each flipped a healthy account to
       // status='error' with errorCount=3 (peer seeded so lastAccountExempt could
       // not mask it).
-      if (credentialCurrent) reportInternalError(apiKey);
+      if (credentialCurrent) reportInternalError(apiKey, { selector });
       bumpConnect('transport_fault');
     }
-    else if (credentialCurrent) reportError(apiKey);
+    else if (credentialCurrent) reportError(apiKey, { selector });
   } else if (credentialCurrent) {
     // An old-key success does not prove the new key works, so it must not
     // clear the new epoch's error budget either. The account-level stats below
@@ -4190,7 +4226,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                   const next = await acquireConnectFailover(triedKeys, abortController.signal, callerKey, selector, context.budget || null);
                   if (next) {
                     log.info(`Chat[${reqId}]: DEVIN_CONNECT ${r.err.code} on account → stream failover hop ${hops + 1} to next pooled account`);
-                    bumpConnect('quota_failover_hops');
+                    bumpConnect(r.err.code === 'SELECTOR_NOT_ELIGIBLE' ? 'selector_failover_hops' : 'quota_failover_hops');
                     acct = next;
                     continue;
                   }
@@ -4198,7 +4234,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 // Preserve the 429 class on the streaming wire: `api_error` is
                 // not what OpenAI SDKs back off on. The internal name is mapped
                 // to the official `rate_limit_error` by the egress normalizer.
-                const streamErrType = r.err.code === 'RATE_LIMITED' ? 'rate_limit_exceeded' : 'upstream_error';
+                // SELECTOR_NOT_ELIGIBLE keeps the same type the non-stream path
+                // gets from connectErrorToHttp (403 model_not_available) instead
+                // of collapsing into a generic upstream_error.
+                const streamErrType = r.err.code === 'RATE_LIMITED' ? 'rate_limit_exceeded'
+                  : (r.err.code === 'SELECTOR_NOT_ELIGIBLE' ? 'model_not_available' : 'upstream_error');
                 const retryAfterMs = r.err.code === 'RATE_LIMITED'
                   ? (Number.isFinite(r.err.resetMs) && r.err.resetMs > 0 ? r.err.resetMs : getBreakerTunable('rlBurstMs'))
                   : null;
@@ -4411,7 +4451,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
           const next = await acquireConnectFailover(triedKeys, context.signal, callerKey, selector, context.budget || null);
           if (next) {
             log.info(`Chat[${reqId}]: DEVIN_CONNECT ${r.err.code} on account → failover hop ${hops + 1} to next pooled account`);
-            bumpConnect('quota_failover_hops');
+            bumpConnect(r.err.code === 'SELECTOR_NOT_ELIGIBLE' ? 'selector_failover_hops' : 'quota_failover_hops');
             acct = next;
             continue;
           }

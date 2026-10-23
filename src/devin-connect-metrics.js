@@ -25,6 +25,20 @@ const _counters = {
   // dry-well (QUOTA_EXHAUSTED / RATE_LIMITED) while the pool still had a healthy
   // account — the request moves on instead of surfacing 402/429 to the client (R1)
   quota_failover_hops: 0,
+  // cross-account failover hops taken because the upstream refused THIS selector
+  // for THIS account ("This model is no longer available for your account").
+  // Sibling of quota_failover_hops, deliberately separate: a spike here means the
+  // upstream retired a model for part of the pool, not that anyone is out of
+  // credit. No errorCount / re-login / reauth is involved (see
+  // finalizeConnectAccount's SELECTOR_NOT_ELIGIBLE arm).
+  selector_failover_hops: 0,
+  // upstream refused a specific selector for one account. Scoped to the
+  // (account, selector) pair: the token is alive and every other selector keeps
+  // working, so this counter moving is NOT an account-health signal. It counts the
+  // REFUSAL, not the routing latch: with no eligible peer the latch is deliberately
+  // skipped (the account must keep surfacing the honest 403) and the refusal still
+  // counts here.
+  selector_ineligible: 0,
   // session tokens observed dead (UNAUTHORIZED, not revived on same account)
   dead_tokens: 0,
   // requests rejected because the whole pool was rate-limited/unavailable
