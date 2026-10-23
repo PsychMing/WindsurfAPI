@@ -5,7 +5,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { WindsurfClient, contentToString, isCascadeTransportError, acquireLsUseOrThrow, detachedClaimLostError } from '../client.js';
-import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountInternal, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, markSelectorIneligible, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
+import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountInternal, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, markSelectorIneligible, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, isAllConnectAccountsUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
 
 import { isStickyEnabled, setStickyBinding, peekStickyBinding } from '../account/sticky-session.js';
 import { resolveModel, getModelInfo, pickRateLimitFallback, isModelDisabledUpstream, getModelCaps } from '../models.js';
@@ -2571,6 +2571,11 @@ function credentialEpochCurrent(acct, credentialKey = null) {
   return currentApiKeyForId(acct.id, attempted) === attempted;
 }
 
+// `model` is the ATTRIBUTION name: the dashboard request row (and the token
+// row recorded next to it) files this attempt under it. The connect path passes
+// the served display name (connectDisplayModel) so both rows land in the same
+// bucket as the response's `model` field — a stream turn and a non-stream turn
+// of the same request must not split across two model buckets (P2-6).
 export function finalizeConnectAccount(acct, { model, selector = null, startTime, err, aborted: abortedHint = false, signal = null, credentialKey = null }) {
   if (!acct) {
     // env-token path: still record the request for dashboard totals.
@@ -3836,27 +3841,44 @@ async function _handleChatCompletionsInner(body, context = {}) {
       }
       const rl = isAllRateLimited(null, selector);
       const tu = isAllTemporarilyUnavailable(null, selector);
+      // P2-7: neither check above can see the rest of the selection conjunction.
+      // Maintenance (a background / language-server swap holds the account, live by
+      // default), the per-account in-flight cap and the selector latch all make an
+      // account unselectable while leaving it outside rl/tu — so a pool blocked on
+      // one of those passed this preflight, spent the full queue wait, and then
+      // acquired null, which is indistinguishable from "no pool" and fell through to
+      // the un-accounted env token. Ask the scheduler's own admission predicate
+      // (read-only) so that shape fails fast instead.
+      const adm = isAllConnectAccountsUnavailable(selector);
       // L2: when degraded-serve is on, DON'T fast-429 a fully-throttled pool here.
       // Fall through to acquireConnectAccount → getApiKey, which will degrade-serve
       // the least-bad transiently-cooled account (pickDegradedFallback) instead of
       // blacking out. A genuine dry-well (quota) still surfaces downstream since the
       // fallback strictly excludes quotaResetAt accounts. Default OFF = the original
-      // fast-429 preflight is byte-identical. (tu = temporarily-unavailable, e.g.
-      // maintenance, is NOT degradable — only transient rate-limits are — so we only
-      // suppress the 429 for the rate-limit arm when a degradable candidate exists.)
+      // fast-429 preflight is byte-identical. (tu = temporarily-unavailable = the
+      // cooldown/RPM dimensions; degraded serve bypasses only those, so it must not
+      // suppress the admission arm below — pickDegradedFallback skips maintenance
+      // accounts and latched selectors, so it cannot serve a pool blocked on them.)
+      const throttled = rl.allLimited || tu.allUnavailable;
       const degradable = getBreakerTunable('degradedServe') && rl.allLimited && !tu.allUnavailable;
-      if ((rl.allLimited || tu.allUnavailable) && !degradable) {
-        const retryAfterMs = rl.retryAfterMs || tu.retryAfterMs || 60000;
+      if ((throttled && !degradable) || (!throttled && adm.allUnavailable)) {
+        const retryAfterMs = rl.retryAfterMs || tu.retryAfterMs || adm.retryAfterMs || 60000;
         // F3: clamp the advertised Retry-After so an agent client's auto-retry
         // backs off usefully (floor) and is never frozen by an over-long window
         // (ceil). header + body report the SAME clamped value.
         const retryAfterSec = clientRetryAfterSeconds(retryAfterMs);
-        log.info(`Chat[${reqId}]: DEVIN_CONNECT pool exhausted (all accounts rate-limited/unavailable) → 429 retry_after=${retryAfterMs}ms (advertised ${retryAfterSec}s)`);
+        log.info(`Chat[${reqId}]: DEVIN_CONNECT pool exhausted (${throttled ? 'all accounts rate-limited/unavailable' : 'no account admitted for the selector — maintenance / in-flight cap / latch'}) → 429 retry_after=${retryAfterMs}ms (advertised ${retryAfterSec}s)`);
         bumpConnect('pool_exhausted');
         return {
           status: 429,
           headers: { 'Retry-After': String(retryAfterSec) },
-          body: { error: { message: `All DEVIN_CONNECT accounts are temporarily rate-limited. Retry in ~${retryAfterSec}s.`, type: 'rate_limit_exceeded', retry_after_ms: retryAfterSec * 1000 } },
+          body: { error: {
+            message: throttled
+              ? `All DEVIN_CONNECT accounts are temporarily rate-limited. Retry in ~${retryAfterSec}s.`
+              : `No DEVIN_CONNECT account is currently selectable for \`${reqModelName}\` (maintenance, in-flight cap, or model unavailable for the pool). Retry in ~${retryAfterSec}s.`,
+            type: 'rate_limit_exceeded',
+            retry_after_ms: retryAfterSec * 1000,
+          } },
         };
       }
     }
@@ -4162,20 +4184,24 @@ async function _handleChatCompletionsInner(body, context = {}) {
               // Dashboard token-usage breakdown from the streaming connect path
               // (the return value carries the terminal usage). Was discarded
               // before → "Token 用量分布" empty on connect deployments.
-              try { recordTokenUsage(_sr?.usage, reqModelName); } catch {}
+              // Attribute under the SERVED name (connectDisplayModel), the same
+              // name the response body/chunks carry and the non-stream arm files
+              // under — reqModelName split one conversation across two buckets on
+              // a degrade or a router hop (P2-6).
+              try { recordTokenUsage(_sr?.usage, connectDisplayModel); } catch {}
               // K8: attribute the spend to THIS account (per-account lifetime total).
               // Pass the whole reservation, not its apiKey: the credential may have
               // rotated while the stream was in flight, and the ledger belongs to
               // the immutable account id (review #3).
               try { recordAccountSpend(a, _sr?.usage, connectSpendOpts(_sr?.billing)); } catch {}
-              finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
+              finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err: null });
               return { kind: 'ok', sr: _sr };
             } catch (err) {
               // Client or server-level abort: the caller is gone (or the process
               // is shutting down). Don't penalize the account, don't log a scary
               // ERROR, and don't burn quota on more retries/failover.
               if (abortController.signal.aborted || isAbortError(err)) {
-                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: err || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true });
+                finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err: err || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true });
                 return { kind: 'abort' };
               }
               // Transport retries belong to the adapter (devin-connect-openai
@@ -4204,16 +4230,16 @@ async function _handleChatCompletionsInner(body, context = {}) {
                     log.info(`Chat[${reqId}]: DEVIN_CONNECT re-login recovered token, replaying stream once`);
                     try {
                       const _sr3 = await streamChatCompletion({ ...connectParams, token: freshKey }, send, connectMeta);
-                      try { recordTokenUsage(_sr3?.usage, reqModelName); } catch {}
+                      try { recordTokenUsage(_sr3?.usage, connectDisplayModel); } catch {}
                       // Billing identity is the account, not the credential: the
                       // retry presented freshKey, but the row belongs to a.id.
                       try { recordAccountSpend({ accountId: a.id, apiKey: freshKey, attemptId: a.reservationTimestamp }, _sr3?.usage, connectSpendOpts(_sr3?.billing)); } catch {}
-                      finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null, credentialKey: freshKey });
+                      finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err: null, credentialKey: freshKey });
                       return { kind: 'ok', sr: _sr3 };
                     } catch (retryErr) {
                       // Client disconnected while re-login was in flight — stop cleanly.
                       if (abortController.signal.aborted || isAbortError(retryErr)) {
-                        finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: retryErr || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true, credentialKey: freshKey });
+                        finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err: retryErr || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true, credentialKey: freshKey });
                         return { kind: 'abort' };
                       }
                       // Fresh token still UNAUTHORIZED ⇒ entitlement wall, not a dead
@@ -4223,16 +4249,16 @@ async function _handleChatCompletionsInner(body, context = {}) {
                       const reErr = (retryErr.code === 'UNAUTHORIZED' && !emitted)
                         ? Object.assign(new Error('model requires a paid Devin entitlement (fresh session token still UNAUTHORIZED → not a dead token)'), { code: 'MODEL_BLOCKED' })
                         : retryErr;
-                      finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: reErr, signal: abortController.signal, credentialKey: freshKey });
+                      finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err: reErr, signal: abortController.signal, credentialKey: freshKey });
                       log.error(`Chat[${reqId}]: DEVIN_CONNECT stream retry error: ${reErr.message}`);
                       return { kind: 'error', err: reErr };
                     }
                   }
                 }
-                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err, signal: abortController.signal });
+                finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err, signal: abortController.signal });
                 return !emitted ? { kind: 'dead' } : { kind: 'error', err };
               }
-              finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err, signal: abortController.signal });
+              finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err, signal: abortController.signal });
               log.error(`Chat[${reqId}]: DEVIN_CONNECT stream error: ${err.message}`);
               return { kind: 'error', err };
             }
@@ -4431,12 +4457,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
       const params = a ? { ...connectParams, token: a.apiKey, deviceSeed: ensureDeviceSeed(a) } : connectParams;
       try {
         const out = await toChatCompletion(params, connectMeta);
-        finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
+        finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err: null });
         return { kind: 'ok', out };
       } catch (err) {
         // Client or server-level abort: don't penalize the account or log ERROR.
         if ((context.signal?.aborted) || isAbortError(err)) {
-          finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: err || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true });
+          finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err: err || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true });
           return { kind: 'abort' };
         }
         if (err.code === 'UNAUTHORIZED' && a) {
@@ -4455,12 +4481,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
               log.info(`Chat[${reqId}]: DEVIN_CONNECT re-login recovered token, retrying once`);
               try {
                 const out = await toChatCompletion({ ...connectParams, token: freshKey }, connectMeta);
-                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null, credentialKey: freshKey });
+                finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err: null, credentialKey: freshKey });
                 return { kind: 'ok', out };
               } catch (retryErr) {
                 // Client aborted during the re-login retry.
                 if ((context.signal?.aborted) || isAbortError(retryErr)) {
-                  finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: retryErr || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true, credentialKey: freshKey });
+                  finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err: retryErr || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true, credentialKey: freshKey });
                   return { kind: 'abort' };
                 }
                 // The re-login above minted a verifiably-fresh token (windsurfLogin
@@ -4476,16 +4502,16 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 const reErr = retryErr.code === 'UNAUTHORIZED'
                   ? Object.assign(new Error('model requires a paid Devin entitlement (fresh session token still UNAUTHORIZED → not a dead token)'), { code: 'MODEL_BLOCKED' })
                   : retryErr;
-                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: reErr, signal: context.signal, credentialKey: freshKey });
+                finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err: reErr, signal: context.signal, credentialKey: freshKey });
                 log.error(`Chat[${reqId}]: DEVIN_CONNECT retry-after-relogin error (${reErr.code || 'UPSTREAM_ERROR'}): ${reErr.message}`);
                 return { kind: 'error', err: reErr };
               }
             }
           }
-          finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err, signal: context.signal });
+          finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err, signal: context.signal });
           return { kind: 'dead' };
         }
-        finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err, signal: context.signal });
+        finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err, signal: context.signal });
         return { kind: 'error', err };
       }
     };
@@ -4535,7 +4561,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
         // recordTokenUsage (only the cascade paths did), so the "Token 用量分布"
         // card stayed empty on connect-only deployments (homecloud). Safe no-op
         // when usage is absent (recordTokenUsage guards null).
-        try { recordTokenUsage(r.out?.body?.usage, r.out?.body?.model || reqModelName); } catch {}
+        // The adapter stamps the SERVED name on the body; the fallback is the same
+        // attribution name the stream arm and finalizeConnectAccount use (P2-6).
+        try { recordTokenUsage(r.out?.body?.usage, r.out?.body?.model || connectDisplayModel); } catch {}
         // K8: per-account lifetime spend (non-stream connect path).
         try { recordAccountSpend(acct, r.out?.body?.usage, connectSpendOpts(r.out?.body?._windsurf_billing)); } catch {}
         // Session continuity: commit the completed request→response pair so the

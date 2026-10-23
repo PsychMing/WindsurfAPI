@@ -3943,10 +3943,22 @@ export function markQuotaExhausted(apiKey, durationMs = null, now = Date.now()) 
   }
 }
 
-function maybeRecoverErrorAccount(account, now) {
-  if (!account || account.status !== 'error') return;
+/**
+ * Read-only half of maybeRecoverErrorAccount: is this account's half-open trial
+ * due? Split out so a caller that MUST NOT mutate — the connect preflight — can
+ * still model what the next getApiKey call will do (it recovers before applying
+ * the admission predicate), instead of concluding "nothing selectable" for a
+ * pool whose next selection would make this account active.
+ */
+function errorRecoveryDue(account, now) {
+  if (!account || account.status !== 'error') return false;
   const since = account.erroredAt || account._errorAt || 0;
-  if (!since || (now - since) < errorRecoveryTtlMs()) return;
+  return since > 0 && (now - since) >= errorRecoveryTtlMs();
+}
+
+function maybeRecoverErrorAccount(account, now) {
+  if (!errorRecoveryDue(account, now)) return;
+  const since = account.erroredAt || account._errorAt || 0;
   account.status = 'active';
   account.errorCount = 0;
   log.info(`Account ${safeAccountRef(account)} half-open recovery after ${Math.round((now - since) / 60000)}m in error state`);
@@ -4496,6 +4508,61 @@ export function isAllTemporarilyUnavailable(modelKey, connectSelector = null) {
   if (!anyEligible) return { allUnavailable: false, retryAfterMs: null };
   const retryAfterMs = soonestExpiry === Infinity ? 30_000 : Math.max(1000, soonestExpiry - now);
   return { allUnavailable: true, retryAfterMs };
+}
+
+/**
+ * Preflight view of the SELECTION conjunction for one connect selector: is every
+ * entitled account unselectable right now?
+ *
+ * isAllRateLimited / isAllTemporarilyUnavailable model only the cooldown and RPM
+ * dimensions. They are blind to the dimensions isAdmittedForRequest adds — account
+ * maintenance (held for the duration of a background or language-server swap; live
+ * by default) and the per-account in-flight cap (DEVIN_CONNECT_MAX_INFLIGHT_PER_ACCOUNT)
+ * — and to the selector latch. A pool that is unselectable for one of those reasons
+ * therefore passes the fast-fail preflight, spends the queue wait in
+ * acquireConnectAccount, and acquires null — which the connect path cannot tell apart
+ * from "no pool at all" and answers with the un-accounted env token (the P0-2
+ * conflation the preflight exists to prevent).
+ *
+ * Read-only and reservation-free: it delegates to isAdmittedForRequest, the
+ * scheduler's own predicate, rather than re-deriving the conjunction (a second copy
+ * is exactly how the latch's peer gate once disagreed with getApiKey).
+ *
+ * Returns the same shape as its two siblings so the caller folds it into one arm.
+ * `retryAfterMs` is a flat 30s: maintenance and in-flight release carry no deadline
+ * this layer can read, and the point is only to stop the caller from blocking a full
+ * queue wait on a pool that cannot serve it.
+ *
+ * An empty eligible set means "no pool to judge" (every account disabled, or an
+ * env-token deploy) — NOT exhaustion — so it reports available, leaving the caller's
+ * env-token fallback intact.
+ *
+ * One step of getApiKey is modelled rather than skipped: it half-opens an 'error'
+ * account whose recovery TTL has elapsed BEFORE applying the admission predicate
+ * (maybeRecoverErrorAccount). A pool whose remaining candidate is due for that trial
+ * is not exhausted, and fast-failing here would be self-inflicted — the recovery only
+ * runs inside getApiKey, so a 429 would never let it happen. The trial is evaluated
+ * on a COPY: this function still mutates nothing.
+ */
+export function isAllConnectAccountsUnavailable(selector) {
+  const now = Date.now();
+  let anyEligible = false;
+  for (const a of accounts) {
+    if (a.status !== 'active') {
+      if (errorRecoveryDue(a, now)
+          && isAdmittedForRequest({ ...a, status: 'active' }, { connectSelector: selector, now })) {
+        return { allUnavailable: false, retryAfterMs: null };
+      }
+      continue;
+    }
+    if (!isConnectSelectorAllowedForAccount(a, selector)) continue;
+    anyEligible = true;
+    if (isAdmittedForRequest(a, { connectSelector: selector, now })) {
+      return { allUnavailable: false, retryAfterMs: null };
+    }
+  }
+  if (!anyEligible) return { allUnavailable: false, retryAfterMs: null };
+  return { allUnavailable: true, retryAfterMs: 30_000 };
 }
 
 export function isAuthenticated() {
