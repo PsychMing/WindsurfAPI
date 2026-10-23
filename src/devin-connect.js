@@ -2322,7 +2322,16 @@ export function classifyUpstreamError(text, code = null, status = null) {
   // Checked BEFORE the /upgrade tier-wall arm so a per-account signal wins
   // over an inferred tier wall (a tier wall is shared by every account of a
   // tier; this one is not, so a peer may well serve it).
-  if (/(?:this |the )?(?:model|selector)[^.]{0,60}?(?:no longer |not )(?:available|entitled|enabled|offered) (?:for|to|on) your (?:account|plan|tier|subscription|workspace)/i.test(lc)) {
+  //
+  // NARROWED to the measured account-scoped wording. This arm used to also
+  // accept plan/tier/subscription/workspace and the "not available" variant,
+  // which reclassified an explicit tier wall ("… no longer available for your
+  // plan. Please /upgrade …") as a per-account selector verdict. The two codes
+  // route differently: MODEL_BLOCKED is excluded from failover on purpose
+  // (every account of that tier hits the same wall), while
+  // SELECTOR_NOT_ELIGIBLE hops and latches. Those nouns are not evidence
+  // about ONE account; only "your account" is.
+  if (/(?:this |the )?(?:model|selector)\b[^.]{0,60}?\bno longer available for your account\b/i.test(lc)) {
     return { code: 'SELECTOR_NOT_ELIGIBLE', message: body || 'DEVIN_CONNECT: model not available for this account' };
   }
   if (/\/upgrade|upgrade to access|insufficient.*entitlement|requires? .*(paid|pro|team|enterprise)/i.test(lc)) {
