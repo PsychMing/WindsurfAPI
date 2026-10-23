@@ -43,7 +43,7 @@ async function run(options = {}) {
   }
   const deps = {
     options, res, visited, lastErr: new Error('upstream failed'), model: 'model', modelKey: 'model',
-    startTime: 0, currentApiKey: 'test-key', reqId: 'request', id: 'completion', created: 1,
+    startTime: 0, currentApiKey: 'test-key', currentAccountId: 'test-account', reqId: 'request', id: 'completion', created: 1,
     tried: ['key'], streamInternalCount: 0, hadSuccess: false, reuseEntryDead: false,
     checkedOutReuseEntry: null, fpBefore: null, callerKey: '', cachePolicy: null,
     deps: { wantThinking: false }, collectedToolCalls: [], isOpenAIClient: !options.internal,

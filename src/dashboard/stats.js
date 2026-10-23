@@ -9,6 +9,7 @@ import { join } from 'path';
 import { config } from '../config.js';
 import { getModelInfo, getCloudSelectorPricing, resolveModel } from '../models.js';
 import { resolveConnectSelector } from '../devin-connect-models.js';
+import { accountRef } from '../log-safety.js';
 
 const STATS_FILE = join(config.dataDir, 'stats.json');
 
@@ -140,7 +141,7 @@ const STATS_DEFAULTS = {
   successCount: 0,
   errorCount: 0,
   modelCounts: {},    // { "gpt-4o-mini": { requests, success, errors, totalMs } }
-  accountCounts: {},  // { "abc123": { requests, success, errors } }
+  accountCounts: {},  // { "acct-<8 hex>": { requests, success, errors } } — opaque ref, never a key/email
   hourlyBuckets: [],  // [{ hour: "2026-04-09T07:00:00Z", requests, errors }]
   // v2.0.69 (#118 wnfilm) — bucket-level token totals so the dashboard
   // can show fresh_input / cache_read / cache_write / output without
@@ -165,7 +166,9 @@ const STATS_DEFAULTS = {
   // v2.0.148 — Credits spend dimension. creditsByHour/Day are keyed maps
   // { "<iso-hour|day>": creditsFloat } so the dashboard can chart spend over
   // time. Cost per request = MODELS[model].credit (rate card), summed here so we
-  // never have to thread cost through the 10 recordRequest call sites.
+  // never have to thread cost through the 10 recordRequest call sites. Only
+  // successful attempts are charged; failed attempts keep their request row
+  // with credit 0, so the log and this card share one number.
   creditsTotal: 0,
   creditsByHour: {},   // { "2026-07-09T01:00:00Z": 12.5 }
   creditsByDay: {},    // { "2026-07-09": 340.0 }
@@ -177,7 +180,7 @@ const STATS_DEFAULTS = {
   tokensByModel: {},   // { "swe-2-medium": { fresh_input, cache_read, cache_write, output, total, requests_with_usage } }
   // v2.0.148 — per-request detail ring buffer (bounded, persisted) so long runs
   // keep a rolling window of recent calls for audit/export instead of losing them.
-  recentRequests: [],  // [{ ts, model, success, ms, account, credit }]  newest last, cap 500
+  recentRequests: [],  // [{ ts, model, success, ms, account, credit }]  newest last, cap 500; account is an opaque acct-<hash> ref
 };
 
 function createStatsState() {
@@ -187,6 +190,52 @@ function createStatsState() {
 const _state = createStatsState();
 
 const RECENT_REQ_CAP = 500;
+
+const ACCOUNT_REF_RE = /^acct-[0-9a-f]{8}$/;
+
+/**
+ * Canonical account reference for stats persistence and display.
+ *
+ * The request log used to key this dimension by `String(accountId).slice(0, 8)`.
+ * Chat handlers passed the credential the attempt presented, and every
+ * `devin-session-token$…` key starts with `devin-se`, so all connect accounts
+ * collapsed into one bucket and stats.json stored a credential prefix. Callers
+ * now pass the immutable account id; this boundary turns any value into an
+ * opaque `acct-<8 hex>` ref (the same shape the DevIn panel uses). A value that
+ * already looks like a ref passes through, so re-reading a persisted row or
+ * importing an exported snapshot is idempotent.
+ */
+function normalizeAccountRef(value) {
+  if (value == null) return null;
+  const raw = typeof value === 'string' ? value : String(value);
+  if (!raw) return null;
+  return ACCOUNT_REF_RE.test(raw) ? raw : accountRef(raw);
+}
+
+/** Re-key a persisted account map by normalized ref, merging old duplicates. */
+function normalizeAccountCounts(map) {
+  const out = {};
+  const source = map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+  for (const [key, counts] of Object.entries(source)) {
+    const ref = normalizeAccountRef(key);
+    if (!ref) continue;
+    const current = out[ref] || { requests: 0, success: 0, errors: 0 };
+    current.requests += Number(counts?.requests) || 0;
+    current.success += Number(counts?.success) || 0;
+    current.errors += Number(counts?.errors) || 0;
+    out[ref] = current;
+  }
+  return out;
+}
+
+/** Scrub the credential-derived `account` values older versions persisted. */
+function normalizeRecentRequests(rows) {
+  if (!Array.isArray(rows)) return [];
+  for (const row of rows) {
+    if (row && typeof row === 'object') row.account = normalizeAccountRef(row.account);
+  }
+  return rows;
+}
 
 // ─── Per-HTTP-request accounting scope ─────────────────────────────────
 // recordRequest (the attempt row) and recordTokenUsage (the usage block) are
@@ -261,6 +310,11 @@ try {
   if (existsSync(STATS_FILE)) {
     const saved = JSON.parse(readFileSync(STATS_FILE, 'utf-8'));
     Object.assign(_state, saved);
+    // Older versions persisted the credential prefix (or a raw id) as the
+    // account key/value. Normalize on load so stats.json and the dashboard stop
+    // displaying it without waiting for the 500-row ring to rotate.
+    _state.accountCounts = normalizeAccountCounts(_state.accountCounts);
+    _state.recentRequests = normalizeRecentRequests(_state.recentRequests);
     // Reseed the recency counter above any persisted lastTs so LRU ordering
     // survives a restart without an early wrap-collision.
     for (const s of Object.values(_state.modelCounts || {})) {
@@ -342,13 +396,13 @@ export function recordRequest(model, success, durationMs, accountId, extra = {})
     if (mc.recentMs.length > 200) mc.recentMs.shift();
   }
 
-  // Per-account stats
-  if (accountId) {
-    const aid = typeof accountId === 'string' ? accountId.slice(0, 8) : String(accountId);
-    if (!_state.accountCounts[aid]) {
-      _state.accountCounts[aid] = { requests: 0, success: 0, errors: 0 };
+  // Per-account stats, keyed by the same opaque ref the log row carries.
+  const account = normalizeAccountRef(accountId);
+  if (account) {
+    if (!_state.accountCounts[account]) {
+      _state.accountCounts[account] = { requests: 0, success: 0, errors: 0 };
     }
-    const ac = _state.accountCounts[aid];
+    const ac = _state.accountCounts[account];
     ac.requests++;
     if (success) ac.success++;
     else ac.errors++;
@@ -379,9 +433,17 @@ export function recordRequest(model, success, durationMs, accountId, extra = {})
   // billing sync when it knows the model (free promo → 0, catalog/rate-table
   // multiplier otherwise) and only falls back to the static rate card when the
   // upstream has said nothing. Persisted maps stay JSON-safe.
+  //
+  // A failed attempt is not spend: the credits card has always charged
+  // successes only, while the row used to carry the model's price anyway, so
+  // the log's cost column/summary over-reported by every failover, 429 and 500.
+  // Store the charged amount (0 on failure); `success` is the explicit failed
+  // flag, so the row and the card share one number.
   let credit = 0;
-  try { credit = requestCreditCost(model); } catch { credit = 0; }
-  if (credit > 0 && success) {
+  if (success) {
+    try { credit = requestCreditCost(model); } catch { credit = 0; }
+  }
+  if (credit > 0) {
     const dayKey = hourKey.slice(0, 10);
     _state.creditsTotal = (_state.creditsTotal || 0) + credit;
     _state.creditsByHour[hourKey] = (_state.creditsByHour[hourKey] || 0) + credit;
@@ -395,7 +457,7 @@ export function recordRequest(model, success, durationMs, accountId, extra = {})
   const scope = _requestScope.getStore();
   const row = {
     ts: Date.now(), model, success: !!success, ms: durationMs || 0,
-    account: accountId ? (typeof accountId === 'string' ? accountId.slice(0, 8) : String(accountId)) : null,
+    account,
     credit,
     status: Number.isFinite(extra?.status) ? extra.status : (success ? 200 : 500),
     tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0,
@@ -512,6 +574,9 @@ function normalizeStatsSnapshot(src) {
       out[key][name] = entry;
     }
   }
+  // Snapshots written before the id fix carry credential prefixes in both the
+  // account map keys and the request rows; scrub them on import too.
+  out.accountCounts = normalizeAccountCounts(out.accountCounts);
   if (Object.hasOwn(src, 'tokenTotals')) out.tokenTotals = counts(src.tokenTotals, Object.keys(out.tokenTotals));
   if (Object.hasOwn(src, 'tokensByModel')) {
     if (!object(src.tokensByModel)) throw new Error('invalid token map');
@@ -540,6 +605,7 @@ function normalizeStatsSnapshot(src) {
       return entry;
     });
   }
+  out.recentRequests = normalizeRecentRequests(out.recentRequests);
   return out;
 }
 
@@ -736,7 +802,7 @@ function logRowView(row) {
   return {
     ts: Number.isFinite(ts) ? ts : 0,
     model: typeof row?.model === 'string' ? row.model : '',
-    account: typeof row?.account === 'string' ? row.account : null,
+    account: normalizeAccountRef(row?.account),
     status,
     success: !!row?.success,
     ms: nonNeg(row?.ms),

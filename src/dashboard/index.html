@@ -6470,7 +6470,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   },
 
   // Top models + top accounts by request volume (local counters only — no upstream
-  // calls, account shown by 8-char id prefix, never joined to email/keys/balance).
+  // calls, account shown by opaque acct-<hash> ref, never joined to email/keys/balance).
   _renderOverviewRankings(s) {
     const el = document.getElementById('overview-rankings-body');
     if (!el) return;
