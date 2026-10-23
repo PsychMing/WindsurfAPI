@@ -73,6 +73,14 @@ const _counters = {
   // the upstream is stalling or the deployment is misconfigured, not that the pool
   // is dying.
   transport_fault: 0,
+  // an error code finalizeConnectAccount did not classify. DENY-BY-DEFAULT: the
+  // blame chain is an allow-list of named verdicts, so an unknown code takes the
+  // health-window path (reportInternalError) and never charges the errorCount
+  // budget. This counter is the visibility that the old silent `else reportError`
+  // lacked: a spike means devin-connect.js (or Node's socket layer — EPROTO,
+  // HPE_*, ERR_SSL_* are produced by https.request itself) emitted a code with no
+  // explicit blame decision. Add an arm rather than widening an enumeration.
+  unclassified_fault: 0,
   // the LOCAL frame queue hit its cap because the consumer was slower than the
   // upstream stream (QUEUE_OVERFLOW in devin-connect.js). Not an account fault —
   // the upstream and its token are healthy — so it carries no errorCount penalty.

@@ -2533,6 +2533,22 @@ const TRANSPORT_FAULT_CODES = new Set([
   'out_of_range', 'unimplemented',
 ]);
 
+// An unclassified code is a GAP in the classification, not a verdict about the
+// account (see the deny-by-default arm in finalizeConnectAccount). The counter is
+// the dashboard signal; this line is the diagnostic that names the code. Bounded
+// per process like the unknown-stop-reason log: a hostile or broken upstream that
+// repeats one novel code must not turn a gap into a log flood.
+const MAX_UNCLASSIFIED_FAULT_LOGS = 16;
+const _unclassifiedFaultsLogged = new Set();
+function noteUnclassifiedConnectFault(err) {
+  const raw = typeof err?.code === 'string' && err.code ? err.code : '<no-code>';
+  if (_unclassifiedFaultsLogged.has(raw) || _unclassifiedFaultsLogged.size >= MAX_UNCLASSIFIED_FAULT_LOGS) return;
+  _unclassifiedFaultsLogged.add(raw);
+  try {
+    log.warn(`Chat: unclassified connect fault code=${safeLogValue(raw)} — treated as transport-class (health-window only); add an explicit blame arm if this is an account fault`);
+  } catch { /* diagnostics must never fail the release path */ }
+}
+
 // `abortedHint` lets a caller say "the client went away" WITHOUT discarding the
 // upstream error it was holding. The callers used to substitute a synthetic
 // AbortError for the real one on disconnect, which erased the upstream verdict
@@ -2799,7 +2815,38 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       if (credentialCurrent) reportInternalError(apiKey, { selector });
       bumpConnect('transport_fault');
     }
-    else if (credentialCurrent) reportError(apiKey, { selector });
+    // DENY-BY-DEFAULT. The chain above is an allow-list of NAMED verdicts, so
+    // whatever reaches here is a code this file has not classified — and the
+    // open-ended part of that space is the transport's: devin-connect.js uses
+    // Node core `https.request` and surfaces the RAW socket error (res/req
+    // 'error' → streamError), which no literal in devin-connect.js names. EPROTO,
+    // the HPE_* header/parse family, and ERR_SSL_* (a corporate proxy, TLS
+    // interception, or a misbehaving upstream edge produces these routinely)
+    // landed in the old `else reportError` and charged the error budget, so three
+    // in-window faults flipped a healthy account to status='error' with persisted
+    // backoff — the exact failure mode the set above exists to remove.
+    //
+    // Enumerating is not a fix: the space is open-ended by construction and this
+    // class has now recurred three times (STREAM_TRUNCATED, then TIMEOUT/
+    // DEADLINE_EXCEEDED/NO_TOKEN, now the TLS/parse families). Charging the
+    // budget for an unknown code is a bet that the unknown is the account's
+    // fault; the measured cost of losing that bet is an evicted healthy account.
+    // So the default is the safe side: a health-window event (selection still
+    // de-prioritizes a genuinely sick account) and NO errorCount. An account
+    // fault must be NAMED — UNAUTHORIZED is the only code that is positive
+    // evidence about the credential; the quota/rate/capacity/model arms above are
+    // account STATE, not health faults, and they write their own cooldown
+    // dimensions instead.
+    else {
+      // The verdict belongs to the credential that produced it, so a retired
+      // credential's unknown code records nothing; the counter still moves so an
+      // operator can see the unclassified traffic.
+      if (credentialCurrent) {
+        reportInternalError(apiKey, { selector });
+        noteUnclassifiedConnectFault(err);
+      }
+      bumpConnect('unclassified_fault');
+    }
   } else if (credentialCurrent) {
     // An old-key success does not prove the new key works, so it must not
     // clear the new epoch's error budget either. The account-level stats below
@@ -4234,39 +4281,55 @@ async function _handleChatCompletionsInner(body, context = {}) {
               if (r.kind === 'ok') {
                 terminalOk = true;
                 lastOkSr = r.sr;
-                // Pin this conversation to the account that just served it, so the
-                // next turn reads the prompt cache back instead of re-writing it.
-                // Complementary to the pair-chain commit below: that keeps the
-                // upstream session_id stable, this keeps the ACCOUNT stable — the
-                // prompt cache lives on the account, so without both the next turn
-                // still lands elsewhere and re-writes the whole context.
-                bindConnectSticky(callerKey, acct, selector);
-                // Session continuity: commit the completed request→response pair
-                // from the streamed result so the next turn resolves to this same
-                // session_id via pair-chain overlap. Gate-checked + best-effort
-                // (no-op when reuse is off). r.sr is threaded from every success
-                // path (initial, transient replay, re-login retry) so the commit
-                // fires even after an upstream wobble — exactly when reuse helps.
-                try {
-                  const tc = r.sr?.toolCalls;
-                  const commitMsgs = [...connectMessages, {
-                    role: 'assistant',
-                    content: r.sr?.content || '',
-                    ...(tc?.length ? { tool_calls: tc.map((t, idx) => ({ id: t.id || `tc_${idx}`, function: { name: t.name, arguments: t.argumentsJson || t.arguments || '' } })) } : {}),
-                  }];
-                  commitConnectSession(callerKey || '', commitMsgs, undefined, { reasoning: r.sr?.reasoning || incomingConnectReasoning });
-                } catch { /* session commit is best-effort */ }
-                // [STREAM-CACHE] store full text + usage AFTER commit, BEFORE the
-                // loop-exit break (code after break is unreachable).
-                try {
-                  const _sTxt = r.sr?.delivered ?? r.sr?.content ?? '';
-                  const _sTc = r.sr?.toolCalls;
-                  if (__sCkey && _sTxt && !(_sTc && _sTc.length)) {
-                    const _sSt = applyStop(_sTxt, normalizeStop(body.stop));
-                    cacheSet(__sCkey, { text: _sSt.hit ? _sSt.text : _sTxt, thinking: r.sr?.reasoning || '', stop: _sSt.hit ? _sSt.stop : (r.sr?.stop || null), finishReason: r.sr?.finish_reason || null, displayModel: connectDisplayModel, usage: r.sr?.usage || null });
-                    log.info('[STREAM-CACHE-STORE] ckey=' + __sCkey);
-                  }
-                } catch (e) { log.info('[STREAM-CACHE-ERR] store ' + (e && e.message)); }
+                // DELIVERY GATE. attemptStream resolves normally when the
+                // upstream turn completed even if the client vanished inside the
+                // final-write window (`send()` no-ops on a closed socket, and the
+                // upstream signal abort races the completed turn). Committing
+                // the pair-chain, binding prompt-cache affinity, or storing the
+                // response cache for a turn the client never received poisons the
+                // NEXT turn: session-continuity overlap assumes the answer was
+                // delivered, and the cache would replay it. The Cascade path
+                // already gates every one of these on !abortController.signal
+                // .aborted; this arm had no such check. Account-side success in
+                // finalizeConnectAccount stays unconditional — the upstream turn
+                // really ran and cost quota.
+                if (abortController.signal.aborted) {
+                  log.info(`Chat[${reqId}]: DEVIN_CONNECT stream completed after the client disconnected — skipping session commit, cache write and affinity`);
+                } else {
+                  // Pin this conversation to the account that just served it, so the
+                  // next turn reads the prompt cache back instead of re-writing it.
+                  // Complementary to the pair-chain commit below: that keeps the
+                  // upstream session_id stable, this keeps the ACCOUNT stable — the
+                  // prompt cache lives on the account, so without both the next turn
+                  // still lands elsewhere and re-writes the whole context.
+                  bindConnectSticky(callerKey, acct, selector);
+                  // Session continuity: commit the completed request→response pair
+                  // from the streamed result so the next turn resolves to this same
+                  // session_id via pair-chain overlap. Gate-checked + best-effort
+                  // (no-op when reuse is off). r.sr is threaded from every success
+                  // path (initial, transient replay, re-login retry) so the commit
+                  // fires even after an upstream wobble — exactly when reuse helps.
+                  try {
+                    const tc = r.sr?.toolCalls;
+                    const commitMsgs = [...connectMessages, {
+                      role: 'assistant',
+                      content: r.sr?.content || '',
+                      ...(tc?.length ? { tool_calls: tc.map((t, idx) => ({ id: t.id || `tc_${idx}`, function: { name: t.name, arguments: t.argumentsJson || t.arguments || '' } })) } : {}),
+                    }];
+                    commitConnectSession(callerKey || '', commitMsgs, undefined, { reasoning: r.sr?.reasoning || incomingConnectReasoning });
+                  } catch { /* session commit is best-effort */ }
+                  // [STREAM-CACHE] store full text + usage AFTER commit, BEFORE the
+                  // loop-exit break (code after break is unreachable).
+                  try {
+                    const _sTxt = r.sr?.delivered ?? r.sr?.content ?? '';
+                    const _sTc = r.sr?.toolCalls;
+                    if (__sCkey && _sTxt && !(_sTc && _sTc.length)) {
+                      const _sSt = applyStop(_sTxt, normalizeStop(body.stop));
+                      cacheSet(__sCkey, { text: _sSt.hit ? _sSt.text : _sTxt, thinking: r.sr?.reasoning || '', stop: _sSt.hit ? _sSt.stop : (r.sr?.stop || null), finishReason: r.sr?.finish_reason || null, displayModel: connectDisplayModel, usage: r.sr?.usage || null });
+                      log.info('[STREAM-CACHE-STORE] ckey=' + __sCkey);
+                    }
+                  } catch (e) { log.info('[STREAM-CACHE-ERR] store ' + (e && e.message)); }
+                }
                 break;
               }
               // #225: a client-gone abort is not an account fault — stop the
@@ -5120,6 +5183,20 @@ async function _handleChatCompletionsInner(body, context = {}) {
   let reuseEntryDead = false;
   if (reuseEntry) log.info(`Chat[${reqId}]: reuse HIT cascade=${reuseEntry.cascadeId.slice(0, 8)} model=${displayModel}`);
 
+  // A checked-out entry has been REMOVED from the pool (conversation-pool.js
+  // checkout), so it is not TTL-healed: poolCheckin is the only way back, and a
+  // return that skips it loses the cascade permanently — the caller's next turn
+  // then pays a full history replay (a prompt-cache WRITE is ~5.6x a read). Every
+  // exit between the checkout above and the end of this function must funnel
+  // through this gate. It is the same predicate the end-of-loop restore block has
+  // always used, extracted so an early return cannot silently bypass it.
+  const restoreCheckedOutReuse = (why) => {
+    if (reuseEntryDead || !checkedOutReuseEntry || !fpBefore) return false;
+    poolCheckin(fpBefore, checkedOutReuseEntry, callerKey, ttlHintFromCachePolicy(cachePolicy));
+    log.info(`Chat[${reqId}]: restored checked-out cascade after ${why}`);
+    return true;
+  };
+
   // Non-stream: retry with a different account on model-not-available errors
   const tried = [];
   let lastErr = null;
@@ -5177,6 +5254,10 @@ async function _handleChatCompletionsInner(body, context = {}) {
       const exhausted = poolExhaustedFailure(routingModelKey);
       if (exhausted) {
         log.info(`Chat[${reqId}]: non-stream pool exhausted at admission (retry_after=${exhausted.retryAfterMs}ms) → fast-fail`);
+        // The entry was checked out before admission; this return is one of the
+        // early exits that used to drop it. Nothing ran upstream, so the cascade
+        // is exactly as it was when checked out.
+        restoreCheckedOutReuse('exhausted-pool admission fast-fail');
         return {
           status: 429,
           headers: { 'Retry-After': String(clientRetryAfterSeconds(exhausted.retryAfterMs)) },
@@ -5328,12 +5409,10 @@ async function _handleChatCompletionsInner(body, context = {}) {
       // while this turn is in flight; see recordAccountSpend).
       acct.id,
     );
-    if (context.signal?.aborted || result?.body?.error?.code === 'client_disconnect') {
-      log.info(`Chat[${reqId}]: non-stream aborted (client gone) — not failing over or restoring reuse`);
-      return result;
-    }
-    if (result.status === 200) return result;
-    reuseEntry = null; // don't try to reuse on the retry
+    // Classify the entry's health BEFORE the abort branch can return: a 504 /
+    // deadline verdict (or an explicit not_found) marks the cascade half-broken,
+    // and restoring it on the way out is the #101 regression regardless of
+    // whether the client also left.
     if (result.reuseEntryInvalid) reuseEntryDead = true;
     // #101: same upstream-timeout invalidation as the stream path —
     // see the matching catch block in streamResponse for the full
@@ -5349,12 +5428,35 @@ async function _handleChatCompletionsInner(body, context = {}) {
     ) {
       reuseEntryDead = true;
     }
+    if (context.signal?.aborted || result?.body?.error?.code === 'client_disconnect') {
+      // The client is gone, but the checked-out cascade's fate depends on what
+      // the upstream did. Two shapes share this 499:
+      //   - nonStreamResponse's post-call check (the turn COMPLETED, then the
+      //     client vanished before the commit) marks reuseEntryRestorable;
+      //   - the catch arm (the abort interrupted the turn mid-answer) does not.
+      // Restoring the second shape would hand the next request a half-broken
+      // trajectory (#101: a trailing tool_result with no user prompt), which
+      // test/cascade-abort-side-effects.test.js pins as a deliberate drop. A
+      // structured non-499 verdict means the call itself returned an upstream
+      // error — the same failed-turn shape the end-of-loop block restores; the
+      // gate above still refuses a deadline-dead entry.
+      const restorable = result?.reuseEntryRestorable === true
+        || (typeof result?.status === 'number' && result.status !== 200 && result.status !== 499);
+      if (restorable) {
+        restoreCheckedOutReuse('client abort');
+      } else {
+        log.info(`Chat[${reqId}]: cascade left checked out (client abort interrupted the turn)`);
+      }
+      return result;
+    }
+    if (result.status === 200) return result;
+    reuseEntry = null; // don't try to reuse on the retry
     lastErr = result;
     const errType = result.body?.error?.type;
     // v2.0.61 (#113): policy_blocked → don't rotate accounts, return
     // immediately. The model refused the request, swapping accounts
     // gives the same refusal but burns more quota.
-    if (errType === 'policy_blocked') { recordPolicyBlocked(buildPolicyBlockSample(messages, displayModel, acct?.id || null, context.traceId || null)); return result; }
+    if (errType === 'policy_blocked') { recordPolicyBlocked(buildPolicyBlockSample(messages, displayModel, acct?.id || null, context.traceId || null)); restoreCheckedOutReuse('policy block'); return result; }
     // Rate limit: this account is done for this model, try the next one
     if (errType === 'rate_limit_exceeded') {
       recordRateLimited();
@@ -5381,6 +5483,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
       if (burst.tripped) {
         const maxCooldown = Math.max(burst.maxCooldownMs, IP_RATE_LIMIT_BURST_FLOOR_MS);
         log.warn(`Chat[${reqId}]: IP-rate-limit burst detected — ${burst.count} accounts rate-limited on ${displayModel} within ${RATE_LIMIT_BURST_WINDOW_MS}ms. Short-circuiting.`);
+        restoreCheckedOutReuse('IP-rate-limit burst');
         return {
           status: 429,
           headers: { 'Retry-After': String(Math.ceil(maxCooldown / 1000)) },
@@ -5438,10 +5541,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
   if (lastErr?.body?.error?.type === 'upstream_deadline_exceeded') return lastErr;
   // 所有账号都遇到 Cascade transient 时，账号轮换已经无法修复；返回明确错误，避免误报成限流或模型不可用。
   if (internalCount > 0 && tried.length > 0 && internalCount >= tried.length) {
-    if (!reuseEntryDead && checkedOutReuseEntry && fpBefore) {
-      poolCheckin(fpBefore, checkedOutReuseEntry, callerKey, ttlHintFromCachePolicy(cachePolicy));
-      log.info(`Chat[${reqId}]: restored checked-out cascade after all-internal-error chain`);
-    }
+    restoreCheckedOutReuse('all-internal-error chain');
     const lastIsTransport = isCascadeTransportError(lastErr);
     log.error(`Chat[${reqId}]: ${tried.length}/${tried.length} accounts hit upstream transient error — surfacing upstream_transient_error`);
     return {
@@ -5452,10 +5552,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
   // If all accounts exhausted, check if it's because they're all rate-limited
   const temporaryUnavailable = isAllTemporarilyUnavailable(routingModelKey);
   if (temporaryUnavailable.allUnavailable) {
-    if (!reuseEntryDead && checkedOutReuseEntry && fpBefore) {
-      poolCheckin(fpBefore, checkedOutReuseEntry, callerKey, ttlHintFromCachePolicy(cachePolicy));
-      log.info(`Chat[${reqId}]: restored checked-out cascade after temporary unavailability`);
-    }
+    restoreCheckedOutReuse('temporary unavailability');
     const retryAfterSec = Math.ceil(temporaryUnavailable.retryAfterMs / 1000);
     return {
       status: 429,
@@ -5472,18 +5569,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
   if (!lastErr || lastErr.status === 429) {
     const rl = isAllRateLimited(routingModelKey);
     if (rl.allLimited) {
-      if (checkedOutReuseEntry && fpBefore) {
-        poolCheckin(fpBefore, checkedOutReuseEntry, callerKey, ttlHintFromCachePolicy(cachePolicy));
-        log.info(`Chat[${reqId}]: restored checked-out cascade after rate limit`);
-      }
+      restoreCheckedOutReuse('rate limit');
       const retryAfterSec = Math.ceil(rl.retryAfterMs / 1000);
       return { status: 429, headers: { 'Retry-After': String(retryAfterSec) }, body: { error: { message: `${displayModel} 所有账号均已达速率限制，请 ${retryAfterSec} 秒后重试`, type: 'rate_limit_exceeded', retry_after_ms: rl.retryAfterMs } } };
     }
   }
-  if (!reuseEntryDead && checkedOutReuseEntry && fpBefore) {
-    poolCheckin(fpBefore, checkedOutReuseEntry, callerKey, ttlHintFromCachePolicy(cachePolicy));
-    log.info(`Chat[${reqId}]: restored checked-out cascade after failed request`);
-  } else if (reuseEntryDead) {
+  if (!restoreCheckedOutReuse('failed request') && reuseEntryDead) {
     log.info(`Chat[${reqId}]: reuse entry was invalidated (cascade not_found upstream); not restoring to pool`);
   }
   return lastErr || { status: 503, body: { error: { message: 'No active accounts available', type: 'pool_exhausted' } } };
@@ -5860,6 +5951,12 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
       log.info('Chat[non-stream]: aborted (client gone) — discarding turn');
       return {
         status: 499,
+        // The upstream call RESOLVED before this check, so the cascade holds a
+        // complete turn: the handler may put the checked-out entry back in the
+        // pool. The catch arm below returns the same 499 for a turn the abort
+        // INTERRUPTED mid-answer and deliberately omits this marker — restoring
+        // that shape would resume a half-broken trajectory (#101).
+        reuseEntryRestorable: true,
         body: { error: { message: 'Client closed request', type: 'client_disconnect', code: 'client_disconnect' } },
       };
     }
@@ -6650,6 +6747,20 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       let reuseEntryDead = false;
       if (reuseEntry) log.info(`Chat: cascade reuse HIT cascadeId=${reuseEntry.cascadeId.slice(0, 8)}… stream model=${model}`);
 
+      // Same lease-leak gate as the non-stream path. poolCheckout REMOVED the
+      // entry, so a return that skips poolCheckin loses the cascade permanently
+      // (no TTL heal for an entry that is no longer in the pool). The stream gate
+      // also requires !hadSuccess: a turn that already emitted bytes is a
+      // half-broken trajectory and must never re-enter the pool. This is the
+      // predicate the failure tail's `pool-restore` stage already used; it lives
+      // here so early returns cannot bypass it.
+      const restoreCheckedOutReuse = (why) => {
+        if (hadSuccess || reuseEntryDead || !checkedOutReuseEntry || !fpBefore) return false;
+        poolCheckin(fpBefore, checkedOutReuseEntry, callerKey, ttlHintFromCachePolicy(cachePolicy));
+        log.info(`Chat[${reqId}]: restored checked-out cascade after ${why}`);
+        return true;
+      };
+
       // Strip <tool_call>/<tool_result> blocks in Cascade mode.
       // In emulation mode, parsed calls are emitted as OpenAI tool_calls.
       // In non-emulation mode, blocks are silently stripped (defense-in-depth
@@ -7070,7 +7181,15 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         };
 
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
-          if (abortController.signal.aborted) return;
+          if (abortController.signal.aborted) {
+            // The client left between attempts. Nothing was emitted for THIS
+            // attempt, and on attempt > 0 the previous attempt's failure tail
+            // never ran (the loop `continue`d), so the checkout is still held.
+            // Restore it through the same gate the failure tail uses; dropping
+            // it here loses the cascade for a turn that never delivered a byte.
+            restoreCheckedOutReuse('client abort before the next attempt');
+            return;
+          }
           // Rebuild per-attempt stream state so a prior failure's residue
           // (partial <tool_call>, half-scrubbed path) can't leak into the
           // retry. Skip on attempt 0 — already fresh. hadSuccess=true
@@ -8090,13 +8209,9 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           if (allInternal) log.error('Chat stream: all attempts hit an upstream transient error');
         });
         await failureStage('pool-restore', () => {
-          if (!hadSuccess && !reuseEntryDead && checkedOutReuseEntry && fpBefore) {
-            poolCheckin(fpBefore, checkedOutReuseEntry, callerKey, ttlHintFromCachePolicy(cachePolicy));
-            log.info(`Chat[${reqId}]: restored checked-out cascade after failed stream`);
-          } else if (!hadSuccess && reuseEntryDead) {
+          if (!restoreCheckedOutReuse('failed stream') && !hadSuccess && reuseEntryDead) {
             log.info(`Chat[${reqId}]: stream reuse entry was invalidated (cascade not_found upstream); not restoring to pool`);
           }
-
         });
         await failureStage('egress-tail', async () => {
           // #185 failure tail: a candidate object may still be wholly buffered
