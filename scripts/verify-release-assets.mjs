@@ -43,7 +43,7 @@ export const SIGNATURE_SUFFIXES = Object.freeze(['.sig', '.pem', '.sigstore.json
 // carries for a tag push. Keep this in sync with the workflow path; the
 // workflow test asserts both.
 export const DEFAULT_IDENTITY_REGEXP =
-  String.raw`^https://github\.com/dwgx/WindsurfAPI/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+`;
+  String.raw`^https://github\.com/dwgx/WindsurfAPI/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$`;
 export const DEFAULT_OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
 
 class CliError extends Error {
@@ -218,6 +218,7 @@ Options:
   --dir <dir>                same as the positional argument
   --cosign <path>            cosign binary (default: $COSIGN, then "cosign")
   --identity <regexp>        certificate identity regexp
+  --tag <vX.Y.Z>             pin the exact release tag (builds the identity regexp)
                              (default: ${DEFAULT_IDENTITY_REGEXP})
   --issuer <url>             OIDC issuer (default: ${DEFAULT_OIDC_ISSUER})
   -h, --help                 show this help
@@ -239,7 +240,7 @@ export async function main(argv) {
       console.log(usage());
       return 0;
     }
-    if (arg === '--dir' || arg === '--cosign' || arg === '--identity' || arg === '--issuer') {
+    if (arg === '--dir' || arg === '--cosign' || arg === '--identity' || arg === '--issuer' || arg === '--tag') {
       const value = argv[index + 1];
       if (value === undefined || value === '') {
         throw new CliError(`${arg} needs a value`, 2);
@@ -249,6 +250,7 @@ export async function main(argv) {
       if (arg === '--cosign') options.cosign = value;
       if (arg === '--identity') options.identity = value;
       if (arg === '--issuer') options.issuer = value;
+      if (arg === '--tag') options.tag = value;
       continue;
     }
     if (arg.startsWith('-')) {
@@ -262,6 +264,14 @@ export async function main(argv) {
   if (positional !== null) options.dir = positional;
 
   options.dir = resolve(options.dir);
+  if (options.tag) {
+    const tag = options.tag.startsWith('v') ? options.tag : `v${options.tag}`;
+    if (!/^v[0-9]+\.[0-9]+\.[0-9]+$/.test(tag)) {
+      throw new CliError(`--tag must be vX.Y.Z, got ${options.tag}`, 2);
+    }
+    const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    options.identity = `^https://github\\.com/dwgx/WindsurfAPI/\\.github/workflows/release\\.yml@refs/tags/${escaped}$`;
+  }
   const result = await verifyDirectory(options.dir, {
     cosign: options.cosign,
     identity: options.identity,

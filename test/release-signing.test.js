@@ -340,4 +340,25 @@ describe('verify-release-assets end to end', () => {
     assert.equal(calls.length, 5);
     for (const line of calls) assert.match(line, /^verify-blob /);
   });
+  posixIt('pins the exact tag with --tag and rejects a lookalike version', () => {
+    const dir = tempDownload();
+    dirs.push(dir);
+    const fake = join(dir, 'fake-cosign');
+    const log = join(dir, 'cosign.log');
+    writeFileSync(fake, '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$FAKE_COSIGN_LOG"\nexit 0\n');
+    chmodSync(fake, 0o755);
+    const result = spawnSync(
+      process.execPath,
+      [verifierScript, '--dir', dir, '--cosign', fake, '--tag', 'v3.10.0'],
+      { encoding: 'utf8', env: { ...process.env, FAKE_COSIGN_LOG: log } },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const calls = readFileSync(log, 'utf8').trim().split('\n');
+    const expected = String.raw`^https://github\.com/dwgx/WindsurfAPI/\.github/workflows/release\.yml@refs/tags/v3\.10\.0$`;
+    for (const line of calls) assert.ok(line.includes(expected), `missing exact identity in: ${line}`);
+    // The default regexp must not accept a longer version that merely starts the same.
+    assert.ok(new RegExp(DEFAULT_IDENTITY_REGEXP).test('https://github.com/dwgx/WindsurfAPI/.github/workflows/release.yml@refs/tags/v3.10.0'));
+    assert.ok(!new RegExp(DEFAULT_IDENTITY_REGEXP).test('https://github.com/dwgx/WindsurfAPI/.github/workflows/release.yml@refs/tags/v3.10.0-unrequested'));
+  });
+
 });

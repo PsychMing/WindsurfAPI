@@ -61,7 +61,7 @@ bundle against the release identity and issuer. Exit codes: `0` verified,
 # 1. Verify the manifest's own signature. This is the trust anchor.
 cosign verify-blob \
   --bundle SHA256SUMS.sigstore.json \
-  --certificate-identity-regexp '^https://github\.com/dwgx/WindsurfAPI/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+' \
+  --certificate-identity-regexp '^https://github\.com/dwgx/WindsurfAPI/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS
 
@@ -69,7 +69,7 @@ cosign verify-blob \
 for f in windsurfapi.exe windsurfapi-windows.zip windsurfapi-macos-arm64 windsurfapi-macos.zip; do
   cosign verify-blob \
     --bundle "$f.sigstore.json" \
-    --certificate-identity-regexp '^https://github\.com/dwgx/WindsurfAPI/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+' \
+    --certificate-identity-regexp '^https://github\.com/dwgx/WindsurfAPI/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     "$f"
 done
@@ -86,7 +86,7 @@ The detached pair is also published, but only the bundle is durable:
 cosign verify-blob \
   --signature windsurfapi.exe.sig \
   --certificate windsurfapi.exe.pem \
-  --certificate-identity-regexp '^https://github\.com/dwgx/WindsurfAPI/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+' \
+  --certificate-identity-regexp '^https://github\.com/dwgx/WindsurfAPI/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   windsurfapi.exe
 ```
@@ -116,7 +116,7 @@ push. To pin one exact release, replace the regexp with:
 | Issuer | `https://token.actions.githubusercontent.com` |
 | Identity (tag build) | `https://github.com/dwgx/WindsurfAPI/.github/workflows/release.yml@refs/tags/vX.Y.Z` |
 
-`scripts/verify-release-assets.mjs` carries the same values as
+`scripts/verify-release-assets.mjs`（`--tag vX.Y.Z` 生成精确锚定的 identity，验收某个版本时用它，不要只依赖默认正则） carries the same values as
 `DEFAULT_IDENTITY_REGEXP` / `DEFAULT_OIDC_ISSUER`; `test/release-signing.test.js`
 fails if this page and the script drift apart.
 
