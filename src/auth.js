@@ -3944,9 +3944,16 @@ export function reportSuccess(apiKey) {
  * periodic flush writes it — no hot-path fsync). creditCost only accrues when a
  * paid token surfaced billing (DEVIN_CONNECT_BILLING_TAGS calibrated).
  *
- * @param {string} apiKey
+ * The first argument is an ATTEMPT IDENTITY, not a credential lookup key. The
+ * account is resolved by its immutable id whenever the caller has one; the
+ * apiKey on the identity is only the credential the attempt presented, and may
+ * already be stale by the time the turn completes (re-login / manual rotation).
+ * A bare apiKey is still accepted for the env-token and detached-resume paths,
+ * which have no pool account to point at.
+ *
+ * @param {string|{accountId?: string, id?: string, apiKey?: string, attemptId?: string, reservationTimestamp?: number}} identity
  * @param {object|null} usage  { prompt_tokens, completion_tokens, total_tokens }
- * @param {object} [opts]      { creditCost?: number }
+ * @param {object} [opts]      { creditCost?: number, acuCost?: number, model?: string, attemptId?: string }
  */
 /**
  * Full billable cost of a request, independent of whatever shape total_tokens is in.
@@ -3996,11 +4003,15 @@ export function fullBillableTokens(usage) {
 export const ACCOUNT_REQUEST_CAP = 100;
 const _accountRequests = new Map();
 
-export function recordAccountRequest(account, { model = '', usage = null, creditCost = 0, acuCost = 0, now = Date.now() } = {}) {
+export function recordAccountRequest(account, { model = '', usage = null, creditCost = 0, acuCost = 0, attemptId = '', now = Date.now() } = {}) {
   const id = account?.id;
   if (!id) return null;
   const entry = {
     ts: now,
+    // The upstream attempt that produced this row (the reservation timestamp).
+    // Immutable for the life of the attempt, so a row stays traceable when the
+    // account's credential rotated between two otherwise identical turns.
+    attemptId: attemptId == null ? '' : String(attemptId).slice(0, 80),
     model: typeof model === 'string' ? model.slice(0, 120) : '',
     promptTokens: Math.max(0, Number(usage?.prompt_tokens) || 0),
     completionTokens: Math.max(0, Number(usage?.completion_tokens) || 0),
@@ -4052,9 +4063,29 @@ export function __resetAccountRequestsForTest() {
   _accountRequests.clear();
 }
 
-export function recordAccountSpend(apiKey, usage, { creditCost = 0, acuCost = 0, model = '' } = {}) {
-  if (!apiKey) return;
-  const account = accounts.find(a => a.apiKey === apiKey);
+function resolveSpendAccount(identity) {
+  if (!identity) return null;
+  if (typeof identity === 'object') {
+    const id = identity.accountId || identity.id;
+    // A supplied id is authoritative. Do NOT fall back to the key when it does
+    // not resolve: a credential that outlived its account may since have been
+    // recycled onto a different one, and crediting that account would be a
+    // worse error than dropping a row for an account that no longer exists.
+    if (id) return accounts.find(a => a.id === id) || null;
+    return accounts.find(a => a.apiKey === identity.apiKey) || null;
+  }
+  return accounts.find(a => a.apiKey === identity) || null;
+}
+
+function spendAttemptId(identity, explicit) {
+  if (explicit) return String(explicit);
+  if (!identity || typeof identity !== 'object') return '';
+  const id = identity.attemptId ?? identity.reservationTimestamp;
+  return id == null ? '' : String(id);
+}
+
+export function recordAccountSpend(identity, usage, { creditCost = 0, acuCost = 0, model = '', attemptId = '' } = {}) {
+  const account = resolveSpendAccount(identity);
   if (!account) return;
   if (!account._totalSpend || typeof account._totalSpend !== 'object') {
     account._totalSpend = { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0, acuCost: 0 };
@@ -4083,7 +4114,7 @@ export function recordAccountSpend(apiKey, usage, { creditCost = 0, acuCost = 0,
   s.totalTokens += total;
   s.creditCost += Math.max(0, Number(creditCost) || 0);
   s.acuCost = (Number(s.acuCost) || 0) + Math.max(0, Number(acuCost) || 0);
-  recordAccountRequest(account, { model, usage, creditCost, acuCost });
+  recordAccountRequest(account, { model, usage, creditCost, acuCost, attemptId: spendAttemptId(identity, attemptId) });
   markDirty();
 }
 
