@@ -2293,6 +2293,8 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   // PUT /settings/credentials — rotate one or both credentials. Body:
   //   { apiKey?: string, dashboardPassword?: string }
   // Empty string clears the runtime override (env value takes over).
+  // dashboardPassword is trimmed before validation and hashing; a non-empty
+  // value that trims to nothing is rejected as blank (SEC-04).
   // Requires the caller to re-authenticate with the NEW dashboard
   // password on the next request — no session cookies, so the UI just
   // re-prompts. We don't accept the old-password proof here because the
@@ -2327,7 +2329,19 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       if (v != null && typeof v !== 'string') {
         return json(res, 400, { error: 'dashboardPassword must be a string' });
       }
-      const pw = String(v ?? '');
+      const raw = String(v ?? '');
+      // SEC-04 (audit 2026-10-22): the length gate used to run on the raw
+      // string, so an all-whitespace value of >= 8 chars ("        ") passed
+      // it, got hashed, and became a password the login path can never match —
+      // checkAuth() rejects a blank header before hashing (SEC-01) and trims
+      // nothing else. The rotation silently disabled dashboard login and
+      // replaced the env fallback. Empty string stays the explicit "clear the
+      // runtime override" signal; a non-empty value that trims to empty is a
+      // blank password, not a clear, and must be rejected.
+      const pw = raw.trim();
+      if (raw && !pw) {
+        return json(res, 400, { error: 'dashboardPassword must not be blank' });
+      }
       if (pw && pw.length < 8) {
         return json(res, 400, { error: 'dashboardPassword must be at least 8 characters' });
       }

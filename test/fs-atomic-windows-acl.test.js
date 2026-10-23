@@ -100,4 +100,36 @@ describe('restrictFileToOwnerSync', () => {
       removeAccount(account.id);
     }
   });
+
+  // SEC-03 follow-up (3.10.0): accounts.json was not the only credential file.
+  // runtime-config.json holds the scrypt dashboard-password hash plus the
+  // plaintext runtime API key, and proxy.json holds upstream proxy passwords —
+  // both were written with `mode: 0o600`, a POSIX-only contract that leaves
+  // inherited `Users:(RX)` / `Authenticated Users:(M)` ACEs on Windows. Pin
+  // that each save path now runs the same icacls restriction.
+  it('saving runtime-config.json applies the owner-only ACL (Windows only)', { skip: process.platform !== 'win32' }, async () => {
+    const { config } = await import('../src/config.js');
+    const { setRuntimeApiKey } = await import('../src/runtime-config.js');
+    try {
+      setRuntimeApiKey(`acl-wiring-${Date.now()}`);
+      const file = join(config.dataDir, 'runtime-config.json');
+      const acl = execFileSync('icacls', [file], { encoding: 'utf8' });
+      assert.doesNotMatch(acl, /\(I\)/, `runtime-config.json kept inherited ACEs:\n${acl}`);
+    } finally {
+      setRuntimeApiKey('');
+    }
+  });
+
+  it('saving proxy.json applies the owner-only ACL (Windows only)', { skip: process.platform !== 'win32' }, async () => {
+    const { config } = await import('../src/config.js');
+    const { setGlobalProxy, removeProxy } = await import('../src/dashboard/proxy-config.js');
+    try {
+      setGlobalProxy({ host: 'proxy.example.com', port: 8080, password: 'proxy-secret' });
+      const file = join(config.dataDir, 'proxy.json');
+      const acl = execFileSync('icacls', [file], { encoding: 'utf8' });
+      assert.doesNotMatch(acl, /\(I\)/, `proxy.json kept inherited ACEs:\n${acl}`);
+    } finally {
+      removeProxy('global');
+    }
+  });
 });
