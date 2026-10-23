@@ -47,13 +47,16 @@ function specialAgentEnabled(env = process.env) {
   return backend === 'devin-cli' || env?.DEVIN_CLI_ENABLED === '1';
 }
 
-// Observed gpt-5.6 SKUs Cascade rejects with "This model is only in Devin Local".
-// Anchored to luna/sol/terra (+ effort / -priority). Do not prefix-match gpt-5.60.
-// swe-2* is catalogued as backend: 'special_agent' and is handled by that branch.
-const GPT56_LOCAL_SKU = /^(?:gpt-5[.-]6|gpt5[.-]6)-(luna|sol|terra)(?:-(none|low|medium|high|xhigh|max)(?:-priority)?)?$/;
+// SKUs Cascade rejects with "This model is only in Devin Local": the gpt-5.6
+// luna/sol/terra family and the gpt-6 luna/sol/astra (+ 6.1 sol) family. The
+// effort tier and the -priority lane suffix are optional, matching the catalog
+// names in models.js. Anchored to the family names so lookalikes (gpt-5.60,
+// gpt-6-lunar, gpt-60-*) never hijack routing. swe-2* is catalogued as
+// backend: 'special_agent' and is handled by that branch.
+const DEVIN_LOCAL_ONLY_SKU = /^(?:(?:gpt-5[.-]6|gpt5[.-]6)-(?:luna|sol|terra)|(?:gpt-6|gpt6)(?:[.-]1)?-(?:luna|sol|astra))(?:-(?:none|low|medium|high|xhigh|max)(?:-priority)?)?$/;
 
 function isDevinLocalOnlyModel(modelInfo) {
-  return [modelInfo?.name, modelInfo?.modelUid].some((k) => GPT56_LOCAL_SKU.test(String(k || '').trim().toLowerCase()));
+  return [modelInfo?.name, modelInfo?.modelUid].some((k) => DEVIN_LOCAL_ONLY_SKU.test(String(k || '').trim().toLowerCase()));
 }
 
 /**
