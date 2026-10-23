@@ -4,7 +4,7 @@
     "test/detached-registry.test.js",
     "test/cascade-detach-lazy-resume.test.js"
   ],
-  "expectBaselinePass": 43,
+  "expectBaselinePass": 48,
   "mutations": [
     {
       "name": "M11 replay: prefix bypasses onChunk (raw send, no sanitizer)",
