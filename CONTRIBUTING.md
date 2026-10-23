@@ -248,6 +248,14 @@ the release result includes explicit skips. Mutations print SKIP because they ar
 of this incremental command. Exit 0 is incremental success, 1 a failed check, 2 missing or
 untrustworthy evidence. PR CI deliberately does not run mutations because of their cost.
 
+The working-tree scan cannot see a credential that was committed and then deleted — it is
+still in every clone. CI's `history-secrets` job runs `node scripts/history-secret-scan.mjs`
+over every blob in every ref plus the unreachable objects an amend/rebase/force-push leaves
+behind. Reviewed historical findings live in `scripts/history-secret-scan.baseline`, one
+line each with a reason; a new leak is not in that file and fails the job. It is not part of
+`npm run gate`: it walks the whole object database (~15 s on a 1.9k-commit history) and no
+working-tree change can alter its answer.
+
 **A test file that declares tests but executes none has to be declared.** The shard summary
 folds such a file into a skip total, so on a host where 4813 tests ran and 6 files did not, the
 verdict still reads PASS and the only trace is `79 skip` in a detail line. The gate now names
