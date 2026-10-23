@@ -222,7 +222,7 @@ checkout 账号（`acct === null`），成功尾必须把 usage 记到条目 own
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `DEVIN_CONNECT_PROMPT_CACHE` | gpt-6 家族开，其余关 | 往请求里写 prompt 缓存字段（`devin-connect.js`）。tag `#13` 猜自声明顺序。`1` = 所有家族开；`0`/其他非空值 = 全关；**未设置**时只对 gpt-6 家族（`gpt-6-{luna,sol,astra}`、`gpt-6-1-sol`）默认开 —— 2026-10-23 实测五次相同 `gpt-6-luna-max` 请求每轮都报 cache-write 3984、cache-read 0，而 Claude 每轮读 6884，所以先让这个家族带上唯一的缓存控制字段去验证「是否必须」；读仍为 0 且写继续计数时，下一个怀疑对象是 tag 映射而不是本开关。 |
-| `DEVIN_CONNECT_TOOL_CHOICE` | 关 | 发送 `tool_choice`（`=== '1'`）。tag `#12`/`#11` 同样猜自声明顺序。 |
+| `DEVIN_CONNECT_TOOL_CHOICE` | 关 | 发送 `tool_choice`（`=== '1'`）。tag `#12`/`#11` 同样猜自声明顺序。**关着的时候 `parallel_tool_calls:false` 会被 400 `unsupported_parameter` 拒绝**，而不是静默忽略（`handlers/chat.js`，只作用于 DEVIN_CONNECT 流；`true`/不传照常通过；`/v1/messages` 的 `tool_choice.disable_parallel_tool_use` 映射成同一字段，错误信息会按 Anthropic 词汇重写）—— 代理无法替上游串行化已生成的多个 tool call，丢掉多余调用等于吞掉模型已完成的工作，所以宁可明说做不到。 |
 | `DEVIN_CONNECT_TOOL_CHOICE_TAGS` | 空（= 用内置默认 tag） | 覆盖上面两个 tag，格式 `choice=N,parallel=M`（`getToolChoiceTags`）。**只认 `choice`/`parallel` 两个键**，其他键、非正整数、以及**撞上已占用 tag 的值**都会被跳过并打 warn，然后保留默认 —— 不是报错。撞 tag 的后果很隐蔽：`choice=1` 会和 814 字节的 `ClientMetadata` 同占 `#1`，protobuf 解码器取最后一个，等于**用 tool_choice 覆盖上游认证元数据**，表现为**认证失败**而不是"配置写错了"。这个防护是修过的真实缺陷，别绕过它。 |
 | `DEVIN_CONNECT_SIGNATURE_TAG` | 空（= 整个解码关闭） | thinking `delta_signature` 的 tag。**这个是这组的总开关**：没设或不是 `(0, 2^29)` 内的整数时 `parseSignatureTagMap()` 返回 `null`，下面两个一起失效。 |
 | `DEVIN_CONNECT_SIGNATURE_TYPE_TAG` | 空（= 该字段不解码） | signature `type` 的 tag，同样要求 `(0, 2^29)`。只在上一个已生效时才有意义。 |

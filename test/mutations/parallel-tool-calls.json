@@ -1,0 +1,44 @@
+{
+  "tests": [
+    "test/parallel-tool-calls-connect.test.js"
+  ],
+  "expectBaselinePass": 10,
+  "mutations": [
+    {
+      "name": "the rejection gate is removed — parallel_tool_calls:false is silently ignored again, which is exactly the live defect (4/4 connect models still emitted two calls)",
+      "file": "src/devin-connect.js",
+      "anchor": "  return parallelToolCalls === false && !isToolChoicePassthroughEnabled(env);",
+      "replacement": "  return false;"
+    },
+    {
+      "name": "the gate ignores the passthrough switch — an operator who set DEVIN_CONNECT_TOOL_CHOICE=1 to honour the hint still gets a 400, so the only honourable path is unreachable",
+      "file": "src/devin-connect.js",
+      "anchor": "  return parallelToolCalls === false && !isToolChoicePassthroughEnabled(env);",
+      "replacement": "  return parallelToolCalls === false;"
+    },
+    {
+      "name": "streamChat stops forwarding the opt-in fields — the switch is inert on the live route again (the second half of the original defect: even DEVIN_CONNECT_TOOL_CHOICE=1 produced no #11)",
+      "file": "src/devin-connect.js",
+      "anchor": "continuityTrail, toolChoice, parallelToolCalls });",
+      "replacement": "continuityTrail, toolChoice });"
+    },
+    {
+      "name": "the handler stops threading parallel_tool_calls into connectParams — the parameter is accepted and dropped one layer below the rejection gate",
+      "file": "src/handlers/chat.js",
+      "anchor": "      parallelToolCalls: body.parallel_tool_calls,\n      toolChoice: tool_choice,",
+      "replacement": "      parallelToolCalls: undefined,\n      toolChoice: tool_choice,"
+    },
+    {
+      "name": "the handler stops threading tool_choice — the other field behind the same switch stays inert",
+      "file": "src/handlers/chat.js",
+      "anchor": "      parallelToolCalls: body.parallel_tool_calls,\n      toolChoice: tool_choice,",
+      "replacement": "      parallelToolCalls: body.parallel_tool_calls,\n      toolChoice: undefined,"
+    },
+    {
+      "name": "the /v1/messages remap is dropped — the refusal reaches an Anthropic client as the opaque generic 'Invalid request' (the internal message contains the backend name, so clientFacingMessage() replaces it) and the client cannot tell which parameter to change",
+      "file": "src/handlers/messages.js",
+      "anchor": "  const message = err.param === 'parallel_tool_calls'",
+      "replacement": "  const message = false"
+    }
+  ]
+}
