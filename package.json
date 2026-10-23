@@ -37,6 +37,7 @@
     "audit:baselines": "node scripts/spec-baseline-audit.mjs",
     "check:baselines": "node scripts/spec-baseline-check.mjs",
     "check:copy": "node scripts/check-dashboard-copy.mjs",
+    "check:ui": "node scripts/check-dashboard-scale.mjs && node scripts/check-dashboard-contrast.mjs",
     "smoke:exe": "node scripts/exe-boot-smoke.mjs"
   },
   "pkg": {

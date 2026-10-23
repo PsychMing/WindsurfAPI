@@ -341,6 +341,7 @@ describe('#257 panel loaders keep the last good state on a failed read', () => {
       renderAccountsKpis: () => {},
       renderAccountsFilterState: () => {},
       renderAccountsTable: () => { painted += 1; },
+      applyAccountsSortState: () => {},
       applyAccountsDensity: () => {},
       startAccountsClock: () => {},
     });

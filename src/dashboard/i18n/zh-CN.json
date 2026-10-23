@@ -236,10 +236,6 @@
     "running": "正在处理 {{count}} 个账号…",
     "done": "{{ok}} 成功 / {{fail}} 失败"
   },
-  "reveal": {
-    "confirmPrompt": "重新输入 Dashboard 密码以揭示此 Key(若未设 Dashboard 密码则输入 API Key):",
-    "wrongPassword": "二次验证失败——密码错误,未揭示 Key。"
-  },
   "status": {
     "active": "正常",
     "disabled": "已禁用",
@@ -1151,6 +1147,11 @@
       "title": "切换紧凑 / 宽松密度",
       "label": "紧凑"
     },
+    "sort": {
+      "label": "排序",
+      "default": "默认顺序",
+      "hint": "点一次排序，再点一次反向"
+    },
     "export": {
       "title": "导出全部账号（仅元数据，不含密钥）",
       "label": "导出",
@@ -1276,7 +1277,13 @@
       "lastCheckResult": "上次检查 {{ago}} · {{result}}",
       "neverChecked": "尚未检查",
       "skipCheck": "未检查：{{reason}}",
-      "retryCheck": "重试"
+      "retryCheck": "重试",
+      "rename": "编辑名称"
+    },
+    "rename": {
+      "prompt": "输入新的显示名称",
+      "done": "名称已更新",
+      "failed": "重命名失败，请重试"
     },
     "reauth": {
       "bannerTitle": "需要重新授权",
@@ -1627,9 +1634,6 @@
     "clipboardEmpty": "剪贴板为空",
     "clipboardUnsupported": "当前环境不支持自动读取剪贴板，请手动粘贴",
     "clipboardError": "读取剪贴板失败：{{error}}",
-    "apiKeyCopied": "API Key 已复制",
-    "copyFailed": "复制失败，请手动选择",
-    "copyFailedError": "复制失败：{{error}}",
     "enterEmailPassword": "请输入邮箱和密码",
     "enterEmailFirstName": "请输入邮箱和名字",
     "enterOtpCode": "请输入验证码",
