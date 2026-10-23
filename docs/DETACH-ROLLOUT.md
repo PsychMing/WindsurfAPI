@@ -74,8 +74,10 @@ Dashboard 的 `GET /dashboard/api/overview`（需要 `X-Dashboard-Password`）�
   认领并走完正常成功尾的次数。**gate 1 的比值就是 `serve / admit`。**
 - `evict.*` / `refuse.*` / `claim.*` 用来解释比值为什么低：TTL/容量/被新请求覆盖
   的条目不会贡献 `serve`；`claim.busy` 说明并发重试只有一个赢家。
-- `billed_detached` 应等于 `serve`（每次成功恢复恰好记一次账）。不相等是计费
-  回归，直接停止测量。
+- `billed_detached` 应等于 `serve`（每次成功恢复恰好记一次账）。唯一的例外是
+  claim 在原请求 deadline 边界结束、但上游 turn 已经跑完的样本：它按 owner 的
+  稳定 id 记账（`billed_detached` +1），`release` 拒绝后不提交成功尾（`serve`
+  不加）。其余任何不相等都是计费回归，直接停止测量。
 - 计数器是**进程生命周期**的，重启清零；`/overview` 同一响应里的 `uptime` 可用来
   识别重启。
 
@@ -139,7 +141,7 @@ jq -s '
 出现任一条即停止测量并回滚（unset 两个 env，重启；entry 全在内存，无需清理）：
 
 - 跨 tenant 命中（`hasPerUserScope` 之外的 scope 拿到 entry）；
-- `billed_detached != serve`，或账单落到非 owner 账号；
+- `billed_detached != serve`（仅 §2.1 的 deadline 边界已完成 turn 例外），或账单落到非 owner 账号；
 - 恢复轮把整条 cascade 历史重复计费（metadata RPC 不是从 `generatorOffset` 起）；
 - 120s TTL 后**未 claim** 的 `entries/bytes` 不归零（泄漏）；claimed entry 由原请求
   deadline 约束，deadline 前不归零是正常；

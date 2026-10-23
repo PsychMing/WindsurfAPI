@@ -232,6 +232,47 @@ describe('DetachedRegistry ownership', () => {
     assert.equal(registry.release('k1', claim.token, { state: 'served' }), false);
   });
 
+  it('claim_release_after_deadline_is_independent_of_cleanup_order', () => {
+    // The deadline can be observed by the timer/sweep first or by release
+    // first. Both interleavings must produce the same facts: false, serve=0,
+    // exactly one deadline eviction, no re-detach, no entry left. Before the
+    // deadline check lived in release(), the release-first interleaving
+    // counted a serve and deleted the entry without naming the deadline.
+    for (const state of ['served', 'running']) {
+      for (const cleanupFirst of [true, false]) {
+        const { registry, clock } = makeRegistry({ ttlMs: 120_000 });
+        registry.admit({
+          key: 'k1',
+          callerKey: 'session:a',
+          snapshot: snapshot(),
+          pin: pin(clock.now(), { deadline: clock.now() + 1_000 }),
+        });
+        const claim = registry.claim('k1', 'session:a');
+        assert.ok(claim.entry, 'precondition: the claim wins');
+        clock.advance(1_001);
+
+        if (cleanupFirst) {
+          assert.equal(registry.sweepExpired(), 1, 'the deadline sweep drops the claim');
+          assert.equal(registry.stats().evict.deadline, 1);
+        }
+
+        assert.equal(registry.release('k1', claim.token, {
+          state,
+          ...(state === 'running' ? { snapshot: snapshot('grown') } : {}),
+        }), false, `${state}/${cleanupFirst ? 'sweep-first' : 'release-first'}: release must refuse`);
+        const stats = registry.stats();
+        assert.equal(stats.serve, 0, `${state}/${cleanupFirst ? 'sweep-first' : 'release-first'}: no serve`);
+        assert.equal(stats.re_detach, 0, `${state}/${cleanupFirst ? 'sweep-first' : 'release-first'}: no re-detach`);
+        assert.equal(stats.evict.deadline, 1,
+          `${state}/${cleanupFirst ? 'sweep-first' : 'release-first'}: exactly one deadline eviction`);
+        assert.equal(stats.evict.resume_miss, 0);
+        assert.equal(stats.evict.ttl, 0);
+        assert.equal(stats.entries, 0);
+        assert.equal(registry.lookup('k1', 'session:a'), null);
+      }
+    }
+  });
+
   it('R7c a claimed entry is only evictable with its own token', () => {
     const { registry, clock } = makeRegistry();
     assert.ok(admit(registry, clock).token);

@@ -20,6 +20,14 @@
 // be deleted by the stale owner. Every eviction names the instance it means:
 // a token for a claim, the entry object for a running entry.
 //
+// Ownership ENDS at the deadline even before a timer/sweep observes it. The
+// producer checks `owns` after every awaited read and before it replays or
+// commits; `release` applies the same deadline rule itself, so a turn that
+// wakes after its budget expired cannot be reported as served. Deadline
+// eviction is token/instance-conditioned and idempotent: whichever caller
+// (timer, sweep, lookup, owns, release, evict) observes it first, `serve`
+// stays 0 and `evict.deadline` is counted exactly once.
+//
 // `admit` freezes an entry. Nothing mutates it while it is `running`, so there
 // is no read cursor to race and no byte-accounting to reconcile.
 //
@@ -473,14 +481,40 @@ export class DetachedRegistry {
   }
 
   /**
+   * True iff `token` still owns a LIVE claim. A claim past its own request
+   * deadline is no longer owned: delete it here, by deadline, so a producer
+   * that wakes after its budget expired cannot act on a stale token. The
+   * delete is identity-checked and idempotent, so the timer/sweep order does
+   * not change the outcome (`serve` stays 0, one deadline eviction).
+   */
+  owns(key, token) {
+    const entry = this.entries.get(key);
+    if (!entry || entry.state !== 'claimed' || entry.token !== token) return false;
+    if (entry.deadline <= this.now()) {
+      this.#delete(entry, 'deadline');
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Finish a claim. `state: 'served'` deletes the entry (the resumer completed
    * through the normal success tail). `state: 'running'` re-detaches: the new
    * snapshot replaces the old one, the original TTL is NOT extended, and the
    * entry becomes claimable again.
+   *
+   * The claim is bounded by the ORIGINAL request deadline. Checking it here
+   * makes release independent of cleanup order: whether the deadline timer,
+   * a sweep, or `owns` already deleted the entry, or this call is the first
+   * observer, the result is false and no serve is counted.
    */
   release(key, token, { state = 'served', snapshot = null } = {}) {
     const entry = this.entries.get(key);
     if (!entry || entry.state !== 'claimed' || entry.token !== token) return false;
+    if (entry.deadline <= this.now()) {
+      this.#delete(entry, 'deadline');
+      return false;
+    }
 
     if (state === 'served') {
       this.#delete(entry, null);
@@ -532,7 +566,14 @@ export class DetachedRegistry {
     if (!entry) return false;
     const owned = entry.state === 'claimed' ? entry.token : entry;
     if (!identity || identity !== owned) return false;
-    return this.#delete(entry, cause);
+    // A claim past its own deadline is a DEADLINE eviction whichever caller
+    // observes it first. Without this, a resumer that timed out would label
+    // the same cleanup resume_miss on one interleaving and deadline on
+    // another, and the counters could not be compared across runs.
+    const effectiveCause = entry.state === 'claimed' && entry.deadline <= this.now()
+      ? 'deadline'
+      : cause;
+    return this.#delete(entry, effectiveCause);
   }
 
   evictForAccount(accountId) {

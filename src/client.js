@@ -53,6 +53,22 @@ export function acquireLsUseOrThrow(port) {
   return (() => { throw err; })();
 }
 
+/**
+ * A detached claim that the registry no longer owns (its original request
+ * deadline ended, or a token-conditioned eviction removed it). The producer
+ * raises this after an awaited read and before the prefix replay; the handler
+ * treats it as a resume miss (fall back upstream) rather than a model error.
+ * `type` lets the failure tail classify it as a deadline, not an upstream bug.
+ */
+export function detachedClaimLostError(message = 'Detached claim is no longer owned (request deadline ended)') {
+  const err = new Error(message);
+  err.name = 'DetachedClaimLostError';
+  err.code = 'DETACHED_CLAIM_LOST';
+  err.type = 'upstream_deadline_exceeded';
+  err.detachedClaimLost = true;
+  return err;
+}
+
 export function isCascadeTransportError(err) {
   const msg = String(err?.message || err || '');
   const code = String(err?.code || '');
@@ -1138,10 +1154,24 @@ export class WindsurfClient {
       // as a later step carrying the result.
       const pendingToolCalls = new Map();
 
+      // A trajectory read is part of the request's budget. `maxWait` already
+      // carries what the route has left (a resume clamps it to the claim's own
+      // deadline), so every RPC below is bounded by the remaining time: a read
+      // that cannot finish before the deadline must not complete the turn
+      // after it. With no route budget, keep grpcUnary's own 30s default
+      // rather than turning the poll window into a timeout.
+      const readTimeoutMs = () => (Number.isFinite(requestMaxWaitMs)
+        ? Math.max(1, Math.min(30_000, maxWait - (Date.now() - startTime)))
+        : undefined);
+
       while (Date.now() - startTime < maxWait) {
         if (aborted()) { endReason = 'aborted'; break; }
-        await new Promise(r => setTimeout(r, pollInterval));
+        // The inter-poll sleep is a wait too: never sleep past the budget only
+        // to start a read that has no time left.
+        const sleepMs = Math.max(0, Math.min(pollInterval, maxWait - (Date.now() - startTime)));
+        await new Promise(r => setTimeout(r, sleepMs));
         if (aborted()) { endReason = 'aborted'; break; }
+        if (Date.now() - startTime >= maxWait) { endReason = 'max_wait'; break; }
         pollCount++;
 
         // Get steps. `stepOffset` is the absolute index of the next unread
@@ -1156,10 +1186,19 @@ export class WindsurfClient {
           const read = await turn.readWindow(async (start) => {
             const stepsResp = await grpcUnary(
               this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`,
-              grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, start))
+              grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, start)),
+              readTimeoutMs()
             );
             return parseTrajectorySteps(stepsResp);
           });
+          // Ownership is a LIVE predicate: the registry's deadline timer (or
+          // a sweep from another request) may have ended the claim while this
+          // read was in flight. Check after EVERY await before touching the
+          // cursors or replaying a single byte; the handler checks again at
+          // the replay write boundary.
+          if (resumeTurn && typeof resumeTurn.ownsClaim === 'function' && !resumeTurn.ownsClaim()) {
+            throw detachedClaimLostError();
+          }
           ({ windowStart, steps } = read);
           lastWindowStart = read.windowStart;
           stepOffset = turn.stepOffset;
@@ -1189,7 +1228,8 @@ export class WindsurfClient {
           windowStart = Math.max(pollFloor, stepOffset - CASCADE_STEP_OVERLAP);
           const stepsProto = buildGetTrajectoryStepsRequest(cascadeId, windowStart);
           const stepsResp = await grpcUnary(
-            this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto)
+            this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto),
+            readTimeoutMs()
           );
           steps = parseTrajectorySteps(stepsResp);
           lastWindowStart = windowStart;
@@ -1532,8 +1572,15 @@ export class WindsurfClient {
             // pollFloor, so pre-turn steps on a resume are not replayed.
             const finalResp = await grpcUnary(
               this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`,
-              grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, lastWindowStart))
+              grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, lastWindowStart)),
+              readTimeoutMs()
             );
+            // The final sweep is an awaited trajectory read like any other:
+            // a claim that ended while it was in flight must not emit the
+            // top-up content or reach the success tail.
+            if (resumeTurn && typeof resumeTurn.ownsClaim === 'function' && !resumeTurn.ownsClaim()) {
+              throw detachedClaimLostError();
+            }
             const finalSteps = parseTrajectorySteps(finalResp);
             if (turn) {
               turn.advanceTo(lastWindowStart + finalSteps.length);

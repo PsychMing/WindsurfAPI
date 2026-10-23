@@ -4,8 +4,9 @@
  */
 
 import { createHash, randomUUID } from 'crypto';
-import { WindsurfClient, contentToString, isCascadeTransportError, acquireLsUseOrThrow } from '../client.js';
+import { WindsurfClient, contentToString, isCascadeTransportError, acquireLsUseOrThrow, detachedClaimLostError } from '../client.js';
 import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountInternal, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, markSelectorIneligible, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
+
 import { isStickyEnabled, setStickyBinding, peekStickyBinding } from '../account/sticky-session.js';
 import { resolveModel, getModelInfo, pickRateLimitFallback, isModelDisabledUpstream, getModelCaps } from '../models.js';
 import { getLsFor, ensureLs, beginLsUse, endLsUse, getLsEntryByPort } from '../langserver.js';
@@ -7005,6 +7006,14 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         // + metadata egress + stop gate + think reroute + reasoning dedup, so the
         // prefix is transformed exactly as the live one was.
         const replayDetachedPrefix = async () => {
+          // The last ownership gate before the first byte of a frozen prefix
+          // reaches the client. The producer checks after its awaited read;
+          // this check closes the window between that read and this write
+          // (deadline timer, another request's sweep, account removal). No
+          // byte of a claim we no longer own may be replayed.
+          if (resumeClaim && !detachedRegistry.owns(resumeClaim.key, resumeClaim.token)) {
+            throw detachedClaimLostError('Detached claim ended before the prefix replay');
+          }
           let bytes = 0;
           for (const chunk of resumeClaim.entry.snapshot.chunks) {
             await onChunk(chunk);
@@ -7237,6 +7246,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                         sessionId: resumeClaim.entry.pin.sessionId,
                         snapshot: resumeClaim.entry.snapshot,
                         onFirstRead: replayDetachedPrefix,
+                        // Live ownership predicate: the producer checks it
+                        // after every awaited trajectory read, so a claim
+                        // whose deadline ended mid-read cannot be replayed or
+                        // committed as a success.
+                        ownsClaim: () => !!resumeClaim
+                          && detachedRegistry.owns(resumeClaim.key, resumeClaim.token),
                       },
                       leaseHeld: true,
                       maxWaitMs: resumeMaxWaitMs,
@@ -7553,6 +7568,57 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               }
               return;
             }
+            // Settle this turn's usage by stable identity. A resume has no
+            // checked-out account (`acct === null`), so the target is the
+            // entry's owner id; the current key is only the fallback
+            // credential. The claim's death must never erase the spend — the
+            // upstream turn really ran (review: keep the 330-token
+            // settlement).
+            const settleUsage = () => {
+              const usage = buildUsageBody(cascadeResult?.usage || null, messages, accText, accThinking, cachePolicy);
+              try { recordTokenUsage(usage, model); } catch {}
+              try {
+                if (acct) {
+                  recordAccountSpend(acct, usage);
+                } else if (resumeBillingAccountId) {
+                  const ownerKey = currentApiKeyForId(resumeBillingAccountId);
+                  if (ownerKey) {
+                    recordAccountSpend({ accountId: resumeBillingAccountId, apiKey: ownerKey }, usage);
+                    detachedRegistry.noteBilled();
+                  }
+                }
+              } catch {}
+              return usage;
+            };
+            // A resumed turn commits success only while its claim is still
+            // owned. The claim's deadline can pass during the post-loop
+            // metadata RPC or the tail flush; release() checks that deadline
+            // itself and returns false. The turn still ran upstream and is
+            // settled above by its stable owner id, but no success side
+            // effect (pool, account stats, finish, DONE, cache) may run for a
+            // claim the registry no longer owns.
+            let detachedServed = true;
+            if (resumeAttempt && resumeClaim) {
+              detachedServed = detachedRegistry.release(resumeClaim.key, resumeClaim.token, { state: 'served' });
+              resumeClaim = null;
+            }
+            if (!detachedServed) {
+              log.warn(`Chat[${reqId}]: detached claim deadline ended before commit — settling usage without a success terminal`);
+              settleUsage();
+              // The turn is not a success: count it as a failed request, but
+              // keep the spend (settleUsage above) because it ran upstream.
+              recordRequest(model, false, Date.now() - startTime, currentApiKey);
+              await awaitWriter();
+              if (!res.writableEnded) {
+                await send(chatStreamError(
+                  'Detached turn lost its claim before completion (request deadline exceeded)',
+                  'upstream_deadline_exceeded',
+                  'windsurf_provider_deadline',
+                ));
+                res.end();
+              }
+              return;
+            }
             // Pool check-in on success (cascade only). A resumed turn is never
             // pooled in P1: the retry that resumed it may not be the client
             // that owns the next turn, and the pool key is fingerprint-based.
@@ -7582,12 +7648,6 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             if (hadSuccess) reportSuccess(currentApiKey);
             updateCapability(currentApiKey, modelKey, true, 'success');
             recordRequest(model, true, Date.now() - startTime, currentApiKey);
-            // The resumed turn is now committed through the normal success
-            // tail; P1 has no completed-entry replay, so the entry is deleted.
-            if (resumeAttempt && resumeClaim) {
-              detachedRegistry.release(resumeClaim.key, resumeClaim.token, { state: 'served' });
-              resumeClaim = null;
-            }
             if (!rolePrinted) {
               await send({ id, object: 'chat.completion.chunk', created, model,
                 choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
@@ -7679,8 +7739,9 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               // Always build + record for internal billing; O1: only forward the
               // usage-only frame to the client when they opted in via
               // stream_options.include_usage (OpenAI omits it by default).
-              const usage = buildUsageBody(cascadeResult?.usage || null, messages, accText, accThinking, cachePolicy);
-              try { recordTokenUsage(usage, model); } catch {}
+              // The accounting itself lives in `settleUsage` (shared with the
+              // lost-claim path above); the abort guard above still runs first.
+              const usage = settleUsage();
               // K8: per-account lifetime spend (Cascade STREAM path).
               //
               // This call point was missing while the other three had it (connect stream,
@@ -7711,17 +7772,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               // Billing `acct` would silently bill nothing, so the target is the
               // entry's owner id (a re-auth may have rotated its key while the
               // turn was detached); the current key is only the fallback credential.
-              try {
-                if (acct) {
-                  recordAccountSpend(acct, usage);
-                } else if (resumeBillingAccountId) {
-                  const ownerKey = currentApiKeyForId(resumeBillingAccountId);
-                  if (ownerKey) {
-                    recordAccountSpend({ accountId: resumeBillingAccountId, apiKey: ownerKey }, usage);
-                    detachedRegistry.noteBilled();
-                  }
-                }
-              } catch {}
+              // `settleUsage` above applies exactly this identity rule.
               if (deps.includeUsage) {
                 await awaitWriter();
                 await send({ id, object: 'chat.completion.chunk', created, model,
@@ -7964,7 +8015,9 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           // every account was broken. A budget message is already specific, so
           // do not replace it with the ~240s provider-deadline text.
           const errMsg = deadlineExceeded
-            ? (isBudgetExceededError(lastErr) ? sanitizeText(lastErr?.message || 'request budget exhausted') : upstreamDeadlineExceededMessage(model))
+            ? (isBudgetExceededError(lastErr) || lastErr?.detachedClaimLost
+              ? sanitizeText(lastErr?.message || 'request budget exhausted')
+              : upstreamDeadlineExceededMessage(model))
             : allInternal
             ? upstreamTransientErrorMessage(model, tried.length, lastIsTransport ? 'cascade_transport' : 'internal_error')
             : poolExhausted
@@ -8064,7 +8117,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           });
         }
         await failureStage('content-gate-tail', async () => { await settleWriter(); if (!writerGone()) await flushContentGate(); });
-        if (emittedClientPayload) {
+        // A detached claim that lost ownership must not be dressed up as a
+        // completed turn: no synthetic finish_reason:"stop" and no [DONE],
+        // even when the prefix already reached the client. The error frame
+        // below is the honest terminal for this stream.
+        const claimLost = lastErr?.detachedClaimLost === true;
+        if (emittedClientPayload && !claimLost) {
           // Keep the existing synthetic-finish contract on internal routes.
           // Suppress its local DONE write; the independent stage below owns it.
           await failureStage('finish-frame', async () => {
@@ -8116,8 +8174,11 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           // clients and relays treat a failed request as an empty success. The
           // DEVIN_CONNECT path already guards the same sentinel with
           // terminalOk || contentEmitted (see the stream-exit block above).
+          // A lost detached claim is the same rule even when content was
+          // emitted: the stream is incomplete, so it gets the error frame and
+          // no sentinel.
           await settleWriter();
-          if (emittedClientPayload) writeRaw('data: [DONE]\n\n');
+          if (emittedClientPayload && !claimLost) writeRaw('data: [DONE]\n\n');
         });
         await failureStage('end', () => {
           if (!res.writableEnded) res.end();
