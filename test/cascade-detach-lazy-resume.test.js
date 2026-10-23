@@ -656,6 +656,37 @@ describe('Detach P1 lazy resume', () => {
     });
   });
 
+  it('T7b the replayed prefix is sanitized exactly like the live one', async () => {
+    const acct = seedAccount('t7b');
+    createdIds.push(acct.id);
+    const RAW_PATH = '/tmp/windsurf-workspace/secret.js';
+    const RAW_PREFIX = `PREFIX-ANSWER-${RAW_PATH} END-`;
+    const { state, handler } = cascadeUpstream({ initialText: RAW_PREFIX });
+    state.stepsFor = () => rawStepsResponse([
+      plannerStep(state.grown ? `${RAW_PREFIX}${GROWTH}` : RAW_PREFIX, { status: state.grown ? 3 : 1 }),
+    ]);
+    await withFakeLanguageServer(handler, async (port) => {
+      const lsFake = makeLsFake(port);
+      const body = bodyFor('t7b');
+      const ctx = handlerContext(port, acct, lsFake);
+      const { state: liveState } = await runToCompletion(body, ctx, { closeAfterWrites: 2 });
+      assert.ok(liveState.body.includes('<workspace>'), 'precondition: the live prefix was sanitized');
+      assert.equal(liveState.body.includes(RAW_PATH), false, 'precondition: the live prefix did not leak the path');
+      const entry = registry.detachedRegistry.lookup(detachKeyOf(body), ctx.callerKey);
+      assert.ok(entry.snapshot.chunks.some(chunk => String(chunk.text || '').includes(RAW_PATH)),
+        'the snapshot stores the raw chunk; the replay must sanitize it');
+
+      state.status = 'idle';
+      state.grown = true;
+      const { state: resState } = await runToCompletion(body, ctx, {});
+      assert.equal(resState.body.includes(RAW_PATH), false, 'the replayed prefix must not leak the raw path');
+      assert.ok(contentOf(resState).includes('<workspace>'), 'the replayed prefix carries the sanitizer marker');
+      assert.equal(contentOf(resState), `PREFIX-ANSWER-<workspace> END-${GROWTH}`,
+        'the resumed answer is the sanitized prefix plus the growth');
+      assert.equal(resState.body.split('PREFIX-ANSWER-').length - 1, 1, 'prefix exactly once');
+    });
+  });
+
   it('T11 a detached entry pins no LS lease; the resume holds exactly one', async () => {
     const acct = seedAccount('t11');
     createdIds.push(acct.id);
