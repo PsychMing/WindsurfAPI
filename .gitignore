@@ -24,6 +24,7 @@ scripts/*
 !scripts/web-search-direct-probe.mjs
 !scripts/sync-docs-contributors.mjs
 !scripts/check-dashboard-copy.mjs
+!scripts/verify-release-assets.mjs
 !scripts/secret-scan.mjs
 !scripts/run-test-shard.mjs
 !scripts/run-tests.mjs
