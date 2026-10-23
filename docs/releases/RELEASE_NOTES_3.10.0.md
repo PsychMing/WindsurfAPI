@@ -40,8 +40,8 @@
 ## 工程与门禁
 
 - 合入分支：`fix/sec-310` `1dae047`、`fix/ui-p2` `b0c2b27`、`test/detach-soak-patches` `6a2e40c`、`test/smoke-expand` `2715b61`、`fix/detach-p2` `5cd6271`。
-- Windows `npm run gate`：**PASS**；`npm run test:release` **6,451 pass / 0 fail / 97 skip（532 文件）**（测于 `d338b36`；分支 tip 前进后需复测）。
-- Linux `npm run test:release`（HMC，Node v24.21.0，532 文件）：**6,544 pass / 0 fail / 5 skip**。
+- Windows `npm run gate`：**PASS**；`npm run test:release` **6,548 pass / 0 fail / 97 skip（543 文件）**（测于 `da8a8a0`）。
+- Linux `npm run test:release`（HMC，Node v24.21.0，543 文件）：**6,641 pass / 0 fail / 5 skip**（`da8a8a0`）。
 - Node 22.23.4 矩阵（HMC）：**6,439 pass / 0 fail / 5 skip（525 文件）**；532 文件树未跑 Node 22。
 - wire：对 `v3.9.60`（`d449895`）比较 **270/270**。
 - mutation：`b502065` 上 **89 个规格全 exit 0**、14 条已声明 survivor；tip 的第 90 个规格（parallel-tool-calls）未扫。
@@ -76,6 +76,14 @@
 - **工具/图片/缓存矩阵**（75 次 live）：四族工具全 native；HTTPS `image_url` 之前被静默丢弃，现已按 5MB/8s/私有 IP 防护内联；`gpt-6` 默认开启 prompt-cache hint。
 - **面板**：`#stats` 改为 new-api 风格请求日志（时间/模型/账号/状态/延迟/token/费用 + 过滤/分页/聚合/时间序列）；新增 `#devin` 页（runtime/sessions/catalog/quota/settings，缺失源显式标注）；配色回退到 workbuddy 之前的 zinc/clay 并保留 AA；审计 10 tab/42 端点/42 动作，修 5 个接线 bug（0 console error）。
 - 已知未修（记录）：Gemini `max_tokens` 不限制 thinking；swe 工具 ID 形状；`parallel_tool_calls:false` 在该路由无效；stats 每账号求和 352 vs 总数 393。
+
+
+## Wave 13/14（复审军团）
+
+- 独立复跑确认 `d338b36` 的发布数字属实；4 处声明（Node 22 口径、mutation 89 规格、gate 6 表述、Wave 13 未含项）已按 `VerifyReleaseClaims.md` 修正。
+- ReviewChatCore 深审（无 P1，7 P2）全部修复：Cascade 侧身份调用改按账号 id（旋转后健康/计费/死 token 不丢）、`reportDeadToken` 按当前 key、未分类传输错误不再驱逐账号、复用条目在早退路径恢复、连接流成功写入需实际交付、served-model 归因统一、preflight 采用与调度器相同的准入合取。
+- Dashboard 复审（1 P1 + 5 P2）全部修复：请求日志按账号 id 归属（原来所有 `devin-session-token$` 账号折叠成一个 `devin-se` 桶）、失败行零计费、DevIn 配额覆盖率/500 信封/扫描计数/对比度四项、stats 归因 352+41=393。
+- gpt-6 缓存 A/B：hint 已在线上（`#13=1`），上游仍不报 read——判定为上游语义，非解码 bug；Claude 控制组 read/write 均正常。
 
 ## 尚未验证
 
