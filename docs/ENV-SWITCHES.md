@@ -150,7 +150,14 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `WINDSURFAPI_CASCADE_TURN` | 关 | 启用生产者级 `CascadeTurn`（`src/cascade-turn.js`，`=== '1'`）。P1 阶段只做状态抽取与懒恢复快照，不启用 detach / 注册表 / 后台泵；默认关，开它只改变内部轮询状态的所有者，不改变输出。 |
+| `WINDSURFAPI_CASCADE_TURN` | 关 | 启用生产者级 `CascadeTurn`（`src/cascade-turn.js`，`=== '1'`）。P1 阶段只做状态抽取与懒恢复快照；默认关，开它只改变内部轮询状态的所有者，不改变输出。 |
+| `WINDSURFAPI_CASCADE_DETACH` | 关 | 客户端断线后把 turn 冻结进 `src/detached-registry.js`，同一 body + 同一可信 scope 的重试认领并继续原轮询（`=== '1'`，且要求 `WINDSURFAPI_CASCADE_TURN=1`）。**默认关**：只有 per-user / `session:` scope 会生效，`api:<hash>` 等不可信 scope 不准入。快照 v2 携带 `generatorOffset`（元数据 RPC 从该 offset 起，避免把整条 cascade 历史重复计费）、`consumedThrough`（未消费完的批次拒绝 detach）、`sawActive`、`usageByStep`。条目 TTL 120s、全局 8 条 / 每 caller 2 条 / 单条 4 MiB，**不持有 `beginLsUse` 租约**（只在本请求内持有）；没有后台泵、没有 completed-entry 回放。 |
+
+**Detach P1 的计费规则（两条都必须成立）：** ① 恢复轮的
+`GetCascadeTrajectoryGeneratorMetadata` 从快照的 `generatorOffset` 发起 —— 从 0
+发起会把该 cascade 之前所有 turn 的 usage 一起计入（over-bill）；② 恢复轮没有
+checkout 账号（`acct === null`），成功尾必须把 usage 记到条目 owner
+（`currentApiKeyForId(entry.accountId)`），否则静默不记账（under-bill）。
 
 ## 默认开的功能开关
 

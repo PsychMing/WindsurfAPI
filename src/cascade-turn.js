@@ -26,7 +26,11 @@
 // the turn's resume offset so pre-turn steps are never replayed.
 export const CASCADE_STEP_OVERLAP = 8;
 
-const SNAPSHOT_VERSION = 1;
+// v2 (detach P1) adds generatorOffset, sawActive, usageByStep and
+// consumedThrough. v1 snapshots were in-memory only, so the bump is free:
+// fromSnapshot refuses a v1 payload instead of silently resuming it without
+// the metadata offset (over-bill) or the consumed pointer (duplicate steps).
+const SNAPSHOT_VERSION = 2;
 
 // The feature flag is read at call time, not module load, so a test (or a
 // future runtime config reload) can flip it without re-importing client.js.
@@ -77,6 +81,34 @@ function positiveInt(value, fallback) {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
+/**
+ * Per-step usage is an index → {inputTokens, outputTokens, cacheReadTokens,
+ * cacheWriteTokens} map. JSON-safe form is an array of [index, usage] pairs.
+ * A non-object value is a broken snapshot, not a usage report: refuse it
+ * rather than resume with a silently dropped billing fallback.
+ */
+function usageFromMap(value) {
+  const entries = value instanceof Map ? [...value.entries()] : value;
+  if (!Array.isArray(entries)) {
+    throw new CascadeTurnCursorError('CascadeTurn usageByStep must be a Map or an array of [index, usage] pairs');
+  }
+  const map = new Map();
+  for (const pair of entries) {
+    if (!Array.isArray(pair) || pair.length !== 2) {
+      throw new CascadeTurnCursorError('CascadeTurn usageByStep entry is not an [index, usage] pair');
+    }
+    const [index, usage] = pair;
+    if (!Number.isInteger(index) || index < 0) {
+      throw new CascadeTurnCursorError('CascadeTurn usageByStep has a non-integer index');
+    }
+    if (!usage || typeof usage !== 'object') {
+      throw new CascadeTurnCursorError('CascadeTurn usageByStep has a non-object usage value');
+    }
+    map.set(index, { ...usage });
+  }
+  return map;
+}
+
 export class CascadeTurn {
   /**
    * @param {object} [options]
@@ -91,6 +123,10 @@ export class CascadeTurn {
    * @param {number} [options.totalYielded=0]
    * @param {number} [options.totalThinking=0]
    * @param {boolean} [options.sawText=false]
+   * @param {number} [options.generatorOffset=0] metadata-RPC offset this turn started from
+   * @param {boolean} [options.sawActive=false] true once the trajectory was non-IDLE
+   * @param {Map|Array} [options.usageByStep] per-step usage fallback
+   * @param {number} [options.consumedThrough=pollFloor] max(consumed index)+1
    */
   constructor({
     cascadeId = '',
@@ -104,12 +140,24 @@ export class CascadeTurn {
     totalYielded = 0,
     totalThinking = 0,
     sawText = false,
+    generatorOffset = 0,
+    sawActive = false,
+    usageByStep = new Map(),
+    consumedThrough = pollFloor,
   } = {}) {
     if (!Number.isInteger(stepOffset) || stepOffset < 0) {
       throw new CascadeTurnCursorError(`CascadeTurn stepOffset must be a non-negative integer, got ${stepOffset}`);
     }
     if (!Number.isInteger(pollFloor) || pollFloor < 0 || pollFloor > stepOffset) {
       throw new CascadeTurnCursorError(`CascadeTurn pollFloor must be an integer in [0, stepOffset], got ${pollFloor}`);
+    }
+    if (!Number.isInteger(generatorOffset) || generatorOffset < 0) {
+      throw new CascadeTurnCursorError(`CascadeTurn generatorOffset must be a non-negative integer, got ${generatorOffset}`);
+    }
+    if (!Number.isInteger(consumedThrough) || consumedThrough < 0 || consumedThrough > stepOffset) {
+      throw new CascadeTurnCursorError(
+        `CascadeTurn consumedThrough must be an integer in [0, stepOffset], got ${consumedThrough}`,
+      );
     }
     this.cascadeId = cascadeId;
     this.stepOffset = stepOffset;
@@ -122,6 +170,14 @@ export class CascadeTurn {
     this.totalYielded = Number.isFinite(totalYielded) ? totalYielded : 0;
     this.totalThinking = Number.isFinite(totalThinking) ? totalThinking : 0;
     this.sawText = !!sawText;
+    this.generatorOffset = generatorOffset;
+    this.sawActive = !!sawActive;
+    this.usageByStep = usageFromMap(usageByStep);
+    // Absolute pointer proving every counted step was actually consumed. A
+    // detach is only safe when this equals stepOffset: otherwise the steps
+    // between the two would fall out of the resume window (stepOffset -
+    // overlap) and their text would be lost.
+    this.consumedThrough = consumedThrough;
     this.lastWindowStart = pollFloor;
     this.lastGrowthAt = Date.now();
     // Set by fromSnapshot: the exact window the detached turn would have read
@@ -190,6 +246,13 @@ export class CascadeTurn {
    * @returns {Promise<{textDelta: string, thinkingDelta: string, grew: boolean}>}
    */
   async consumeStep(step, stepIndex) {
+    // The step was read and is being consumed: advance the proof pointer
+    // BEFORE any await, so a detach landing inside the sink still records it.
+    // `stepIndex < stepOffset` keeps a standalone consume (no readWindow) from
+    // moving the pointer past a cursor the turn never advanced.
+    if (stepIndex < this.stepOffset && stepIndex + 1 > this.consumedThrough) {
+      this.consumedThrough = stepIndex + 1;
+    }
     let thinkingDelta = '';
     const liveThink = step?.thinking || '';
     if (liveThink) {
@@ -226,6 +289,9 @@ export class CascadeTurn {
    * responseText (a rewrite would splice wrong bytes onto the stream).
    */
   async consumeFinalStep(step, stepIndex) {
+    if (stepIndex < this.stepOffset && stepIndex + 1 > this.consumedThrough) {
+      this.consumedThrough = stepIndex + 1;
+    }
     const responseText = step?.responseText || '';
     const modifiedText = step?.modifiedText || '';
     let textDelta = '';
@@ -293,6 +359,15 @@ export class CascadeTurn {
    * their original object identity).
    */
   snapshot() {
+    // A detach taken mid-batch would store stepOffset ahead of the cursors;
+    // steps older than stepOffset - overlap would then fall out of the resume
+    // window and their text would be lost forever. Refuse instead of storing
+    // an entry that cannot be resumed correctly.
+    if (this.consumedThrough !== this.stepOffset) {
+      throw new CascadeTurnCursorError(
+        `CascadeTurn cannot snapshot a mid-batch turn: consumedThrough ${this.consumedThrough} != stepOffset ${this.stepOffset}`,
+      );
+    }
     return {
       version: SNAPSHOT_VERSION,
       cascadeId: this.cascadeId,
@@ -306,6 +381,16 @@ export class CascadeTurn {
       totalYielded: this.totalYielded,
       totalThinking: this.totalThinking,
       sawText: this.sawText,
+      // v2: the metadata RPC is offset-scoped. Resuming from 0 re-sums every
+      // prior turn of the cascade and over-bills it (src/windsurf.js:947-951).
+      generatorOffset: this.generatorOffset,
+      // v2: the IDLE grace only applies before the trajectory was ever
+      // non-IDLE; a resumed ACTIVE turn must not wait the extra grace.
+      sawActive: this.sawActive,
+      // v2: fallback usage when the metadata RPC fails.
+      usageByStep: [...this.usageByStep.entries()].sort((a, b) => a[0] - b[0]).map(([i, u]) => [i, { ...u }]),
+      // v2: proves every counted step was consumed (see the guard above).
+      consumedThrough: this.consumedThrough,
       chunks: this.chunks.map(chunk => ({ ...chunk })),
     };
   }
@@ -338,6 +423,29 @@ export class CascadeTurn {
         + 'resuming from stepOffset alone returns zero steps (Q10 E2b: stepOffset=3 → 0 steps / 0 chars)',
       );
     }
+    // v2 validity precondition: every counted step must have been consumed.
+    // Without this an entry with stepOffset=3 and empty cursors is accepted,
+    // and the resumed window (max(0, 3-8)=0) re-emits steps 0-2 — a duplicated
+    // prefix, not the E2b "0 steps" bug.
+    if (!Number.isInteger(snapshot.consumedThrough)) {
+      throw new CascadeTurnCursorError('CascadeTurn snapshot has no consumedThrough pointer');
+    }
+    if (snapshot.consumedThrough !== snapshot.stepOffset) {
+      throw new CascadeTurnCursorError(
+        `CascadeTurn snapshot is mid-batch: consumedThrough ${snapshot.consumedThrough} != stepOffset ${snapshot.stepOffset}`,
+      );
+    }
+    if (!Number.isInteger(snapshot.generatorOffset) || snapshot.generatorOffset < 0) {
+      throw new CascadeTurnCursorError(
+        'CascadeTurn snapshot has no generatorOffset; resuming the metadata RPC from 0 re-bills prior turns',
+      );
+    }
+    if (typeof snapshot.sawActive !== 'boolean') {
+      throw new CascadeTurnCursorError('CascadeTurn snapshot has no sawActive flag');
+    }
+    if (!Array.isArray(snapshot.usageByStep)) {
+      throw new CascadeTurnCursorError('CascadeTurn snapshot has no usageByStep fallback');
+    }
 
     const turn = new CascadeTurn({
       cascadeId: snapshot.cascadeId,
@@ -353,6 +461,10 @@ export class CascadeTurn {
       totalYielded: snapshot.totalYielded,
       totalThinking: snapshot.totalThinking,
       sawText: snapshot.sawText,
+      generatorOffset: snapshot.generatorOffset,
+      sawActive: snapshot.sawActive,
+      usageByStep: snapshot.usageByStep,
+      consumedThrough: snapshot.consumedThrough,
     });
 
     if (Number.isInteger(snapshot.windowStart)) {

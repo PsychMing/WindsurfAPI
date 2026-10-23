@@ -245,6 +245,10 @@ async function main() {
     log.info(`${signal} received — draining ${inflight} in-flight requests (up to 30s)...`);
     const abortedSse = abortActiveSse('server shutting down');
     if (abortedSse) log.warn(`Aborted ${abortedSse} active SSE stream(s): server shutting down`);
+    // Detach P1: entries are in-memory and hold no LS lease, but a drain must
+    // refuse new admissions and drop what exists so a dying process does not
+    // leave claims behind while the LS pool is being stopped.
+    import('./detached-registry.js').then(m => m.beginDetachDrain()).catch(() => {});
     if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
     // v2.0.146 (audit F-2): await LS children actually exiting before
     // process.exit, mirroring the self-update path. A synchronous

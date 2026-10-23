@@ -2618,6 +2618,10 @@ export function removeAccount(id) {
   // Drop any Cascade conversations owned by this key so future requests
   // don't try to resume on an account that no longer exists.
   import('./conversation-pool.js').then(m => m.invalidateFor({ apiKey: account.apiKey })).catch(() => {});
+  // Detach P1: a frozen turn pinned to this account must not be resumable
+  // either. The entry holds no LS lease, so eviction is just the map delete;
+  // the next retry goes upstream.
+  import('./detached-registry.js').then(m => m.evictForAccount(account.id)).catch(() => {});
   log.info(`Account removed: ${safeAccountRef(account)}`);
   return true;
 }

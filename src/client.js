@@ -41,7 +41,7 @@ const LS_SERVICE = '/exa.language_server_pb.LanguageServerService';
 // in windsurf-api.js (they were verified identical in the four-proto study).
 const SERVER_JWT_HOST = 'server.codeium.com';
 
-function acquireLsUseOrThrow(port) {
+export function acquireLsUseOrThrow(port) {
   const entry = beginLsUse(port);
   if (entry) return entry;
   if (!getLsEntryByPort(port)) return null;
@@ -687,7 +687,16 @@ export class WindsurfClient {
   async cascadeChat(messages, modelEnum, modelUid, opts = {}) {
     let onChunk, onEnd, onError, signal, reuseEntry, toolPreamble, displayModel, nativeEnvironment;
     let nativeMode, nativeAllowlist, additionalSteps, requestMaxWaitMs;
-    acquireLsUseOrThrow(this.port);
+    let resumeTurn, leaseHeld, detach, accountId, modelKey, lsGeneration;
+    // Lease seam. The handler owns the lease for a resumed request (it
+    // acquired it before claim), so the producer must release exactly that
+    // hold and never take a second one. Production defaults are the module
+    // helpers; the injection exists so a test can observe the count.
+    const acquireLease = opts.acquireLease || acquireLsUseOrThrow;
+    const releaseLease = opts.releaseLease || endLsUse;
+    // Assigned inside the poll setup. Declared here so the abort catch can
+    // re-detach when the client dies during the prefix replay (F22).
+    let tryDetach = () => null;
     try {
     ({
       onChunk, onEnd, onError, signal, reuseEntry, toolPreamble, displayModel, nativeEnvironment,
@@ -701,17 +710,31 @@ export class WindsurfClient {
       // The caller passes what the request has left; it can only shorten the
       // configured CASCADE_MAX_WAIT_MS, never extend it.
       maxWaitMs: requestMaxWaitMs,
+      // Detach P1: resume a frozen turn instead of starting one, and the
+      // handler-supplied admission handle the producer calls on a client-gone
+      // abort. The producer never imports the registry.
+      resumeTurn, leaseHeld, detach,
+      // Billing/pin identity. The producer only forwards these; the handler
+      // owns the account and the registry policy.
+      accountId, modelKey, lsGeneration,
     } = opts);
+    // `leaseHeld` is set by the resume path: the handler already acquired the
+    // LS lease for this request, so the producer must not take a second hold.
+    // Correctness then depends on one owner and one release (the finally
+    // below), not on every handler exit path remembering to end a duplicate.
+    if (!leaseHeld) acquireLease(this.port);
     const aborted = () => signal?.aborted;
     const inputChars = messages.reduce((n, m) => n + contentToString(m?.content).length, 0);
 
-    log.debug(`CascadeChat: uid=${modelUid} enum=${modelEnum} msgs=${messages.length} reuse=${!!reuseEntry}`);
+    log.debug(`CascadeChat: uid=${modelUid} enum=${modelEnum} msgs=${messages.length} reuse=${!!reuseEntry}${resumeTurn ? ' resume=1' : ''}`);
 
     // One-shot per-LS workspace init (idempotent; typically pre-warmed at
     // LS startup). Falls back to a local session id if the LS entry is gone.
+    // A resume never re-runs the handshake: the cascade and its panel already
+    // exist upstream, and a warmup failure must not lose the turn.
     const lsEntry = getLsEntryByPort(this.port);
-    await this.warmupCascade();
-    let sessionId = reuseEntry?.sessionId || lsEntry?.sessionId || randomUUID();
+    if (!resumeTurn) await this.warmupCascade();
+    let sessionId = resumeTurn?.sessionId || reuseEntry?.sessionId || lsEntry?.sessionId || randomUUID();
 
     // "panel state not found" means the LS forgot the panel for our sessionId
     // (LS restarted, TTL expired, etc.). Re-run warmupCascade with a fresh
@@ -730,8 +753,26 @@ export class WindsurfClient {
     // UpdateWorkspaceTrust) and reopen the cascade.
     const isUntrustedWorkspace = (e) => /untrusted workspace|workspace.*not.*trusted/i.test(e?.message || '');
 
-      // Step 1: Start cascade — with retry on panel-state-not-found
+      // Detach P1 resume: the cascade and its user message already exist
+      // upstream. A resume must NOT call StartCascade or SendUserCascadeMessage
+      // (a second Send would execute the turn twice and double-bill), so the
+      // whole open/send/history block is skipped and the cursors come from the
+      // snapshot. `generatorOffset` is the offset the ORIGINAL turn started
+      // from; the metadata RPC at the end is offset-scoped, and starting it at
+      // 0 would sum every prior turn of this cascade (over-bill).
       let cascadeId;
+      let stepOffset = 0;
+      let generatorOffset = 0;
+      let text = '';
+      let images = [];
+      let historyCoverage = { droppedTurnCount: 0, firstIncludedTurnIndex: 0, totalTurns: 0 };
+      if (resumeTurn) {
+        cascadeId = resumeTurn.cascadeId;
+        stepOffset = resumeTurn.snapshot.stepOffset;
+        generatorOffset = resumeTurn.snapshot.generatorOffset;
+      } else {
+
+      // Step 1: Start cascade — with retry on panel-state-not-found
       const openCascade = async () => {
         if (reuseEntry?.cascadeId) {
           log.debug(`Cascade resumed: ${reuseEntry.cascadeId}`);
@@ -763,10 +804,10 @@ export class WindsurfClient {
       // across turns (`alpha` -> `alphabeta` -> ...). Store absolute offsets in
       // the conversation pool and reuse them here; fall back to a one-shot
       // snapshot so entries created before this fix still resume safely.
-      let stepOffset = Number.isInteger(reuseEntry?.stepOffset) && reuseEntry.stepOffset >= 0
+      stepOffset = Number.isInteger(reuseEntry?.stepOffset) && reuseEntry.stepOffset >= 0
         ? reuseEntry.stepOffset
         : 0;
-      let generatorOffset = Number.isInteger(reuseEntry?.generatorOffset) && reuseEntry.generatorOffset >= 0
+      generatorOffset = Number.isInteger(reuseEntry?.generatorOffset) && reuseEntry.generatorOffset >= 0
         ? reuseEntry.generatorOffset
         : 0;
       if (reuseEntry?.cascadeId && (!Number.isInteger(reuseEntry?.stepOffset) || !Number.isInteger(reuseEntry?.generatorOffset))) {
@@ -793,8 +834,8 @@ export class WindsurfClient {
         }
       }
 
-      let text;
-      let images = [];
+      text = '';
+      images = [];
       const systemMsgs = messages.filter(m => m.role === 'system');
       const convo = messages.filter(m => m.role === 'user' || m.role === 'assistant');
       let sysText = systemMsgs.map(m => contentToString(m.content)).join('\n').trim();
@@ -828,7 +869,7 @@ export class WindsurfClient {
       // expose how much of the trajectory it really represents. Resume
       // path doesn't replay history (cascade still has it), so coverage =
       // full input; fresh path may truncate large histories.
-      let historyCoverage = { droppedTurnCount: 0, firstIncludedTurnIndex: 0, totalTurns: convo.length };
+      historyCoverage = { droppedTurnCount: 0, firstIncludedTurnIndex: 0, totalTurns: convo.length };
       // GPT-08: one computation for "which turns fit the prompt", shared by the fresh
       // path and the post-resume-rebuild path. They used to disagree — the rebuild
       // truncated the same history without updating historyCoverage, so a request that
@@ -963,6 +1004,7 @@ export class WindsurfClient {
       // Surface the recovery to the caller so chat.js can skip restoring the
       // dead reuse entry to the pool on later success/failure paths.
       if (cascadeExpiredOnce) this._lastReuseInvalidated = true;
+      } // end !resumeTurn
 
       // Step 3: Poll for response.
       // Track per-step text cursors instead of a single global `lastYielded`.
@@ -978,17 +1020,22 @@ export class WindsurfClient {
       // Each value is the latest {inputTokens, outputTokens, cacheReadTokens,
       // cacheWriteTokens} observed on that step's CortexStepMetadata.model_usage.
       // Summed across all steps at return time → the response's real usage.
-      const usageByStep = new Map();
+      // On a resume the restored turn owns the map (snapshot.usageByStep), so
+      // the fallback keeps the pre-detach usage instead of starting empty.
+      let usageByStep;
       const seenToolCallIds = new Set();
       const toolCalls = [];
       const approvedReadUrlInteractions = new Set();
       let cascadeTrajectoryId = '';
-      let totalYielded = 0;
-      let totalThinking = 0;
+      let totalYielded = resumeTurn ? (Number(resumeTurn.snapshot.totalYielded) || 0) : 0;
+      let totalThinking = resumeTurn ? (Number(resumeTurn.snapshot.totalThinking) || 0) : 0;
       let idleCount = 0;
       let pollCount = 0;
-      let sawActive = false;   // true once we've seen a non-IDLE status
-      let sawText = false;     // true once at least one PLANNER_RESPONSE with text arrived
+      // A resumed turn that was already ACTIVE must not spend another
+      // IDLE_GRACE_MS waiting: the grace only applies before the trajectory
+      // was ever non-IDLE.
+      let sawActive = resumeTurn ? !!resumeTurn.snapshot.sawActive : false;
+      let sawText = resumeTurn ? !!resumeTurn.snapshot.sawText : false;
       let lastStatus = -1;
       // "Progress" is ANY forward motion on the trajectory — text, thinking,
       // new tool call, or a new step appearing. Using this (instead of text
@@ -1008,8 +1055,10 @@ export class WindsurfClient {
       let approvalError = null;
       // Absolute offset this turn started polling from: the overlap window
       // never reaches behind it, so a resumed cascade cannot replay pre-turn
-      // steps as fresh output.
-      const pollFloor = stepOffset;
+      // steps as fresh output. On a resume this is the ORIGINAL turn's floor
+      // (snapshot.pollFloor), not the unread offset: clamping to stepOffset
+      // would hide growth inside already-counted steps (Q10 E2b).
+      const pollFloor = resumeTurn ? resumeTurn.snapshot.pollFloor : stepOffset;
       let lastStepCount = stepOffset;
       // Window start of the most recent poll. The final IDLE sweep re-reads
       // the same bounded window for modifiedText polish.
@@ -1018,15 +1067,66 @@ export class WindsurfClient {
       // loop below is the pre-existing inline implementation, byte-for-byte;
       // when it is on, the same window/cursor work runs through CascadeTurn
       // so a detach can snapshot one object instead of scavenging locals.
-      const turn = cascadeTurnEnabled()
-        ? new CascadeTurn({
+      // A resume ALWAYS restores the turn (that is the snapshot), regardless
+      // of the producer flag: the flag gates producing new snapshots, not
+      // consuming one that was admitted under it.
+      let turn = null;
+      if (resumeTurn) {
+        turn = CascadeTurn.fromSnapshot(resumeTurn.snapshot, { emit: chunk => onChunk?.(chunk) });
+        usageByStep = turn.usageByStep;
+        lastWindowStart = Number.isInteger(turn.lastWindowStart) ? turn.lastWindowStart : lastWindowStart;
+        sawActive = !!turn.sawActive;
+        sawText = !!turn.sawText;
+      } else if (cascadeTurnEnabled()) {
+        usageByStep = new Map();
+        turn = new CascadeTurn({
+          cascadeId,
+          stepOffset,
+          pollFloor,
+          chunks,
+          emit: chunk => onChunk?.(chunk),
+          generatorOffset,
+          usageByStep,
+        });
+      } else {
+        usageByStep = new Map();
+      }
+      let resumeFirstReadPending = !!resumeTurn;
+      // Detach is a producer decision, but the handler owns the key, tenancy
+      // and cause. `admit` is called at most once per turn, only while the
+      // client is gone, and only for a turn P1 can serve: buffered output, no
+      // tool/native chunk, and every counted step consumed.
+      let detachAttempted = false;
+      tryDetach = () => {
+        if (detachAttempted || !detach || !turn) return null;
+        if (!(aborted() || detach.forcedCause)) return null;
+        if (!turn.chunks.length) return null;
+        if (turn.chunks.some(chunk => chunk?.nativeToolCall || chunk?.nativeToolResult)) return null;
+        if (toolCalls.length) return null;
+        let snapshot;
+        try {
+          snapshot = turn.snapshot();
+        } catch {
+          return null;
+        }
+        detachAttempted = true;
+        try {
+          detach.admit(snapshot, {
             cascadeId,
-            stepOffset,
-            pollFloor,
-            chunks,
-            emit: chunk => onChunk?.(chunk),
-          })
-        : null;
+            sessionId,
+            lsPort: this.port,
+            lsGeneration: lsGeneration ?? lsEntry?.generation ?? null,
+            accountId: accountId ?? null,
+            modelKey: modelKey ?? null,
+            generatorOffset: snapshot.generatorOffset,
+            deadline: startTime + maxWait,
+            startedAt: startTime,
+          });
+        } catch (e) {
+          log.warn(`Cascade detach admission failed: ${e.message}`);
+        }
+        return snapshot;
+      };
       // Tool calls that were ACTIVE when last seen and have not reported a
       // result since, keyed by name+arguments. Persisted across polls because
       // a step can fall out of the overlap window while its tool is still
@@ -1062,6 +1162,24 @@ export class WindsurfClient {
           if (turn.stepOffset > lastStepCount) {
             lastStepCount = turn.stepOffset;
             lastGrowthAt = Date.now();
+          }
+          // The first successful read is the proof that the cascade survived
+          // the detach. Only now may the buffered prefix go on the wire: a
+          // not_found/expired read must fall back to a fresh upstream turn
+          // with ZERO bytes written (the 200 is not committed until the first
+          // write). The replay goes through onChunk — never a direct buffer
+          // write — so path scrubbing, stop gating, think reroute and
+          // reasoning dedup run exactly as they did on the live prefix.
+          if (resumeFirstReadPending) {
+            resumeFirstReadPending = false;
+            try {
+              await resumeTurn.onFirstRead?.();
+            } catch (e) {
+              if (aborted() || e?.isClientAbort || e?.name === 'AbortError' || e?.code === 'ABORT_ERR') {
+                tryDetach();
+              }
+              throw e;
+            }
           }
         } else {
           windowStart = Math.max(pollFloor, stepOffset - CASCADE_STEP_OVERLAP);
@@ -1381,7 +1499,10 @@ export class WindsurfClient {
         if (statusInfo.trajectoryId) cascadeTrajectoryId = statusInfo.trajectoryId;
         lastStatus = status;
 
-        if (status !== 1) sawActive = true;
+        if (status !== 1) {
+          sawActive = true;
+          if (turn) turn.sawActive = true;
+        }
 
         if (status === 1) { // IDLE
           // Don't allow idle-break during the warmup window unless we've
@@ -1475,6 +1596,11 @@ export class WindsurfClient {
       // `aborted()` is checked in addition to the loop's endReason so an
       // abort that lands after idle_done/max_wait is still surfaced.
       if (endReason === 'aborted' || aborted()) {
+        // Detach P1: the turn object is still alive here and the last window
+        // was fully consumed, which is the only safe snapshot seam. The
+        // producer calls the handler-supplied handle; it never imports the
+        // registry. A refused admission changes nothing below.
+        tryDetach();
         // Mirror the normal return's reset so a reused client instance never
         // carries this turn's recovery flag into the next call.
         this._lastReuseInvalidated = false;
@@ -1574,7 +1700,12 @@ export class WindsurfClient {
       // the flag is on; the default return shape is unchanged. A completed
       // turn's snapshot is not a resume point (the registry serves its
       // chunks); a mid-turn detach calls turn.snapshot() at the same seam.
-      if (turn) chunks.turnSnapshot = turn.snapshot();
+      // A tool/native break can leave consumedThrough < stepOffset; that turn
+      // is not resumable by construction, so omit the snapshot instead of
+      // failing a completed turn.
+      if (turn) {
+        try { chunks.turnSnapshot = turn.snapshot(); } catch { /* not resumable */ }
+      }
       chunks.generatorOffset = serverUsage?.entryCount != null
         ? generatorOffset + serverUsage.entryCount
         : null;
@@ -1590,7 +1721,7 @@ export class WindsurfClient {
       // v2.0.25 LOW-1: stamp the LS generation onto the cascade meta so the
       // pool entry can be invalidated cleanly if this LS restarts and a
       // different LS later lands on the same port.
-      chunks.lsGeneration = lsEntry?.generation || null;
+      chunks.lsGeneration = lsGeneration ?? lsEntry?.generation ?? null;
       // v2.0.25 LOW-2: surface history coverage so the pool entry can
       // record whether truncation happened on the fresh-cascade path.
       chunks.historyCoverage = historyCoverage;
@@ -1601,6 +1732,12 @@ export class WindsurfClient {
       return chunks;
 
     } catch (err) {
+      // A client that vanished during the prefix replay (F22) or anywhere
+      // after the poll loop must re-detach the resumed turn before the error
+      // escapes; the handler's abort branch then returns without a bill.
+      if (signal?.aborted || err?.isClientAbort || err?.name === 'AbortError' || err?.code === 'ABORT_ERR') {
+        try { tryDetach(); } catch { /* detach is best-effort */ }
+      }
       if (isCascadeTransportError(err)) {
         resetCascadeTransportState(this.port);
         markCascadeTransportError(err);
@@ -1608,7 +1745,7 @@ export class WindsurfClient {
       onError?.(err);
       throw err;
     } finally {
-      endLsUse(this.port);
+      releaseLease(this.port);
     }
   }
 
