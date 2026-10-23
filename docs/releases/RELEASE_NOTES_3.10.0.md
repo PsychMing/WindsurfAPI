@@ -58,6 +58,16 @@
 - **detach D1/D2**：TTL 只作准入，已 claim 的 entry 只按原请求 deadline + token 清理；`evict` 带身份校验（关掉 ABA）；发出过工具调用（含 markup 模拟）的回合不进 no-tool 缓存。119/119 + 127/127。
 - 顺带：`test/connect-token-usage` 的两处单参数断言更新为接受 2 参数调用；4 个 mutation baseline 与 escape 行号随合并重钉。
 
+
+### 第二轮审查修正（补丁复审）
+
+- **F1 旧凭证的迟到拒绝污染新凭证**：`SELECTOR_NOT_ELIGIBLE` 分支现在先过 `credentialCurrent`；旧 epoch 只记统计，不写 selector latch。测试 `late_old_selector_denial_must_not_override_new_credential_success`。
+- **F2 peer 判定与调度器不一致**：提取只读的 `isAdmittedForRequest()`（status/maintenance/cooldown/latch/RPM/inflight/tier），latch 与 `getApiKey` 共用；不会把 maintenance 或 inflight 满的 B 当成可用 peer。测试两条（maintenance / inflight）。
+- **F3 hosted 搜索版本化类型**：`web_search_preview_2025_03_11`、`web_search_2025_08_26` 等日期快照全部拒绝（400 `unsupported_hosted_tool`），覆盖 tools/additional_tools/namespace/tool_choice × 流式/非流式 16 种位置；普通 `function` 不变。
+- **detach 交付截止**：trajectory 读取受剩余预算约束，await 后/回放前/终态前检查所有权；`release()` 自查 deadline；过期 claim 一律记 `deadline`，与清理顺序无关。新增 4 条测试，330-token 结算保留。
+- **移除账号的迟到结果**：`finalizeConnectAccount` 先按不可变 id 解析账号；账号已删除则只记全局统计，不再回落到旧 key 惩罚重建账号。
+- **签名验证收窄**：默认 identity 正则锚定结尾；`--tag vX.Y.Z` 生成精确身份，`v3.10.0-unrequested` 不再匹配。
+
 ## 尚未验证
 
 - `[UNVERIFIED]` detach 默认开启（NO-GO 未变）；真实 Cascade 上游 resume。
