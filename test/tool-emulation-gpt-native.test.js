@@ -45,26 +45,32 @@ describe('pickToolDialect — gpt_native gating (v2.0.62 #115)', () => {
   });
 
   it('GLM and Kimi precedence beats GPT detection', () => {
-    assert.equal(pickToolDialect('glm-5.1', 'zhipu', 'responses'), 'glm47');
+    // glm-5 is a genuine glm47 model, so it still proves the GLM branch wins over
+    // GPT detection on the responses route (where a GPT name would pick gpt_native).
+    assert.equal(pickToolDialect('glm-5', 'zhipu', 'responses'), 'glm47');
     assert.equal(pickToolDialect('kimi-k2', 'moonshot', 'responses'), 'kimi_k2');
   });
 
-  // GLM-5.2 arrives under both spellings — resolveConnectSelector maps `glm-5.2` and
-  // `glm-5-2` to the same upstream selector, so a client may legitimately send either, and
-  // clients do (#236 came in reporting `glm-5-2-none`). Every spelling must land on
-  // gpt_native, because the v2.0.72 probe found this model IGNORES the glm47 XML markup:
-  // the wrong dialect means plain-text answers with no tool call emitted, and a client that
-  // waits forever for one.
+  // GLM-5.1 / GLM-5.2 arrive under both spellings — resolveConnectSelector maps
+  // `glm-5.1` / `glm-5-1` and `glm-5.2` / `glm-5-2` onto the SAME upstream selector
+  // (`glm-5-2`), so a client may legitimately send either, and clients do (#236 came in
+  // reporting `glm-5-2-none`). Every spelling must land on gpt_native, because the
+  // v2.0.72 probe found this model IGNORES the glm47 XML markup: the wrong dialect means
+  // plain-text answers with no tool call emitted, and a client that waits forever for one.
   //
-  // Bare `glm-5-2` was the one form that got it wrong — not equal to `glm-5.2`, and with no
-  // trailing dash neither prefix test fired, so it fell through to glm47. Every other
-  // spelling already worked, which is exactly what kept it hidden.
-  it('every GLM-5.2 spelling gets gpt_native, dotted or dashed, bare or suffixed', () => {
+  // Bare `glm-5-2` was the first form that got it wrong — not equal to `glm-5.2`, and with
+  // no trailing dash neither prefix test fired, so it fell through to glm47. `glm-5-1`
+  // (and the dotted `glm-5.1` after dot-collapse) was the second: the old `[2-9]` class
+  // started at 5.2, so the whole 5.1 alias family landed on the dialect it ignores.
+  it('every GLM-5.1 / GLM-5.2 spelling gets gpt_native, dotted or dashed, bare or suffixed', () => {
     for (const key of [
       'glm-5.2', 'glm-5-2',
       'glm-5.2-none', 'glm-5-2-none',
       'glm-5.2-high', 'glm-5-2-high',
       'GLM-5-2', 'GLM-5.2-NONE',
+      'glm-5.1', 'glm-5-1',
+      'glm-5.1-none', 'glm-5-1-none',
+      'GLM-5-1', 'GLM-5.1-NONE',
     ]) {
       assert.equal(pickToolDialect(key, 'zhipu'), 'gpt_native',
         `${key} must use gpt_native — glm47 markup is ignored by this model, so the wrong `
@@ -73,11 +79,31 @@ describe('pickToolDialect — gpt_native gating (v2.0.62 #115)', () => {
   });
 
   it('and the fix does not drag other GLM models onto gpt_native', () => {
-    // The dot-collapse must not widen the match. glm-4.7 and glm-5 are different models and
-    // the glm47 dialect is correct for them; a `startsWith('glm-5')` style fix would have
-    // swallowed glm-5 and glm-5.1 too.
-    for (const key of ['glm-4.7', 'glm-4-7', 'glm-5', 'glm-5.1', 'glm-5-1']) {
+    // The dot-collapse must not widen the match. glm-4.7 and bare glm-5 are different
+    // models and the glm47 dialect is correct for them; a `startsWith('glm-5')` style fix
+    // would have swallowed them. The `-12` / `-1x` entries pin the boundary of the
+    // `(?:1|[2-9])(?:-|$)` class: a bare `1` may only match when the minor version ends
+    // there, so a hypothetical 5.12 or 5.1x is NOT silently treated as 5.1.
+    for (const key of ['glm-4.7', 'glm-4-7', 'glm-5', 'glm-5-12', 'glm-5-1x']) {
       assert.equal(pickToolDialect(key, 'zhipu'), 'glm47', `${key} must stay on glm47`);
+    }
+  });
+
+  it('dialect table: GLM 5.1 alias family → gpt_native, bare glm-5 and 4.x → glm47', () => {
+    // The acceptance table for the glm-5-1 alias/dialect fix. Pinned as data so a future
+    // regex widening (or narrowing) cannot quietly move a model onto the dialect it
+    // ignores — the failure mode is a silent no-tool-call stall, not an error.
+    const table = [
+      ['glm-5-1', 'gpt_native'],
+      ['glm-5.1', 'gpt_native'],
+      ['glm-5-2', 'gpt_native'],
+      ['glm-5.2', 'gpt_native'],
+      ['glm-5', 'glm47'],
+      ['glm-4.7', 'glm47'],
+      ['glm-4-7', 'glm47'],
+    ];
+    for (const [model, dialect] of table) {
+      assert.equal(pickToolDialect(model, 'zhipu'), dialect, `${model} must use ${dialect}`);
     }
   });
 

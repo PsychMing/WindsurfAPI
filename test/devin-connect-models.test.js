@@ -141,6 +141,21 @@ describe('resolveConnectSelector — live catalog (audit 2026-07-12 snapshot sta
     assert.equal(m.resolveConnectSelector('glm-5.2').selector, 'glm-5-2');
   });
 
+  it('resolves the dashed glm-5-1 spelling onto the same selector as glm-5.1', async () => {
+    const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-glm51`);
+    // Live catalog in which the only GLM row is glm-5-2 — the shape a real account
+    // reports. Before this fix the map carried `glm-5.1` but NOT `glm-5-1`, so the
+    // dashed spelling missed every map lookup, was absent from the live set, and the
+    // authoritative catalog left no degrade target → {selector:null, mapped:false},
+    // which the handler answers with 400 model_not_found. Dotted worked, dashed did
+    // not, for the same model.
+    m.setLiveCatalogSelectors([{ selector: 'glm-5-2' }]);
+    assert.deepEqual(m.resolveConnectSelector('glm-5-1'), { selector: 'glm-5-2', mapped: true },
+      'dashed glm-5-1 must resolve to the live glm-5-2 selector, not fail model_not_found');
+    assert.deepEqual(m.resolveConnectSelector('glm-5.1'), { selector: 'glm-5-2', mapped: true },
+      'dotted glm-5.1 keeps resolving to the same selector');
+  });
+
   it('retires a snapshot alias when its target is absent from a complete live catalog', async () => {
     const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-c3`);
     m.setLiveCatalogSelectors([
