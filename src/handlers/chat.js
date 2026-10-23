@@ -6106,6 +6106,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       // It is also what makes the producer's handle switch from "admit a new
       // entry" to "release the claimed entry back to running" on a re-detach.
       let resumeClaim = null;
+      // Port of the LS lease acquired for a claimed resume. Ownership moves to
+      // the producer at the `leaseHeld` call; until then this handler's finally
+      // is the only release, so a synchronous throw between `beginLsUse` and
+      // the producer cannot leak `activeRequests` (which would pin the entry
+      // from idle reaping and maintenance).
+      let resumeLeasePort = null;
       const detachHandle = detachEnabled ? {
         admit: (snapshot, pin) => {
           if (resumeClaim) {
@@ -6775,68 +6781,82 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         return run;
       };
 
-      // ── Detach P1: lazy resume ──────────────────────────────────────────
-      // Precedence: response cache (returned above) → detached registry →
-      // upstream. A byte-identical retry claims the frozen entry and continues
-      // the ORIGINAL turn's poll loop; nothing is replayed until the first
-      // successful steps read proves the cascade survived (see client.js).
-      if (detachEnabled) {
-        const found = detachedRegistry.lookup(detachKeyValue, callerKey);
-        if (found) {
-          const now = Date.now();
-          if (now > Math.min(found.expiresAt, found.deadline)) {
-            detachedRegistry.evict(detachKeyValue, 'ttl');
-          } else {
-            const lsEntry = getLsEntryByPortFn(found.pin.lsPort);
-            const generationMismatch = lsEntry && found.pin.lsGeneration != null
-              && lsEntry.generation !== found.pin.lsGeneration;
-            if (!lsEntry || generationMismatch) {
-              detachedRegistry.evict(detachKeyValue, 'resume_miss');
+      try {
+        // ── Detach P1: lazy resume ──────────────────────────────────────────
+        // Precedence: response cache (returned above) → detached registry →
+        // upstream. A byte-identical retry claims the frozen entry and continues
+        // the ORIGINAL turn's poll loop; nothing is replayed until the first
+        // successful steps read proves the cascade survived (see client.js).
+        // This block lives inside the try/finally below: a synchronous throw
+        // between `beginLsUse` and the producer must still release the lease
+        // and end the response.
+        if (detachEnabled) {
+          const found = detachedRegistry.lookup(detachKeyValue, callerKey);
+          if (found) {
+            const now = Date.now();
+            if (found.state === 'claimed') {
+              // `lookup` returns claimed entries by design. Another request
+              // holds the CAS claim, so this entry belongs to a live resumer:
+              // never evict it and never take its lease. Record the refused
+              // CAS and stay foreground with a fresh upstream turn.
+              detachedRegistry.claim(detachKeyValue, callerKey);
+            } else if (now > Math.min(found.expiresAt, found.deadline)) {
+              detachedRegistry.evict(detachKeyValue, 'ttl');
             } else {
-              // The request lease covers this request only. The entry itself
-              // pins no lease, so between detach and claim the LS is free to
-              // be reaped; the re-read of the generation from the object
-              // beginLsUse returned catches a restart in that window.
-              const leased = beginLsUseFn(found.pin.lsPort);
-              const leaseMismatch = leased && found.pin.lsGeneration != null
-                && leased.generation !== found.pin.lsGeneration;
-              if (!leased || leaseMismatch) {
-                if (leased) endLsUseFn(found.pin.lsPort);
+              const lsEntry = getLsEntryByPortFn(found.pin.lsPort);
+              const generationMismatch = lsEntry && found.pin.lsGeneration != null
+                && lsEntry.generation !== found.pin.lsGeneration;
+              if (!lsEntry || generationMismatch) {
                 detachedRegistry.evict(detachKeyValue, 'resume_miss');
               } else {
-                const claimed = detachedRegistry.claim(detachKeyValue, callerKey);
-                if (claimed.entry) {
-                  resumeClaim = {
-                    key: detachKeyValue,
-                    token: claimed.token,
-                    entry: claimed.entry,
-                    lsEntry: leased,
-                  };
-                  log.info(`Chat[${reqId}]: detached turn CLAIMED cascade=${String(found.pin.cascadeId).slice(0, 8)}… stepOffset=${claimed.entry.snapshot.stepOffset}`);
+                // The request lease covers this request only. The entry itself
+                // pins no lease, so between detach and claim the LS is free to
+                // be reaped; the re-read of the generation from the object
+                // beginLsUse returned catches a restart in that window.
+                const leased = beginLsUseFn(found.pin.lsPort);
+                if (leased) resumeLeasePort = found.pin.lsPort;
+                const leaseMismatch = leased && found.pin.lsGeneration != null
+                  && leased.generation !== found.pin.lsGeneration;
+                if (!leased || leaseMismatch) {
+                  if (leased) {
+                    endLsUseFn(found.pin.lsPort);
+                    resumeLeasePort = null;
+                  }
+                  detachedRegistry.evict(detachKeyValue, 'resume_miss');
                 } else {
-                  // Busy / expired between lookup and claim: stay foreground.
-                  endLsUseFn(found.pin.lsPort);
+                  const claimed = detachedRegistry.claim(detachKeyValue, callerKey);
+                  if (claimed.entry) {
+                    resumeClaim = {
+                      key: detachKeyValue,
+                      token: claimed.token,
+                      entry: claimed.entry,
+                      lsEntry: leased,
+                    };
+                    log.info(`Chat[${reqId}]: detached turn CLAIMED cascade=${String(found.pin.cascadeId).slice(0, 8)}… stepOffset=${claimed.entry.snapshot.stepOffset}`);
+                  } else {
+                    // Busy / expired between lookup and claim: stay foreground.
+                    endLsUseFn(found.pin.lsPort);
+                    resumeLeasePort = null;
+                  }
                 }
               }
             }
           }
         }
-      }
 
-      // Replay the frozen prefix through the stream pipeline — never a direct
-      // socket write. `onChunk` runs ToolCallStreamParser + PathSanitizeStream
-      // + metadata egress + stop gate + think reroute + reasoning dedup, so the
-      // prefix is transformed exactly as the live one was.
-      const replayDetachedPrefix = async () => {
-        let bytes = 0;
-        for (const chunk of resumeClaim.entry.snapshot.chunks) {
-          await onChunk(chunk);
-          bytes += 2 * ((chunk?.text?.length || 0) + (chunk?.thinking?.length || 0));
-        }
-        detachedRegistry.noteReplay(bytes);
-      };
+        // Replay the frozen prefix through the stream pipeline — never a direct
+        // socket write. `onChunk` runs ToolCallStreamParser + PathSanitizeStream
+        // + metadata egress + stop gate + think reroute + reasoning dedup, so the
+        // prefix is transformed exactly as the live one was.
+        const replayDetachedPrefix = async () => {
+          let bytes = 0;
+          for (const chunk of resumeClaim.entry.snapshot.chunks) {
+            await onChunk(chunk);
+            bytes += 2 * ((chunk?.text?.length || 0) + (chunk?.thinking?.length || 0));
+          }
+          detachedRegistry.noteReplay(bytes);
+        };
 
-      try {
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
           if (abortController.signal.aborted) return;
           // Rebuild per-attempt stream state so a prior failure's residue
@@ -7041,8 +7061,14 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // The claim acquired this request's lease; no producer ran to
             // release it.
             endLsUseFn(ls.port);
+            resumeLeasePort = null;
             continue;
           }
+          // Ownership of the request lease transfers to the producer here:
+          // cascadeChat's own finally releases exactly this hold (leaseHeld),
+          // including when it throws synchronously before its first await. The
+          // handler finally below no longer releases it.
+          if (resumeAttempt && useCascade) resumeLeasePort = null;
           try {
             if (useCascade) {
               cascadeResult = await client.cascadeChat(cascadeMessages, modelEnum, modelUid, {
@@ -7590,6 +7616,14 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               // attempt; nothing was committed to the client.
               detachedRegistry.evict(resumeClaim.key, 'resume_miss');
               resumeClaim = null;
+              // The fallback attempt checks out a NEW account (only attempt 0
+              // uses the reuse key). Passing the checked-out pool cascade on
+              // would resume it under that account and re-bind it to the new
+              // key; the normal failure path below drops the reuse intent for
+              // the same reason. Drop the checkout too: the cascade just
+              // proved it cannot be resumed.
+              reuseEntry = null;
+              checkedOutReuseEntry = null;
               lastErr = null;
               continue;
             }
@@ -7934,7 +7968,23 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         await failureStage('end', () => {
           if (!res.writableEnded) res.end();
         });
+      } catch (err) {
+        // A synchronous throw before any terminal frame (e.g. constructing the
+        // producer client after a resume claim) leaves the client waiting on an
+        // open SSE socket. Close it; the lease and claim safety nets are in the
+        // finally below.
+        if (!res.writableEnded) {
+          try { res.end(); } catch { /* the socket may already be gone */ }
+        }
+        throw err;
       } finally {
+        // A resume claim that never reached the producer still holds this
+        // request's LS lease; release it here so a throw cannot pin the entry
+        // from idle reaping/maintenance.
+        if (resumeLeasePort != null) {
+          endLsUseFn(resumeLeasePort);
+          resumeLeasePort = null;
+        }
         // Safety net: every normal path above releases its claim (served or
         // running). A claim that survives to here means an early return or a
         // throw took a path that did not; re-detach with the frozen snapshot

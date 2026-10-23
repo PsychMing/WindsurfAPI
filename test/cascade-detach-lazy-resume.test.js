@@ -348,6 +348,19 @@ function bodyFor(marker) {
   };
 }
 
+// Two turns so fingerprintBefore() is non-null (reuse needs a prior turn).
+function bodyWithHistory(marker) {
+  return {
+    model: 'gemini-2.5-flash',
+    messages: [
+      { role: 'user', content: `earlier ${marker}` },
+      { role: 'assistant', content: 'earlier answer' },
+      { role: 'user', content: `detach test ${marker}` },
+    ],
+    stream: true,
+  };
+}
+
 const createdIds = [];
 
 before(async () => {
@@ -1005,6 +1018,168 @@ describe('Detach P1 claim discipline', () => {
       assert.equal(registry.detachedRegistry.stats().serve, 0);
       assert.equal(lsFake.activeRequests, 0, 'the claim lease must be released on the deadline path');
       void state;
+    });
+  });
+});
+
+// ── T21–T23: Review360 P2 regressions ───────────────────────
+describe('Detach P1 claim/lease regressions', () => {
+  it('T21 a synchronous throw after the claim releases the lease and ends the response', async () => {
+    const acct = seedAccount('t21');
+    createdIds.push(acct.id);
+    const { state, handler } = cascadeUpstream();
+    await withFakeLanguageServer(handler, async (port) => {
+      const lsFake = makeLsFake(port);
+      const body = bodyFor('t21');
+      const ctx = handlerContext(port, acct, lsFake);
+      await runToCompletion(body, ctx, { closeAfterWrites: 2 });
+      assert.equal(registry.detachedRegistry.stats().admit, 1);
+
+      state.status = 'idle';
+      state.grown = true;
+      const begin0 = lsFake.beginCalls;
+      const end0 = lsFake.endCalls;
+      // The claim succeeds, then the producer cannot even be constructed. The
+      // handler used to reject with the lease still held and the socket open.
+      class ThrowingClient {
+        constructor() { throw new Error('injected constructor failure'); }
+      }
+      const retryCtx = handlerContext(port, acct, lsFake, { WindsurfClient: ThrowingClient });
+      const result = await startStream(body, retryCtx);
+      const { res, state: resState } = makeResponse({});
+      await assert.rejects(() => result.handler(res), /injected constructor failure/);
+
+      assert.equal(lsFake.beginCalls - begin0, 1, 'the resume acquired exactly one lease');
+      assert.equal(lsFake.endCalls - end0, 1, 'the synchronous throw must release it');
+      assert.equal(lsFake.activeRequests, 0, 'no request lease may survive the throw');
+      assert.equal(resState.writableEnded, true, 'the failed handler must end the response');
+      const entry = registry.detachedRegistry.lookup(detachKeyOf(body), ctx.callerKey);
+      assert.ok(entry, 'the claim is released back to running, not lost');
+      assert.equal(entry.state, 'running');
+      assert.equal(registry.detachedRegistry.stats().entries, 1);
+    });
+  });
+
+  it('T22 a resume miss drops the checked-out cascade instead of resuming it under a new account', async () => {
+    const producer = seedAccount('t22-producer');
+    const retry = seedAccount('t22-retry');
+    createdIds.push(producer.id, retry.id);
+    const { state, handler } = cascadeUpstream();
+    await withFakeLanguageServer(handler, async (port) => {
+      const lsFake = makeLsFake(port);
+      const body = bodyWithHistory('t22');
+      const callerKey = 'session:detach-lazy-resume';
+      const accountFor = (a) => ({ id: a.id, email: a.email, apiKey: a.apiKey, proxy: null });
+
+      const producerCtx = handlerContext(port, producer, lsFake, {
+        waitForAccount: () => accountFor(producer),
+      });
+      await runToCompletion(body, producerCtx, { closeAfterWrites: 2 });
+      assert.equal(registry.detachedRegistry.stats().admit, 1);
+      assert.equal(state.startCalls, 1);
+
+      // A checked-out pool entry under the retry's fingerprint, owned by the
+      // producer account. Only attempt 0 uses its key; the fallback attempt
+      // checks out a different account.
+      const modelKey = resolveModel(body.model);
+      const fp = pool.fingerprintBefore(body.messages, modelKey, callerKey, {
+        tools: [], toolChoice: null, toolPreamble: '', preambleTier: null,
+        emulateTools: false, route: 'chat',
+      });
+      assert.ok(fp, 'the two-turn body must have a reuse fingerprint');
+      pool.checkin(fp, {
+        cascadeId: 'pooled-cascade-t22',
+        sessionId: 'pooled-session-t22',
+        lsPort: port,
+        lsGeneration: lsFake.generation,
+        apiKey: producer.apiKey,
+        modelKey,
+        stepOffset: 1,
+        generatorOffset: 0,
+      }, callerKey, 0);
+
+      state.status = 'idle';
+      state.grown = true;
+      state.failNextSteps = 1; // the resume's first read: cascade gone
+      let retryAccountCalls = 0;
+      const retryCtx = handlerContext(port, retry, lsFake, {
+        waitForAccount: () => {
+          retryAccountCalls++;
+          return accountFor(retry);
+        },
+      });
+      const { state: resState } = await runToCompletion(body, retryCtx, {});
+
+      assert.equal(registry.detachedRegistry.stats().evict.resume_miss, 1);
+      assert.ok(retryAccountCalls >= 1, 'the fallback checked out a new account');
+      assert.equal(state.startCalls, 2,
+        'the fallback must start a fresh cascade; reusing the pool entry would resume it under the retry account');
+      assert.equal(state.sendCalls, 2);
+      assert.equal(contentOf(resState), FULL_TEXT);
+    });
+  });
+
+  it('T23 a second retry never evicts an entry another request has claimed', async () => {
+    const acct = seedAccount('t23');
+    createdIds.push(acct.id);
+    const { state, handler } = cascadeUpstream();
+    await withFakeLanguageServer(handler, async (port) => {
+      const lsFake = makeLsFake(port);
+      const body = bodyFor('t23');
+      const ctx = handlerContext(port, acct, lsFake);
+      await runToCompletion(body, ctx, { closeAfterWrites: 2 });
+      assert.equal(registry.detachedRegistry.stats().admit, 1);
+
+      const key = detachKeyOf(body);
+      const claim = registry.detachedRegistry.claim(key, ctx.callerKey);
+      assert.ok(claim.entry, 'precondition: a live resumer holds the claim');
+      const snapshot = claim.entry.snapshot;
+
+      // The claimed resumer's LS restarted while the entry is still claimed.
+      // The second retry must stay foreground, not delete the entry.
+      lsFake.generation = 2;
+      state.status = 'idle';
+      state.grown = true;
+      const begin0 = lsFake.beginCalls;
+      const starts0 = state.startCalls;
+      const { state: genState } = await runToCompletion(body, ctx, {});
+      assert.equal(registry.detachedRegistry.stats().evict.resume_miss, 0,
+        'a claimed entry is never evicted by a second retry');
+      assert.equal(registry.detachedRegistry.stats().entries, 1);
+      assert.equal(registry.detachedRegistry.lookup(key, ctx.callerKey).state, 'claimed');
+      assert.equal(lsFake.beginCalls, begin0, 'a claimed entry is not leased by a second request');
+      assert.equal(state.startCalls, starts0 + 1, 'the second retry stays foreground');
+      assert.equal(contentOf(genState), FULL_TEXT);
+
+      // A claimed entry past its own deadline is likewise left to its owner.
+      const bodyB = bodyFor('t23-deadline');
+      const keyB = detachKeyOf(bodyB);
+      const admitted = registry.detachedRegistry.admit({
+        key: keyB,
+        callerKey: ctx.callerKey,
+        snapshot,
+        cause: 'client_gone',
+        pin: {
+          cascadeId: 'deadline-cascade', sessionId: 'deadline-session', lsPort: port,
+          lsGeneration: lsFake.generation, accountId: acct.id, modelKey: resolveModel(bodyB.model),
+          generatorOffset: 0, deadline: Date.now() + 30, startedAt: Date.now(),
+        },
+      });
+      assert.ok(admitted.token);
+      const claimB = registry.detachedRegistry.claim(keyB, ctx.callerKey);
+      assert.ok(claimB.entry);
+      await new Promise(resolve => setTimeout(resolve, 40));
+      const ttl0 = registry.detachedRegistry.stats().evict.ttl;
+      const starts1 = state.startCalls;
+      const { state: deadlineState } = await runToCompletion(bodyB, ctx, {});
+      assert.equal(registry.detachedRegistry.stats().evict.ttl, ttl0,
+        'a claimed entry past its deadline is not evicted by a second retry');
+      assert.equal(registry.detachedRegistry.lookup(keyB, ctx.callerKey).state, 'claimed');
+      assert.equal(state.startCalls, starts1 + 1);
+      assert.equal(contentOf(deadlineState), FULL_TEXT);
+
+      registry.detachedRegistry.release(keyB, claimB.token, { state: 'served' });
+      registry.detachedRegistry.release(key, claim.token, { state: 'served' });
     });
   });
 });

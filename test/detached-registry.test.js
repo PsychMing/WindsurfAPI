@@ -199,6 +199,54 @@ describe('DetachedRegistry ownership', () => {
     assert.ok(admit(registry, clock).token);
   });
 
+  it('R6b a refused over-bytes admission never destroys valid entries', () => {
+    // Review360 P2-1: the byte checks used to run AFTER the same-key supersede
+    // and the capacity evictions, so a 2-entry registry lost one live entry to
+    // an admission that was then refused. Reproduce the 2→1 loss.
+    const { registry, clock } = makeRegistry({
+      maxEntries: 2, maxPerCaller: 10, maxEntryBytes: 4096, maxTotalBytes: 1 << 20,
+    });
+    admit(registry, clock, { key: 'a', callerKey: 'session:a', snap: snapshot('aaaa') });
+    admit(registry, clock, { key: 'c', callerKey: 'session:c', snap: snapshot('cccc') });
+    assert.equal(registry.stats().entries, 2);
+
+    const refused = registry.admit({
+      key: 'huge', callerKey: 'session:b', snapshot: snapshot('x'.repeat(5000)), pin: pin(clock.now()),
+    });
+    assert.equal(refused.refused, 'over_bytes');
+    assert.equal(registry.stats().entries, 2, 'a refused admission must not evict capacity entries');
+    assert.equal(registry.stats().evict.capacity, 0);
+    assert.ok(registry.lookup('a', 'session:a'), 'the first valid entry survives');
+    assert.ok(registry.lookup('c', 'session:c'), 'the second valid entry survives');
+
+    // The same-key supersede is behind the same check: a refused replacement
+    // leaves the original entry (and its bytes) intact.
+    const replaced = registry.admit({
+      key: 'a', callerKey: 'session:a', snapshot: snapshot('y'.repeat(5000)), pin: pin(clock.now()),
+    });
+    assert.equal(replaced.refused, 'over_bytes');
+    assert.equal(registry.stats().evict.superseded, 0);
+    assert.equal(registry.lookup('a', 'session:a').snapshot.chunks[0].text, 'aaaa');
+
+    // The total cap is checked before capacity eviction too.
+    registry.maxTotalBytes = registry.totalBytes + 1;
+    const overTotal = registry.admit({
+      key: 'd', callerKey: 'session:d', snapshot: snapshot('dddd'), pin: pin(clock.now()),
+    });
+    assert.equal(overTotal.refused, 'over_bytes');
+    assert.equal(registry.stats().entries, 2);
+    assert.equal(registry.stats().evict.capacity, 0);
+
+    // A same-key replacement credits the bytes it frees, so it still fits.
+    const okReplace = registry.admit({
+      key: 'a', callerKey: 'session:a', snapshot: snapshot('a'), pin: pin(clock.now()),
+    });
+    assert.ok(okReplace.token);
+    assert.equal(registry.lookup('a', 'session:a').snapshot.chunks[0].text, 'a');
+    assert.equal(registry.stats().entries, 2);
+    assert.ok(registry.totalBytes <= registry.maxTotalBytes);
+  });
+
   it('R7 entry cap evicts only non-claimed entries', () => {
     const { registry, clock } = makeRegistry({ maxEntries: 2, maxPerCaller: 10 });
     admit(registry, clock, { key: 'a', callerKey: 'session:a' });
