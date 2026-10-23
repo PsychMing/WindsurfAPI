@@ -89,6 +89,16 @@ const _counters = {
   // is retried or rewritten, because the shape cannot be told apart from a
   // legitimate prose answer without a real capture. A spike here is that capture.
   prose_tool_intent: 0,
+  // Remote http(s) image_url blocks resolved to data URLs before the connect
+  // wire was built (inlineRemoteImages). `inlined` moving means clients use
+  // hosted image URLs; a matching rise in `fetch_failed` means those fetches are
+  // being refused/blocked/oversized and the image was dropped (text still sent).
+  remote_images_inlined: 0,
+  remote_image_fetch_failed: 0,
+  // A remote image_url reached the SYNCHRONOUS wire builder unresolved, i.e. a
+  // direct buildGetChatMessageRequest() caller skipped streamChat's resolver.
+  // The image is not sent; the log line names the host. Production should stay 0.
+  remote_image_unresolved: 0,
   // liveness probe pre-emptively recovered a dying token
   liveness_recovered: 0,
   // SessionReauth: accounts benched because a free GetUserStatus probe confirmed

@@ -9,10 +9,13 @@ import { decodePng } from './vendor/png.js';
 import jpegDecode from './vendor/jpeg-js/decoder.js';
 import jpegEncode from './vendor/jpeg-js/encoder.js';
 
-const MAX_SIZE = 5 * 1024 * 1024; // 5 MB
-const MAX_BASE64_LEN = Math.ceil(MAX_SIZE * 4 / 3) + 100;
+// Exported because the connect route (devin-connect.js:inlineRemoteImages) reuses
+// fetchImageUrl and re-checks its result: one SSRF/size/content-type policy for
+// both routes instead of a second copy that can drift.
+export const MAX_SIZE = 5 * 1024 * 1024; // 5 MB
+export const MAX_BASE64_LEN = Math.ceil(MAX_SIZE * 4 / 3) + 100;
 const MAX_REDIRECTS = 3;
-const MIME_OK = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+export const MIME_OK = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
 // ---------------------------------------------------------------------------
 // Inbound image inspection (pure-Node header parsing — NO pixel decode)
