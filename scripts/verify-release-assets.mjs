@@ -4,9 +4,9 @@
 // The release workflow signs five blobs — the four published binaries/zips and
 // SHA256SUMS — and publishes three artifacts per blob:
 //
-//   <name>.sig             detached signature
-//   <name>.pem             Fulcio certificate carrying the workflow identity
-//   <name>.sigstore.json   Sigstore bundle (certificate + Rekor inclusion proof)
+//   <name>.sigstore.json   Sigstore bundle (signature + Fulcio certificate +
+//                          Rekor inclusion proof), the only artifact the
+//                          release workflow publishes since v3.10.0
 //
 // The bundle is the durable proof. Fulcio certificates live for minutes, so a
 // detached certificate only verifies while it is still inside its validity
@@ -37,7 +37,7 @@ export const RELEASE_ASSETS = Object.freeze([
 ]);
 
 export const MANIFEST_NAME = 'SHA256SUMS';
-export const SIGNATURE_SUFFIXES = Object.freeze(['.sig', '.pem', '.sigstore.json']);
+export const SIGNATURE_SUFFIXES = Object.freeze(['.sigstore.json']);
 
 // The certificate identity is the workflow ref that GitHub's OIDC token
 // carries for a tag push. Keep this in sync with the workflow path; the
