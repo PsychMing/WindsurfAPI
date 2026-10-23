@@ -4,9 +4,19 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 async function run(options = {}) {
-  const source = readFileSync(new URL('../src/handlers/chat.js', import.meta.url), 'utf8');
+  // Byte-exact anchors below span newlines; a Windows working copy (CRLF)
+  // would otherwise miss the LF text that is committed and executed on Linux.
+  const source = readFileSync(new URL('../src/handlers/chat.js', import.meta.url), 'utf8')
+    .replace(/\r\n/g, '\n');
   const start = source.indexOf('        // All attempts failed\n');
-  const end = source.indexOf('      } finally {\n        unregisterSse();', start);
+  // Detach P1 added a claim-release safety net at the TOP of the enclosing
+  // finally (before unregisterSse). Anchor on the NEW finally block so the
+  // slice still ends exactly where the failure continuation ends and executes
+  // the real code, not a stale copy.
+  const end = source.indexOf(
+    '      } finally {\n        // Safety net: every normal path above releases its claim (served or',
+    start,
+  );
   assert.ok(start >= 0 && end > start, 'execute the actual failure continuation, not a copied decision tree');
   const block = source.slice(start, end);
   const warnings = [], fallback = [], writes = [], visited = [];
