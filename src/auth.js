@@ -5013,6 +5013,18 @@ export async function fetchUserStatus(id, { allowLsStart = true } = {}) {
   } else {
     log.info(`UserStatus ${safeAccountRef(account)}: tier=${account.tier} plan="${status.planName}" allowed=${status.allowedModels.length}`);
   }
+  // #245: `tier` above is the tier AFTER mapTeamsTier ran, so a teams account
+  // whose TeamsTier decoded as UNSPECIFIED(0) is indistinguishable in the log
+  // from a genuine free account — the exact ambiguity the maintainer asked this
+  // line to resolve. Report the raw enum the mapping consumed and the tier it
+  // produced (parseGetUserStatusResponse sets tierName = mapTeamsTier(teamsTier)).
+  // Gated on the response carrying teams evidence: the PlanInfo flags cover a
+  // teams plan whose enum is 0, while a plain free response (no flags, enum 0 by
+  // protobuf default) would otherwise print teams_tier=0 and read as the very
+  // failure this line exists to diagnose.
+  if (status.isTeams || status.isEnterprise || status.teamsTier > 0) {
+    log.info(`UserStatus ${safeAccountRef(account)}: teams_tier=${status.teamsTier} mapped=${status.tierName} plan="${status.planName}"`);
+  }
   saveAccounts();
   return status;
 }
