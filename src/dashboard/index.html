@@ -56,6 +56,9 @@
   --tip-bg: #1f1e1b;
   --tip-fg: #f6f2ea;
   --tip-border: rgba(246,242,234,.16);
+  /* Overlay scrims — warm ink, not the old slate rgba(15,23,42). */
+  --scrim: rgba(31,30,27,.45);
+  --scrim-strong: rgba(31,30,27,.70);
 
   /* data-viz palette: req = blue line+area, succ = green rate, err = red. */
   --chart-req:  #4a6f96;
@@ -68,7 +71,71 @@
   --radius: 12px;
   --radius-sm: 8px;
   --radius-lg: 14px;
+  --radius-xs: 4px;
   --page-pad: clamp(16px, 2vw, 36px);
+
+  /* ── Spacing scale (UISpec P2) ───────────────────────────────────────────
+     Tokens are named by their px value so a rule reads without counting steps:
+     --space-12 IS 12px. Even values only (2px grid); 1px stays a literal
+     hairline. The account + usage surfaces below use these instead of raw px,
+     enforced by scripts/check-dashboard-scale.mjs — a new off-scale padding
+     fails the gate instead of quietly widening the drift. */
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-14: 14px;
+  --space-16: 16px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-32: 32px;
+  /* 44 px row budget. The comfortable account row lands on 44 with 5 px of
+     vertical cell padding (see the .acct-tier-stack note); 5 is deliberately
+     NOT on the 2 px grid so a scale sweep cannot silently move the row height. */
+  --acct-row-pad-y: 5px;
+
+  /* ── Type scale (UISpec P2) ──────────────────────────────────────────────
+     One dense ladder for the console. 3xs/2xs are table micro-labels, xs/sm
+     are meta, md/lg body, xl+ headings and KPI values. */
+  --fs-3xs: 9px;
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 15px;
+  --fs-2xl: 18px;
+  --fs-3xl: 22px;
+  --fs-4xl: 24px;
+
+  /* ── Provider swatches (UISpec P2-12) ────────────────────────────────────
+     Brand-adjacent hues tuned to ≥3:1 against --surface in THIS theme
+     (graphical-object rule, WCAG 1.4.11) — the old hardcoded set was 2.4–2.9
+     on one theme or the other. The dark block carries the lighter ramp because
+     the dark surface is #2d2c25. Recomputed by
+     scripts/check-dashboard-contrast.mjs; the swatch never carries information
+     alone (the provider name sits next to it). */
+  --prov-anthropic: #b45309;
+  --prov-openai: #047857;
+  --prov-google: #1a56db;
+  --prov-deepseek: #6d28d9;
+  --prov-xai: #be123c;
+  --prov-alibaba: #be185d;
+  --prov-moonshot: #0e7490;
+  --prov-zhipu: #7e22ce;
+  --prov-minimax: #b91c1c;
+  --prov-windsurf: #4338ca;
+  --prov-other: #52525b;
+  /* OAuth brand blocks. White on Google's #4285F4 is 3.56 (AA fail for text);
+     the deeper blue clears 4.5 while staying recognisably Google. */
+  --brand-google-bg: #1967d2;
+  --brand-google-fg: #ffffff;
+  --brand-google-bg-hover: #1558d6;
+  --brand-github-bg: #24292e;
+  --brand-github-fg: #ffffff;
+  --brand-github-bg-hover: #1b1f23;
   --shadow-sm: 0 1px 2px rgba(31,30,27,.05), 0 1px 3px rgba(31,30,27,.07);
   --shadow: 0 2px 4px rgba(31,30,27,.04), 0 4px 14px rgba(31,30,27,.06);
   --shadow-lg: 0 8px 24px rgba(31,30,27,.10), 0 2px 8px rgba(31,30,27,.06);
@@ -127,6 +194,20 @@
   --tip-bg: #2d2c25;
   --tip-fg: #edebe3;
   --tip-border: rgba(237,235,227,.16);
+  --scrim: rgba(0,0,0,.55);
+  --scrim-strong: rgba(0,0,0,.70);
+  /* Provider swatches: lighter ramp for the dark surface (≥3:1 on #2d2c25). */
+  --prov-anthropic: #f0a86e;
+  --prov-openai: #6ee7b7;
+  --prov-google: #93c5fd;
+  --prov-deepseek: #c4b5fd;
+  --prov-xai: #fda4af;
+  --prov-alibaba: #f9a8d4;
+  --prov-moonshot: #67e8f9;
+  --prov-zhipu: #d8b4fe;
+  --prov-minimax: #fca5a5;
+  --prov-windsurf: #a5b4fc;
+  --prov-other: #a1a1aa;
   --shadow-sm: 0 1px 2px rgba(0,0,0,.30), 0 1px 3px rgba(0,0,0,.40);
   --shadow: 0 2px 4px rgba(0,0,0,.30), 0 4px 14px rgba(0,0,0,.40);
   --shadow-lg: 0 8px 24px rgba(0,0,0,.50), 0 2px 8px rgba(0,0,0,.40);
@@ -419,10 +500,10 @@ code {
 .sbar-fire { flex-shrink: 0; font-size: 12px; }
 .sbar-metric { flex-shrink: 0; font-family: var(--mono); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; min-width: 34px; }
 .sbar-metric .u { font-size: 8px; opacity: .6; }
-.sbar-rpm { color: #6ab0ff; }
+.sbar-rpm { color: var(--info); }
 .sbar-inflight { color: var(--accent); min-width: 52px; }
-.sbar-ok { color: #4a9d6a; min-width: 30px; }
-.sbar-err { color: #e0524a; min-width: 26px; }
+.sbar-ok { color: var(--success); min-width: 30px; }
+.sbar-err { color: var(--error); min-width: 26px; }
 .sbar-muted { color: var(--text-dim); min-width: 26px; }
 .sbar.hot { border-color: rgba(255,120,30,.5); box-shadow: 0 0 8px rgba(255,110,20,.25) inset; }
 /* WebGL fire (KiroStudio FireCanvas port): a full-width burning band behind the
@@ -451,7 +532,7 @@ code {
 @keyframes phc-rise { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 .phc-head { display: flex; align-items: center; gap: 6px; font-weight: 600; font-family: var(--mono); }
 .phc-dot { width: 8px; height: 8px; border-radius: 50%; }
-.phc-fire { font-size: 10px; font-weight: 500; color: #ff9a4d; }
+.phc-fire { font-size: var(--fs-2xs); font-weight: 500; color: var(--warn); }
 .phc-email { color: var(--text-muted); font-size: 11px; margin: 2px 0 6px; word-break: break-all; }
 .phc-row { display: flex; justify-content: space-between; gap: 14px; }
 .phc-k { color: var(--text-muted); }
@@ -523,7 +604,7 @@ code {
 .skeleton-line { height: 1em; margin: 6px 0; }
 .skeleton-card { height: 96px; }
 .batch-bar { display: flex; align-items: center; gap: 12px; padding: 8px 12px; margin-bottom: 10px; background: var(--surface, rgba(255,255,255,.04)); border: 1px solid var(--border, rgba(255,255,255,.08)); border-radius: 8px; }
-.batch-bar .batch-count { font-size: 13px; font-weight: 600; color: var(--accent, #60a5fa); }
+.batch-bar .batch-count { font-size: var(--fs-md); font-weight: 600; color: var(--accent); }
 .card.accent .card-value { color: var(--accent); }
 .card.success .card-value { color: var(--success); }
 .card.warn .card-value { color: var(--warn); }
@@ -577,9 +658,9 @@ code {
    persisted in localStorage. */
 #accounts-table.accounts-compact th,
 #accounts-table.accounts-compact td {
-  padding-top: 5px;
-  padding-bottom: 5px;
-  font-size: 12px;
+  padding-top: var(--acct-row-pad-y);
+  padding-bottom: var(--acct-row-pad-y);
+  font-size: var(--fs-sm);
 }
 #accounts-density-btn.active { background: var(--accent-soft); color: var(--accent); }
 .section-title {
@@ -716,12 +797,15 @@ code {
 
 .select {
   appearance: none;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236a675e' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
   background-repeat: no-repeat;
   background-position: right 10px center;
   padding-right: 32px;
   cursor: pointer;
 }
+/* Chevron follows --text-dim per theme (a data URI cannot read a custom prop,
+   so the two ramps are spelled out; the old #a1a1aa was 2.56 on white). */
+[data-theme="dark"] .select { background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239a978e' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>"); }
 .select option { background: var(--surface); color: var(--text); }
 
 /* ── Custom themed select (enhances a hidden native <select>) ── */
@@ -1371,13 +1455,28 @@ tbody tr:hover td { background: var(--surface-2); }
   white-space: nowrap;
   font-weight: 600;
 }
+/* Provider swatch: colour comes from the theme-aware --prov-* tokens, so the
+   light and dark ramps can each clear 3:1 on their own surface (P2-12). The
+   provider name always sits beside it — the colour is never the only signal. */
 .provider-swatch {
   width: 14px; height: 14px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   display: inline-block;
-  margin-right: 6px;
+  margin-right: var(--space-6);
   vertical-align: middle;
+  background: var(--prov-other);
 }
+.provider-swatch[data-provider="anthropic"] { background: var(--prov-anthropic); }
+.provider-swatch[data-provider="openai"] { background: var(--prov-openai); }
+.provider-swatch[data-provider="google"] { background: var(--prov-google); }
+.provider-swatch[data-provider="deepseek"] { background: var(--prov-deepseek); }
+.provider-swatch[data-provider="xai"] { background: var(--prov-xai); }
+.provider-swatch[data-provider="alibaba"] { background: var(--prov-alibaba); }
+.provider-swatch[data-provider="moonshot"] { background: var(--prov-moonshot); }
+.provider-swatch[data-provider="zhipu"] { background: var(--prov-zhipu); }
+.provider-swatch[data-provider="minimax"] { background: var(--prov-minimax); }
+.provider-swatch[data-provider="windsurf"] { background: var(--prov-windsurf); }
+.provider-swatch[data-provider="other"] { background: var(--prov-other); }
 
 /* ─── Badges ──────────────────────────────────── */
 .badge {
@@ -1967,7 +2066,7 @@ tbody tr:hover td { background: var(--surface-2); }
 /* Expandable model-stats rows: clickable summary row + on-demand detail row. */
 .model-row { cursor: pointer; transition: background .12s ease; }
 .model-row:hover { background: var(--surface-2); }
-.model-row:focus-visible { outline: 2px solid var(--accent, #4c9aff); outline-offset: -2px; }
+.model-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .row-chevron { display: inline-block; width: 1em; color: var(--text-muted); font-size: 10px; transition: transform .12s ease; }
 .model-detail-row > td { padding: 0 !important; background: var(--surface-2); }
 .model-detail { display: flex; flex-wrap: wrap; gap: 20px; padding: 12px 16px; }
@@ -2105,7 +2204,7 @@ tbody tr:hover td { background: var(--surface-2); }
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,.7);
+  background: var(--scrim-strong);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -2309,29 +2408,29 @@ tbody tr:hover td { background: var(--surface-2); }
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
-  margin-bottom: 16px;
+  margin-bottom: var(--space-16);
   overflow: hidden;
 }
-.acct-kpi { padding: 12px 16px; border-left: 1px solid var(--border); min-width: 0; }
+.acct-kpi { padding: var(--space-12) var(--space-16); border-left: 1px solid var(--border); min-width: 0; }
 .acct-kpi:first-child { border-left: 0; }
 .acct-kpi-label {
-  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+  font-size: var(--fs-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.acct-kpi-value { font-size: 22px; font-weight: 700; line-height: 1.2; margin-top: 2px; font-variant-numeric: tabular-nums; }
-.acct-kpi-sub { font-size: 11px; color: var(--text-dim); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acct-kpi-value { font-size: var(--fs-3xl); font-weight: 700; line-height: 1.2; margin-top: var(--space-2); font-variant-numeric: tabular-nums; }
+.acct-kpi-sub { font-size: var(--fs-xs); color: var(--text-dim); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.acct-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.acct-toolbar { display: flex; align-items: center; gap: var(--space-8); flex-wrap: wrap; margin-bottom: var(--space-12); }
 /* The three credential verbs are one group, sized like the toolbar clusters so
    the header stays one line at 1440 and wraps as a unit at 390. */
-.acct-add-group { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.acct-load-status { font-size: 12px; color: var(--text-muted); margin: -4px 0 10px; }
+.acct-add-group { display: inline-flex; align-items: center; gap: var(--space-6); flex-wrap: wrap; }
+.acct-load-status { font-size: var(--fs-sm); color: var(--text-muted); margin: calc(-1 * var(--space-4)) 0 var(--space-10); }
 .acct-load-status[hidden] { display: none; }
-.acct-skeleton-row td { padding: 10px 16px !important; }
-.acct-skeleton-row .skeleton { height: 12px; border-radius: 4px; }
+.acct-skeleton-row td { padding: var(--space-10) var(--space-16) !important; }
+.acct-skeleton-row .skeleton { height: 12px; border-radius: var(--radius-xs); }
 .tb-group {
-  display: inline-flex; align-items: center; gap: 4px; padding: 3px;
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+  display: inline-flex; align-items: center; gap: var(--space-4); padding: var(--space-4);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
 }
 .tb-group .btn { border-color: transparent; background: transparent; }
 .tb-group .btn:hover:not(:disabled) { background: var(--surface); border-color: var(--border); }
@@ -2339,38 +2438,55 @@ tbody tr:hover td { background: var(--surface-2); }
    hidden-by-state button (fleet cancel, fleet details, filter clear) needs this
    or it stays visible while `hidden` is set. */
 .btn[hidden] { display: none; }
-.acct-op-status { font-size: 12px; color: var(--text-muted); min-height: 18px; }
+.acct-op-status { font-size: var(--fs-sm); color: var(--text-muted); min-height: 18px; }
 
 /* Last fleet run. Lives outside the selection bar so a probe-all (no selected
    rows) still has a readable failure list after the run. */
 .fleet-panel {
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
-  padding: 8px 12px; margin-bottom: 12px; font-size: 12px;
+  padding: var(--space-8) var(--space-12); margin-bottom: var(--space-12); font-size: var(--fs-sm);
 }
-.fleet-panel-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fleet-panel-head { display: flex; align-items: center; gap: var(--space-8); flex-wrap: wrap; }
 .fleet-panel-head #accounts-fleet-summary { color: var(--text-muted); }
-.fleet-list { margin: 6px 0 0; padding-left: 18px; max-height: 200px; overflow: auto; }
-.fleet-list li { margin: 2px 0; color: var(--text-muted); word-break: break-all; }
-.fleet-item { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.fleet-list { margin: var(--space-6) 0 0; padding-left: var(--space-20); max-height: 200px; overflow: auto; }
+.fleet-list li { margin: var(--space-2) 0; color: var(--text-muted); word-break: break-all; }
+.fleet-item { display: flex; align-items: baseline; gap: var(--space-6); flex-wrap: wrap; }
 .fleet-item-email { color: var(--text); font-weight: 600; }
 .fleet-item-result {
-  flex: none; padding: 0 5px; border-radius: 4px; font-size: 10px; font-weight: 700;
+  flex: none; padding: 0 var(--space-6); border-radius: var(--radius-xs); font-size: var(--fs-2xs); font-weight: 700;
 }
 .fleet-item-result.ok { background: var(--success-soft); color: var(--text); }
 .fleet-item-result.fail { background: var(--error-soft); color: var(--text); }
 .fleet-item-result.skip { background: var(--warn-soft); color: var(--text); }
 
-.acct-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-.acct-filters .input, .acct-filters .select { width: auto; height: 32px; padding-top: 4px; padding-bottom: 4px; }
+.acct-filters { display: flex; align-items: center; gap: var(--space-8); flex-wrap: wrap; margin-bottom: var(--space-12); }
+.acct-filters .input, .acct-filters .select { width: auto; height: 32px; padding-top: var(--space-4); padding-bottom: var(--space-4); }
 .acct-filters .cs { width: auto; flex: 0 0 auto; min-width: 150px; }
-.acct-filters .cs-trigger { height: 32px; padding-top: 4px; padding-bottom: 4px; }
+.acct-filters .cs-trigger { height: 32px; padding-top: var(--space-4); padding-bottom: var(--space-4); }
 .acct-filters .input { flex: 1 1 240px; min-width: 160px; max-width: 360px; }
-.acct-filter-count { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.acct-filter-count { font-size: var(--fs-sm); color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .acct-filter-clear[hidden] { display: none; }
 
 #accounts-table { min-width: 1070px; table-layout: fixed; }
-#accounts-table th, #accounts-table td { padding: 5px 16px; }
-#accounts-table .acct-check-col { width: 40px; padding-left: 12px; padding-right: 0; }
+#accounts-table th, #accounts-table td { padding: var(--acct-row-pad-y) var(--space-16); }
+/* Sortable header: the whole label is the control, and aria-sort on the th is
+   the state (a screen reader announces it; the caret is decoration). */
+#accounts-table th.th-help { cursor: default; }
+.th-sort {
+  display: inline-flex; align-items: center; gap: var(--space-4);
+  padding: 0; border: 0; background: transparent; color: inherit;
+  font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer;
+}
+.th-sort:hover { color: var(--text); }
+.th-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-xs); }
+.th-sort-mark { font-size: var(--fs-2xs); color: var(--text-dim); letter-spacing: normal; }
+#accounts-table th[aria-sort="ascending"] .th-sort-mark::after { content: "▲"; }
+#accounts-table th[aria-sort="descending"] .th-sort-mark::after { content: "▼"; }
+#accounts-table th[aria-sort="ascending"] .th-sort,
+#accounts-table th[aria-sort="descending"] .th-sort { color: var(--text); }
+.acct-sort-field { display: inline-flex; align-items: center; }
+.acct-sort-select { width: auto; height: 32px; padding-top: var(--space-4); padding-bottom: var(--space-4); }
+#accounts-table .acct-check-col { width: 40px; padding-left: var(--space-12); padding-right: 0; }
 #accounts-table .acct-account-col { width: auto; min-width: 260px; }
 #accounts-table .acct-tier-col { width: 88px; }
 #accounts-table .acct-state-col { width: 150px; }
@@ -2378,55 +2494,55 @@ tbody tr:hover td { background: var(--surface-2); }
 #accounts-table .acct-models-col { width: 92px; }
 #accounts-table .acct-rpm-col { width: 96px; }
 #accounts-table .acct-last-col { width: 132px; }
-#accounts-table .acct-actions-col { width: 44px; padding-left: 4px; padding-right: 8px; }
+#accounts-table .acct-actions-col { width: 44px; padding-left: var(--space-4); padding-right: var(--space-8); }
 #accounts-table tbody td { overflow: hidden; }
-#accounts-table.accounts-compact th, #accounts-table.accounts-compact td { padding: 4px 12px; font-size: 12px; }
-#accounts-table.accounts-compact .acct-name { font-size: 12.5px; }
-#accounts-table.accounts-compact .acct-line2 { font-size: 10px; }
+#accounts-table.accounts-compact th, #accounts-table.accounts-compact td { padding: var(--space-4) var(--space-12); font-size: var(--fs-sm); }
+#accounts-table.accounts-compact .acct-name { font-size: var(--fs-sm); }
+#accounts-table.accounts-compact .acct-line2 { font-size: var(--fs-2xs); }
 
-.acct-line1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.acct-line1 { display: flex; align-items: center; gap: var(--space-6); min-width: 0; }
 /* Tier cell is the one cell allowed two lines. It is budgeted so the row still
    lands on the 44 px comfortable target: pill (17.2) + 1 px gap + 11 px subline
    + 10 px cell padding ≈ 40 px. Before this rule the subline inherited 1.5
    line-height and pushed rows with a reported plan to 49 px. */
 .acct-tier-stack { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .acct-tier-sub {
-  font-size: 10px; line-height: 1.1; color: var(--text-dim);
+  font-size: var(--fs-2xs); line-height: 1.1; color: var(--text-dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.acct-name { font-size: 13.5px; font-weight: 600; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-name { font-size: var(--fs-lg); font-weight: 600; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-open { border: 0; background: none; padding: 0; color: var(--text); font-family: inherit; text-align: left; cursor: pointer; }
 .acct-open:hover { color: var(--accent); text-decoration: underline; }
 .acct-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
-.acct-line2 { display: flex; align-items: center; gap: 6px; font-size: 11px; line-height: 1.3; color: var(--text-dim); min-width: 0; }
-.acct-line2 code { background: transparent; border: 0; padding: 0; font-size: 11px; color: var(--text-dim); }
+.acct-line2 { display: flex; align-items: center; gap: var(--space-6); font-size: var(--fs-xs); line-height: 1.3; color: var(--text-dim); min-width: 0; }
+.acct-line2 code { background: transparent; border: 0; padding: 0; font-size: var(--fs-xs); color: var(--text-dim); }
 .acct-line2 .acct-key { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Last check lives on the existing second line, so the 44px row budget holds. */
 .acct-last-check {
-  margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 4px;
+  margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: var(--space-4);
   max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  color: var(--text-dim); font-size: 10px;
+  color: var(--text-dim); font-size: var(--fs-2xs);
 }
 .acct-last-check.is-skip { color: var(--warn); }
 .acct-last-check-text { overflow: hidden; text-overflow: ellipsis; }
 .acct-last-check-retry {
   border: 0; background: transparent; padding: 0; color: var(--accent);
-  font: inherit; font-size: 10px; cursor: pointer; text-decoration: underline; flex: none;
+  font: inherit; font-size: var(--fs-2xs); cursor: pointer; text-decoration: underline; flex: none;
 }
 .acct-last-check-retry:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .note-chip {
-  display: inline-flex; align-items: center; max-width: 120px; height: 18px; padding: 0 6px;
+  display: inline-flex; align-items: center; max-width: 120px; height: 18px; padding: 0 var(--space-6);
   border-radius: 999px; border: 1px dashed var(--border-strong);
-  font-size: 10px; line-height: 16px; color: var(--text-muted);
+  font-size: var(--fs-2xs); line-height: 16px; color: var(--text-muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none;
 }
-.method-chip { font-size: 10px; color: var(--text-dim); flex: none; }
+.method-chip { font-size: var(--fs-2xs); color: var(--text-dim); flex: none; }
 .acct-band { box-shadow: inset 3px 0 0 var(--text-dim); }
-.acct-state { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.acct-state { display: inline-flex; align-items: center; gap: var(--space-6); flex-wrap: wrap; }
 .acct-state-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-.acct-countdown { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.acct-error-count { font-size: 10px; color: var(--error); font-weight: 600; }
-.acct-batch-chip { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 4px; }
+.acct-countdown { font-size: var(--fs-2xs); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.acct-error-count { font-size: var(--fs-2xs); color: var(--error); font-weight: 600; }
+.acct-batch-chip { font-size: var(--fs-2xs); font-weight: 600; padding: 0 var(--space-6); border-radius: var(--radius-xs); }
 .acct-batch-chip.ok { background: var(--success-soft); color: var(--text); }
 .acct-batch-chip.fail { background: var(--error-soft); color: var(--text); }
 .acct-batch-chip.skip { background: var(--warn-soft); color: var(--text); }
@@ -2434,55 +2550,55 @@ tbody tr:hover td { background: var(--surface-2); }
 .row-menu-btn {
   display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
   border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent;
-  color: var(--text-muted); font-size: 16px; line-height: 1; cursor: pointer;
+  color: var(--text-muted); font-size: var(--fs-xl); line-height: 1; cursor: pointer;
 }
 .row-menu-btn:hover, .row-menu-btn[aria-expanded="true"] { background: var(--surface-2); border-color: var(--border); color: var(--text); }
 .row-menu-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .row-menu {
-  position: fixed; z-index: 160; min-width: 190px; padding: 5px;
+  position: fixed; z-index: 160; min-width: 190px; padding: var(--space-4);
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   box-shadow: var(--shadow-lg);
 }
 .row-menu [role="menuitem"] {
-  display: flex; align-items: center; width: 100%; padding: 7px 10px; border: 0; border-radius: 6px;
-  background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+  display: flex; align-items: center; width: 100%; padding: var(--space-8) var(--space-10); border: 0; border-radius: var(--radius-xs);
+  background: transparent; color: var(--text); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer;
 }
 .row-menu [role="menuitem"]:hover, .row-menu [role="menuitem"]:focus-visible { background: var(--surface-2); outline: none; }
 .row-menu [role="menuitem"].danger { color: var(--error); }
-.row-menu .menu-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+.row-menu .menu-sep { height: 1px; margin: var(--space-4) var(--space-6); background: var(--border); }
 
 #accounts-batch-bar {
   position: sticky; bottom: 0; z-index: 4;
-  margin: 0; padding: 10px 12px; border-radius: 0;
+  margin: 0; padding: var(--space-10) var(--space-12); border-radius: 0;
   border: 0; border-top: 1px solid var(--border);
   background: var(--surface-2); box-shadow: 0 -8px 18px -14px rgba(31,30,27,.55);
   flex-wrap: wrap;
 }
-#accounts-batch-bar .batch-scope { font-size: 12px; color: var(--text-muted); }
+#accounts-batch-bar .batch-scope { font-size: var(--fs-sm); color: var(--text-muted); }
 #accounts-batch-bar .batch-scope button {
-  border: 0; background: transparent; padding: 0 2px; color: var(--accent);
-  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: underline;
+  border: 0; background: transparent; padding: 0 var(--space-2); color: var(--accent);
+  font: inherit; font-size: var(--fs-sm); font-weight: 600; cursor: pointer; text-decoration: underline;
 }
-#accounts-batch-bar .batch-progress { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-#accounts-batch-bar .batch-fail-link { border: 0; background: transparent; color: var(--error); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; }
+#accounts-batch-bar .batch-progress { font-size: var(--fs-sm); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+#accounts-batch-bar .batch-fail-link { border: 0; background: transparent; color: var(--error); font: inherit; font-size: var(--fs-sm); cursor: pointer; text-decoration: underline; }
 #accounts-batch-bar .batch-fail-pop {
   position: absolute; bottom: calc(100% + 6px); left: 12px; max-width: 520px; max-height: 220px; overflow: auto;
-  padding: 10px 12px; background: var(--surface); border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm); box-shadow: var(--shadow-lg); font-size: 12px;
+  padding: var(--space-10) var(--space-12); background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-lg); font-size: var(--fs-sm);
 }
-#accounts-batch-bar .batch-fail-pop ul { margin: 6px 0 0; padding-left: 18px; }
-#accounts-batch-bar .batch-fail-pop li { margin: 2px 0; color: var(--text-muted); word-break: break-all; }
+#accounts-batch-bar .batch-fail-pop ul { margin: var(--space-6) 0 0; padding-left: var(--space-20); }
+#accounts-batch-bar .batch-fail-pop li { margin: var(--space-2) 0; color: var(--text-muted); word-break: break-all; }
 
-.acct-empty { padding: 32px 16px; text-align: center; }
-.acct-empty-title { font-family: var(--font-display); font-size: 15px; font-weight: 600; }
-.acct-empty-sub { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-.acct-empty-actions { margin-top: 14px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.acct-empty { padding: var(--space-32) var(--space-16); text-align: center; }
+.acct-empty-title { font-family: var(--font-display); font-size: var(--fs-xl); font-weight: 600; }
+.acct-empty-sub { font-size: var(--fs-md); color: var(--text-muted); margin-top: var(--space-4); }
+.acct-empty-actions { margin-top: var(--space-14); display: flex; gap: var(--space-8); justify-content: center; flex-wrap: wrap; }
 .acct-empty.is-error .acct-empty-title { color: var(--error); }
 
 /* Detail drawer (replaces the colspan=12 detail row) */
 .acct-drawer-mask {
   position: fixed; inset: 0; z-index: 140;
-  background: rgba(15,23,42,.45); backdrop-filter: blur(2px);
+  background: var(--scrim); backdrop-filter: blur(2px);
 }
 .acct-drawer {
   position: fixed; top: 0; right: 0; bottom: 0; z-index: 141;
@@ -2490,80 +2606,109 @@ tbody tr:hover td { background: var(--surface-2); }
   background: var(--surface); border-left: 1px solid var(--border); box-shadow: var(--shadow-lg);
 }
 .acct-drawer.hidden, .acct-drawer-mask.hidden { display: none; }
-.acct-drawer-head { display: flex; align-items: flex-start; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
-.acct-drawer-title { font-size: 15px; font-weight: 700; line-height: 1.3; word-break: break-all; }
-.acct-drawer-sub { font-size: 11px; color: var(--text-dim); margin-top: 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.acct-drawer-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
+.acct-drawer-head { display: flex; align-items: flex-start; gap: var(--space-12); padding: var(--space-16) var(--space-20); border-bottom: 1px solid var(--border); }
+.acct-drawer-title { font-size: var(--fs-xl); font-weight: 700; line-height: 1.3; word-break: break-all; }
+.acct-drawer-sub { font-size: var(--fs-xs); color: var(--text-dim); margin-top: var(--space-4); display: flex; align-items: center; gap: var(--space-8); flex-wrap: wrap; }
+.acct-drawer-body { flex: 1; overflow-y: auto; padding: var(--space-16) var(--space-20); }
 .acct-drawer-foot {
-  position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 12px 20px; border-top: 1px solid var(--border); background: var(--surface-2);
+  position: sticky; bottom: 0; display: flex; align-items: center; gap: var(--space-8); flex-wrap: wrap;
+  padding: var(--space-12) var(--space-20); border-top: 1px solid var(--border); background: var(--surface-2);
 }
 .acct-drawer-foot .spacer { flex: 1; }
 .acct-drawer .account-detail-wrap { padding: 0; background: none; }
-.acct-drawer .detail-grid { grid-template-columns: 1fr; gap: 12px; margin-bottom: 0; }
+.acct-drawer .detail-grid { grid-template-columns: 1fr; gap: var(--space-12); margin-bottom: 0; }
 .acct-drawer .detail-card { border-radius: var(--radius); }
 /* Primary cards answer the four questions; technical cards live behind this
    disclosure so the drawer's first screen is not a wall of ledgers. */
-.detail-advanced { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.detail-advanced { margin-top: var(--space-6); border-top: 1px dashed var(--border); padding-top: var(--space-8); }
 .detail-advanced > summary {
-  cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 8px;
-  padding: 6px 2px; font-size: 12px; font-weight: 600; color: var(--text-muted);
+  cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: var(--space-8);
+  padding: var(--space-6) var(--space-2); font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted);
 }
 .detail-advanced > summary::-webkit-details-marker { display: none; }
 .detail-advanced > summary::before { content: '▸'; color: var(--text-dim); }
 .detail-advanced[open] > summary::before { content: '▾'; }
 .detail-advanced > summary:hover { color: var(--text); }
 .detail-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.detail-advanced-hint { font-weight: 400; font-size: 11px; color: var(--text-dim); }
-.detail-advanced .detail-grid { margin-top: 10px; }
+.detail-advanced-hint { font-weight: 400; font-size: var(--fs-xs); color: var(--text-dim); }
+.detail-advanced .detail-grid { margin-top: var(--space-10); }
 
 /* Add-account modal: 4 tabs (login / paste / import / local) */
 .add-modal { width: min(720px, 100%); max-width: 720px; max-height: 88vh; display: flex; flex-direction: column; }
-.add-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 20px 10px; }
-.add-tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.add-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-12); padding: var(--space-16) var(--space-20) var(--space-10); }
+.add-tabs { display: flex; gap: var(--space-4); padding: 0 var(--space-20); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .add-tab {
-  padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent;
-  color: var(--text-muted); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  padding: var(--space-8) var(--space-12); border: 0; border-bottom: 2px solid transparent; background: transparent;
+  color: var(--text-muted); font: inherit; font-size: var(--fs-md); font-weight: 600; cursor: pointer;
 }
 .add-tab:hover { color: var(--text); }
 .add-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
 .add-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.add-modal-body { padding: 16px 20px 20px; overflow-y: auto; }
+.add-modal-body { padding: var(--space-16) var(--space-20) var(--space-20); overflow-y: auto; }
 .add-panel { display: none; }
 .add-panel.active { display: block; }
-.add-result { margin-top: 14px; }
+.add-result { margin-top: var(--space-14); }
 .add-result .section { margin-bottom: 0; }
-.add-panel .section { border: 0; box-shadow: none; margin-bottom: 12px; }
-.add-panel .section-header { padding: 0 0 8px; border-bottom: 0; }
+.add-panel .section { border: 0; box-shadow: none; margin-bottom: var(--space-12); }
+.add-panel .section-header { padding: 0 0 var(--space-8); border-bottom: 0; }
 .add-panel .section-body { padding: 0; }
 .add-panel .section-body.tight { padding: 0; }
-.add-panel .field-row { margin-bottom: 10px; }
+.add-panel .field-row { margin-bottom: var(--space-10); }
 /* Login step 1: two method cards + a secondary token link. */
-.login-methods { display: grid; gap: 10px; margin-bottom: 4px; }
+.login-methods { display: grid; gap: var(--space-10); margin-bottom: var(--space-4); }
 .login-methods.hidden { display: none; }
 .login-method {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%;
-  padding: 14px 16px; text-align: left; cursor: pointer;
+  display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-4); width: 100%;
+  padding: var(--space-14) var(--space-16); text-align: left; cursor: pointer;
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
   color: var(--text); font: inherit;
 }
 .login-method:hover { border-color: var(--accent); background: var(--surface-2); }
 .login-method:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.login-method-title { font-size: 14px; font-weight: 700; }
-.login-method-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.login-method-title { font-size: var(--fs-lg); font-weight: 700; }
+.login-method-desc { font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.5; }
 .login-method-token { justify-self: start; }
+/* OAuth brand blocks (P2 palette). These were inline `background:#4285F4` with
+   white text — 3.56, an AA text failure — plus a hardcoded hex outside the
+   theme system. Tokens keep the brand hue while clearing 4.5. */
+.oauth-brand-btn { padding: var(--space-10) var(--space-24); font-weight: 600; gap: var(--space-8); }
+.oauth-brand-google { background: var(--brand-google-bg); color: var(--brand-google-fg); }
+.oauth-brand-google:hover:not(:disabled) { background: var(--brand-google-bg-hover); border-color: transparent; }
+.oauth-brand-github { background: var(--brand-github-bg); color: var(--brand-github-fg); }
+.oauth-brand-github:hover:not(:disabled) { background: var(--brand-github-bg-hover); border-color: transparent; }
+/* Token step panel: neutral border. Its accent stripe was a leftover of the
+   pre-workbuddy palette; the panel is a step, not a status. */
+.login-token-step {
+  margin-top: var(--space-14); padding: var(--space-14);
+  background: var(--surface-2); border-radius: var(--radius);
+  border-left: 3px solid var(--border-strong);
+}
+/* "Try another way" / OAuth-only hint panels: same neutral treatment. */
+.login-alt-panel {
+  margin-top: var(--space-14); padding: var(--space-12);
+  background: var(--surface-2); border-radius: var(--radius);
+  border-left: 3px solid var(--border-strong);
+}
+/* ── Usage page (P2 scale) ──────────────────────────────────────────────
+   The ACU panel reuses .card/.metrics-grid; only its geometry lives here so
+   the inline px that used to sit in the renderer has one home. */
+.usage-org-bar { padding: var(--space-12) var(--space-16); }
+.usage-metrics { margin-bottom: var(--space-20); }
+.usage-card-value { font-size: var(--fs-4xl); }
+.usage-retry { margin-top: var(--space-12); }
+.usage-org-inline { display: flex; align-items: center; gap: var(--space-8); flex-wrap: wrap; }
 .login-method-panel.hidden { display: none; }
-.login-panel-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.login-panel-title { font-size: 13px; font-weight: 700; }
-.login-steps { margin: 0; padding-left: 18px; display: grid; gap: 10px; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
-.login-steps li { display: grid; gap: 6px; justify-items: start; }
+.login-panel-head { display: flex; align-items: center; gap: var(--space-10); margin-bottom: var(--space-10); }
+.login-panel-title { font-size: var(--fs-md); font-weight: 700; }
+.login-steps { margin: 0; padding-left: var(--space-20); display: grid; gap: var(--space-10); font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.6; }
+.login-steps li { display: grid; gap: var(--space-6); justify-items: start; }
 .login-steps li > .btn { justify-self: start; }
-.login-advanced { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 8px; }
-.login-advanced > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text-muted); padding: 4px 0; }
+.login-advanced { margin-top: var(--space-14); border-top: 1px dashed var(--border); padding-top: var(--space-8); }
+.login-advanced > summary { cursor: pointer; font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted); padding: var(--space-4) 0; }
 .login-advanced > summary:hover { color: var(--text); }
 .login-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.login-advanced-body { padding-top: 8px; }
-.login-advanced-body .section { margin-bottom: 8px; }
+.login-advanced-body { padding-top: var(--space-8); }
+.login-advanced-body .section { margin-bottom: var(--space-8); }
 
 @media (max-width: 1100px) {
   .acct-kpis { grid-template-columns: repeat(3, 1fr); }
@@ -2598,20 +2743,20 @@ tbody tr:hover td { background: var(--surface-2); }
   .acct-drawer { width: 100%; top: auto; height: 88vh; border-left: 0; border-top: 1px solid var(--border); border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
   #accounts-batch-bar { position: fixed; left: 12px; right: 12px; bottom: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); box-shadow: var(--shadow-lg); }
 }
-.acct-blocked-count { margin-left:4px; padding:0 4px; border-radius:4px; background:var(--warn-soft); color:var(--text); font-size:10px; font-weight:600; }
-.acct-quota { font-size: 10px; line-height: 1.25; min-width: 0; }
-.acct-quota-head { display: flex; align-items: center; gap: 4px; font-size: 10.5px; white-space: nowrap; overflow: hidden; }
+.acct-blocked-count { margin-left: var(--space-4); padding: 0 var(--space-4); border-radius: var(--radius-xs); background:var(--warn-soft); color:var(--text); font-size: var(--fs-2xs); font-weight:600; }
+.acct-quota { font-size: var(--fs-2xs); line-height: 1.25; min-width: 0; }
+.acct-quota-head { display: flex; align-items: center; gap: var(--space-4); font-size: var(--fs-2xs); white-space: nowrap; overflow: hidden; }
 .acct-quota-head b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
 .acct-quota-head > span:last-child { margin-left: auto; }
-.acct-quota-bar { display: flex; align-items: center; gap: 3px; margin-top: 1px; line-height: 1; }
-.acct-quota-label { width: 10px; flex: none; font-size: 9px; font-weight: 600; color: var(--text-dim); }
+.acct-quota-bar { display: flex; align-items: center; gap: var(--space-4); margin-top: 1px; line-height: 1; }
+.acct-quota-label { width: 10px; flex: none; font-size: var(--fs-3xs); font-weight: 600; color: var(--text-dim); }
 .acct-quota-track { flex: 1; height: 3px; background: var(--surface-3); border-radius: 2px; overflow: hidden; min-width: 30px; }
 .acct-quota-track.na { outline: 1px dashed var(--text-dim); outline-offset: -1px; }
-.acct-quota-pct { width: 26px; text-align: right; font-size: 9px; font-variant-numeric: tabular-nums; }
-.acct-state { gap: 4px; flex-wrap: nowrap; min-width: 0; }
-.acct-state .badge { padding: 1px 6px; font-size: 10.5px; flex: none; }
+.acct-quota-pct { width: 26px; text-align: right; font-size: var(--fs-3xs); font-variant-numeric: tabular-nums; }
+.acct-state { gap: var(--space-4); flex-wrap: nowrap; min-width: 0; }
+.acct-state .badge { padding: 1px var(--space-6); font-size: var(--fs-2xs); flex: none; }
 .acct-state-dot { flex: none; }
-.acct-countdown { flex: none; padding: 0 4px; border-radius: 4px; background: var(--surface-2); font-variant-numeric: tabular-nums; }
+.acct-countdown { flex: none; padding: 0 var(--space-4); border-radius: var(--radius-xs); background: var(--surface-2); font-variant-numeric: tabular-nums; }
 .acct-open { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 </style>
 
@@ -2892,6 +3037,18 @@ tbody tr:hover td { background: var(--surface-2); }
       <div class="tb-group" role="group" data-i18n-aria-label="accounts.toolbar.view">
         <button class="btn btn-ghost btn-sm" id="accounts-density-btn" onclick="App.toggleAccountsDensity()" aria-pressed="false" data-i18n-title="accounts.density.title" title="切换紧凑/宽松密度"><span data-i18n="accounts.density.label">紧凑</span></button>
       </div>
+      <!-- Sort: server-side (sort/order query params), persisted with the page
+           size. The quota and last-used columns are also clickable headers. -->
+      <label class="acct-sort-field">
+        <span class="sr-only" data-i18n="accounts.sort.label">排序</span>
+        <select id="accounts-sort" class="select acct-sort-select" onchange="App.setAccountsSort(this.value)" data-i18n-title="accounts.sort.hint" title="点一次排序，再点一次反向">
+          <option value="" data-i18n="accounts.sort.default">默认顺序</option>
+          <option value="quota_weekly" data-i18n="table.header.quota">配额</option>
+          <option value="balance" data-i18n="table.header.credits">余额</option>
+          <option value="last_used" data-i18n="table.header.lastUsed">最后使用</option>
+          <option value="errors" data-i18n="table.header.errorCount">错误数</option>
+        </select>
+      </label>
       <span class="acct-op-status" id="accounts-op-status" aria-live="polite"></span>
     </div>
 
@@ -2968,7 +3125,7 @@ tbody tr:hover td { background: var(--surface-2); }
         </div>
         <div class="table-wrap">
           <table id="accounts-table">
-            <thead><tr><th class="acct-check-col" style="text-align:center"><input type="checkbox" id="accounts-select-all" aria-label="选择本页" data-i18n-aria-label="accounts.selectAllPage" data-i18n-title="accounts.selectAllPage" title="选择本页" onchange="App.toggleSelectAllAccounts(this.checked)"></th><th class="acct-account-col" data-i18n="table.header.account">账号</th><th class="acct-tier-col" data-i18n="table.header.tier">层级</th><th class="acct-state-col" data-i18n="table.header.status">状态</th><th class="acct-quota-col th-help" data-i18n="table.header.quota" data-i18n-title="creditsBar.columnTooltip" title="配额使用情况">配额</th><th class="acct-models-col" data-i18n="table.header.models">模型</th><th class="acct-rpm-col" data-i18n="table.header.rpm">RPM</th><th class="acct-last-col" data-i18n="table.header.lastUsed">最后使用</th><th class="acct-actions-col" data-i18n="table.header.action">操作</th></tr></thead>
+            <thead><tr><th class="acct-check-col" style="text-align:center"><input type="checkbox" id="accounts-select-all" aria-label="选择本页" data-i18n-aria-label="accounts.selectAllPage" data-i18n-title="accounts.selectAllPage" title="选择本页" onchange="App.toggleSelectAllAccounts(this.checked)"></th><th class="acct-account-col" data-i18n="table.header.account">账号</th><th class="acct-tier-col" data-i18n="table.header.tier">层级</th><th class="acct-state-col" data-i18n="table.header.status">状态</th><th class="acct-quota-col th-help" data-i18n-title="creditsBar.columnTooltip" title="配额使用情况" aria-sort="none"><button type="button" class="th-sort" onclick="App.setAccountsSort('quota_weekly')" data-i18n-title="accounts.sort.hint" title="点一次排序，再点一次反向"><span data-i18n="table.header.quota">配额</span><span class="th-sort-mark" aria-hidden="true"></span></button></th><th class="acct-models-col" data-i18n="table.header.models">模型</th><th class="acct-rpm-col" data-i18n="table.header.rpm">RPM</th><th class="acct-last-col" aria-sort="none"><button type="button" class="th-sort" onclick="App.setAccountsSort('last_used')" data-i18n-title="accounts.sort.hint" title="点一次排序，再点一次反向"><span data-i18n="table.header.lastUsed">最后使用</span><span class="th-sort-mark" aria-hidden="true"></span></button></th><th class="acct-actions-col" data-i18n="table.header.action">操作</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
@@ -3052,11 +3209,11 @@ tbody tr:hover td { background: var(--surface-2); }
             </div>
             <div class="section-body">
               <div style="display:flex;gap:12px;flex-wrap:wrap">
-                <button class="btn" onclick="App.oauthLogin('google')" id="oauth-google-btn" style="background:#4285F4;color:#fff;padding:10px 24px;font-weight:600;display:flex;align-items:center;gap:8px">
+                <button class="btn oauth-brand-btn oauth-brand-google" onclick="App.oauthLogin('google')" id="oauth-google-btn">
                   <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.9 33.1 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.2-2.7-.4-3.9z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.5 15.5 18.8 12 24 12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.6-11.2-8.5l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.2-2.7-.4-3.9z"/></svg>
                   <span data-i18n="oauth.google">Google 登录</span>
                 </button>
-                <button class="btn" onclick="App.oauthLogin('github')" id="oauth-github-btn" style="background:#24292e;color:#fff;padding:10px 24px;font-weight:600;display:flex;align-items:center;gap:8px">
+                <button class="btn oauth-brand-btn oauth-brand-github" onclick="App.oauthLogin('github')" id="oauth-github-btn">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.08-.73.08-.73 1.2.08 1.84 1.23 1.84 1.23 1.07 1.83 2.81 1.3 3.5 1 .1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 016.02 0c2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.8 5.63-5.48 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.21.7.82.58C20.56 21.8 24 17.3 24 12 24 5.37 18.63 0 12 0z"/></svg>
                   <span data-i18n="oauth.github">GitHub 登录</span>
                 </button>
@@ -3064,7 +3221,7 @@ tbody tr:hover td { background: var(--surface-2); }
               <div id="oauth-status" aria-live="polite" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
               <!-- Three steps, each with its own action button. Step 2 fills the
                    box and imports; step 3 imports whatever is in the box. -->
-              <div id="oauth-token-step" class="hidden" style="margin-top:14px;padding:14px;background:var(--surface-2);border-radius:var(--radius);border-left:3px solid var(--accent)">
+              <div id="oauth-token-step" class="login-token-step hidden">
                 <div style="font-weight:600;margin-bottom:6px" data-i18n="oauth.step2Title">粘贴 Windsurf 返回的 Token</div>
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px" data-i18n="oauth.step2Desc">登录完成后，Windsurf 会显示一串 Token。复制它，或直接复制整条回调地址。</div>
                 <ol class="login-steps">
@@ -3144,7 +3301,7 @@ tbody tr:hover td { background: var(--surface-2); }
                 <div id="wl-code-status" aria-live="polite" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
               </div>
               <!-- OAuth-only path: has_password:false and no email connection. -->
-              <div id="wl-oauth-hint" class="hidden" style="margin-top:14px;padding:12px;background:var(--surface-2);border-radius:var(--radius);border-left:3px solid var(--accent)">
+              <div id="wl-oauth-hint" class="login-alt-panel hidden">
                 <div class="text-sm" data-i18n="emailLogin.oauthOnlyHint">该账号没有密码，也不支持邮箱验证码。请用上面的 Google / GitHub 按钮登录，或粘贴 show-auth-token 页面的 Token。</div>
                 <button class="btn btn-outline" style="margin-top:8px" onclick="App.showOAuthTokenStep()" data-i18n="emailLogin.useToken">改用 Token 登录</button>
               </div>
@@ -3674,7 +3831,7 @@ tbody tr:hover td { background: var(--surface-2); }
         </button>
       </div>
     </div>
-    <div id="usage-org-bar" class="section hidden" style="padding:12px 16px"></div>
+    <div id="usage-org-bar" class="section usage-org-bar hidden"></div>
     <div id="usage-content"></div>
   </section>
 
@@ -4209,6 +4366,11 @@ const App = {
   _filterTimer: null,
   accountsPage: 1,
   accountsPageSize: Number(localStorage.getItem('accountsPageSize') || 50),
+  // Server-side ordering (GET /accounts?sort=&order=). Persisted next to the
+  // page size so a reload keeps the view the operator set up (UISpec P2-10).
+  accountsSort: ['quota_weekly', 'balance', 'last_used', 'errors'].includes(localStorage.getItem('accountsSort'))
+    ? localStorage.getItem('accountsSort') : '',
+  accountsOrder: localStorage.getItem('accountsOrder') === 'asc' ? 'asc' : 'desc',
   accountsTier: '',
   accountsCompact: localStorage.getItem('accountsCompact') === '1',
   accountsTotal: 0,
@@ -6336,7 +6498,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       return `<div class="section"><div class="section-body">
         <div class="section-title">${this.esc(T('errorTitle'))}</div>
         <div class="section-desc" title="${this.esc(this.usageReasonTip(raw))}">${this.esc(this.usageReason(raw))}</div>
-        <button class="btn btn-primary btn-sm" style="margin-top:12px" onclick="App.loadUsage(true)">${this.esc(T('retry'))}</button>
+        <button class="btn btn-primary btn-sm usage-retry" onclick="App.loadUsage(true)">${this.esc(T('retry'))}</button>
       </div></div>`;
     }
     return `<div class="section"><div class="section-body">
@@ -6351,7 +6513,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       const org = orgs[0] || {};
       const plan = org.plan || T('notReported');
       const count = Array.isArray(org.accounts) ? org.accounts.length : 0;
-      return `<div class="section-desc" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      return `<div class="section-desc usage-org-inline">
         <span class="badge info no-dot">${this.esc(T('org'))}</span>
         <span>${this.esc(T('singleOrg', { plan, count }))}</span>
       </div>`;
@@ -6451,11 +6613,11 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
 
     const card = (title, value, sub, cls = '', tip = '') => `<div class="card ${cls}">
         <div class="card-header"><div class="card-title">${this.esc(title)}</div></div>
-        <div class="card-value" style="font-size:24px"${tip ? ` title="${this.esc(tip)}"` : ''}>${this.esc(value)}</div>
+        <div class="card-value usage-card-value"${tip ? ` title="${this.esc(tip)}"` : ''}>${this.esc(value)}</div>
         <div class="card-sub">${this.esc(sub)}</div>
       </div>`;
 
-    const cards = `<div class="metrics-grid" style="margin-bottom:18px">
+    const cards = `<div class="metrics-grid usage-metrics">
       ${card(T('cards.remaining'), remainingText, T('remainingSub'), 'accent', T('derivedTip'))}
       ${card(T('cards.used'), usedText, T('usedSub'))}
       ${card(T('cards.limit'), limitText, T('limitSub'), '', T('limitTip'))}
@@ -6611,7 +6773,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       <div class="section-title">${this.esc(T('errorTitle'))}</div>
       <div class="section-desc" title="${this.esc(this.usageReasonTip(reason))}">${this.esc(this.usageReason(reason))}</div>
       <div class="section-desc" style="margin-top:6px">${this.esc(count === 1 ? T('accountsOne') : T('accounts', { count }))}</div>
-      <button class="btn btn-primary btn-sm" style="margin-top:12px" onclick="App.loadUsage(true)">${this.esc(T('retry'))}</button>
+      <button class="btn btn-primary btn-sm usage-retry" onclick="App.loadUsage(true)">${this.esc(T('retry'))}</button>
     </div></div>`;
   },
 
@@ -7105,12 +7267,12 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const offerCode = r.error === 'ERR_NO_PASSWORD_OAUTH_ACCOUNT'
       || (Array.isArray(r.alternatives) && r.alternatives.includes('email_code'));
     return `
-      <div style="margin-top:12px;padding:12px;background:var(--surface-2);border-radius:var(--radius);border-left:3px solid var(--accent)">
+      <div class="login-alt-panel">
         <div style="font-weight:600;margin-bottom:8px">${I18n.t('oauth.tryAnotherWay')}</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
           ${offerCode ? `<button class="btn btn-sm btn-primary" onclick="App.useEmailCodeInstead()">${I18n.t('emailLogin.useCode')}</button>` : ''}
-          <button class="btn btn-sm" style="background:#4285F4;color:#fff" onclick="App.oauthLogin('google')">${I18n.t('oauth.google')}</button>
-          <button class="btn btn-sm" style="background:#24292e;color:#fff" onclick="App.oauthLogin('github')">${I18n.t('oauth.github')}</button>
+          <button class="btn btn-sm oauth-brand-google" onclick="App.oauthLogin('google')">${I18n.t('oauth.google')}</button>
+          <button class="btn btn-sm oauth-brand-github" onclick="App.oauthLogin('github')">${I18n.t('oauth.github')}</button>
         </div>
         <div style="border-top:1px dashed var(--border);padding-top:12px">
           <div style="font-weight:600;margin-bottom:6px">${I18n.t('oauth.inlineTokenTitle')}</div>
@@ -7959,6 +8121,43 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this.loadAccounts();
   },
 
+  // Server-side ordering. A header click re-sends the SAME column to flip the
+  // direction; picking a different column starts at desc (the useful default:
+  // highest quota / most recent use first). Same rule as a filter change —
+  // reset to page 1 and drop the selection, because the rows move under it.
+  setAccountsSort(sort, order = '') {
+    const allowed = ['quota_weekly', 'balance', 'last_used', 'errors'];
+    const next = allowed.includes(sort) ? sort : '';
+    let nextOrder = order === 'asc' || order === 'desc' ? order : '';
+    if (next && !nextOrder) {
+      nextOrder = next === this.accountsSort ? (this.accountsOrder === 'desc' ? 'asc' : 'desc') : 'desc';
+    }
+    if (!next) nextOrder = '';
+    if (next === this.accountsSort && nextOrder === this.accountsOrder) return;
+    this.accountsSort = next;
+    this.accountsOrder = nextOrder;
+    localStorage.setItem('accountsSort', next);
+    localStorage.setItem('accountsOrder', nextOrder);
+    this.accountsPage = 1;
+    this.clearAccountSelection();
+    this.loadAccounts();
+  },
+
+  // Paint the current order into the two sortable headers and the toolbar
+  // select. aria-sort is the only state a screen reader announces, so it is
+  // driven from the same values the request uses.
+  applyAccountsSortState() {
+    const sel = document.getElementById('accounts-sort');
+    if (sel) sel.value = this.accountsSort;
+    const state = (key) => (this.accountsSort === key
+      ? (this.accountsOrder === 'asc' ? 'ascending' : 'descending')
+      : 'none');
+    const quota = document.querySelector('#accounts-table th.acct-quota-col');
+    const last = document.querySelector('#accounts-table th.acct-last-col');
+    if (quota) quota.setAttribute('aria-sort', state('quota_weekly'));
+    if (last) last.setAttribute('aria-sort', state('last_used'));
+  },
+
   toggleAccountsDensity() {
     this.accountsCompact = !this.accountsCompact;
     localStorage.setItem('accountsCompact', this.accountsCompact ? '1' : '0');
@@ -8372,6 +8571,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       tier: this.accountsTier,
       q: this.accountsQuery,
       status: this.accountsStatus,
+      sort: this.accountsSort,
+      order: this.accountsOrder,
     }));
     // A failed GET (401 / lockout / network) must leave the last valid table
     // painted — never replace a real pool with an empty one (#257). It must also
@@ -8385,6 +8586,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this.renderAccountsKpis(d.stats || {}, d.total);
     this.renderAccountsFilterState(d);
     this.renderAccountsTable(d);
+    this.applyAccountsSortState();
     this.applyAccountsDensity();
     this.startAccountsClock();
   },
@@ -8687,6 +8889,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const items = [
       { key: 'accounts.row.probe', act: () => this.probeAccount(id) },
       { key: 'accounts.row.refreshBalance', act: () => this.refreshCredits(id) },
+      { key: 'accounts.row.rename', act: () => this.renameAccount(id) },
       { key: 'accounts.row.blockedModels', act: () => this.openBlockedModal(id) },
       // One action, two labels: a reauth account's only way back is a fresh
       // login, so the row says so instead of the generic "log in again".
@@ -8830,6 +9033,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       foot.innerHTML = `
         <button class="btn btn-outline btn-sm" onclick="App.probeAccount('${this.escJsAttr(a.id)}')">${I18n.t('action.probe')}</button>
         <button class="btn btn-outline btn-sm" onclick="App.refreshCredits('${this.escJsAttr(a.id)}')">${I18n.t('accounts.row.refreshBalance')}</button>
+        <button class="btn btn-outline btn-sm" onclick="App.renameAccount('${this.escJsAttr(a.id)}')">${I18n.t('accounts.row.rename')}</button>
         ${isReauth ? `<button class="btn btn-outline btn-sm" onclick="App.checkAccountToken('${this.escJsAttr(a.id)}')">${I18n.t('accounts.reauth.checkToken')}</button>` : ''}
         <button class="btn ${isReauth ? 'btn-primary' : 'btn-outline'} btn-sm" onclick="App.reloginAccount('${this.escJsAttr(a.id)}')">${I18n.t(isReauth ? 'accounts.row.reauth' : 'accounts.row.relogin')}</button>
         <span class="spacer"></span>
@@ -9560,11 +9764,6 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const tierModels = a.tierModels || [];
     const blocked = new Set(a.blockedModels || []);
     const providerOrder = ['anthropic', 'openai', 'google', 'deepseek', 'xai', 'alibaba', 'moonshot', 'zhipu', 'minimax', 'windsurf', 'other'];
-    const providerColors = {
-      anthropic: '#d97706', openai: '#10b981', google: '#4285f4', deepseek: '#7c3aed',
-      xai: '#e11d48', alibaba: '#ec4899', moonshot: '#06b6d4', zhipu: '#8b5cf6',
-      minimax: '#f43f5e', windsurf: '#6366f1', other: '#71717a',
-    };
     const providerLabels = {
       anthropic: 'Anthropic · Claude', openai: 'OpenAI · GPT / o', google: 'Google · Gemini',
       deepseek: 'DeepSeek', xai: 'xAI · Grok', alibaba: 'Alibaba · Qwen',
@@ -9586,7 +9785,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         const availIn = models.length - blockedIn;
         return `<div class="model-group">
           <div class="model-group-head">
-            <span class="model-group-name"><span class="provider-swatch" style="background:${providerColors[p]}"></span>${providerLabels[p] || p}</span>
+            <span class="model-group-name"><span class="provider-swatch" data-provider="${this.escAttr(p)}"></span>${providerLabels[p] || p}</span>
             <span class="model-group-count">${availIn}/${models.length}</span>
           </div>
           <div class="model-chips">
@@ -9691,6 +9890,29 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         this.toast(this.translateError(r.error, 'toast.credits.refreshFailed'), 'error', r.error);
       }
     } catch (e) { this.toast(I18n.t('toast.credits.refreshFailed') + ': ' + e.message, 'error'); }
+  },
+
+  // Rename the account's display name. PATCH {label} writes the display email
+  // (src/auth.js updateAccountLabel) — the re-login credential is keyed by
+  // credentialEmail, so a rename cannot orphan it (session-reauth-hooks test).
+  // The row, the KPI/search corpus and the export all read the same field.
+  async renameAccount(id) {
+    const acct = this._accountsById?.get(id) || this._accountDetails?.get(id) || {};
+    const current = String(acct.email || '');
+    const input = window.prompt(I18n.t('accounts.rename.prompt'), current);
+    if (input == null) return; // cancelled
+    const name = String(input).trim();
+    if (!name || name === current) return;
+    const r = await this.api('PATCH', `/accounts/${encodeURIComponent(id)}`, { label: name });
+    if (!r || r.success === false) {
+      this.toast(this.translateError(r?.error, 'accounts.rename.failed'), 'error', r?.error);
+      return;
+    }
+    this.toast(I18n.t('accounts.rename.done'), 'success');
+    await this.loadAccounts();
+    const title = document.getElementById('acct-drawer-title');
+    if (title && this._drawerAccountId === id) title.textContent = name;
+    this.refreshOpenDrawer(id);
   },
 
   // ─── Fleet runs: probe-all / refresh-all ──────────────────
@@ -12664,50 +12886,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     }
     return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)}${units[unit]}`;
   },
-  async revealAndCopyKey(accountId) {
-    // reveal-key requires an explicit re-auth confirmation (AUTH-1). Prompt for
-    // the dashboard password (or the API key when no dashboard password is set),
-    // and send it in the body — otherwise the backend returns 401 and the key
-    // never reveals. Uses a raw fetch so the 401 here doesn't bounce to the login
-    // overlay (that path is for session expiry, not this deliberate re-auth).
-    const proof = window.prompt(I18n.t('reveal.confirmPrompt'));
-    if (proof == null) return; // user cancelled
-    try {
-      const opts = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
-      if (this.password) opts.headers['X-Dashboard-Password'] = this.password;
-      opts.body = JSON.stringify({ password: proof });
-      const r = await fetch('/dashboard/api/account/' + encodeURIComponent(accountId) + '/reveal-key', opts);
-      const data = await r.json().catch(() => ({}));
-      if (r.ok && data && data.apiKey) { this.copyKey(data.apiKey); return; }
-      if (r.status === 401) { this.toast(I18n.t('reveal.wrongPassword'), 'error'); return; }
-      this.toast((data && (data.message || data.error)) || I18n.t('toast.copyFailed'), 'error');
-    } catch (e) {
-      this.toast(e?.message || I18n.t('toast.copyFailed'), 'error');
-    }
-  },
-  copyKey(key) {
-    const fallback = () => {
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = key;
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        const ok = document.execCommand('copy');
-        ta.remove();
-        this.toast(ok ? I18n.t('toast.apiKeyCopied') : I18n.t('toast.copyFailed'), ok ? 'success' : 'error');
-      } catch (e) {
-        this.toast(I18n.t('toast.copyFailedError', {error: e.message}), 'error');
-      }
-    };
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(key).then(() => this.toast(I18n.t('toast.apiKeyCopied'))).catch(fallback);
-    } else {
-      fallback();
-    }
-  },
+  // No reveal/copy-key helper here: the default UI shows masked keys only, and
+  // the sketch skin keeps its own implementation of that flow.
   // Roster lives in /dashboard/data/contributors.json so default UI
   // and sketch UI share one source of truth. Fetched at panel-open.
   CONTRIBUTORS_CACHE: null,

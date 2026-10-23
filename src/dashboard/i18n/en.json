@@ -236,10 +236,6 @@
     "running": "Processing {{count}} accounts…",
     "done": "{{ok}} succeeded / {{fail}} failed"
   },
-  "reveal": {
-    "confirmPrompt": "Re-enter the dashboard password to reveal this key (or the API key if no dashboard password is set):",
-    "wrongPassword": "Re-auth failed — wrong password. Key not revealed."
-  },
   "status": {
     "active": "Active",
     "disabled": "Disabled",
@@ -1151,6 +1147,11 @@
       "title": "Toggle compact / comfortable density",
       "label": "Compact"
     },
+    "sort": {
+      "label": "Sort",
+      "default": "Default order",
+      "hint": "Click once to sort, click again to reverse"
+    },
     "export": {
       "title": "Export all accounts (metadata only, no secret keys)",
       "label": "Export",
@@ -1276,7 +1277,13 @@
       "lastCheckResult": "Checked {{ago}} ago · {{result}}",
       "neverChecked": "Not checked yet",
       "skipCheck": "Not checked: {{reason}}",
-      "retryCheck": "Retry"
+      "retryCheck": "Retry",
+      "rename": "Rename"
+    },
+    "rename": {
+      "prompt": "Enter a new display name",
+      "done": "Name updated",
+      "failed": "Rename failed, please try again"
     },
     "reauth": {
       "bannerTitle": "Re-authentication required",
@@ -1627,9 +1634,6 @@
     "clipboardEmpty": "Clipboard is empty",
     "clipboardUnsupported": "Current environment doesn't support auto clipboard read, please paste manually",
     "clipboardError": "Failed to read clipboard: {{error}}",
-    "apiKeyCopied": "API Key copied",
-    "copyFailed": "Copy failed, please select manually",
-    "copyFailedError": "Copy failed: {{error}}",
     "enterEmailPassword": "Please enter email and password",
     "enterEmailFirstName": "Please enter email and first name",
     "enterOtpCode": "Please enter the verification code",
