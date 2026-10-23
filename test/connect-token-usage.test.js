@@ -63,9 +63,10 @@ describe('B1: the DEVIN_CONNECT paths are actually wired to recordTokenUsage', (
     assert.ok(matches.length >= 2, `expected >=2 stream usage-record sites, found ${matches.length}`);
     // And ensure NO ok-return stream path discards the result (both the direct
     // `(params, send, connectMeta)` site and the re-login `({...token}, …)` site
-    // must capture into _sr* before finalize — a bare discard = token dist stays
-    // empty on that path). Guard both call shapes.
-    assert.doesNotMatch(chat, /await streamChatCompletion\([^;]*\);\n\s+finalizeConnectAccount\(a, \{ model: reqModelName, startTime: ccStart, err: null \}\);\n\s+return \{ kind: 'ok' \}/,
+    // must capture into _sr* before finalize — a bare discard = token dist
+    // empty on that path). Guard both call shapes. The attribution name in this
+    // pattern is connectDisplayModel (P2-6): the served name, not reqModelName.
+    assert.doesNotMatch(chat, /await streamChatCompletion\([^;]*\);\n\s+finalizeConnectAccount\(a, \{ model: connectDisplayModel, startTime: ccStart, err: null \}\);\n\s+return \{ kind: 'ok' \}/,
       'a streamChatCompletion result on any ok path must be captured (const _sr = …), not discarded');
     // Exactly two capture sites (main attempt, re-login replay).
     assert.equal(matches.length, 2, `expected exactly 2 stream capture sites, found ${matches.length}`);
