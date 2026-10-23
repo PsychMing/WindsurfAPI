@@ -682,6 +682,197 @@ describe('chatToResponse', () => {
     assert.ok(result.body.output.every(item => item.type !== 'web_search_call'));
   });
 
+  it('rejects every server-executed tool type instead of dropping it silently', async () => {
+    // ReviewConnectRouter P2-1: a client that declared a server-executed tool got
+    // a perfectly normal answer with the tool gone. `file_search` /
+    // `computer_use_preview` / `mcp` were dropped without a trace and every other
+    // hosted type fell through the catch-all (`log.warn` + `return []`). This is
+    // the same silent non-execution the hosted-search gate removes, minus the
+    // fake receipt: the request must fail before dispatch, in every position a
+    // tool declaration can hide in.
+    const serverSideTypes = [
+      'file_search',
+      'computer_use_preview',
+      'mcp',
+      'code_interpreter',
+      'image_generation',
+      'local_shell',
+      'shell',
+      'apply_patch',
+    ];
+    const cases = [
+      {
+        position: 'top-level tools',
+        param: 'tools',
+        bodyFor: type => ({ tools: [{ type }] }),
+      },
+      {
+        position: 'additional_tools',
+        param: 'input',
+        bodyFor: type => ({
+          input: [
+            { type: 'additional_tools', tools: [{ type }] },
+            { type: 'message', role: 'user', content: 'run it' },
+          ],
+        }),
+      },
+      {
+        position: 'namespace child',
+        param: 'tools',
+        bodyFor: type => ({ tools: [{ type: 'namespace', name: 'hosted', tools: [{ type }] }] }),
+      },
+      {
+        position: 'tool_choice',
+        param: 'tool_choice',
+        bodyFor: type => ({ tool_choice: { type } }),
+      },
+    ];
+    for (const type of serverSideTypes) {
+      for (const stream of [false, true]) {
+        for (const { position, param, bodyFor } of cases) {
+          let modelCalled = false;
+          const result = await handleResponses({
+            model: 'claude-sonnet-4.6',
+            input: 'run it',
+            stream,
+            ...bodyFor(type),
+          }, {
+            async handleChatCompletions() {
+              modelCalled = true;
+              throw new Error('must not call the model for a server-executed tool');
+            },
+          });
+          assert.equal(result.status, 400, `${type} in ${position} stream=${stream}`);
+          assert.equal(result.stream, undefined, 'a rejected request never opens an SSE stream');
+          assert.equal(result.body.error.type, 'invalid_request_error');
+          assert.equal(result.body.error.code, 'unsupported_server_side_tool', `${type} in ${position}`);
+          assert.equal(result.body.error.param, param, `${type} in ${position}`);
+          assert.match(result.body.error.message, /executor/i);
+          assert.ok(
+            result.body.error.message.includes(type),
+            `the message names the rejected type ${type}`,
+          );
+          for (const listed of serverSideTypes) {
+            assert.ok(
+              result.body.error.message.includes(listed),
+              `the message lists every rejected type, missing ${listed}`,
+            );
+          }
+          assert.equal(modelCalled, false, 'no credits are spent on a turn whose tool this proxy cannot execute');
+        }
+      }
+    }
+  });
+
+  it('keeps a client-declared function tool named apply_patch as an ordinary function tool', async () => {
+    // The control for the ambiguous spelling: `{type:'apply_patch'}` is the
+    // server-executed hosted tool, but `{type:'function', name:'apply_patch'}` is
+    // how codex clients declare their own patch tool. Only `tool.type` decides.
+    const result = await handleResponses({
+      model: 'claude-sonnet-4.6',
+      input: 'patch it',
+      tools: [{
+        type: 'function',
+        name: 'apply_patch',
+        description: 'Client-run patch',
+        parameters: { type: 'object', properties: { patch: { type: 'string' } }, required: ['patch'] },
+      }],
+      tool_choice: { type: 'function', name: 'apply_patch' },
+    }, {
+      async handleChatCompletions(body) {
+        assert.equal(body.tools[0].function.name, 'apply_patch');
+        assert.equal(body.tool_choice.type, 'function');
+        assert.equal(body.tool_choice.function.name, 'apply_patch');
+        return {
+          status: 200,
+          body: {
+            created: 123,
+            model: body.model,
+            choices: [{
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [
+                  { id: 'call_patch', type: 'function', function: { name: 'apply_patch', arguments: '{"patch":"*** Begin Patch"}' } },
+                ],
+              },
+              finish_reason: 'tool_calls',
+            }],
+          },
+        };
+      },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.output[0].type, 'function_call');
+    assert.equal(result.body.output[0].name, 'apply_patch');
+    assert.equal(result.body.output[0].call_id, 'call_patch');
+  });
+
+  it('leaves a request without tools untouched by the server-side gate', async () => {
+    let forwarded = null;
+    const result = await handleResponses({
+      model: 'claude-sonnet-4.6',
+      input: 'Hello',
+    }, {
+      async handleChatCompletions(body) {
+        forwarded = body;
+        return {
+          status: 200,
+          body: {
+            created: 123,
+            model: body.model,
+            choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          },
+        };
+      },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(forwarded.tools, undefined);
+    assert.equal(forwarded.tool_choice, undefined);
+  });
+
+  it('still drops a genuinely unknown tool type with a warning', async () => {
+    // The catch-all stays lenient for types this bridge has never heard of —
+    // but it must still emit the warning, not swallow the tool in silence.
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+    let forwarded = null;
+    let result;
+    try {
+      result = await handleResponses({
+        model: 'claude-sonnet-4.6',
+        input: 'Hello',
+        tools: [
+          { type: 'quantum_flux' },
+          { type: 'function', name: 'do_thing', parameters: { type: 'object' } },
+        ],
+      }, {
+        async handleChatCompletions(body) {
+          forwarded = body;
+          return {
+            status: 200,
+            body: {
+              created: 123,
+              model: body.model,
+              choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+            },
+          };
+        },
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(result.status, 200);
+    assert.equal(forwarded.tools.length, 1);
+    assert.equal(forwarded.tools[0].function.name, 'do_thing');
+    assert.ok(
+      warnings.some(line => line.includes('quantum_flux') && line.includes('unknown tool type')),
+      `expected a warning naming the dropped type, got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
   it('round-trips Responses Lite additional_tools metadata', async () => {
     const result = await handleResponses({
       model: 'claude-sonnet-4.6',
@@ -770,70 +961,59 @@ describe('chatToResponse', () => {
 });
 
 describe('handleResponses streaming', () => {
-  it('drops unbridged server-side tools (file_search, computer_use_preview, mcp) instead of failing', async () => {
-    // Throwing on the first non-function entry killed the whole request
-    // even when the model still had real function tools to use. Drop
-    // the unbridged server-side types, forward the function tools, and
-    // let sandleft's flatten layer translate web_search / custom /
-    // namespace separately (covered by other tests).
-    let forwarded = null;
-    const result = await handleResponses({
-      model: 'claude-sonnet-4.6',
-      input: 'Hello',
-      stream: false,
-      tools: [
-        { type: 'file_search' },
-        { type: 'computer_use_preview' },
-        { type: 'mcp', server_label: 'foo' },
-        { type: 'function', name: 'do_thing', parameters: { type: 'object' } },
-      ],
-    }, {
-      async handleChatCompletions(chatBody) {
-        forwarded = chatBody;
-        return {
-          status: 200,
-          body: {
-            id: 'c1', object: 'chat.completion', created: 1, model: chatBody.model,
-            choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-          },
-        };
-      },
-    });
-    assert.equal(result.status, 200);
-    assert.ok(Array.isArray(forwarded.tools));
-    assert.equal(forwarded.tools.length, 1);
-    assert.equal(forwarded.tools[0].function.name, 'do_thing');
+  it('rejects unbridged server-side tools (file_search, computer_use_preview, mcp) instead of failing the model turn silently', async () => {
+    // Dropping these used to keep the request alive at the cost of the tool:
+    // the client declared a server-executed tool, got a normal answer, and had
+    // no way to learn the tool never existed. Refuse before dispatch instead —
+    // the client still has real function tools and can retry without them.
+    for (const type of ['file_search', 'computer_use_preview', 'mcp']) {
+      let modelCalled = false;
+      const result = await handleResponses({
+        model: 'claude-sonnet-4.6',
+        input: 'Hello',
+        stream: false,
+        tools: [
+          { type, ...(type === 'mcp' ? { server_label: 'foo' } : {}) },
+          { type: 'function', name: 'do_thing', parameters: { type: 'object' } },
+        ],
+      }, {
+        async handleChatCompletions() {
+          modelCalled = true;
+          throw new Error('must not call the model for an unbridged server-side tool');
+        },
+      });
+      assert.equal(result.status, 400, type);
+      assert.equal(result.body.error.code, 'unsupported_server_side_tool', type);
+      assert.equal(result.body.error.param, 'tools', type);
+      assert.equal(modelCalled, false, `${type}: no model turn runs`);
+    }
   });
 
-  it('drops forced tool_choice when a Responses server-side tool was not forwarded', async () => {
-    let forwarded = null;
+  it('rejects a forced tool_choice naming a server-side tool instead of dropping the choice', async () => {
+    // Dropping the forced choice left the model free to answer normally, so the
+    // caller could not tell its forced tool had been discarded. `tool_choice`
+    // naming a type this proxy cannot execute is now the same 400 as declaring
+    // it — here with no declaration at all, mirroring the hosted-search gate.
+    let modelCalled = false;
     const result = await handleResponses({
       model: 'claude-sonnet-4.6',
       input: 'Hello',
       stream: false,
       tools: [
-        { type: 'file_search' },
         { type: 'function', name: 'do_thing', parameters: { type: 'object' } },
       ],
       tool_choice: { type: 'file_search' },
     }, {
-      async handleChatCompletions(chatBody) {
-        forwarded = chatBody;
-        return {
-          status: 200,
-          body: {
-            id: 'c1', object: 'chat.completion', created: 1, model: chatBody.model,
-            choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-          },
-        };
+      async handleChatCompletions() {
+        modelCalled = true;
+        throw new Error('must not call the model');
       },
     });
-    assert.equal(result.status, 200);
-    assert.equal(forwarded.tools.length, 1);
-    assert.equal(forwarded.tools[0].function.name, 'do_thing');
-    assert.equal(forwarded.tool_choice, undefined);
+    assert.equal(result.status, 400);
+    assert.equal(result.body.error.type, 'invalid_request_error');
+    assert.equal(result.body.error.code, 'unsupported_server_side_tool');
+    assert.equal(result.body.error.param, 'tool_choice');
+    assert.equal(modelCalled, false);
   });
 
   it('emits the Responses text event sequence and response.completed', async () => {
