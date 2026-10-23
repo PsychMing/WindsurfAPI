@@ -143,7 +143,11 @@ describe('parallel_tool_calls:false is never silently dropped (connect route)', 
     });
 
     // The Cascade path rejects the unknown model for its own reason; the point is
-    // that it is NOT the connect-only parallel_tool_calls gate.
+    // that it is NOT the connect-only parallel_tool_calls gate — and that the request
+    // really did reach Cascade's model gate (a 200 or a 500 would prove nothing).
+    assert.equal(r.status, 400);
+    assert.equal(r.body?.error?.param, 'model', 'Cascade must answer about the model, not the connect knob');
+    assert.equal(r.body?.error?.code, 'model_not_found');
     assert.notEqual(r.body?.error?.code, 'unsupported_parameter',
       'a connect switch must not refuse a Cascade request');
   });
