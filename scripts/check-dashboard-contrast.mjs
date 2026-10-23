@@ -96,6 +96,17 @@ export function lintDashboardContrast(html = readDashboardHtml()) {
       if (ratio < TEXT_FLOOR) problems.push(`${theme}: ${token} is ${ratio}:1 on --surface (needs ${TEXT_FLOOR})`);
     }
 
+    // 2b. Text tokens on the raised surfaces. The DevIn panel paints 10px
+    // --text-dim labels on --surface-2 (.dm-stat-label, .dm-req-num) and the
+    // surface ladder's top step carries chips, so these are text backgrounds
+    // too — not only borders between cards.
+    for (const token of ['--text', '--text-muted', '--text-dim']) {
+      for (const raised of ['--surface-2', '--surface-3']) {
+        const ratio = contrastRatio(color(vars, token), color(vars, raised));
+        if (ratio < TEXT_FLOOR) problems.push(`${theme}: ${token} is ${ratio}:1 on ${raised} (needs ${TEXT_FLOOR})`);
+      }
+    }
+
     // 3. Graphical tokens (status dots, meter fills, focus rings).
     for (const token of GRAPHICAL) {
       const ratio = contrastRatio(onSurface(vars, token), surface);

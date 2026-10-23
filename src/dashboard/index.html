@@ -35,7 +35,7 @@
   --border-strong: rgba(24,24,27,.18);
   --text: var(--ink);
   --text-muted: #52525b;
-  --text-dim: #71717a;     /* 4.83 on surface — was #a1a1aa (2.56 FAIL) */
+  --text-dim: #626269;     /* 6.05 surface / 5.13 surface-2 / 4.68 surface-3 — 10px labels sit on --surface-2 */
   --text-faint: #a1a1aa;   /* disabled + decorative only, never body copy */
 
   /* Anthropic accent — signature clay orange */
@@ -6963,9 +6963,16 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       this.api('GET', '/models').catch(() => null),
       this.api('GET', '/models/catalog').catch(() => null),
     ]);
-    this._devinPanel = panel && typeof panel === 'object' && panel.ok !== false
+    // Only the builder's `ok:true` snapshot is a snapshot. A dashboard 500
+    // envelope is `{error:{message}}` with `success:false` forced by _apiRaw;
+    // accepting it painted an empty-but-healthy panel with no reason.
+    const panelError = panel && panel.error;
+    const panelReason = panelError && typeof panelError === 'object'
+      ? (panelError.message || panelError.type || 'failed')
+      : (panelError || 'failed');
+    this._devinPanel = panel && typeof panel === 'object' && panel.ok === true && panel.success !== false
       ? panel
-      : { ok: false, error: (panel && panel.error) || 'failed' };
+      : { ok: false, error: panelReason };
     this._devinModels = models && Array.isArray(models.models) ? models.models : null;
     this._devinCatalog = catalog && typeof catalog === 'object' && 'synced' in catalog ? catalog : null;
     if (force) {
@@ -7156,7 +7163,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         ${kv(T('credit'), frac(summary.credit))}
         ${kv(T('acu'), acu(summary.acu))}
       </div>
-      ${turns.capped ? `<div class="dm-note" style="color:var(--warn)">${this.esc(T('scanCapped', { total: num(turns.totalAccounts) }))}</div>` : ''}
+      ${turns.capped ? `<div class="dm-note" style="color:var(--warn)">${this.esc(T('scanCapped', { scanned: num(turns.scanned), total: num(turns.totalAccounts) }))}</div>` : ''}
       <div class="dm-subhead">${this.esc(T('sources'))}</div>
       <div class="table-wrap"><table><thead><tr>
         <th>${this.esc(T('source'))}</th><th>${this.esc(T('state'))}</th><th>${this.esc(T('detail'))}</th>
@@ -7285,7 +7292,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const pct = (n) => (n == null || !Number.isFinite(Number(n)) ? '—' : `${Math.round(Number(n))}%`);
     const kv = (label, value) => `<span class="k">${this.esc(label)}</span><span class="v">${this.esc(value)}</span>`;
     const droughtHtml = `<div class="dm-grid">
-        <div class="dm-stat"><span class="dm-stat-value">${this.esc(d.active ? T('active') : T('ok'))}</span><span class="dm-stat-label">${this.esc(T('state'))}</span></div>
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(d.active ? T('active') : (d.coverageMet ? T('ok') : T('unknown')))}</span><span class="dm-stat-label">${this.esc(T('state'))}</span></div>
         <div class="dm-stat"><span class="dm-stat-value">${this.esc(pct(d.lowestWeeklyPercent))}</span><span class="dm-stat-label">${this.esc(T('lowestWeekly'))}</span></div>
         <div class="dm-stat"><span class="dm-stat-value">${this.esc(pct(d.lowestDailyPercent))}</span><span class="dm-stat-label">${this.esc(T('lowestDaily'))}</span></div>
         <div class="dm-stat"><span class="dm-stat-value">${this.esc(`${num(d.droughtAccounts)} / ${num(d.quotaKnownAccounts)}`)}</span><span class="dm-stat-label">${this.esc(T('dryAccounts'))}</span></div>
