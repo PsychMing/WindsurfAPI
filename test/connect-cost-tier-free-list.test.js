@@ -174,6 +174,11 @@ describe('pricing resolution (auth.js)', () => {
       + 'a stale static whitelist must not outrank live data');
     assert.equal(phantom.freeReason, null);
     assert.equal(isConnectSelectorCurrentlyFree('swe-1-6-slow'), false);
+    // One live source is enough: cost-tier data exists (rate table is absent), so the
+    // static whitelist must NOT be unioned back in. This is the one-null case a
+    // `costFree === null || rateFree === null` fallback would silently reintroduce.
+    assert.ok(!getConnectFreeSelectors().includes('swe-1-6-slow'),
+      'the whitelist must not return when only one live source is present');
   });
 
   it('reports the three swe-2 selectors as free with the promo end', () => {
