@@ -43,8 +43,8 @@
 - Windows `npm run gate`：**PASS**；`npm run test:release` **6,548 pass / 0 fail / 97 skip（543 文件）**（测于 `da8a8a0`）。
 - Linux `npm run test:release`（HMC，Node v24.21.0，543 文件）：**6,641 pass / 0 fail / 5 skip**（`da8a8a0`）。
 - Node 22.23.4 矩阵（HMC）：**6,439 pass / 0 fail / 5 skip（525 文件）**；532 文件树未跑 Node 22。
-- wire：对 `v3.9.60`（`d449895`）比较 **270/270**。
-- mutation：`b502065` 上 **89 个规格全 exit 0**、14 条已声明 survivor；tip 的第 90 个规格（parallel-tool-calls）未扫。
+- wire：对 `v3.9.60`（`d449895`）比较 **270/270**（`da8a8a0` 树，最终代码）。
+- mutation：**90/90 spec exit 0**（`da8a8a0` 树，含 parallel-tool-calls 的 6 条）。
 - 真实 Docker E2E：**4/4 PASS**（`evidence/DockerE2E.md`）。
 
 
