@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 212 份发布说明</a> ·
+  <a href="docs/releases/">全部 213 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **212** 份,v2.0.6 → v3.10.0 |
+| 发布说明 | **213** 份,v2.0.6 → v3.10.1 |
 | git tag | 214 个（2026-10-23 实测；以 `git tag \| wc -l` 为准） |
-| 当前 | **v3.10.0**(2026-10-23) |
+| 当前 | **v3.10.1**(2026-10-24) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -41,6 +41,10 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.10.1](docs/releases/RELEASE_NOTES_3.10.1.md) · 2026-10-24
+
+三个硬化修复:明文 `http:` 图片默认拒(`WINDSURFAPI_ALLOW_HTTP_IMAGES=1` 逃生)、`/v1/responses` 对 8 种 server-executed 工具类型显式 400(不再静默丢弃)、`glm-5-1` 破折号拼写的路由与工具方言(此前静默降级免费档 + 错方言卡死)。wire 270/270 vs v3.10.0。
 
 ### [v3.10.0](docs/releases/RELEASE_NOTES_3.10.0.md) · 2026-10-23
 
