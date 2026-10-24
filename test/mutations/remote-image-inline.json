@@ -1,8 +1,9 @@
 {
   "tests": [
-    "test/connect-remote-images.test.js"
+    "test/connect-remote-images.test.js",
+    "test/image-http-gate.test.js"
   ],
-  "expectBaselinePass": 17,
+  "expectBaselinePass": 28,
   "mutations": [
     {
       "name": "a failed fetch is treated as 'nothing changed' — the remote URL is returned to the builder, which drops it, so the image is lost again and the only trace is the later unresolved warning instead of the fetch error that actually happened",
