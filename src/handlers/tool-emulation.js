@@ -353,22 +353,48 @@ export function pickToolDialect(modelKey, provider, route = null) {
   if (forced) log.warn(`pickToolDialect: unrecognized WINDSURFAPI_FORCE_TOOL_DIALECT value ${JSON.stringify(forced)} — ignored, normal routing applies`);
   const normalizedProvider = String(provider || '').toLowerCase();
   // A client may name the model with a provider prefix (`zhipu/glm-5.1`,
-  // `anthropic/claude-sonnet-4.6`). resolveConnectSelector strips exactly one
-  // such segment (`/^[a-z]+\//`) before resolving, so the prefix does not change
-  // which upstream model runs — and therefore must not change the dialect.
-  // Without this strip every prefixed name missed its family rule: `zhipu/glm-5.1`
+  // `x-ai/grok-4-5-low`). resolveConnectSelector strips exactly one such segment
+  // before resolving, and for most spellings the prefix therefore does not change
+  // which upstream model runs — so it must not change the dialect either.
+  //
+  // KNOWN EXCEPTION (P2-1): the resolver consults the alias map on the RAW name
+  // first, so a dotted MAP KEY with a curated target runs a DIFFERENT selector
+  // once prefixed — `claude-sonnet-4.6` → claude-sonnet-4-6-thinking, but
+  // `anthropic/claude-sonnet-4.6` → claude-sonnet-4-6 (the base selector). The
+  // dialect is still chosen from the name it is given, so this strip must stay.
+  //
+  // The rule MUST be identical to the resolver's `/^[a-z0-9][a-z0-9-]*\//`
+  // (verifier P2-2): a wider rule here picks a dialect for a model the resolver
+  // never routes to (`foo_bar/glm-5.1` is NOT stripped there — `_` is not a
+  // provider segment — and degrades to free), a narrower one misses `x-ai/`.
+  // Without the strip every prefixed name missed its family rule: `zhipu/glm-5.1`
   // fell past `startsWith('glm')` to glm47 (the markup that model IGNORES, so it
   // answers in plain text and the client waits for a tool call forever), and
   // prefixed Kimi lost kimi_k2. Strip ONCE only: in `x/y/glm-5.1` the second
   // segment is part of the name, not another provider.
-  const normalizedModelKey = String(modelKey || '').toLowerCase().replace(/^[a-z][a-z0-9_-]*\//, '');
-  if (normalizedProvider === 'zhipu' || normalizedModelKey.startsWith('glm')) {
+  const normalizedModelKey = String(modelKey || '').toLowerCase().replace(/^[a-z0-9][a-z0-9-]*\//, '');
+  // The resolver collapses dots before every lookup, so `gpt.5.5.low` and
+  // `glm-5.2` route to the same selectors as their dashed spellings. Collapse
+  // ONCE here and match every family rule below against `dashed`: matching the
+  // literal spelling made a dotted name fall past the GPT branch entirely, so a
+  // model documented to refuse the XML protocol (and GLM, which ignores it) ran
+  // on it. The GLM branch already collapsed dots locally; this is the same
+  // normalization applied to every family.
+  //
+  // The resolver ALSO splits the compact version form (`gpt5.5` → `gpt-5.5`, S4),
+  // so do that here too: the dialect has to describe the selector the request
+  // RUNS ON. Without it `gpt5.6-luna` (a mapped spelling) still missed the 5.4+
+  // gate and ran the XML protocol its own target refuses. The `(?=-)` keeps the
+  // split to version forms only — `claude5` is a family shorthand, not a version.
+  const dashed = normalizedModelKey.replace(/\./g, '-')
+    .replace(/^(gpt|claude|gemini)(\d)(?=-)/, '$1-$2');
+  if (normalizedProvider === 'zhipu' || dashed.startsWith('glm')) {
     // v2.0.72 — glm-5.2 probe: the glm47 XML markup dialect is ignored and
     // the model answers in plain text. The gpt_native function_call JSON
     // dialect is emitted reliably and parsed correctly. Keep older GLM on
     // glm47 until proven otherwise; env override still available for tests.
     //
-    // Dots are collapsed to dashes BEFORE matching, because the same model arrives under
+    // Dots are already collapsed into `dashed` above, because the same model arrives under
     // both spellings — `resolveConnectSelector` maps `glm-5.2` and `glm-5-2` to the same
     // upstream selector, so a client may legitimately send either. Matching the literal
     // spellings missed exactly one form: bare `glm-5-2` (it is not `glm-5.2`, and it has no
@@ -385,11 +411,10 @@ export function pickToolDialect(modelKey, provider, route = null) {
     // through to glm47 — the identical silent stall. Match the minor version as exactly
     // `1` or `2`-`9` followed by `-` or end: a hypothetical `glm-5-12` / `glm-5-1x` must
     // NOT be swallowed, and bare `glm-5` plus glm-4.x stay on glm47.
-    const dashed = normalizedModelKey.replace(/\./g, '-');
     if (/^glm-5-(?:1|[2-9])(?:-|$)/.test(dashed)) return 'gpt_native';
     return 'glm47';
   }
-  if (normalizedProvider === 'moonshot' || normalizedModelKey.startsWith('kimi')) {
+  if (normalizedProvider === 'moonshot' || dashed.startsWith('kimi')) {
     // The Kimi K2 vLLM dialect is verified working only against the original
     // `kimi-k2` and `kimi-k2-thinking` SKUs. Newer Moonshot SKUs
     // (`kimi-k2.5`, `kimi-k2-6`, ...) are served by a different upstream
@@ -399,7 +424,7 @@ export function pickToolDialect(modelKey, provider, route = null) {
     // chat (observed 2026-05-07 on VPS — 12-24 tokens, empty content), the
     // model is temporarily broken at the Windsurf side. The proxy cannot fix
     // this; it is an upstream outage.
-    if (normalizedModelKey === 'kimi-k2' || normalizedModelKey === 'kimi-k2-thinking') {
+    if (dashed === 'kimi-k2' || dashed === 'kimi-k2-thinking') {
       return 'kimi_k2';
     }
     return 'openai_json_xml';
@@ -411,9 +436,18 @@ export function pickToolDialect(modelKey, provider, route = null) {
   // openai_json_xml. swe-1-7-lightning also emits narrative calls instead
   // of Kimi section tokens (live probe 2026-08-09); future variants may
   // differ too.
-  if (/^swe-1[.-](5|6|7)(-|$)/.test(normalizedModelKey)
-      && !normalizedModelKey.endsWith('-slow')
-      && !normalizedModelKey.endsWith('-lightning')) {
+  //
+  // S7: the SWE-1.5 aliases resolve to ENUM selectors — `swe-1-5` →
+  // MODEL_SWE_1_5_SLOW, `swe-1-5-fast` → MODEL_SWE_1_5 — whose names carry no
+  // `swe-1-5` token, so the same model used to get kimi_k2 under one spelling and
+  // openai_json_xml under the other (a client could flip the protocol by renaming
+  // the model). Read those two enums into the family spelling. `_SLOW` there is
+  // the slow MODE of SWE-1.5, not the distinct deployment selector
+  // `swe-1-6-slow` the exclusion is about; the alias spelling is the observed one.
+  const familyKey = /^model_swe_1_5(?:_slow)?$/.test(dashed) ? 'swe-1-5' : dashed;
+  if (/^swe-1-(5|6|7)(-|$)/.test(familyKey)
+      && !familyKey.endsWith('-slow')
+      && !familyKey.endsWith('-lightning')) {
     return 'kimi_k2';
   }
   // v2.0.62 (#115) — GPT family + Codex/Responses route uses bare-JSON
@@ -424,7 +458,12 @@ export function pickToolDialect(modelKey, provider, route = null) {
   // /v1/chat/completions clients aren't surprised by the new prompt.
   // Override with WINDSURFAPI_FORCE_GPT_NATIVE_DIALECT=1 to enable for
   // every route.
-  const isGpt = normalizedProvider === 'openai' || /^(?:gpt-|o3|o4)/i.test(normalizedModelKey);
+  //
+  // `gpt\d` is part of the family test because the compact spelling is a real
+  // client form (`gpt5.6-luna`, issue #244) and it resolves to the same selector
+  // as `gpt-5.6-luna`. Matching only `gpt-` sent a GPT-5.6 request down the XML
+  // path it refuses — the exact silent no-tool-call stall this branch prevents.
+  const isGpt = normalizedProvider === 'openai' || /^(?:gpt-|gpt\d|o3|o4)/i.test(dashed);
   if (isGpt) {
     const forceAll = process.env.WINDSURFAPI_FORCE_GPT_NATIVE_DIALECT === '1';
     // GPT-5.4+ refuses the <tool_call> XML protocol on OpenAI-spec tools
@@ -434,9 +473,8 @@ export function pickToolDialect(modelKey, provider, route = null) {
     // existing chat clients; the 5.4+ family is new enough that the gate
     // no longer buys safety there. 5.1/5.2/5.3 keep the original behavior.
     // devin_connect 路径传原始 params.model（连字符形态 gpt-5-4-medium）——
-    // 照 glm-5.2 先例先折叠 dashed 再匹配，两种拼写都覆盖。
-    const dashedKey = normalizedModelKey.replace(/\./g, '-');
-    const isGpt54Plus = /^gpt-5-[456](?:-|$)/.test(dashedKey);
+    // 先折叠 dashed 再匹配，两种拼写都覆盖。
+    const isGpt54Plus = /^gpt-5-[456](?:-|$)/.test(dashed);
     if (forceAll || route === 'responses' || isGpt54Plus) return 'gpt_native';
   }
   return 'openai_json_xml';

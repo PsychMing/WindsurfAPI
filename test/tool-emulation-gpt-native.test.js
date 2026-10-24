@@ -109,11 +109,12 @@ describe('pickToolDialect — gpt_native gating (v2.0.62 #115)', () => {
 
   it('strips a provider prefix before the family checks', () => {
     // The selector resolver already strips `provider/` (resolveConnectSelector:
-    // `.replace(/^[a-z]+\//, '')`), so `zhipu/glm-5.1` and `anthropic/claude-…`
-    // route to the right upstream model. pickToolDialect saw the RAW name, so
-    // every prefixed name missed its family rule: `zhipu/glm-5.1` fell through
-    // the `startsWith('glm')` test to openai_json_xml (glm47-adjacent wrong
-    // answer, and glm-5.1 ignores XML markup), and a prefixed Kimi lost kimi_k2.
+    // `.replace(/^[a-z0-9][a-z0-9-]*\//, '')` — S3 widened it so `x-ai/` and
+    // `z-ai/` strip too), so `zhipu/glm-5.1` and `anthropic/claude-…` route to
+    // the right upstream model. pickToolDialect saw the RAW name, so every
+    // prefixed name missed its family rule: `zhipu/glm-5.1` fell through the
+    // `startsWith('glm')` test to openai_json_xml (glm47-adjacent wrong answer,
+    // and glm-5.1 ignores XML markup), and a prefixed Kimi lost kimi_k2.
     // The stall is silent — the model answers in plain text and the client waits
     // for a tool call that never arrives.
     assert.equal(pickToolDialect('zhipu/glm-5.1', 'zhipu'), 'gpt_native',
@@ -138,6 +139,63 @@ describe('pickToolDialect — gpt_native gating (v2.0.62 #115)', () => {
     assert.equal(pickToolDialect('foo/bar/baz', null), 'openai_json_xml');
     assert.equal(pickToolDialect('x/y/glm-5.1', null), 'openai_json_xml',
       'stripping twice would expose glm-5.1 and wrongly return gpt_native');
+  });
+
+  it('matches family rules against the dotted spelling (S2)', () => {
+    // S2: the resolver collapses dots before every lookup, so `gpt.5.5.low` ROUTES
+    // to gpt-5-5-low — but pickToolDialect tested its family regexes against the
+    // literal spelling. `gpt.5.5.low` matched neither `/^(?:gpt-|o3|o4)/` nor the
+    // 5.4+ test nested inside it, so a model documented to refuse the XML protocol
+    // ran on it. Collapse dots ONCE at the top of the function (the GLM branch
+    // already did this locally) and match every family regex against the result.
+    assert.equal(pickToolDialect('gpt.5.5.low', null), 'gpt_native',
+      'dotted 5.5 resolves to gpt-5-5-low, which refuses the XML protocol');
+    assert.equal(pickToolDialect('gpt.5.6-luna', null), 'gpt_native');
+    assert.equal(pickToolDialect('gpt5.6-luna', null), 'gpt_native',
+      'the compact spelling routes to the same selector as gpt.5.6-luna');
+    assert.equal(pickToolDialect('swe.1.5', null), 'kimi_k2',
+      'dotted SWE-1.5 is the same model as swe-1.5, so it must not change dialect');
+    // No family is invented by the collapse.
+    assert.equal(pickToolDialect('claude.opus.4.8', null), 'openai_json_xml');
+    assert.equal(pickToolDialect('glm-5.12', 'zhipu'), 'glm47');
+    assert.equal(pickToolDialect('glm-5-12', 'zhipu'), 'glm47');
+  });
+
+  it('gives the SWE-1.5 enum target the same dialect as its alias (S7)', () => {
+    // S7: SELECTOR_MAP resolves the SWE-1.5 aliases to ENUM selectors
+    // (`swe-1-5` → MODEL_SWE_1_5_SLOW, `swe-1-5-fast` → MODEL_SWE_1_5). The family
+    // rule matched the alias spelling but not the enum, so the SAME model got
+    // kimi_k2 under one spelling and openai_json_xml under the other — a client
+    // could flip the protocol by renaming the model. The alias is the observed
+    // spelling (production 2026-08-07: SWE-1.5 emits Kimi section tokens), and
+    // `_SLOW` is the slow MODE of SWE-1.5, not the distinct deployment selector
+    // `swe-1-6-slow` that the exclusion below is about.
+    assert.equal(pickToolDialect('swe-1-5', null), 'kimi_k2');
+    assert.equal(pickToolDialect('MODEL_SWE_1_5_SLOW', null), 'kimi_k2',
+      'the enum spelling names the same model as swe-1-5');
+    assert.equal(pickToolDialect('swe-1-5-fast', null), 'kimi_k2');
+    assert.equal(pickToolDialect('MODEL_SWE_1_5', null), 'kimi_k2',
+      'the fast enum names the same model as swe-1-5-fast');
+    // The distinct-deployment exclusion is unchanged.
+    assert.equal(pickToolDialect('swe-1-6-slow', null), 'openai_json_xml');
+    assert.equal(pickToolDialect('swe-1-7-lightning', null), 'openai_json_xml');
+  });
+
+  it('uses exactly the resolver prefix rule (P2-2)', () => {
+    // The strip must be the SAME rule the resolver applies, or the dialect can be
+    // chosen for a model the request never runs on. The resolver's rule is
+    // `/^[a-z0-9][a-z0-9-]*\//` (S3 widened it for `x-ai/` / `z-ai/`) and it does
+    // NOT treat an underscore segment as a provider. The dialect strip previously
+    // allowed `_`, so `foo_bar/glm-5.1` picked gpt_native while the resolver
+    // degraded the same name to free.
+    assert.equal(pickToolDialect('foo_bar/glm-5.1', null), 'openai_json_xml',
+      'the resolver does not strip `_` segments, so neither may the dialect');
+    assert.equal(pickToolDialect('x-ai/glm-5.1', null), 'gpt_native');
+    assert.equal(pickToolDialect('z-ai/glm-5.1', null), 'gpt_native');
+    assert.equal(pickToolDialect('9lives/glm-5.1', null), 'gpt_native',
+      'the resolver prefix may start with a digit');
+    assert.equal(pickToolDialect('x/y/glm-5.1', null), 'openai_json_xml',
+      'single strip only');
   });
 
   it('WINDSURFAPI_FORCE_GPT_NATIVE_DIALECT=1 forces gpt_native on chat route too', () => {
