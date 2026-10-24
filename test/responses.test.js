@@ -873,6 +873,188 @@ describe('chatToResponse', () => {
     );
   });
 
+  it('rejects dated snapshots of server-executed tools instead of dropping them', async () => {
+    // OpenAI ships dated snapshots next to the unversioned aliases
+    // (`code_interpreter_2025_03_11`, `web_search_2025_08_26`). A snapshot of a
+    // server-executed tool asks THIS SERVER to execute it just the same, but the
+    // exact-match set sent it to the catch-all, which warned and dropped it — a
+    // 200 with the tool gone. Stripping the trailing `_YYYY_MM_DD` and re-testing
+    // the set covers every current and future snapshot of a member without
+    // touching unrelated types.
+    const serverSideTypes = [
+      'file_search',
+      'computer_use_preview',
+      'mcp',
+      'code_interpreter',
+      'image_generation',
+      'local_shell',
+      'shell',
+      'apply_patch',
+    ];
+    const cases = [
+      {
+        position: 'top-level tools',
+        param: 'tools',
+        bodyFor: type => ({ tools: [{ type }] }),
+      },
+      {
+        position: 'additional_tools',
+        param: 'input',
+        bodyFor: type => ({
+          input: [
+            { type: 'additional_tools', tools: [{ type }] },
+            { type: 'message', role: 'user', content: 'run it' },
+          ],
+        }),
+      },
+      {
+        position: 'namespace child',
+        param: 'tools',
+        bodyFor: type => ({ tools: [{ type: 'namespace', name: 'hosted', tools: [{ type }] }] }),
+      },
+      {
+        position: 'tool_choice',
+        param: 'tool_choice',
+        bodyFor: type => ({ tool_choice: { type } }),
+      },
+    ];
+    for (const type of serverSideTypes) {
+      const versioned = `${type}_2025_03_11`;
+      for (const stream of [false, true]) {
+        for (const { position, param, bodyFor } of cases) {
+          let modelCalled = false;
+          const result = await handleResponses({
+            model: 'claude-sonnet-4.6',
+            input: 'run it',
+            stream,
+            ...bodyFor(versioned),
+          }, {
+            async handleChatCompletions() {
+              modelCalled = true;
+              throw new Error('must not call the model for a dated server-executed tool');
+            },
+          });
+          assert.equal(result.status, 400, `${versioned} in ${position} stream=${stream}`);
+          assert.equal(result.body.error.code, 'unsupported_server_side_tool', `${versioned} in ${position}`);
+          assert.equal(result.body.error.param, param, `${versioned} in ${position}`);
+          assert.ok(
+            result.body.error.message.includes(versioned),
+            `the message names the rejected snapshot ${versioned}`,
+          );
+          assert.equal(modelCalled, false, 'no model turn runs for a snapshot this proxy cannot execute');
+        }
+      }
+    }
+
+    // A versioned HOSTED search keeps its own gate and error code.
+    let hostedModelCalled = false;
+    const hosted = await handleResponses({
+      model: 'claude-sonnet-4.6',
+      input: 'search',
+      tools: [{ type: 'web_search_2025_03_11' }],
+    }, {
+      async handleChatCompletions() {
+        hostedModelCalled = true;
+        throw new Error('must not call the model for a hosted search');
+      },
+    });
+    assert.equal(hosted.status, 400);
+    assert.equal(hosted.body.error.code, 'unsupported_hosted_tool');
+    assert.equal(hosted.body.error.param, 'tools');
+    assert.equal(hostedModelCalled, false);
+
+    // A dated type that is not a member stays unknown: warn + drop, not 400.
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+    let forwarded = null;
+    let junk;
+    try {
+      junk = await handleResponses({
+        model: 'claude-sonnet-4.6',
+        input: 'Hello',
+        tools: [{ type: 'foobar_2025_03_11' }],
+      }, {
+        async handleChatCompletions(body) {
+          forwarded = body;
+          return {
+            status: 200,
+            body: {
+              created: 123,
+              model: body.model,
+              choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+            },
+          };
+        },
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(junk.status, 200);
+    assert.equal(forwarded.tools, undefined);
+    assert.ok(
+      warnings.some(line => line.includes('foobar_2025_03_11') && line.includes('unknown tool type')),
+      `expected a warning naming the dropped type, got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  it('rejects a server-executed tool hidden behind a second namespace child key', async () => {
+    // The walker used to recurse into the FIRST array-valued child key only,
+    // while flattenResponseTool picks the first truthy one. A namespace carrying
+    // both `tools: []` and `children: [{type:'mcp'}]` therefore walked the empty
+    // array, missed the server-executed child, and the request returned 200 with
+    // that tool gone and not even a warning. Walk every child key the schema
+    // allows so a hidden server-side tool cannot slip past the gate.
+    const namespaces = [
+      { name: 'a', tools: [], children: [{ type: 'mcp' }] },
+      {
+        name: 'b',
+        tools: [{ type: 'function', name: 'ok', parameters: { type: 'object' } }],
+        children: [{ type: 'file_search' }],
+      },
+      { name: 'c', functions: [], items: [{ type: 'code_interpreter' }] },
+    ];
+    for (const namespace of namespaces) {
+      let modelCalled = false;
+      const result = await handleResponses({
+        model: 'claude-sonnet-4.6',
+        input: 'run it',
+        tools: [{ type: 'namespace', ...namespace }],
+      }, {
+        async handleChatCompletions() {
+          modelCalled = true;
+          throw new Error('must not call the model for a hidden server-executed tool');
+        },
+      });
+      assert.equal(result.status, 400, `namespace ${namespace.name}`);
+      assert.equal(result.body.error.code, 'unsupported_server_side_tool', `namespace ${namespace.name}`);
+      assert.equal(result.body.error.param, 'tools', `namespace ${namespace.name}`);
+      assert.equal(modelCalled, false, `namespace ${namespace.name}: no model turn runs`);
+    }
+
+    // The same shape inside `additional_tools` is scanned by the same walker.
+    let additionalModelCalled = false;
+    const additional = await handleResponses({
+      model: 'claude-sonnet-4.6',
+      input: [
+        {
+          type: 'additional_tools',
+          tools: [{ type: 'namespace', name: 'd', tools: [], children: [{ type: 'mcp' }] }],
+        },
+        { type: 'message', role: 'user', content: 'run it' },
+      ],
+    }, {
+      async handleChatCompletions() {
+        additionalModelCalled = true;
+        throw new Error('must not call the model for a hidden server-executed tool');
+      },
+    });
+    assert.equal(additional.status, 400);
+    assert.equal(additional.body.error.code, 'unsupported_server_side_tool');
+    assert.equal(additional.body.error.param, 'input');
+    assert.equal(additionalModelCalled, false);
+  });
+
   it('round-trips Responses Lite additional_tools metadata', async () => {
     const result = await handleResponses({
       model: 'claude-sonnet-4.6',

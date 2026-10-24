@@ -145,6 +145,21 @@ const UNBRIDGED_SERVER_SIDE_TYPES = new Set([
   'apply_patch',
 ]);
 
+// Server-executed tools are a VERSIONED family too: OpenAI ships dated snapshots
+// (`code_interpreter_2025_03_11`) next to the unversioned aliases, and every
+// spelling asks THIS SERVER to execute the tool. An exact-match set sent each
+// new snapshot to the catch-all, which warned and dropped it — a 200 with the
+// tool gone. Strip a trailing `_YYYY_MM_DD` and re-test the set: that covers
+// every current and future snapshot of a member, and a type that is not a
+// member either way still falls to the lenient warn+drop path.
+const SERVER_SIDE_VERSION_SUFFIX = /_\d{4}_\d{2}_\d{2}$/;
+
+function isServerSideToolType(type) {
+  if (typeof type !== 'string') return false;
+  if (UNBRIDGED_SERVER_SIDE_TYPES.has(type)) return true;
+  return UNBRIDGED_SERVER_SIDE_TYPES.has(type.replace(SERVER_SIDE_VERSION_SUFFIX, ''));
+}
+
 const HOSTED_SEARCH_TYPES = new Set(['web_search', 'web_search_preview']);
 // Hosted search is a VERSIONED tool family: OpenAI ships dated snapshots of the
 // same hosted tool (`web_search_preview_2025_03_11`, `web_search_2025_08_26`)
@@ -170,6 +185,14 @@ function hostedSearchUnsupported(param) {
   return err;
 }
 
+// A namespace may carry its children under any of these keys. The gate walks
+// EVERY array-valued one: a namespace with `tools: []` and `children: [mcp]`
+// used to walk the empty first key and miss the server-executed child entirely,
+// returning a 200 with that tool gone and not even a warning.
+// (flattenResponseTool still picks a single key when forwarding; that selection
+// is unchanged — this walk only decides what must be refused.)
+const NAMESPACE_CHILD_KEYS = ['tools', 'children', 'functions', 'items'];
+
 /**
  * Visit every tool in a list, recursing into namespaces. Shared by the
  * hosted-search and server-executed gates so both cover the same positions.
@@ -179,8 +202,9 @@ function forEachTool(tools, visit) {
     if (!tool || typeof tool !== 'object') continue;
     visit(tool);
     if (tool.type === 'namespace') {
-      const childKey = ['tools', 'children', 'functions', 'items'].find(key => Array.isArray(tool[key]));
-      if (childKey) forEachTool(tool[childKey], visit);
+      for (const key of NAMESPACE_CHILD_KEYS) {
+        if (Array.isArray(tool[key])) forEachTool(tool[key], visit);
+      }
     }
   }
 }
@@ -225,7 +249,7 @@ function serverSideToolUnsupported(type, param) {
  */
 function assertNoServerSideTools(tools, param = 'tools') {
   forEachTool(tools, tool => {
-    if (UNBRIDGED_SERVER_SIDE_TYPES.has(tool.type)) throw serverSideToolUnsupported(tool.type, param);
+    if (isServerSideToolType(tool.type)) throw serverSideToolUnsupported(tool.type, param);
   });
 }
 
@@ -251,7 +275,7 @@ function assertNoServerSideToolsInRequest(body) {
 function assertSupportedToolChoice(toolChoice) {
   if (!toolChoice || typeof toolChoice !== 'object') return;
   if (isHostedSearchType(toolChoice.type)) throw hostedSearchUnsupported('tool_choice');
-  if (UNBRIDGED_SERVER_SIDE_TYPES.has(toolChoice.type)) {
+  if (isServerSideToolType(toolChoice.type)) {
     throw serverSideToolUnsupported(toolChoice.type, 'tool_choice');
   }
 }
