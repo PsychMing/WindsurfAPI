@@ -141,6 +141,14 @@ const SELECTOR_MAP = new Map(Object.entries({
   'swe-2.0-medium': 'swe-2-medium',
   'swe-2.0-high': 'swe-2-high',
   'swe-2.0-max': 'swe-2-max',
+  // Dashed spelling of the same aliases. The unsuffixed `swe-2-0` row above was
+  // the only dashed form present, so `swe-2-0-medium` / `-high` / `-max` missed
+  // every map lookup: mapped:false on a live catalog (400 model_not_found) and
+  // the swe-1-6-slow degrade on the frozen snapshot — same model, four spellings,
+  // one of them silently free-tier. Targets are snapshot selectors.
+  'swe-2-0-medium': 'swe-2-medium',
+  'swe-2-0-high': 'swe-2-high',
+  'swe-2-0-max': 'swe-2-max',
   'deepseek-v4': 'deepseek-v4',
 
   // GPT-5.6 family (live catalog 2026-07-09, docs.devin.ai price table). Luna is
