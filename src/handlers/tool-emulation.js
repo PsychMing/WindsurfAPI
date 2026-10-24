@@ -459,11 +459,12 @@ export function pickToolDialect(modelKey, provider, route = null) {
   // Override with WINDSURFAPI_FORCE_GPT_NATIVE_DIALECT=1 to enable for
   // every route.
   //
-  // `gpt\d` is part of the family test because the compact spelling is a real
-  // client form (`gpt5.6-luna`, issue #244) and it resolves to the same selector
-  // as `gpt-5.6-luna`. Matching only `gpt-` sent a GPT-5.6 request down the XML
-  // path it refuses — the exact silent no-tool-call stall this branch prevents.
-  const isGpt = normalizedProvider === 'openai' || /^(?:gpt-|gpt\d|o3|o4)/i.test(dashed);
+  // `gpt-` covers the compact spelling too: the compact version split above turns
+  // `gpt5.6-luna` into `gpt-5-6-luna`, and a compact name the resolver cannot map
+  // (`gpt5x`) is never routed, so it needs no dialect of its own. Matching only
+  // the literal `gpt` family here would have sent a GPT-5.6 request down the XML
+  // path it refuses — the silent no-tool-call stall this branch prevents.
+  const isGpt = normalizedProvider === 'openai' || /^(?:gpt-|o3|o4)/i.test(dashed);
   if (isGpt) {
     const forceAll = process.env.WINDSURFAPI_FORCE_GPT_NATIVE_DIALECT === '1';
     // GPT-5.4+ refuses the <tool_call> XML protocol on OpenAI-spec tools
