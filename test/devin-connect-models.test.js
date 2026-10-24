@@ -43,6 +43,24 @@ describe('resolveConnectSelector', () => {
     }
   });
 
+  it('maps the dashed swe-2.0 effort spellings onto their swe-2 tiers', () => {
+    // Live-catalog probe (2026-10-25): `swe-2-0-medium` / `swe-2-0-high` /
+    // `swe-2-0-max` were the ONLY swe-2 spellings missing from SELECTOR_MAP —
+    // they resolved to {selector:null, mapped:false} against a live catalog and
+    // to the swe-1-6-slow degrade target against the frozen snapshot, while the
+    // unsuffixed `swe-2-0` row and the dotted `swe-2.0-{medium,high,max}` rows
+    // worked. Same model family, four spellings, one of them silently free-tier.
+    // Targets are verified present in src/data/devin-catalog-snapshot.json.
+    const cases = [
+      ['swe-2-0-medium', 'swe-2-medium'],
+      ['swe-2-0-high', 'swe-2-high'],
+      ['swe-2-0-max', 'swe-2-max'],
+    ];
+    for (const [name, selector] of cases) {
+      assert.deepEqual(resolveConnectSelector(name), { selector, mapped: true }, name);
+    }
+  });
+
   it('maps claude friendly names to their captured upstream selectors', () => {
     assert.equal(resolveConnectSelector('claude-opus-4.8').selector, 'claude-opus-4-8-medium');
     // Dashed bare form is a real catalog selector (base model) → resolves to itself;
