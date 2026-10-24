@@ -141,14 +141,26 @@ const SELECTOR_MAP = new Map(Object.entries({
   'swe-2.0-medium': 'swe-2-medium',
   'swe-2.0-high': 'swe-2-high',
   'swe-2.0-max': 'swe-2-max',
+  // Dashed spelling of the same aliases. The unsuffixed `swe-2-0` row above was
+  // the only dashed form present, so `swe-2-0-medium` / `-high` / `-max` missed
+  // every map lookup: mapped:false on a live catalog (400 model_not_found) and
+  // the swe-1-6-slow degrade on the frozen snapshot — same model, four spellings,
+  // one of them silently free-tier. Targets are snapshot selectors.
+  'swe-2-0-medium': 'swe-2-medium',
+  'swe-2-0-high': 'swe-2-high',
+  'swe-2-0-max': 'swe-2-max',
   'deepseek-v4': 'deepseek-v4',
 
   // GPT-5.6 family (live catalog 2026-07-09, docs.devin.ai price table). Luna is
   // the fastest/cheapest sibling. Bare, dash and compact forms (issue #244 verbatim
   // `gpt5.6-luna`) all default to -medium. Targets in the snapshot below.
+  // `gpt5-6-luna` is the fourth spelling of the same name: compact prefix AND a
+  // dashed minor. It was the one form missing, so it degraded to free while its
+  // three siblings resolved.
   'gpt-5.6-luna': 'gpt-5-6-luna-medium',
   'gpt-5-6-luna': 'gpt-5-6-luna-medium',
   'gpt5.6-luna': 'gpt-5-6-luna-medium',
+  'gpt5-6-luna': 'gpt-5-6-luna-medium',
 
   // Claude 5: fable/sonnet-5 already mapped above. Opus 5 (2026-07-23) added with
   // the family convention; bare `claude5` (issue #244) defaults to sonnet-5-medium.

@@ -750,7 +750,12 @@ export async function extractImages(contentBlocks) {
           }
           const parsed = parseDataUrl(url);
           if (parsed) await pushImage(images, parsed);
-        } else if (url.startsWith('https://') || url.startsWith('http://')) {
+        } else if (/^https?:\/\//i.test(url)) {
+          // Schemes are case-insensitive (RFC 3986 §3.1) and `new URL()` normalizes
+          // them, so a case-sensitive prefix test only SKIPPED the block: uppercase
+          // HTTPS never fetched, uppercase HTTP never reached the https-only gate —
+          // both vanished silently. The plaintext rejection still comes from
+          // validateImageUrl, unchanged.
           await pushImage(images, await fetchImageUrl(url));
         }
       } catch (e) { log.warn(`Image fetch failed: ${e.message}`); }

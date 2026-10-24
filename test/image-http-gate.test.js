@@ -188,4 +188,65 @@ describe('HTTP-IMAGE-GATE: Cascade extractImages', () => {
     assert.equal(images[0].base64_data, REAL_PNG.toString('base64'));
     assert.equal(images[0].mime_type, 'image/png');
   });
+
+  // Schemes are case-insensitive (RFC 3986 §3.1), and `new URL()` normalizes them
+  // anyway, so the only thing the case-sensitive `startsWith('https://')` gate did
+  // was SKIP the block: the image vanished with no fetch, no warning, and no trace
+  // other than the model answering as if no image had been attached. Uppercase
+  // HTTPS must fetch; uppercase HTTP must reach validateImageUrl and be rejected by
+  // the same https-only gate as lowercase (NOT be skipped silently).
+  it('fetches an uppercase-scheme HTTPS image_url instead of skipping the block', async () => {
+    const pending = extractImages([
+      { type: 'text', text: 'look' },
+      { type: 'image_url', image_url: { url: 'HTTPS://img.example.test/a.png' } },
+    ]);
+    assert.equal(transport.hops.length, 1, 'the scheme test must be case-insensitive');
+    assert.equal(transport.hops[0].url, HTTPS_URL, 'the dialed URL is the normalized https form');
+    const res = transport.respond(transport.hops[0], { status: 200, headers: PNG_HEADERS });
+    res.chunk(REAL_PNG);
+    res.end();
+
+    const { text, images } = await pending;
+    assert.equal(text, 'look');
+    assert.equal(images.length, 1, 'an uppercase HTTPS image must reach the model');
+  });
+
+  it('rejects an uppercase-scheme HTTP image_url through the plaintext gate', async () => {
+    const cap = captureWarns();
+    try {
+      const { images } = await extractImages([
+        { type: 'image_url', image_url: { url: 'HTTP://img.example.test/a.png?signature=secret' } },
+      ]);
+      assert.deepEqual(images, []);
+      assert.equal(transport.hops.length, 0, 'the URL must be rejected before http.get');
+      const logged = cap.warnings.join('\n');
+      assert.match(logged, /plaintext http/i,
+        'uppercase HTTP must hit the https-only rejection, not be silently skipped');
+      assert.doesNotMatch(logged, /signature=secret|\/a\.png/);
+    } finally { cap.restore(); }
+  });
+
+  it('Cascade image sources: uppercase scheme follows the same fetch/reject split', async () => {
+    // Same two cases through the `{type:'image', source:{type:'url'}}` shape, which
+    // has no scheme gate of its own — the control that the fix does not double-gate.
+    const pending = extractImages([
+      { type: 'image', source: { type: 'url', url: 'HtTpS://img.example.test/a.png' } },
+    ]);
+    assert.equal(transport.hops.length, 1);
+    const res = transport.respond(transport.hops[0], { status: 200, headers: PNG_HEADERS });
+    res.chunk(REAL_PNG);
+    res.end();
+    assert.equal((await pending).images.length, 1);
+
+    const cap = captureWarns();
+    try {
+      transport.reset();
+      const rejected = await extractImages([
+        { type: 'image', source: { type: 'url', url: 'HtTp://img.example.test/a.png' } },
+      ]);
+      assert.deepEqual(rejected.images, []);
+      assert.equal(transport.hops.length, 0);
+      assert.match(cap.warnings.join('\n'), /plaintext http/i);
+    } finally { cap.restore(); }
+  });
 });
