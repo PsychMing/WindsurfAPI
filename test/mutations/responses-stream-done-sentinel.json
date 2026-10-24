@@ -3,7 +3,7 @@
     "test/responses-stream-done-sentinel.test.js",
     "test/responses.test.js"
   ],
-  "expectBaselinePass": 55,
+  "expectBaselinePass": 57,
   "mutations": [
     {
       "name": "the original defect — no [DONE] sentinel at all, so the /v1/responses stream ends on the terminal event and a new-api relay drops it (and its usage block)",
