@@ -477,9 +477,10 @@ function safeLookup(hostname, options, callback) {
 
 // Plaintext http image bytes are a MITM surface: any middlebox between us and the
 // image host can replace what is later inlined into the model's context (#10 /
-// Cascade image blocks). https is the default. This escape hatch exists for a
-// trusted LAN mirror and is read live (exactly `1`, like net-safety's
-// trustedProxyHops) so an operator or a test can flip it per process.
+// Cascade image blocks). https is the default. This escape hatch re-allows
+// plaintext http for PUBLIC hosts only — private/loopback targets are rejected
+// by the SSRF check below regardless of the switch — and is read live (exactly
+// `1`, like net-safety's trustedProxyHops) so an operator or a test can flip it.
 function allowPlaintextImageUrls(env = process.env) {
   return env.WINDSURFAPI_ALLOW_HTTP_IMAGES === '1';
 }

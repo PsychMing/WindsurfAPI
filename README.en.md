@@ -468,9 +468,11 @@ locally installed Devin CLI ACP transport.
 Remote images are https-only by default: plaintext `http://` bytes can be replaced by any
 middlebox on the path, and those bytes are inlined verbatim into the model's context (`#10` /
 Cascade image blocks). A rejected fetch drops just that image and still sends the text, logging a
-warning with the host only (never the full URL, which may carry a signed query). To pull from a
-trusted LAN mirror, set `WINDSURFAPI_ALLOW_HTTP_IMAGES=1` explicitly to restore the old behaviour
-(both http and https); the default or any other value accepts https only. The check runs on every
+warning with the host only (never the full URL, which may carry a signed query).
+`WINDSURFAPI_ALLOW_HTTP_IMAGES=1` re-allows plaintext http for **public hosts only** (both http
+and https); the default or any other value accepts https only. Private/internal/loopback targets
+stay blocked regardless of the switch — the SSRF policy is separate and not relaxable (including
+per-hop DNS resolutions), so it cannot be used for a trusted LAN mirror. The check runs on every
 `fetchImageUrl` hop, so an https → http redirect is rejected too.
 
 ## Dashboard Features
