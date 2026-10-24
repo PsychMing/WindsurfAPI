@@ -107,6 +107,39 @@ describe('pickToolDialect — gpt_native gating (v2.0.62 #115)', () => {
     }
   });
 
+  it('strips a provider prefix before the family checks', () => {
+    // The selector resolver already strips `provider/` (resolveConnectSelector:
+    // `.replace(/^[a-z]+\//, '')`), so `zhipu/glm-5.1` and `anthropic/claude-…`
+    // route to the right upstream model. pickToolDialect saw the RAW name, so
+    // every prefixed name missed its family rule: `zhipu/glm-5.1` fell through
+    // the `startsWith('glm')` test to openai_json_xml (glm47-adjacent wrong
+    // answer, and glm-5.1 ignores XML markup), and a prefixed Kimi lost kimi_k2.
+    // The stall is silent — the model answers in plain text and the client waits
+    // for a tool call that never arrives.
+    assert.equal(pickToolDialect('zhipu/glm-5.1', 'zhipu'), 'gpt_native',
+      'prefixed GLM with the provider argument still gets the GLM family dialect');
+    assert.equal(pickToolDialect('zhipu/glm-5.1', null), 'gpt_native',
+      'the prefix alone must be enough — provider is optional');
+    assert.equal(pickToolDialect('moonshot/kimi-k2', null), 'kimi_k2',
+      'prefixed Kimi keeps its family dialect');
+    assert.equal(pickToolDialect('moonshot/kimi-k2.6', null), 'openai_json_xml',
+      'prefixed newer Kimi keeps the newer-SKU dialect');
+
+    // No family rule fires for Claude, and the prefix must not invent one.
+    assert.equal(pickToolDialect('anthropic/claude-sonnet-4.6', null), 'openai_json_xml');
+    assert.equal(pickToolDialect('anthropic/claude-sonnet-4.6', 'anthropic', 'responses'), 'openai_json_xml');
+    // GPT: prefixed and bare must agree, on both routes.
+    assert.equal(pickToolDialect('openai/gpt-4o-mini', null), 'openai_json_xml');
+    assert.equal(pickToolDialect('openai/gpt-5-4-medium', null), 'gpt_native',
+      'prefixed 5.4+ matches bare gpt-5-4-medium, which refuses XML on chat');
+    assert.equal(pickToolDialect('openai/gpt-4.1-mini', 'openai', 'responses'), 'gpt_native');
+
+    // Normalization happens ONCE: a second segment is not another provider prefix.
+    assert.equal(pickToolDialect('foo/bar/baz', null), 'openai_json_xml');
+    assert.equal(pickToolDialect('x/y/glm-5.1', null), 'openai_json_xml',
+      'stripping twice would expose glm-5.1 and wrongly return gpt_native');
+  });
+
   it('WINDSURFAPI_FORCE_GPT_NATIVE_DIALECT=1 forces gpt_native on chat route too', () => {
     const orig = process.env.WINDSURFAPI_FORCE_GPT_NATIVE_DIALECT;
     process.env.WINDSURFAPI_FORCE_GPT_NATIVE_DIALECT = '1';
