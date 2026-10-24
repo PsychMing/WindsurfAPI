@@ -155,6 +155,8 @@ describe('pickToolDialect — gpt_native gating (v2.0.62 #115)', () => {
       'the compact spelling routes to the same selector as gpt.5.6-luna');
     assert.equal(pickToolDialect('swe.1.5', null), 'kimi_k2',
       'dotted SWE-1.5 is the same model as swe-1.5, so it must not change dialect');
+    assert.equal(pickToolDialect('kimi.k2', null), 'kimi_k2',
+      'dotted Kimi K2 is the same model as kimi-k2 (vLLM markup)');
     // No family is invented by the collapse.
     assert.equal(pickToolDialect('claude.opus.4.8', null), 'openai_json_xml');
     assert.equal(pickToolDialect('glm-5.12', 'zhipu'), 'glm47');
