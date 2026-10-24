@@ -33,6 +33,8 @@
 
 ## 门禁
 
+（Windows gate 测于 `26759c4`；wire 与 mutation 测于 `6fb83b3`，其后仅 docs/版本号提交，无 src 变化。）
+
 - Windows `npm run gate`：**PASS**，`6,568 pass / 0 fail / 97 skip`（544 文件；6 inert 文件声明）。
 - Linux（HMC，Node v24.21.0）`npm run test:release` 双跑：**6,661 pass / 0 fail / 5 skip** ×2。
 - wire：对 `v3.10.0`（`3d26345`）比较 **270/270**，`base_head` 校验通过。
