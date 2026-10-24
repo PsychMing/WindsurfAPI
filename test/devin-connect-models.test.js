@@ -98,6 +98,92 @@ describe('resolveConnectSelector', () => {
     assert.equal(resolveConnectSelector('anthropic/claude-sonnet-4-5').selector, 'MODEL_PRIVATE_2');
   });
 
+  it('strips a hyphenated provider prefix (x-ai/, z-ai/) like a plain one', () => {
+    // S3 (alias matrix 2026-10-25): the strip rule was `/^[a-z]+\//`, which cannot
+    // match a hyphenated provider segment. Every `x-ai/...` spelling therefore
+    // missed every lookup and resolved to {selector:null, mapped:false} on a live
+    // catalog — a 400 model_not_found for a model the account can run — while
+    // `xai/…` and `openai/…` resolved. 313 probed rows across 48 families.
+    assert.deepEqual(resolveConnectSelector('x-ai/grok-4-5-low'),
+      { selector: 'grok-4-5-low', mapped: true });
+    assert.deepEqual(resolveConnectSelector('z-ai/glm-5.1'),
+      { selector: 'glm-5-2', mapped: true });
+    // Control: a plain prefix keeps working, and the strip stays SINGLE — in
+    // `x/y/glm-5.1` the second segment is part of the name, not another provider.
+    assert.deepEqual(resolveConnectSelector('xai/grok-4-6'),
+      { selector: 'grok-4-6-medium', mapped: true });
+    assert.deepEqual(resolveConnectSelector('x/y/glm-5.1'),
+      { selector: FREE_TIER_SELECTOR, mapped: false });
+  });
+
+  it('resolves compact gpt5.x / gemini3.x spellings through the version separator', () => {
+    // S4: only `gpt5.6-luna` carried a compact row (#244); every sibling shape
+    // resolved to nothing. The class is normalized rather than row-by-row,
+    // because v3.2.5 makes the map the ONLY alias entry point and speculative
+    // rows are forbidden.
+    assert.deepEqual(resolveConnectSelector('gpt5.5'), { selector: 'gpt-5-5-low', mapped: true });
+    assert.deepEqual(resolveConnectSelector('gemini3.5-flash'),
+      { selector: 'gemini-3-5-flash-medium', mapped: true });
+    assert.deepEqual(resolveConnectSelector('gpt5.4'), { selector: 'gpt-5-4-medium', mapped: true });
+    assert.deepEqual(resolveConnectSelector('gpt5.4-mini'),
+      { selector: 'gpt-5-4-mini-medium', mapped: true });
+    // Already-mapped compact spellings keep their target.
+    assert.deepEqual(resolveConnectSelector('gpt5.6-luna'),
+      { selector: 'gpt-5-6-luna-medium', mapped: true });
+    assert.deepEqual(resolveConnectSelector('gpt5-6-luna'),
+      { selector: 'gpt-5-6-luna-medium', mapped: true });
+    // `claude5` is a FAMILY shorthand, not a compact version. Splitting it would
+    // produce the nonexistent `claude-5` and silently degrade an alias that works
+    // today, so the normalization requires the `.` after the major digit.
+    assert.deepEqual(resolveConnectSelector('claude5'),
+      { selector: 'claude-sonnet-5-medium', mapped: true });
+  });
+
+  it('resolves enum selectors regardless of case or a provider prefix', () => {
+    // S5: the enum passthrough tested `/^MODEL_[A-Z0-9_]+$/` against the RAW name
+    // while the normalized fallthrough lowercases — so a lowercased or prefixed
+    // enum matched neither path (96 probed rows). The existence check is what
+    // keeps a bogus MODEL_* from being written raw to #21.
+    assert.deepEqual(resolveConnectSelector('openai/MODEL_GPT_5_2_LOW'),
+      { selector: 'MODEL_GPT_5_2_LOW', mapped: true });
+    assert.deepEqual(resolveConnectSelector('model_gpt_5_2_low'),
+      { selector: 'MODEL_GPT_5_2_LOW', mapped: true });
+    assert.deepEqual(resolveConnectSelector('MODEL_GPT_5_2_LOW'),
+      { selector: 'MODEL_GPT_5_2_LOW', mapped: true });
+    // An unknown enum still fails closed: it is never passed through raw.
+    assert.deepEqual(resolveConnectSelector('openai/model_gpt_9_9_ultra'),
+      { selector: FREE_TIER_SELECTOR, mapped: false });
+  });
+
+  it('resolves the bare grok-4-5 and inkling family names to their -medium tier', () => {
+    // Family residue from the alias matrix: these two bare names 400'd because the
+    // catalog exposes only tier selectors and the map had no row — while the
+    // sibling families grok-4-6 / grok-4-7 carry exactly such a row. The bare
+    // family alias defaulting to -medium is the map's existing convention
+    // (claude-fable-5-1, deepseek-v4-flash, gemini-3-7-flash, ...). Targets are
+    // real snapshot selectors.
+    assert.deepEqual(resolveConnectSelector('grok-4-5'),
+      { selector: 'grok-4-5-medium', mapped: true });
+    assert.deepEqual(resolveConnectSelector('inkling'),
+      { selector: 'inkling-medium', mapped: true });
+  });
+
+  it('pins the known prefix asymmetry for a dotted family alias (P2-1)', () => {
+    // KNOWN ASYMMETRY, pinned deliberately. The alias map is consulted on the RAW
+    // name before any normalization, so a dotted MAP KEY can carry a curated
+    // target its prefixed spelling never reaches — the prefix then changes which
+    // upstream model runs. `claude-sonnet-4.6` is such a key (curated -thinking);
+    // `anthropic/claude-sonnet-4.6` misses the raw lookup, normalizes to
+    // `claude-sonnet-4-6` (the base catalog selector), and runs the base model.
+    // The dialect comment therefore must not claim "the prefix never changes the
+    // model". Fixing the asymmetry is out of scope here; this test makes any
+    // drift in either direction a deliberate change.
+    assert.equal(resolveConnectSelector('claude-sonnet-4.6').selector,
+      'claude-sonnet-4-6-thinking');
+    assert.equal(resolveConnectSelector('anthropic/claude-sonnet-4.6').selector,
+      'claude-sonnet-4-6');
+  });
+
   it('passes enum-form selectors through verbatim', () => {
     assert.deepEqual(resolveConnectSelector('MODEL_CLAUDE_4_5_OPUS_THINKING'),
       { selector: 'MODEL_CLAUDE_4_5_OPUS_THINKING', mapped: true });
@@ -286,6 +372,38 @@ describe('resolveConnectSelector — live catalog (audit 2026-07-12 snapshot sta
     const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-e`);
     m.setLiveCatalogSelectors([{ selector: 'qwen-3' }]);
     assert.equal(m.resolveConnectSelector('totally-fake-model-xyz').mapped, false);
+  });
+
+  it('resolves the new alias spellings against an authoritative live catalog (P3-d)', async () => {
+    // The S3/S4/S5 spellings must work once a sync lands, not only against the
+    // frozen snapshot: a live set retires the snapshot, so a target missing from
+    // it is a 400. The live set is set EXPLICITLY to exactly the targets these
+    // spellings need, so a resolution that still leaned on the snapshot (or on a
+    // map target the account cannot reach) would fail here.
+    const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-p3d`);
+    m.setLiveCatalogSelectors([
+      { selector: 'grok-4-5-low', provider: 'xai' },
+      { selector: 'grok-4-5-medium', provider: 'xai' },
+      { selector: 'glm-5-2', provider: 'zhipu' },
+      { selector: 'gpt-5-5-low', provider: 'openai' },
+      { selector: 'gemini-3-5-flash-medium', provider: 'google' },
+      { selector: 'inkling-medium', provider: 'thinking_machines' },
+      { selector: 'MODEL_GPT_5_2_LOW', provider: 'openai' },
+    ]);
+    assert.equal(m.hasLiveCatalog(), true);
+    const cases = [
+      ['x-ai/grok-4-5-low', 'grok-4-5-low'],
+      ['grok-4-5', 'grok-4-5-medium'],
+      ['z-ai/glm-5.1', 'glm-5-2'],
+      ['gpt5.5', 'gpt-5-5-low'],
+      ['gemini3.5-flash', 'gemini-3-5-flash-medium'],
+      ['inkling', 'inkling-medium'],
+      ['openai/MODEL_GPT_5_2_LOW', 'MODEL_GPT_5_2_LOW'],
+    ];
+    for (const [name, selector] of cases) {
+      assert.deepEqual(m.resolveConnectSelector(name, { warnOnFallback: false }),
+        { selector, mapped: true }, name);
+    }
   });
 });
 

@@ -197,10 +197,16 @@ const SELECTOR_MAP = new Map(Object.entries({
   'gpt-6-astra': 'gpt-6-astra-medium',
   'gpt-6-luna': 'gpt-6-luna-medium',
   'gpt-6-sol': 'gpt-6-sol-medium',
+  // Bare family names. The catalog exposes only effort tiers for these two, so a
+  // client sending the family name (the shape grok-4-6 / grok-4-7 already accept)
+  // got a 400 while the siblings worked. Same convention as the rest of this map:
+  // a bare family alias defaults to -medium. Targets are snapshot selectors.
+  'grok-4-5': 'grok-4-5-medium',
   'grok-4-6': 'grok-4-6-medium',
   'grok-4.6': 'grok-4-6-medium',
   'grok-4-7': 'grok-4-7-medium',
   'grok-4.7': 'grok-4-7-medium',
+  'inkling': 'inkling-medium',
   'kimi-k3': 'kimi-k3-high',
   'nemotron-3-ultra': 'nemotron-3-ultra-medium',
 }));
@@ -487,9 +493,30 @@ export function resolveConnectSelector(model, {
     return hit(directTarget);
   }
 
-  // Normalize: lowercase, collapse dots to dashes, strip a leading provider
-  // prefix some clients prepend (e.g. "anthropic/claude-...").
-  const norm = raw.toLowerCase().replace(/^[a-z]+\//, '').replace(/\./g, '-');
+  // Normalize: lowercase, strip a leading provider prefix some clients prepend
+  // (e.g. "anthropic/claude-..."), then collapse dots to dashes.
+  //
+  // The prefix segment may contain digits and hyphens: real provider ids include
+  // `x-ai` and `z-ai`, and the old `/^[a-z]+\//` could not match them, so every
+  // `x-ai/...` spelling missed every lookup and failed model_not_found against a
+  // live catalog (313 probed rows across 48 families). Strip exactly ONE segment:
+  // in `x/y/glm-5.1` the second segment is part of the name. pickToolDialect
+  // applies this same rule before its family checks (verifier P2-2) — keep them
+  // identical.
+  const stripped = raw.toLowerCase().replace(/^[a-z0-9][a-z0-9-]*\//, '');
+  // Compact version spellings (`gpt5.5`, `gpt5.4-mini`, `gemini3.5-flash`) are
+  // the same model written without the separator after the family name, but the
+  // catalog and the alias map only carry the separated forms, so they used to
+  // resolve to nothing while their dotted siblings resolved (S4: 10 families).
+  // Split at the version separator BEFORE the map lookup.
+  //
+  // The `.` is REQUIRED. Without it the rule also rewrites the family shorthand
+  // `claude5` into the nonexistent `claude-5`, silently degrading an alias that
+  // works today (probed: it is the only SELECTOR_MAP key the wide rule would
+  // break). A compact spelling without a minor version is a family name, not a
+  // version, so it must keep its existing alias.
+  const compact = stripped.replace(/^(gpt|claude|gemini)(\d)\./, '$1-$2.');
+  const norm = compact.replace(/\./g, '-');
   const normalizedTarget = SELECTOR_MAP.get(norm);
   if (normalizedTarget && isKnownConnectSelector(normalizedTarget, { allowSnapshotFallback })) {
     return hit(normalizedTarget);
@@ -503,12 +530,16 @@ export function resolveConnectSelector(model, {
     return hit(norm);
   }
 
-  // Enum-form passthrough — ONLY when the catalog actually exposes it. A blind
-  // MODEL_* passthrough is what re-introduces UPSTREAM_INTERNAL on drift: any
-  // bogus MODEL_DOES_NOT_EXIST would otherwise be written raw to #21.
-  if (/^MODEL_[A-Z0-9_]+$/.test(raw)
-    && isKnownConnectSelector(raw, { allowSnapshotFallback })) {
-    return hit(raw);
+  // Enum-form passthrough — ONLY when the catalog actually exposes it. Test the
+  // SHAPE on the normalized key and look the UPPERCASE form up: a client may copy
+  // the enum verbatim (MODEL_GPT_5_2_LOW), lowercase it, or prepend a provider
+  // prefix, and the old raw-string test let only the first of those through
+  // (S5: 96 probed rows). A blind MODEL_* passthrough is what re-introduces
+  // UPSTREAM_INTERNAL on drift, so the existence check stays.
+  const enumForm = norm.toUpperCase();
+  if (/^MODEL_[A-Z0-9_]+$/.test(enumForm)
+    && isKnownConnectSelector(enumForm, { allowSnapshotFallback })) {
+    return hit(enumForm);
   }
 
   // A verbatim dash-form selector that IS in the authoritative catalog but is
