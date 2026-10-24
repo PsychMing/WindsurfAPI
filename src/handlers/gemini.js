@@ -362,6 +362,12 @@ export function geminiToOpenAI(body, modelFromPath) {
     ...(tools.length ? { tools } : {}),
     ...(gc.temperature != null ? { temperature: gc.temperature } : {}),
     ...(gc.topP != null ? { top_p: gc.topP } : {}),
+    // F5 (DataAuditTools): `topK` is Gemini's flagship sampling knob and the
+    // chat DEVIN_CONNECT path consumes the internal `top_k` into
+    // CompletionConfig.topK — /v1/messages already forwards the same field.
+    // Dropping it here made the caller's determinism/quality setting a silent
+    // no-op on the one surface that names it topK.
+    ...(gc.topK != null ? { top_k: gc.topK } : {}),
     ...(Array.isArray(gc.stopSequences) && gc.stopSequences.length ? { stop: gc.stopSequences } : {}),
     ...(toolChoice ? { tool_choice: toolChoice } : {}),
     ...(thinking ? { thinking } : {}),
@@ -845,6 +851,21 @@ export function geminiError(status, internalType, message) {
 // opts.alt    : 'sse' → SSE wire format; otherwise JSON-array wire format
 export async function handleGemini(model, body, context = {}, { stream = false, alt = null } = {}) {
   const requestedModel = model || body?.model || 'gemini-2.5-pro';
+  // F2 (DataAuditTools): `generationConfig.candidateCount` is the Gemini
+  // spelling of OpenAI's `n`, and the chat route already refuses n>1 because
+  // the upstream returns exactly one choice (chat.js "O2"). geminiToOpenAI
+  // never read the field, so that gate was unreachable from this surface: a
+  // caller sampling/voting across candidates got a 200 with a single candidate
+  // and read `candidates[1..]` as undefined — a subtler failure than a 400.
+  // Mirror the chat gate in Gemini vocabulary, before any model turn.
+  const candidateCount = body?.generationConfig?.candidateCount;
+  if (candidateCount != null && candidateCount !== 1) {
+    return geminiError(
+      400,
+      null,
+      'This proxy only supports candidateCount=1. The upstream backend returns a single candidate per request; set generationConfig.candidateCount to 1 (or omit it).',
+    );
+  }
   const openaiBody = geminiToOpenAI(body, requestedModel);
   const toolNameMap = openaiBody.__toolNameMap || null;
   delete openaiBody.__toolNameMap;

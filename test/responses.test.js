@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { handleResponses, responsesToChat, chatToResponse } from '../src/handlers/responses.js';
+import { handleChatCompletions, __setConnectDeps, __resetConnectDeps } from '../src/handlers/chat.js';
 
 function chatChunk(chunk) {
   return `data: ${JSON.stringify(chunk)}\n\n`;
@@ -1567,5 +1568,126 @@ describe('H-1 (audit 2026-07-13): input_image string image_url normalizes to obj
     });
     assert.equal(messages[0].content, JSON.stringify(['file1.txt', 'file2.txt']));
     assert.equal(messages[1].content, JSON.stringify([{ name: 'alice' }, { name: 'bob' }]));
+  });
+});
+
+describe('parallel_tool_calls on /v1/responses (F1, DataAuditTools)', () => {
+  // The Responses surface accepted `parallel_tool_calls` and never read it, so
+  // the chat route's honesty gate (400 unsupported_parameter when the #11
+  // passthrough is off) was unreachable from here. Forwarding the field is the
+  // whole fix: the chat handler owns the decision and honours it when
+  // DEVIN_CONNECT_TOOL_CHOICE=1.
+  it('forwards the field instead of dropping it', () => {
+    assert.equal(responsesToChat({ input: 'hi', parallel_tool_calls: false }).parallel_tool_calls, false);
+    assert.equal(responsesToChat({ input: 'hi', parallel_tool_calls: true }).parallel_tool_calls, true);
+    assert.equal('parallel_tool_calls' in responsesToChat({ input: 'hi' }), false,
+      'absent stays absent — the chat default is unchanged');
+  });
+
+  it('hands parallel_tool_calls:false to the chat handler', async () => {
+    let captured = null;
+    const result = await handleResponses({
+      model: 'claude-sonnet-4.6',
+      input: 'hi',
+      parallel_tool_calls: false,
+    }, {
+      async handleChatCompletions(body) {
+        captured = body;
+        return {
+          status: 200,
+          body: {
+            created: 123,
+            model: body.model,
+            choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          },
+        };
+      },
+    });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(captured.parallel_tool_calls, false, 'the chat gate must be able to see the hint');
+  });
+
+  it('surfaces the chat route 400 for parallel_tool_calls:false when the passthrough is off', async () => {
+    const prevConnect = process.env.DEVIN_CONNECT;
+    const prevChoice = process.env.DEVIN_CONNECT_TOOL_CHOICE;
+    process.env.DEVIN_CONNECT = '1';
+    delete process.env.DEVIN_CONNECT_TOOL_CHOICE;
+    try {
+      const result = await handleResponses({
+        model: 'claude-5-fable-medium',
+        input: 'hi',
+        parallel_tool_calls: false,
+      }, { handleChatCompletions });
+      assert.equal(result.status, 400, JSON.stringify(result.body));
+      assert.equal(result.body.error.code, 'unsupported_parameter');
+      assert.equal(result.body.error.param, 'parallel_tool_calls');
+    } finally {
+      if (prevConnect === undefined) delete process.env.DEVIN_CONNECT;
+      else process.env.DEVIN_CONNECT = prevConnect;
+      if (prevChoice === undefined) delete process.env.DEVIN_CONNECT_TOOL_CHOICE;
+      else process.env.DEVIN_CONNECT_TOOL_CHOICE = prevChoice;
+    }
+  });
+});
+
+describe('parallel_tool_calls honoured path through /v1/responses (F1)', () => {
+  const okChat = () => ({
+    status: 200,
+    body: {
+      id: 'chatcmpl-test',
+      model: 'claude-5-fable-medium',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+    },
+  });
+
+  it('passes parallel_tool_calls:true through to the connect layer unchanged', async () => {
+    const prevConnect = process.env.DEVIN_CONNECT;
+    const prevChoice = process.env.DEVIN_CONNECT_TOOL_CHOICE;
+    process.env.DEVIN_CONNECT = '1';
+    delete process.env.DEVIN_CONNECT_TOOL_CHOICE;
+    const seen = [];
+    __setConnectDeps({ toChatCompletion: async (params) => { seen.push(params); return okChat(); } });
+    try {
+      const result = await handleResponses({
+        model: 'claude-5-fable-medium',
+        input: 'hi',
+        parallel_tool_calls: true,
+      }, { handleChatCompletions });
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(seen.length, 1, 'exactly one connect turn');
+      assert.equal(seen[0].parallelToolCalls, true, 'the caller value survives the Responses translation');
+    } finally {
+      __resetConnectDeps();
+      if (prevConnect === undefined) delete process.env.DEVIN_CONNECT;
+      else process.env.DEVIN_CONNECT = prevConnect;
+      if (prevChoice === undefined) delete process.env.DEVIN_CONNECT_TOOL_CHOICE;
+      else process.env.DEVIN_CONNECT_TOOL_CHOICE = prevChoice;
+    }
+  });
+
+  it('honours parallel_tool_calls:false when DEVIN_CONNECT_TOOL_CHOICE=1', async () => {
+    const prevConnect = process.env.DEVIN_CONNECT;
+    const prevChoice = process.env.DEVIN_CONNECT_TOOL_CHOICE;
+    process.env.DEVIN_CONNECT = '1';
+    process.env.DEVIN_CONNECT_TOOL_CHOICE = '1';
+    const seen = [];
+    __setConnectDeps({ toChatCompletion: async (params) => { seen.push(params); return okChat(); } });
+    try {
+      const result = await handleResponses({
+        model: 'claude-5-fable-medium',
+        input: 'hi',
+        parallel_tool_calls: false,
+      }, { handleChatCompletions });
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0].parallelToolCalls, false,
+        'the hint must reach buildGetChatMessageRequest, not stop at the Responses allow-list');
+    } finally {
+      __resetConnectDeps();
+      if (prevConnect === undefined) delete process.env.DEVIN_CONNECT;
+      else process.env.DEVIN_CONNECT = prevConnect;
+      if (prevChoice === undefined) delete process.env.DEVIN_CONNECT_TOOL_CHOICE;
+      else process.env.DEVIN_CONNECT_TOOL_CHOICE = prevChoice;
+    }
   });
 });

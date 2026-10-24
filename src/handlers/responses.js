@@ -656,6 +656,13 @@ export function responsesToChat(body) {
     ...(tools.length ? { tools } : {}),
     ...(body.temperature != null ? { temperature: body.temperature } : {}),
     ...(body.top_p != null ? { top_p: body.top_p } : {}),
+    // F1 (DataAuditTools): `parallel_tool_calls` is a first-class Responses
+    // parameter and a caller CORRECTNESS hint ("emit at most one tool call per
+    // turn"). This allow-list never read it, so the chat route's gate — which
+    // refuses :false with a precise 400 when the connect #11 passthrough is off,
+    // and honours it when DEVIN_CONNECT_TOOL_CHOICE=1 — was unreachable from this
+    // surface. Forward the caller's value; the chat handler owns the decision.
+    ...(body.parallel_tool_calls != null ? { parallel_tool_calls: body.parallel_tool_calls } : {}),
     ...(forwardedToolChoice != null ? { tool_choice: forwardedToolChoice } : {}),
     ...(responseFormat ? { response_format: responseFormat } : {}),
     // Internal, stripped before the upstream call (same convention as __route).
