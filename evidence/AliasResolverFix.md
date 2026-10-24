@@ -46,6 +46,7 @@ Before = base `0cae51b` (`node --input-type=module` probe, `warnOnFallback:false
 | S2 | `gpt5.6-luna` | `openai_json_xml` | `gpt_native` |
 | S2 | `swe.1.5` | `openai_json_xml` | `kimi_k2` (same as `swe-1.5`) |
 | S2 | `claude.opus.4.8` | `openai_json_xml` | unchanged |
+| S2 | `kimi.k2` | `openai_json_xml` | `kimi_k2` (same as `kimi-k2`) |
 | S2 | `glm-5.12` / `glm-5-12` | `glm47` | unchanged |
 | S7 | `swe-1-5` | `kimi_k2` (target: `openai_json_xml`) | `kimi_k2` (target: `kimi_k2`) |
 | S7 | `MODEL_SWE_1_5_SLOW` | `openai_json_xml` | `kimi_k2` |
@@ -73,6 +74,10 @@ Command (every run): `node --import ./test/setup-env.mjs --test <files>` — nev
 | after-probe table | `AliasResolverFix-logs/after-probe.log` | the "after" column above |
 
 The P2-1 test is green on both sides by design: it pins current behaviour, it does not fix it.
+
+The acceptance and affected-suite runs were repeated at the final HEAD (`ddcd57e`). The full-suite runs
+were taken at `0476e18`; every later commit touches only test assertions, the evidence file and the
+mutation spec — no `src/` bytes changed after that run.
 
 ## S7 — why this direction (and what is not proven)
 
@@ -114,7 +119,7 @@ Specs touching `src/devin-connect-models.js` or `src/handlers/tool-emulation.js`
 
 | spec | mutations | exit |
 |---|---|---|
-| `test/mutations/alias-resolver-systemic.json` (**new**) | 11 | 0 |
+| `test/mutations/alias-resolver-systemic.json` (**new**) | 12 | 0 |
 | `test/mutations/connect-catalog-hotfix.json` | 26 | 0 |
 | `test/mutations/devin-connect-warning-cache.json` | 4 | 0 |
 | `test/mutations/interleave-parallel-tool-history.json` | 3 | 0 |
@@ -130,9 +135,10 @@ only, no mutation changed).
 
 The new spec covers each fix plus its over-reach: S3 strip reverted; S4 split removed; S4 split without
 the required `.`; S5 raw-name enum test; S5 existence gate dropped; S2 dot collapse removed; S2 compact
-split removed in the dialect; S7 enum mapping removed; P2-2 strip widened; `grok-4-5` row removed;
-`inkling` row removed. The first run of the over-reach mutation **survived** — the raw map lookup shields
-the exact lowercase key, so `claude5` never reaches the normalization step. Added the uppercased
+split removed in the dialect; S2 Kimi SKU check reverted to the literal spelling; S7 enum mapping
+removed; P2-2 strip widened; `grok-4-5` row removed; `inkling` row removed — 96 mutations across the
+nine specs, all as expected. The first run of the over-reach mutation **survived** — the raw map lookup
+shields the exact lowercase key, so `claude5` never reaches the normalization step. Added the uppercased
 `Claude5` assertion (verified to resolve at base) and the mutation is now caught.
 
 ## Out of scope / not done
