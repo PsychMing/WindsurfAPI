@@ -564,9 +564,11 @@ host，不记可能带签名的完整 URL）并只丢这一张图，文本照常
 
 远程图片默认只接受 `https://`：明文 `http://` 的图片字节可被链路上任何中间人替换，而它会
 原样进入模型上下文（`#10` / Cascade 图片块）。被拒时只丢这一张图、文本照发，并打一条只含
-host 的 warn（完整 URL 可能带签名 query，不记录）。若确实要从可信内网镜像取图，显式设
-`WINDSURFAPI_ALLOW_HTTP_IMAGES=1` 恢复旧行为（http 与 https 都收）；默认或任何其他值都只收
-https。该检查在 `fetchImageUrl` 的每一跳上执行，所以 https 首跳重定向到 http 同样会被拒。
+host 的 warn（完整 URL 可能带签名 query，不记录）。`WINDSURFAPI_ALLOW_HTTP_IMAGES=1` 只恢复
+**公网主机**的明文 http（http 与 https 都收）；默认或任何其他值只收 https。私网/回环地址
+不受该开关影响，始终被独立的 SSRF 策略拒绝（`localhost`、私网 IP，以及每一跳解析到私网地址
+的情况都包括在内），所以它不能用来接可信内网图床。该检查在 `fetchImageUrl` 的每一跳上执行，
+所以 https 首跳重定向到 http 同样会被拒。
 
 ## Dashboard 功能面板
 
