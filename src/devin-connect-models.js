@@ -154,9 +154,13 @@ const SELECTOR_MAP = new Map(Object.entries({
   // GPT-5.6 family (live catalog 2026-07-09, docs.devin.ai price table). Luna is
   // the fastest/cheapest sibling. Bare, dash and compact forms (issue #244 verbatim
   // `gpt5.6-luna`) all default to -medium. Targets in the snapshot below.
+  // `gpt5-6-luna` is the fourth spelling of the same name: compact prefix AND a
+  // dashed minor. It was the one form missing, so it degraded to free while its
+  // three siblings resolved.
   'gpt-5.6-luna': 'gpt-5-6-luna-medium',
   'gpt-5-6-luna': 'gpt-5-6-luna-medium',
   'gpt5.6-luna': 'gpt-5-6-luna-medium',
+  'gpt5-6-luna': 'gpt-5-6-luna-medium',
 
   // Claude 5: fable/sonnet-5 already mapped above. Opus 5 (2026-07-23) added with
   // the family convention; bare `claude5` (issue #244) defaults to sonnet-5-medium.
