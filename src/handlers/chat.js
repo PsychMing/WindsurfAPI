@@ -22,6 +22,7 @@ import { isExperimentalEnabled, getBreakerTunable, strictUsageTotal } from '../r
 import { budgetExceededError, isBudgetExceededError } from '../request-budget.js';
 import { checkOutboundHistory, historyBudgetErrorMessage, HISTORY_BUDGET_ERROR_CODE } from '../history-budget.js';
 import { neutralizeClientIdentity, neutralizeMessageContent } from './identity-neutralize.js';
+import { chatServerSideToolUnsupported, firstUnsupportedServerToolType, forEachTool } from '../server-side-tools.js';
 import { normalizeStop, applyStop, StopSequenceGate } from '../stop-sequences.js';
 import { normalizeToolCallArgs, recordArgRepair } from './cline-compat.js';
 
@@ -3151,6 +3152,47 @@ async function _handleChatCompletionsInner(body, context = {}) {
     tool_choice,
     response_format,
   } = body;
+  // F3 (evidence/DataAuditTools/findings.md): this route had no tool-type gate at
+  // all. Every consumer filters `type === 'function'` — the text preamble in
+  // tool-emulation.js and the native #10 ToolDef encoder in devin-connect.js — so
+  // a hosted (`web_search*`) or server-executed (`file_search`,
+  // `code_interpreter`, `mcp`, …) tool was dropped in silence: the turn ran and
+  // the caller got a 200 with the tool gone. /v1/responses already refuses the
+  // same payload; use its predicates (../server-side-tools.js) so the two
+  // surfaces cannot drift, and refuse HERE — before prompt assembly, account
+  // acquisition, or any upstream call. One rejected tool poisons the request:
+  // the caller declared an executor this proxy does not have, and running the
+  // turn would hide that.
+  if (Array.isArray(tools)) {
+    const rejectedType = firstUnsupportedServerToolType(tools);
+    if (rejectedType) {
+      const err = chatServerSideToolUnsupported(rejectedType, 'tools');
+      log.warn(`Chat[${reqId}]: rejecting server-executed tool type ${safeLogValue(rejectedType)} — this proxy has no executor for it (400, no upstream call)`);
+      return {
+        status: 400,
+        body: {
+          error: {
+            message: err.message,
+            type: 'invalid_request_error',
+            param: err.param,
+            code: err.code,
+          },
+        },
+      };
+    }
+    // Everything below the refusal stays lenient on purpose: an unknown type is
+    // not a server-executed one, and clients do send dialect entries this
+    // surface does not implement. Keep the historical 200, but stop dropping
+    // them without a trace — that silence is what made F3 invisible.
+    forEachTool(tools, (tool) => {
+      if (typeof tool.type !== 'string' || tool.type === 'function') return;
+      if (tool.type === 'custom') {
+        log.info(`Chat[${reqId}]: tool type "custom" (${safeLogValue(tool.name || tool.function?.name || 'unnamed')}) is not executed by this surface — dropping it before the upstream call`);
+        return;
+      }
+      log.warn(`Chat[${reqId}]: dropping unknown tool type ${safeLogValue(tool.type)} — the chat surface only executes client-declared function tools`);
+    });
+  }
   // O3: honor `max_completion_tokens`, the field newer OpenAI SDKs and the o1/o3/
   // gpt-5 reasoning families send in place of `max_tokens` (which those models
   // reject outright). Accept either for compatibility and prefer the modern name
