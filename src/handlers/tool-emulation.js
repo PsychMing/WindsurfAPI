@@ -352,7 +352,16 @@ export function pickToolDialect(modelKey, provider, route = null) {
   if (forced && /^(glm47|openai_json_xml|kimi_k2|gpt_native)$/.test(forced)) return forced;
   if (forced) log.warn(`pickToolDialect: unrecognized WINDSURFAPI_FORCE_TOOL_DIALECT value ${JSON.stringify(forced)} — ignored, normal routing applies`);
   const normalizedProvider = String(provider || '').toLowerCase();
-  const normalizedModelKey = String(modelKey || '').toLowerCase();
+  // A client may name the model with a provider prefix (`zhipu/glm-5.1`,
+  // `anthropic/claude-sonnet-4.6`). resolveConnectSelector strips exactly one
+  // such segment (`/^[a-z]+\//`) before resolving, so the prefix does not change
+  // which upstream model runs — and therefore must not change the dialect.
+  // Without this strip every prefixed name missed its family rule: `zhipu/glm-5.1`
+  // fell past `startsWith('glm')` to glm47 (the markup that model IGNORES, so it
+  // answers in plain text and the client waits for a tool call forever), and
+  // prefixed Kimi lost kimi_k2. Strip ONCE only: in `x/y/glm-5.1` the second
+  // segment is part of the name, not another provider.
+  const normalizedModelKey = String(modelKey || '').toLowerCase().replace(/^[a-z][a-z0-9_-]*\//, '');
   if (normalizedProvider === 'zhipu' || normalizedModelKey.startsWith('glm')) {
     // v2.0.72 — glm-5.2 probe: the glm47 XML markup dialect is ignored and
     // the model answers in plain text. The gpt_native function_call JSON
