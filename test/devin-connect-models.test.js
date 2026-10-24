@@ -137,6 +137,11 @@ describe('resolveConnectSelector', () => {
     // today, so the normalization requires the `.` after the major digit.
     assert.deepEqual(resolveConnectSelector('claude5'),
       { selector: 'claude-sonnet-5-medium', mapped: true });
+    // Case-insensitively too: the exact lowercase key is shielded by the raw map
+    // lookup, so only the uppercased spelling exercises the normalization step.
+    // A rule without the `.` rewrites `Claude5` into `claude-5` and degrades it.
+    assert.deepEqual(resolveConnectSelector('Claude5'),
+      { selector: 'claude-sonnet-5-medium', mapped: true });
   });
 
   it('resolves enum selectors regardless of case or a provider prefix', () => {
