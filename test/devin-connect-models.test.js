@@ -61,6 +61,23 @@ describe('resolveConnectSelector', () => {
     }
   });
 
+  it('maps the compact gpt5-6-luna spelling (no dash after gpt)', () => {
+    // Issue #244 carried `gpt5.6-luna`, which the map covers; the sibling
+    // compact-dash spelling `gpt5-6-luna` was not covered and missed every
+    // lookup, so a client asking for Luna got the free-tier degrade. The target
+    // (gpt-5-6-luna-medium) is a real snapshot selector; keep all four
+    // spellings in lockstep, the same way the gpt-5.5 family is kept.
+    const cases = [
+      ['gpt-5.6-luna', 'gpt-5-6-luna-medium'],
+      ['gpt-5-6-luna', 'gpt-5-6-luna-medium'],
+      ['gpt5.6-luna', 'gpt-5-6-luna-medium'],
+      ['gpt5-6-luna', 'gpt-5-6-luna-medium'],
+    ];
+    for (const [name, selector] of cases) {
+      assert.deepEqual(resolveConnectSelector(name), { selector, mapped: true }, name);
+    }
+  });
+
   it('maps claude friendly names to their captured upstream selectors', () => {
     assert.equal(resolveConnectSelector('claude-opus-4.8').selector, 'claude-opus-4-8-medium');
     // Dashed bare form is a real catalog selector (base model) → resolves to itself;
