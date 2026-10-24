@@ -35,10 +35,10 @@
 
 ## 门禁
 
-（Windows gate 测于 `26759c4`；wire 与 mutation 测于 `6fb83b3`，其后仅 docs/版本号提交，无 src 变化。）
+（全部测于 `a317f0c`——复审修复合入后的最终树。）
 
-- Windows `npm run gate`：**PASS**，`6,568 pass / 0 fail / 97 skip`（544 文件；6 inert 文件声明）。
-- Linux（HMC，Node v24.21.0）`npm run test:release`：**6,661 pass / 0 fail / 5 skip**，三个不同 HEAD 各跑一次全绿；更早的一次（`b85fc10`）有 1 个失败，`detach-ls-pool-pressure` 的假 LS spawn 撞上 `EADDRINUSE 127.0.0.1:42100`（同轮更早还有 ENOSPC），单独复跑与之后三次全量均绿（`evidence/3101-pool-pressure-rerun.log`）。
+- Windows `npm run gate`：**PASS**，`6,570 pass / 0 fail / 97 skip`（544 文件，6,667 tests；6 inert 文件声明）。
+- Linux（HMC，Node v24.21.0）`npm run test:release`：**6,663 pass / 0 fail / 5 skip**（6,668 tests），最终树与两个前序 HEAD 各跑一次全绿；更早的一次（`b85fc10`）有 1 个失败，`detach-ls-pool-pressure` 的假 LS spawn 撞上 `EADDRINUSE 127.0.0.1:42100`（同轮更早还有 ENOSPC），单独复跑与之后三次全量均绿（`evidence/3101-pool-pressure-rerun.log`）。
 - wire：对 `v3.10.0`（`3d26345`）比较 **270/270**，`base_head` 校验通过。
 - mutation：**90/90 spec exit 0**（含本次新增/重钉的 `remote-image-inline`、四个 responses 规格）。
 - 三 lane 交叉干扰套件（10 文件 / 234 tests）全绿后才进全量门禁（`evidence/3101-crosslane-suite.log`）。
