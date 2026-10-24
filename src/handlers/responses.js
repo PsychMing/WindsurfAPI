@@ -14,6 +14,13 @@ import { SseFramer } from '../sse-framer.js';
 import { buildToolNameMap, restoreToolName } from '../tool-names.js';
 import { createToolIdAllocator, normalizeToolIdsInMessages, sanitizeToolId, toolHygieneEnabled } from '../tool-ids.js';
 import { normalizeHistoryTail } from '../history-normalize.js';
+import {
+  forEachTool,
+  hostedSearchUnsupported,
+  isHostedSearchType,
+  isServerSideToolType,
+  serverSideToolUnsupported,
+} from '../server-side-tools.js';
 
 function genResponseId() {
   return 'resp_' + randomUUID().replace(/-/g, '').slice(0, 24);
@@ -111,103 +118,8 @@ function normalizeMessageContent(content, { toolOutput = false } = {}) {
   return out.length ? out : '';
 }
 
-// Server-executed tools are the ones whose execution lives on the server side,
-// not the client's: file_search, computer_use_preview, mcp, code_interpreter,
-// image_generation, local_shell, shell and the hosted apply_patch. This proxy
-// has no executor for any of them — each needs its own service implementation —
-// so they are refused up front with an actionable 400 (see
-// assertNoServerSideTools).
-//
-// Refusing is the point: dropping them — silently for the three oldest types,
-// through the `unknown tool type` catch-all for every later one — let a client
-// declare a server-executed tool, receive a normal answer, and never learn the
-// tool did not exist. The one ambiguity is apply_patch: `{type:'apply_patch'}`
-// is the hosted tool and is refused, while `{type:'function', name:'apply_patch'}`
-// is the client-run tool codex clients declare and passes through untouched.
-// Only `tool.type` decides.
-//
-// Hosted search (web_search / web_search_preview) is rejected the same way and
-// is NOT flattened into a function tool: a client that declares it is asking
-// THIS SERVER to run searches, and this proxy has no hosted-search executor
-// (no GetWebSearchResults call is made for a model turn). Accepting the tool
-// could only produce a `web_search_call` with status `completed` for a search
-// that never ran. It is rejected up front with an actionable 400; a normal
-// client-declared `function` tool named web_search keeps ordinary
-// function-call semantics (the client executes it).
-const UNBRIDGED_SERVER_SIDE_TYPES = new Set([
-  'file_search',
-  'computer_use_preview',
-  'mcp',
-  'code_interpreter',
-  'image_generation',
-  'local_shell',
-  'shell',
-  'apply_patch',
-]);
-
-// Server-executed tools are a VERSIONED family too: OpenAI ships dated snapshots
-// (`code_interpreter_2025_03_11`) next to the unversioned aliases, and every
-// spelling asks THIS SERVER to execute the tool. An exact-match set sent each
-// new snapshot to the catch-all, which warned and dropped it — a 200 with the
-// tool gone. Strip a trailing `_YYYY_MM_DD` and re-test the set: that covers
-// every current and future snapshot of a member, and a type that is not a
-// member either way still falls to the lenient warn+drop path.
-const SERVER_SIDE_VERSION_SUFFIX = /_\d{4}_\d{2}_\d{2}$/;
-
-function isServerSideToolType(type) {
-  if (typeof type !== 'string') return false;
-  if (UNBRIDGED_SERVER_SIDE_TYPES.has(type)) return true;
-  return UNBRIDGED_SERVER_SIDE_TYPES.has(type.replace(SERVER_SIDE_VERSION_SUFFIX, ''));
-}
-
-const HOSTED_SEARCH_TYPES = new Set(['web_search', 'web_search_preview']);
-// Hosted search is a VERSIONED tool family: OpenAI ships dated snapshots of the
-// same hosted tool (`web_search_preview_2025_03_11`, `web_search_2025_08_26`)
-// next to the unversioned aliases. Every spelling asks THIS SERVER to execute
-// the search, so the gate matches the family. An exact-match list forwards the
-// next snapshot to the model and then drops it in flattenResponseTool — the
-// silent non-execution this rejection exists to prevent.
-const HOSTED_SEARCH_VERSIONED_TYPE = /^web_search(?:_preview)?_\d{4}_\d{2}_\d{2}$/;
-
-function isHostedSearchType(type) {
-  return typeof type === 'string'
-    && (HOSTED_SEARCH_TYPES.has(type) || HOSTED_SEARCH_VERSIONED_TYPE.test(type));
-}
-
-function hostedSearchUnsupported(param) {
-  const err = new Error(
-    'Hosted web_search is not supported by this proxy: it does not execute server-side searches. '
-    + 'Remove the hosted web_search/web_search_preview tool (including its versioned aliases) and, '
-    + 'if the client will run the search itself, declare a normal function tool named "web_search".',
-  );
-  err.param = param;
-  err.code = 'unsupported_hosted_tool';
-  return err;
-}
-
-// A namespace may carry its children under any of these keys. The gate walks
-// EVERY array-valued one: a namespace with `tools: []` and `children: [mcp]`
-// used to walk the empty first key and miss the server-executed child entirely,
-// returning a 200 with that tool gone and not even a warning.
-// (flattenResponseTool still picks a single key when forwarding; that selection
-// is unchanged — this walk only decides what must be refused.)
-const NAMESPACE_CHILD_KEYS = ['tools', 'children', 'functions', 'items'];
-
-/**
- * Visit every tool in a list, recursing into namespaces. Shared by the
- * hosted-search and server-executed gates so both cover the same positions.
- */
-function forEachTool(tools, visit) {
-  for (const tool of tools || []) {
-    if (!tool || typeof tool !== 'object') continue;
-    visit(tool);
-    if (tool.type === 'namespace') {
-      for (const key of NAMESPACE_CHILD_KEYS) {
-        if (Array.isArray(tool[key])) forEachTool(tool[key], visit);
-      }
-    }
-  }
-}
+// The tool-type predicates and refusal messages live in ../server-side-tools.js
+// so /v1/chat/completions decides with the exact same set (F3).
 
 /**
  * Walk a tool list (namespaces included) and refuse hosted search.
@@ -230,17 +142,6 @@ function assertNoHostedSearchInRequest(body) {
   for (const item of body.input) {
     if (item?.type === 'additional_tools') assertNoHostedSearchTools(item.tools, 'input');
   }
-}
-
-function serverSideToolUnsupported(type, param) {
-  const err = new Error(
-    `Server-executed tool "${type}" is not supported by this proxy: it requires an executor that runs on `
-    + 'this server, and this proxy has none. Remove it and, if the client will run the tool itself, declare '
-    + `a normal function tool instead. Rejected server-side types: ${[...UNBRIDGED_SERVER_SIDE_TYPES].sort().join(', ')}.`,
-  );
-  err.param = param;
-  err.code = 'unsupported_server_side_tool';
-  return err;
 }
 
 /**
@@ -527,11 +428,10 @@ export function responsesToChat(body) {
   const messages = [];
   const requestedTools = collectResponseTools(body);
   // No hosted-search or server-executed executor exists on this route (see
-  // HOSTED_SEARCH_TYPES and UNBRIDGED_SERVER_SIDE_TYPES). Refuse BEFORE calling
-  // the model: letting the turn run and then reporting the proposal as a
-  // completed search is exactly the false execution receipt this gate removes,
-  // and letting it run with the tool silently dropped is the same failure
-  // without the receipt.
+  // ../server-side-tools.js). Refuse BEFORE calling the model: letting the turn
+  // run and then reporting the proposal as a completed search is exactly the
+  // false execution receipt this gate removes, and letting it run with the tool
+  // silently dropped is the same failure without the receipt.
   assertNoHostedSearchInRequest(body);
   assertNoServerSideToolsInRequest(body);
   assertSupportedToolChoice(body.tool_choice);
