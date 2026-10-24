@@ -55,6 +55,13 @@
       "expectCaught": true
     },
     {
+      "name": "S2 partial — the Kimi SKU check tests the literal spelling again, so kimi.k2 flips to the other dialect",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "    if (dashed === 'kimi-k2' || dashed === 'kimi-k2-thinking') {",
+      "replacement": "    if (normalizedModelKey === 'kimi-k2' || normalizedModelKey === 'kimi-k2-thinking') {",
+      "expectCaught": true
+    },
+    {
       "name": "S7 reverted — the SWE enum target is not read into the family spelling, so swe-1-5 and MODEL_SWE_1_5_SLOW pick different protocols",
       "file": "src/handlers/tool-emulation.js",
       "anchor": "  const familyKey = /^model_swe_1_5(?:_slow)?$/.test(dashed) ? 'swe-1-5' : dashed;",
