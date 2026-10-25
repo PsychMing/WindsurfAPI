@@ -215,6 +215,14 @@ jobs:
         shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v5
+        with:
+          # test/docs-consistency-guard.test.js resolves the handoff's tag and commit
+          # claims with git. The default depth-1 clone carries neither the history nor
+          # the tags, so shards 1 and 3 failed on "ambiguous argument '<sha>^{commit}'"
+          # and "no release tags reachable from HEAD" while the same suite passed
+          # locally. The guard fails closed by design; give it the objects, not an
+          # exemption. release.yml checks out full history for the same reason.
+          fetch-depth: 0
 
       - name: Setup Node 24
         uses: actions/setup-node@v5
