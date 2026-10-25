@@ -140,11 +140,13 @@ tracked-files 计数；仓内修复（5fe110d）：`docs/README.md` 的发布数
 
 ## 尚未验证
 
-- **无 live-account 验收**：本机没有已付费账号；live 套件（`test/devin-connect-relogin-live.test.js`）
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
+- `[UNVERIFIED]` **无 live-account 验收**：本机没有已付费账号；live 套件（`test/devin-connect-relogin-live.test.js`）
   未 armed，整个套件按声明跳过。
-- `system:[null]` 的"修复后完整 200"在本机只能验到越过转换器（提交记录本机 529 因 LS 二进制
+- `[UNVERIFIED]` `system:[null]` 的"修复后完整 200"在本机只能验到越过转换器（提交记录本机 529 因 LS 二进制
   缺失）；200 由仓库自身 backend seam 的测试钉住，真实账号路径未验。
-- s2-b 的 harness 全量重评分（8/8、exit 0）先是 **WSL** 记录（node v24.21.0，1500 MB cgroup 限内存），
+- `[UNVERIFIED]` s2-b 的 harness 全量重评分（8/8、exit 0）先是 **WSL** 记录（node v24.21.0，1500 MB cgroup 限内存），
   现已由 **bench 复核**（`hmc`，`runs/master-final`，`74f6c6d`，`GATE_EXIT=0` 且
   `sweep_ok=85 sweep_abort=0`，该规格日志 `all 8 mutation(s) behaved as expected; tree clean`）。
   本机以手工字节复验 8/8（23 测试全跑），但 `scripts/mutate-verify.mjs` 在本机拒绝运行（POSIX git）。

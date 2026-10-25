@@ -35,6 +35,8 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 真实 LS 3.10.67 的 `UpdateWorkspaceTrust`/`prompt_cache_key` 端到端行为（仅二进制字符串与安装验证）。
 - `[UNVERIFIED]` Linux arm64 无上游归档，需 `--file`。
 - `[UNVERIFIED]` 真实上游的 int64 字符串 JSON 响应（描述符 + 解码器验证）。

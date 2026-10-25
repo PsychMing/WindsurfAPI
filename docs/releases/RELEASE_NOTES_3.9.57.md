@@ -37,5 +37,7 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 真实 Actions 执行（本地用强制 ref clone 复现了对象形态）。
 - `[UNVERIFIED]` v3.9.54–56 的 Release 产物不会补发；它们的内容已包含在 3.9.56/3.9.57。

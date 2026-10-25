@@ -36,6 +36,8 @@ Owner 遇到的“正确密码也报 `ERR_INVALID_CREDENTIALS`”根因是 **3.9
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 真实邮箱验证码的 `email/complete` → PostAuth（需要 Owner 的收件箱）。
 - `[UNVERIFIED]` 真实 `has_password:true` 账号、Devin 跨 host PostAuth。
 - `[UNVERIFIED]` 真实 `app.devin.ai` 的 daily-usage 响应（fixture 按捕获形状）。

@@ -878,6 +878,29 @@ describe('docs: version claims match the repository', () => {
     );
   });
 
+  it('the unverified register exists and the newest release notes link it', () => {
+    // The newest note lists its own gaps, and the bullets filed before it were reachable
+    // only by opening every release note that carries a 尚未验证 section. The register is
+    // generated from those sections (test/unverified-register.test.js compares it byte for
+    // byte), so this guard only pins the two entry points a reader can find it from: the
+    // newest note and the docs index. A register nobody links to is a file, not a record.
+    const register = join(DOCS, 'UNVERIFIED.md');
+    assert.ok(existsSync(register), 'docs/UNVERIFIED.md must exist — run node scripts/unverified-register.mjs');
+    const pkgVersion = JSON.parse(read(join(ROOT, 'package.json'))).version;
+    const notes = notesFor(pkgVersion);
+    assert.ok(notes, `no release-notes file for the packaged version ${pkgVersion}`);
+    assert.match(
+      read(notes),
+      /\]\(\.\.\/UNVERIFIED\.md\)/,
+      `${rel(notes)} must link ../UNVERIFIED.md from its 尚未验证 section`,
+    );
+    assert.match(
+      read(join(DOCS, 'README.md')),
+      /\]\(UNVERIFIED\.md\)/,
+      'docs/README.md must index UNVERIFIED.md',
+    );
+  });
+
   it('every 3.9.x release-notes file is indexed in CHANGELOG.md', () => {
     // CHANGELOG says "下面是 3.9.x 全系". Indexing HEAD while skipping
     // 3.9.22/23 still made the packaged-version and count gates green.

@@ -31,6 +31,8 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 真实 ACP 子进程的重试（fake stdio）。
 - `[UNVERIFIED]` 真实浏览器的 1440/390 之外视口。
 - `[UNVERIFIED]` 请求历史只覆盖计费成功，非计费/失败尝试不显示。

@@ -134,6 +134,8 @@ INCREMENTAL GATE: PASS exit=0
 
 ## 已知 / 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)；本版新增的 7 条也在其中，状态列区分已复核与仍缺。
+
 - **wire 已实测，但只覆盖请求体**：`e3cc399` 对 `v3.10.1`（`b00b3b9`，annotated tag 已验证）**270/270** 逐字节一致，0 mismatch（HMC，见门禁表）。比较范围是 9 组历史 × 5 条 prepare 路由 × 2 native × 3 环境 = 270 个 protobuf 请求体；HTTP/Connect 帧与响应流按设计不在内。本机（Windows）无 `WIRE_BASE_TREE` 时该测试按设计跳过，已声明为 inert。
 - **全量 mutation sweep 已实测**：92/92 spec、822 条全部执行，808 被捕获 + 14 条 spec 自带的 `expectCaught:false`，0 drift、0 untrustworthy（HMC，2,953 s，见门禁表）。14 条幸存者是各 spec 文档化的不可达/等价分支，不是漂移。
 - **真实 Codex CLI 修复后未重跑**：客户端级 PASS 属于修复前基线（只有打开 `DEVIN_CONNECT_TOOL_CHOICE=1` 才 3/3）；修复后的 200 由探针与单元测试证明，未用真实 CLI 复验。

@@ -34,6 +34,8 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 真实池的批量任务延迟与取消（fake upstream）。
 - `[UNVERIFIED]` 真实 Docker daemon 的 pull/health/rollback（脚本状态机已在 Git Bash 复现）。
 - `[UNVERIFIED]` 1440/390 之外视口与屏幕阅读器。

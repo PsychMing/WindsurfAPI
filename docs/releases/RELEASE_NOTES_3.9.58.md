@@ -31,5 +31,7 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 真实 Actions 执行（本地 gate + Linux 全量 + 强制 ref clone 已复现对象形态）。
 - `[UNVERIFIED]` 真实上游在预算边界的行为（fake upstream）。

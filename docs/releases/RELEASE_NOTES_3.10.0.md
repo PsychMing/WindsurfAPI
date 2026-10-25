@@ -87,6 +87,8 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` detach 默认开启（NO-GO 未变）；真实 Cascade 上游 resume。
 - `[UNVERIFIED]` 真实 Enterprise 的 `teams_tier`；历史 secret 扫描。
 - `[UNVERIFIED]` 真实 tag 构建上的 cosign keyless 交换（GitHub OIDC → Fulcio/Rekor 只能在

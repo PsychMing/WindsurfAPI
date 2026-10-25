@@ -78,12 +78,14 @@ v3.9.40 只在 Messages 侧修了 64 字符 wire 上限；这一版把同一类�
 
 ## 尚未验证
 
-- **实际计费 debit**：3,491 是乘数上限，不是账单读数。
-- **图片**：5 个昂贵 selector 的 chat 图片全部失败（4 个本次补测 + opus 既有）；messages 只对 opus 观测到 529，其他四个未重复。
-- **streaming tool deltas**：`gpt-6-astra`/`claude-opus-5-5` 的 live 流式 tool call 已覆盖完整名与完整 args；Gemini 与 Responses 的 split 名均由 fake upstream 覆盖，`output_item.added` 携带完整名。
-- **429/402 停止路径**：本轮没有触发，未验证。
-- **Node 20/22**：版本性失败仍在，发布门只声明 Node 24。
-- **Any2API 集成**：Codex `responses` 直通和 Claude `anthropic` 的 live 冒烟尚未跑；`PATCH-G5.diff` 只是提案，未应用。
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
+- `[UNVERIFIED]` **实际计费 debit**：3,491 是乘数上限，不是账单读数。
+- `[UNVERIFIED]` **图片**：5 个昂贵 selector 的 chat 图片全部失败（4 个本次补测 + opus 既有）；messages 只对 opus 观测到 529，其他四个未重复。
+- `[UNVERIFIED]` **streaming tool deltas**：`gpt-6-astra`/`claude-opus-5-5` 的 live 流式 tool call 已覆盖完整名与完整 args；Gemini 与 Responses 的 split 名均由 fake upstream 覆盖，`output_item.added` 携带完整名。
+- `[UNVERIFIED]` **429/402 停止路径**：本轮没有触发，未验证。
+- `[UNVERIFIED]` **Node 20/22**：版本性失败仍在，发布门只声明 Node 24。
+- `[UNVERIFIED]` **Any2API 集成**：Codex `responses` 直通和 Claude `anthropic` 的 live 冒烟尚未跑；`PATCH-G5.diff` 只是提案，未应用。
 
 ## 2026-10-21 维护增量（代码候选 `f2b938d`）
 

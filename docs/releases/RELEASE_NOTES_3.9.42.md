@@ -90,6 +90,8 @@ HMC 实测（同一主机、同一批二进制，`evidence/NodeFix.md`）：Node
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 真实慢读 socket（内核缓冲区写满的 `ServerResponse`）未测；写门由受控 `EventEmitter` writable 与真实轮询循环驱动，`res.write === false` 的契约本身是 Node 的，未重新测量。
 - `[UNVERIFIED]` 未观察到真实上游发出前导 BOM；BOM 修复是防御性的。
 - `[UNVERIFIED]` 本版没有 live 上游/账号验收：所有协议用例都用既有 fake-`res` / fake-upstream 形状。
