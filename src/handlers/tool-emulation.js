@@ -1939,9 +1939,56 @@ const TOOL_STREAM_PREFIXES = new Map([
   '<tool_result', '{"tool_code"',
 ].map(literal => [literal, toolStreamLiteralPrefixes(literal)]));
 
+/**
+ * Advance JSON string/escape/brace state over `text`. Mutates `state` and
+ * returns the index at which the outermost brace closes (depth returns to 0),
+ * or -1 when it does not close in this slice.
+ *
+ * V-11 — used to find the true end of an abandoned over-limit JSON construct
+ * without retaining its bytes: the scanner state is carried across chunks, so
+ * a `}` inside a string or a nested object cannot terminate the drop early.
+ */
+function advanceJsonBraceState(state, text) {
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (state.escaped) { state.escaped = false; continue; }
+    if (ch === '\\' && state.inStr) { state.escaped = true; continue; }
+    if (ch === '"') { state.inStr = !state.inStr; continue; }
+    if (state.inStr) continue;
+    if (ch === '{') state.depth++;
+    else if (ch === '}') {
+      state.depth--;
+      if (state.depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** Longest suffix of `text` that is a proper prefix of `close` (bounded). */
+function overLimitHoldTail(text, close) {
+  const max = Math.min(close.length - 1, text.length);
+  for (let len = max; len > 0; len--) {
+    if (text.endsWith(close.slice(0, len))) return text.slice(-len);
+  }
+  return '';
+}
+
 export class ToolCallStreamParser {
-  /** 超限 tool_call 后为 true：吞掉残余直到闭合标记，防裸泄漏 */
-  _oversizeDropped = false;
+  /**
+   * V-11 — per-construct drop state for an abandoned over-limit construct.
+   * A single shared boolean made the emitted text depend on where the stream
+   * was split: the terminator was guessed per dialect and everything after it
+   * in the same chunk was discarded. The state now owns the construct kind and
+   * its own terminator:
+   *   - `{ kind: 'tag', close, hold }` swallows until the literal `close`
+   *     arrives, retaining only a possible split-prefix of it;
+   *   - `{ kind: 'json', depth, inStr, escaped }` swallows until the
+   *     construct's own outermost brace closes.
+   * Bytes after the terminator are fed back through the normal path.
+   */
+  _oversizeDrop = null;
+  /** Backwards-compatible read of the drop state (tests/diagnostics). */
+  get _oversizeDropped() { return this._oversizeDrop !== null; }
   constructor(options = {}) {
     this.buffer = '';
     this.inToolCall = false;
@@ -1981,15 +2028,71 @@ export class ToolCallStreamParser {
     return -1;
   }
 
+  /**
+   * V-11 — arm the drop state for an abandoned over-limit construct.
+   * `buffered` is the construct text consumed so far, starting at its opening
+   * marker. Returns the bytes after the terminator when it is already present
+   * (the caller feeds them back through the normal path); otherwise arms
+   * `_oversizeDrop` and returns null.
+   */
+  _armOversizeDrop(kind, close, buffered) {
+    if (kind === 'json') {
+      // `buffered` starts at the construct's opening `{`, so depth starts at 0.
+      const state = { depth: 0, inStr: false, escaped: false };
+      const end = advanceJsonBraceState(state, buffered);
+      if (end !== -1) return buffered.slice(end + 1);
+      this._oversizeDrop = { kind, ...state };
+      return null;
+    }
+    const idx = buffered.indexOf(close);
+    if (idx !== -1) return buffered.slice(idx + close.length);
+    this._oversizeDrop = { kind: 'tag', close, hold: overLimitHoldTail(buffered, close) };
+    return null;
+  }
+
+  /**
+   * V-11 — consume one delta while an over-limit construct is being dropped.
+   * Returns '' while the terminator has not arrived, or the bytes after it
+   * (possibly '') once the construct ends; the caller continues with those
+   * bytes through the normal feed path.
+   */
+  _consumeOversizeDrop(delta) {
+    const drop = this._oversizeDrop;
+    if (drop.kind === 'json') {
+      const end = advanceJsonBraceState(drop, delta);
+      if (end === -1) return '';
+      this._oversizeDrop = null;
+      return delta.slice(end + 1);
+    }
+    const haystack = drop.hold + delta;
+    const idx = haystack.indexOf(drop.close);
+    if (idx === -1) {
+      drop.hold = overLimitHoldTail(haystack, drop.close);
+      return '';
+    }
+    this._oversizeDrop = null;
+    return haystack.slice(idx + drop.close.length);
+  }
+
   _consumeJsonBlock(parseFn, pushTool, pushText) {
-    if (this.buffer.length > 65_536) {
-      log.warn(`ToolCallStreamParser: JSON block exceeds 65KB (${this.buffer.length} bytes), emitting placeholder instead of raw text`);
+    // V-11 — the cap applies to the block's own extent, not to whatever
+    // trailing prose shares the buffer: otherwise a small call followed by a
+    // large delta would be dropped in one split and parsed in another.
+    const endIdx = this._findClosingBrace();
+    const blockLength = endIdx === -1 ? this.buffer.length : endIdx + 1;
+    if (blockLength > 65_536) {
+      log.warn(`ToolCallStreamParser: JSON block exceeds 65KB (${blockLength} bytes), emitting placeholder instead of raw text`);
       pushText(TOOL_OVER_LIMIT_PLACEHOLDER);
-      this.buffer = '';
-      this._oversizeDropped = true;   // M1: 尾部 `"}` 交给全局吞，防裸泄漏
+      if (endIdx !== -1) {
+        this.buffer = this.buffer.slice(endIdx + 1);
+      } else {
+        // Drop the rest of the block by its own balanced brace instead of
+        // swallowing until whatever `}` (or `</tool_call>`) arrives next.
+        this._armOversizeDrop('json', null, this.buffer);
+        this.buffer = '';
+      }
       return true;
     }
-    const endIdx = this._findClosingBrace();
     if (endIdx === -1) return false;
     const jsonStr = this.buffer.slice(0, endIdx + 1);
     this.buffer = this.buffer.slice(endIdx + 1);
@@ -2035,27 +2138,13 @@ export class ToolCallStreamParser {
 
   feed(delta) {
     if (!delta) return { text: '', toolCalls: [], items: [] };
-    // Oversize-drop state: swallow everything until the close marker, so the
-    // trailing `</tool_call>` / `"}` cannot leak into the text stream after
-    // an over-limit tool_call was replaced with the placeholder. Must run
-    // BEFORE sentinel detection (a rebuilt full sentinel would otherwise
-    // flush the held W's as prose).
-    if (this._oversizeDropped) {
-      this.buffer += delta;
-      // B3: 丢弃态 buffer 硬上限 —— 超限直接清空（继续吞语义，防 OOM）
-      if (this.buffer.length > TOOL_XML_BODY_MAX * 2) this.buffer = '';
-      const closed = this.dialect === 'gpt_native'
-        ? this.buffer.includes('}')   // B2: 丢弃态只要出现闭合即恢复（`"}}` 等裸闭合也认）
-        : this.buffer.includes('</tool_call>');
-      if (closed) {
-        this._oversizeDropped = false;
-        this.buffer = '';
-        // B1: 复位所有块状态 —— 否则 inToolCall/inToolResult 僵尸吞掉后续模型文本
-        this.inToolCall = false;
-        this.inToolResult = false;
-        this._toolResultOpenTag = '';
-      }
-      return { text: '', toolCalls: [], items: [] };
+    // V-11 — an abandoned over-limit construct is dropped by its own recorded
+    // terminator, and the bytes after that terminator continue through the
+    // normal path in this same call. That makes the emitted output a function
+    // of the byte stream rather than of where the stream happened to split.
+    if (this._oversizeDrop) {
+      delta = this._consumeOversizeDrop(delta);
+      if (!delta) return { text: '', toolCalls: [], items: [] };
     }
     if (this.dialect !== 'openai_json_xml') {
       this.buffer += delta;
@@ -2071,57 +2160,95 @@ export class ToolCallStreamParser {
         : this.dialect === 'gpt_native'
           ? ['{"function_call"', '{"tool_calls"', '{"tool_call"', '{"function"', '{"name"', '{ "function_call"', '{ "tool_calls"', '{ "name"']
           : ['<|tool_calls_section_begin|>', '<tool_call>'];
-      let earliest = -1;
-      for (const s of sentinels) {
-        const idx = this.buffer.indexOf(s);
-        if (idx !== -1 && (earliest === -1 || idx < earliest)) earliest = idx;
-      }
-      if (earliest === -1) {
-        let holdLen = 0;
+      let text = '';
+      const items = [];
+      // Loop instead of returning after the first pre-sentinel emission: the
+      // held construct can start in the same delta and its over-limit verdict
+      // must be reached now, not on a later feed (which may never come).
+      while (true) {
+        let earliest = -1;
         for (const s of sentinels) {
-          const prefixes = TOOL_STREAM_PREFIXES.get(s);
-          const max = Math.min(s.length - 1, this.buffer.length);
-          for (let len = max; len > 0; len--) {
-            if (this.buffer.endsWith(prefixes[len])) {
-              holdLen = Math.max(holdLen, len);
-              break;
+          const idx = this.buffer.indexOf(s);
+          if (idx !== -1 && (earliest === -1 || idx < earliest)) earliest = idx;
+        }
+        if (earliest === -1) {
+          let holdLen = 0;
+          for (const s of sentinels) {
+            const prefixes = TOOL_STREAM_PREFIXES.get(s);
+            const max = Math.min(s.length - 1, this.buffer.length);
+            for (let len = max; len > 0; len--) {
+              if (this.buffer.endsWith(prefixes[len])) {
+                holdLen = Math.max(holdLen, len);
+                break;
+              }
             }
           }
+          const emitUpto = this.buffer.length - holdLen;
+          if (emitUpto > 0) {
+            const chunk = this.buffer.slice(0, emitUpto);
+            this.buffer = this.buffer.slice(emitUpto);
+            text += chunk;
+            items.push({ type: 'text', text: chunk });
+          }
+          break;
         }
-        const emitUpto = this.buffer.length - holdLen;
-        if (emitUpto > 0) {
-          const text = this.buffer.slice(0, emitUpto);
-          this.buffer = this.buffer.slice(emitUpto);
-          return { text, toolCalls: [], items: [{ type: 'text', text }] };
+        // Sentinel seen — emit any text BEFORE it, hold the rest until flush.
+        if (earliest > 0) {
+          const chunk = this.buffer.slice(0, earliest);
+          this.buffer = this.buffer.slice(earliest);
+          text += chunk;
+          items.push({ type: 'text', text: chunk });
+          continue;
         }
-        return { text: '', toolCalls: [], items: [] };
-      }
-      // Sentinel seen — emit any text BEFORE it, hold the rest until flush.
-      if (earliest > 0) {
-        const text = this.buffer.slice(0, earliest);
-        this.buffer = this.buffer.slice(earliest);
-        return { text, toolCalls: [], items: [{ type: 'text', text }] };
-      }
-      // TOOL-2 — sentinel sits at buffer start (earliest===0): every later
-      // delta appends to the held buffer until flush. Unlike the XML path
-      // (which caps <tool_call>/<tool_result> bodies at TOOL_XML_BODY_MAX),
-      // this branch had no ceiling, so a model that opens a tool-call
-      // sentinel and then streams unbounded text pins it all in memory. Cap
-      // it the same way: once the held buffer exceeds the limit without a
-      // parseable close, flush it as ordinary text and reset so RSS stays
-      // bounded.
-      if (this.buffer.length > TOOL_XML_BODY_MAX) {
-        log.warn(`ToolCallStreamParser: ${this.dialect} sentinel body exceeds 65KB (${this.buffer.length} bytes), emitting placeholder`);
+        // TOOL-2 — sentinel sits at buffer start (earliest===0): every later
+        // delta appends to the held buffer until flush. Unlike the XML path
+        // (which caps <tool_call>/<tool_result> bodies at TOOL_XML_BODY_MAX),
+        // this branch had no ceiling, so a model that opens a tool-call
+        // sentinel and then streams unbounded text pins it all in memory. Cap
+        // it the same way: once the held construct exceeds the limit, replace
+        // it with the placeholder and reset so RSS stays bounded.
+        let kind = 'tag';
+        let close = GLM47_TOOL_CLOSE;
+        if (this.dialect === 'gpt_native') {
+          kind = 'json';
+          close = null;
+        } else if (this.dialect === 'kimi_k2' && this.buffer.startsWith(KIMI_TOOL_SECTION_BEGIN)) {
+          close = KIMI_TOOL_SECTION_END;
+        }
+        // V-11 — decide on the construct's own extent, not on the whole held
+        // buffer: trailing prose must not push a small construct over the cap,
+        // and the terminator is known per construct instead of guessed from
+        // the dialect (the old `gpt_native ? '}' : '</tool_call>'` guess leaked
+        // `}}` and the kimi section-end marker).
+        let constructEnd = -1;
+        if (kind === 'json') {
+          const state = { depth: 0, inStr: false, escaped: false };
+          const end = advanceJsonBraceState(state, this.buffer);
+          if (end !== -1) constructEnd = end + 1;
+        } else {
+          const idx = this.buffer.indexOf(close);
+          if (idx !== -1) constructEnd = idx + close.length;
+        }
+        const overLimit = constructEnd === -1
+          ? this.buffer.length > TOOL_XML_BODY_MAX
+          : constructEnd > TOOL_XML_BODY_MAX;
+        if (!overLimit) break;
+        log.warn(`ToolCallStreamParser: ${this.dialect} sentinel body exceeds 65KB (${constructEnd === -1 ? this.buffer.length : constructEnd} bytes), emitting placeholder`);
+        const tail = constructEnd === -1
+          ? this._armOversizeDrop(kind, close, this.buffer)
+          : this.buffer.slice(constructEnd);
         this.buffer = '';
-        this._oversizeDropped = true;
-        return { text: TOOL_OVER_LIMIT_PLACEHOLDER, toolCalls: [], items: [{ type: 'text', text: TOOL_OVER_LIMIT_PLACEHOLDER }] };
+        text += TOOL_OVER_LIMIT_PLACEHOLDER;
+        items.push({ type: 'text', text: TOOL_OVER_LIMIT_PLACEHOLDER });
+        if (tail === null) break;
+        const rest = this.feed(tail);
+        return {
+          text: text + rest.text,
+          toolCalls: rest.toolCalls,
+          items: items.concat(rest.items),
+        };
       }
-      // 超限丢弃态：吞掉残余直到 JSON 平衡闭合，防 `"}` 等裸泄漏
-      if (this._oversizeDropped) {
-        if (this._findClosingBrace() !== -1) this._oversizeDropped = false;
-        return { text: '', toolCalls: [], items: [] };
-      }
-      return { text: '', toolCalls: [], items: [] };
+      return { text, toolCalls: [], items };
     }
     this.buffer += delta;
     const safeParts = [];
@@ -2148,14 +2275,21 @@ export class ToolCallStreamParser {
     while (true) {
       // ── Inside a <tool_result …>…</tool_result> block — discard body ──
       if (this.inToolResult) {
-        if (this.buffer.length > TOOL_XML_BODY_MAX) {
-          log.warn(`ToolCallStreamParser: <tool_result> body exceeds 65KB (${this.buffer.length} bytes), dropping`);
-          this.buffer = '';
+        const closeIdx = this.buffer.indexOf(TR_CLOSE);
+        // V-11 — cap the discarded body's own extent, not the whole buffer:
+        // trailing prose in the same chunk must not make a small span
+        // over-limit in one split and healthy in another.
+        const bodyLength = closeIdx === -1 ? this.buffer.length : closeIdx;
+        if (bodyLength > TOOL_XML_BODY_MAX) {
+          log.warn(`ToolCallStreamParser: <tool_result> body exceeds 65KB (${bodyLength} bytes), dropping`);
           this.inToolResult = false;
           this._toolResultOpenTag = '';
+          // V-11 — swallow the matching close so it cannot leak as prose, and
+          // keep any bytes that follow it.
+          const tail = this._armOversizeDrop('tag', TR_CLOSE, this.buffer);
+          this.buffer = tail === null ? '' : tail;
           continue;
         }
-        const closeIdx = this.buffer.indexOf(TR_CLOSE);
         if (closeIdx === -1) break;
         this.buffer = this.buffer.slice(closeIdx + TR_CLOSE.length);
         this.inToolResult = false;
@@ -2165,23 +2299,18 @@ export class ToolCallStreamParser {
 
       // ── Inside a <tool_call>…</tool_call> block — parse JSON body ──
       if (this.inToolCall) {
-        if (this.buffer.length > TOOL_XML_BODY_MAX) {
-          log.warn(`ToolCallStreamParser: <tool_call> body exceeds 65KB (${this.buffer.length} bytes), emitting placeholder`);
-          pushText(TOOL_OVER_LIMIT_PLACEHOLDER);
-          this.buffer = '';
-          this._oversizeDropped = true;   // 保持 inToolCall，吞掉残余直到 close，防 close 标记裸泄漏
-          continue;
-        }
-        if (this._oversizeDropped) {
-          // 超限丢弃态：等待 close 到达后整体丢弃，不再尝试解析
-          const closeIdx = this.buffer.indexOf(TC_CLOSE);
-          if (closeIdx === -1) break;
-          this.buffer = this.buffer.slice(closeIdx + TC_CLOSE.length);
-          this.inToolCall = false;
-          this._oversizeDropped = false;
-          continue;
-        }
         const closeIdx = this.buffer.indexOf(TC_CLOSE);
+        const bodyLength = closeIdx === -1 ? this.buffer.length : closeIdx;
+        if (bodyLength > TOOL_XML_BODY_MAX) {
+          log.warn(`ToolCallStreamParser: <tool_call> body exceeds 65KB (${bodyLength} bytes), emitting placeholder`);
+          pushText(TOOL_OVER_LIMIT_PLACEHOLDER);
+          this.inToolCall = false;
+          // V-11 — drop the body by this construct's own close marker, so the
+          // terminator and the bytes after it are resolved on the byte stream.
+          const tail = this._armOversizeDrop('tag', TC_CLOSE, this.buffer);
+          this.buffer = tail === null ? '' : tail;
+          continue;
+        }
         if (closeIdx === -1) break;
         const body = this.buffer.slice(0, closeIdx).trim();
         this.buffer = this.buffer.slice(closeIdx + TC_CLOSE.length);
@@ -2302,6 +2431,21 @@ export class ToolCallStreamParser {
   }
 
   flush() {
+    if (this._oversizeDrop) {
+      // V-11 — explicit EOF: an over-limit construct that never reached its
+      // terminator is discarded whole. Regurgitating its partial body or open
+      // marker is exactly the leak the drop state exists to prevent, and doing
+      // it only when the stream ended mid-construct made the output depend on
+      // the chunk boundaries.
+      this._oversizeDrop = null;
+      this.buffer = '';
+      this.inToolCall = false;
+      this.inToolResult = false;
+      this.inToolCode = false;
+      this.inBareCall = false;
+      this._toolResultOpenTag = '';
+      return { text: '', toolCalls: [] };
+    }
     if (this.dialect !== 'openai_json_xml') {
       const parsed = parseNonOpenAIDialectBuffer(this.dialect, this.buffer, this._totalSeen);
       this.buffer = '';
