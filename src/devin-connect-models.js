@@ -307,6 +307,28 @@ export function hasLiveCatalog() { return _liveSelectors.size > 0; }
 /** The full decoded live catalog rows from the last good sync (may be []). */
 export function getLiveCatalog() { return _liveCatalog; }
 
+/**
+ * The live catalog's EXPLICIT image capability for a resolved selector.
+ *
+ * Three-state on purpose, matching `disabled` (#4): `true`/`false` only when the
+ * upstream actually sent field #5 for this selector; `null` when the catalog is
+ * empty (cold start / failed sync), the selector is absent, or the row stayed
+ * silent. A caller must never read `null` as "no" — the same rule that keeps
+ * isModelDisabledUpstream from refusing statically-catalogued models.
+ *
+ * This is the request-path twin of the `supports_images` bit that
+ * handlers/models.js advertises from these same rows.
+ */
+export function getConnectSelectorImageCapability(selector) {
+  const key = String(selector || '').trim();
+  if (!key) return null;
+  for (const row of _liveCatalog) {
+    if (row?.selector !== key) continue;
+    return typeof row.supportsImages === 'boolean' ? row.supportsImages : null;
+  }
+  return null;
+}
+
 /** Frozen cold-start selectors (the committed snapshot), for dashboard diffing. */
 export function getSnapshotSelectors() { return [...CATALOG_SELECTORS]; }
 

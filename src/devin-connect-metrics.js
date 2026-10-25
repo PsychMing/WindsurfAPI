@@ -92,6 +92,16 @@ const _counters = {
   // — but it used to be silent. A non-zero value means a client is replaying
   // images on assistant turns and those images will not reach the model.
   assistant_images_dropped: 0,
+  // Image blocks dropped because the live catalog EXPLICITLY declares
+  // `supports_images=false` for the resolved selector (C3-01). /v1/models has
+  // advertised that bit since 3.9.23; this counter is the request-path proof
+  // that it now governs forwarding. The text turn is preserved, so a non-zero
+  // value means the client sent images to a model the upstream calls text-only
+  // and the caller got an answer without them. Deliberately NOT an errorCount
+  // signal: the request succeeds, and a catalog bit must never degrade account
+  // health. Absence of the bit is unknown and never counted (see
+  // getConnectSelectorImageCapability).
+  images_dropped_capability: 0,
   // Turns where the model NARRATED a tool call in visible text, then finished
   // with `stop` and zero tool calls (#236 "form A"). Log-only detector: nothing
   // is retried or rewritten, because the shape cannot be told apart from a

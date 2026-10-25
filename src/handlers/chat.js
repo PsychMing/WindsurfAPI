@@ -60,8 +60,8 @@ import {
 import { acpVisionEnabled } from '../devin-acp.js';
 import { selectBackend, usesCascadeFlow } from '../backend-router.js';
 import { toChatCompletion as _toChatCompletion, streamChatCompletion as _streamChatCompletion } from '../devin-connect-openai.js';
-import { resolveConnectSelector, DROUGHT_SAFE_SELECTORS } from '../devin-connect-models.js';
-import { getToolDefTags, parseToolCallTagMap, isParallelToolCallsHintIgnored } from '../devin-connect.js';
+import { resolveConnectSelector, DROUGHT_SAFE_SELECTORS, getConnectSelectorImageCapability } from '../devin-connect-models.js';
+import { getToolDefTags, parseToolCallTagMap, isParallelToolCallsHintIgnored, stripImageParts } from '../devin-connect.js';
 import { recordRateLimitBurstEvent, RATE_LIMIT_BURST_WINDOW_MS } from '../rate-limit-burst.js';
 import { isRouterModel, assignModel as _assignModel } from '../devin-connect-catalog.js';
 import { bumpConnect } from '../devin-connect-metrics.js';
@@ -3626,6 +3626,43 @@ async function _handleChatCompletionsInner(body, context = {}) {
           code: 'model_not_found',
         } },
       };
+    }
+    // Upstream-declared image capability (GetCliModelConfigs #5, the same bit
+    // /v1/models advertises). Until this gate no request path read it, so an
+    // image was forwarded to a model the same server had just told the client
+    // was text-only (C3-01).
+    //
+    // Only an EXPLICIT false gates: a missing bit is unknown and must never be
+    // read as "no" — the same three-state rule as disabled (#4). Unknown models
+    // keep the historical wire byte-for-byte.
+    //
+    // Why STRIP and not a 400: the live catalog measured 2026-10-25 was 240 rows
+    // (224 true / 0 false / 16 silent, evidence/Wave4-Images.md), so no model
+    // exercises the false arm and there is no capture of one rejecting an image.
+    // Refusing on a bit whose false arm has never been observed is the class of
+    // bug the Codex `parallel_tool_calls` 400 was (see the comment below): a hard
+    // failure derived from an unverified declaration, breaking a working client.
+    // Dropping the images preserves the text turn; the counter and the warn make
+    // the drop visible instead of silent.
+    //
+    // Placed after selector resolution + the strict-model guard (so the bit is
+    // looked up for the selector that will actually be sent, not the raw alias)
+    // and before prompt assembly, account acquisition, and the wire builder —
+    // every surface that delegates to this handler (/v1/chat/completions,
+    // /v1/responses, /v1/messages) is covered here and nowhere else. The ACP
+    // vision reroute above is a different transport (local Devin CLI) and returns
+    // before selector resolution; this bit belongs to the direct Connect wire.
+    // Text-only requests skip the catalog scan entirely.
+    const imageCapability = hasMultimodalContent(messages)
+      ? getConnectSelectorImageCapability(selector)
+      : null;
+    if (imageCapability === false) {
+      const stripped = stripImageParts(messages);
+      if (stripped.dropped > 0) {
+        messages = stripped.messages;
+        bumpConnect('images_dropped_capability', stripped.dropped);
+        log.warn(`Chat[${reqId}]: DEVIN_CONNECT selector ${safeLogValue(selector)} declares supports_images=false in the live catalog — dropped ${stripped.dropped} image block(s) before the wire; text preserved (counted in images_dropped_capability)`);
+      }
     }
     // `parallel_tool_calls:false` is a caller PREFERENCE ("prefer one tool call per
     // turn"), not a correctness requirement. The connect upstream can only be told
