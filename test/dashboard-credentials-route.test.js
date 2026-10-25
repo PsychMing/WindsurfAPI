@@ -12,11 +12,16 @@
 
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { config } from '../src/config.js';
 import { handleDashboardApi } from '../src/dashboard/api.js';
 import {
+  __setRuntimeConfigPersistFailureForTests,
   _resetRuntimeConfigForTests,
+  getCredentials,
   getEffectiveDashboardPasswordStored,
+  setRuntimeApiKey,
   setRuntimeDashboardPassword,
   verifyPassword,
 } from '../src/runtime-config.js';
@@ -94,5 +99,92 @@ describe('PUT /settings/credentials dashboardPassword validation', () => {
 
     assert.equal(res.statusCode, 200, JSON.stringify(res.json()));
     assert.equal(getEffectiveDashboardPasswordStored(), 'operator-secret');
+  });
+});
+
+// V-21 (audit A22): the route validated and COMMITTED `apiKey` before it looked
+// at `dashboardPassword`, so a request that ends in 400 had already rotated the
+// chat key on disk. The two credentials now form one transaction: the complete
+// request is validated first, then both setters commit together (or neither
+// does). A rejected password must leave the chat key exactly as it was.
+describe('PUT /settings/credentials commits both credentials atomically', () => {
+  it('a rejected dashboardPassword does not rotate the runtime chat apiKey', async () => {
+    config.dashboardPassword = 'operator-secret';
+    setRuntimeApiKey('sk-existing-key');
+    assert.equal(getCredentials().apiKey, 'sk-existing-key');
+
+    const res = fakeRes();
+    await handleDashboardApi('PUT', '/settings/credentials', {
+      apiKey: 'sk-replace-key',
+      dashboardPassword: 'short',
+    }, authedReq(), res);
+
+    assert.equal(res.statusCode, 400, JSON.stringify(res.json()));
+    assert.match(res.json().error, /dashboardPassword/);
+    assert.equal(
+      getCredentials().apiKey,
+      'sk-existing-key',
+      'a request rejected for its password must not rotate the chat apiKey',
+    );
+    const onDisk = JSON.parse(readFileSync(join(config.dataDir, 'runtime-config.json'), 'utf-8'));
+    assert.equal(onDisk.credentials.apiKey, 'sk-existing-key', 'the rejected key must not reach the file');
+    assert.equal(res.json().apiKeyUpdated, undefined, 'a rejected request must not claim a rotation');
+  });
+
+  it('a rejected apiKey does not rotate the dashboard password', async () => {
+    config.dashboardPassword = 'operator-secret';
+    const before = getEffectiveDashboardPasswordStored();
+
+    const res = fakeRes();
+    await handleDashboardApi('PUT', '/settings/credentials', {
+      apiKey: 'has whitespace',
+      dashboardPassword: 'replacement-password',
+    }, authedReq(), res);
+
+    assert.equal(res.statusCode, 400, JSON.stringify(res.json()));
+    assert.match(res.json().error, /apiKey/);
+    assert.equal(getEffectiveDashboardPasswordStored(), before, 'the rejected request must not rotate the password');
+  });
+
+  it('a fully valid request commits both credentials in one write', async () => {
+    config.dashboardPassword = 'operator-secret';
+    setRuntimeApiKey('sk-existing-key');
+
+    const res = fakeRes();
+    await handleDashboardApi('PUT', '/settings/credentials', {
+      apiKey: 'sk-both-key',
+      dashboardPassword: 'both-applied-password',
+    }, authedReq(), res);
+
+    assert.equal(res.statusCode, 200, JSON.stringify(res.json()));
+    assert.equal(getCredentials().apiKey, 'sk-both-key');
+    assert.equal(verifyPassword('both-applied-password', getEffectiveDashboardPasswordStored()), true);
+    // Both fields in the SAME persisted document: a crash between two setters
+    // could otherwise leave a rotated key next to the old password hash.
+    const onDisk = JSON.parse(readFileSync(join(config.dataDir, 'runtime-config.json'), 'utf-8'));
+    assert.equal(onDisk.credentials.apiKey, 'sk-both-key');
+    assert.equal(onDisk.credentials.dashboardPasswordHash, getCredentials().dashboardPasswordHash);
+  });
+
+  it('a failed write rolls both fields back and reports 500', async () => {
+    config.dashboardPassword = 'operator-secret';
+    setRuntimeApiKey('sk-existing-key');
+    const before = getCredentials();
+    __setRuntimeConfigPersistFailureForTests(new Error('simulated ENOSPC'));
+    try {
+      const res = fakeRes();
+      await handleDashboardApi('PUT', '/settings/credentials', {
+        apiKey: 'sk-rollback-key',
+        dashboardPassword: 'should-not-stick-either',
+      }, authedReq(), res);
+
+      assert.equal(res.statusCode, 500, JSON.stringify(res.json()));
+      assert.equal(res.json().error, 'ERR_CREDENTIAL_PERSIST_FAILED');
+      assert.deepEqual(getCredentials(), before, 'neither credential may remain applied after a failed write');
+      assert.equal(verifyPassword('operator-secret', getEffectiveDashboardPasswordStored()), true);
+      assert.equal(verifyPassword('should-not-stick-either', getEffectiveDashboardPasswordStored()), false);
+    } finally {
+      __setRuntimeConfigPersistFailureForTests(null);
+    }
   });
 });

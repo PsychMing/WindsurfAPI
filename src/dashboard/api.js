@@ -42,7 +42,7 @@ import { getResponseStoreStats } from '../response-store.js';
 import { cacheStats, cacheClear } from '../cache.js';
 import {
   getExperimental, setExperimental, getTunables, setTunables, getPrefs, setPrefs, getSystemPrompts, setSystemPrompts, resetSystemPrompt,
-  getCredentials, setRuntimeApiKey, setRuntimeDashboardPassword,
+  getCredentials, setRuntimeCredentials,
   verifyPassword, getEffectiveApiKey, getEffectiveDashboardPasswordStored,
   getBackendSwitch, getBackendSwitchOverrides, setBackendSwitches,
   getBreakerTunables, getBreakerOverrides, setBreakerTunables,
@@ -83,7 +83,7 @@ import {
   RUNTIME_SWITCH_KEYS,
 } from './devin-panel.js';
 import { listRequests, requestRingStats } from './request-ring.js';
-import { windsurfLogin, refreshFirebaseToken, reRegisterWithCodeium, probeLoginMethod, emailLoginStart, emailLoginComplete, checkEmailLocked } from './windsurf-login.js';
+import { windsurfLogin, refreshFirebaseToken, reRegisterWithCodeium, probeLoginMethod, emailLoginStart, emailLoginComplete, checkEmailLocked, assertLoginIdentity } from './windsurf-login.js';
 import { getModelAccessConfig, setModelAccessMode, setModelAccessList, addModelToList, removeModelFromList, setDefaultModel } from './model-access.js';
 import { checkMessageRateLimit } from '../windsurf-api.js';
 import { getNativeBridgeConfigStatus } from '../cascade-native-bridge.js';
@@ -205,6 +205,38 @@ export function buildBatchProxyBinding(result, proxy) {
     accountId,
     proxy: parsed,
   };
+}
+
+// ─── Batch-import diagnostics (V-25 / audit A24) ──────────────────────────
+//
+// A batch-import response used to echo the submitted line (`raw`) and the
+// proxy string including its userinfo (`proxyRaw`). A failed import therefore
+// returned the password / token / API key the operator had just pasted, in a
+// JSON body the browser may cache — and the dashboard copied it into
+// localStorage login history. Responses now carry structured diagnostics
+// derived from the PARSED item (kind, line number, error code) plus a
+// credential-free proxy label. Nothing here is a substring of the input.
+
+/** `type://host:port` — never the username/password the proxy URL carried. */
+function redactedProxyLabel(proxy) {
+  if (!proxy || typeof proxy !== 'object' || !proxy.host) return null;
+  const type = typeof proxy.type === 'string' && proxy.type ? proxy.type : 'http';
+  const port = Number.isInteger(proxy.port) && proxy.port > 0 ? proxy.port : null;
+  return `${type}://${proxy.host}${port ? `:${port}` : ''}`;
+}
+
+const IMPORT_KIND_LABELS = Object.freeze({
+  email_password: 'email+password',
+  token: 'token',
+  api_key: 'api key',
+  issue: 'unrecognized',
+});
+
+/** One-line human diagnostic that names the shape, not the secret. */
+function describeImportItem(item) {
+  const kind = IMPORT_KIND_LABELS[item?.kind] || IMPORT_KIND_LABELS.issue;
+  const proxy = redactedProxyLabel(item?.proxy);
+  return proxy ? `${kind} · proxy ${proxy}` : kind;
 }
 
 // AUTH-1 CORS hardening: the dashboard used to answer every request (and
@@ -899,6 +931,11 @@ async function finalizeWindsurfLogin(result, { password, loginProxy, autoAdd, st
     const existing = getAccountInternal(accountId);
     if (!existing) throw Object.assign(new Error('ERR_ACCOUNT_NOT_FOUND'), { code: 'ERR_ACCOUNT_NOT_FOUND', statusCode: 404 });
     if (!result.apiKey) throw Object.assign(new Error('ERR_LOGIN_FAILED'), { code: 'ERR_LOGIN_FAILED', statusCode: 502 });
+    // V-24 (audit A23): a bound login REPLACES this row's credential, so the
+    // login must prove it belongs to this row's identity. This runs before
+    // markAccountReauthenticated() — a token for someone else must not rotate
+    // the key, clear error/ban state, or flip `reauth` back to `active`.
+    assertLoginIdentity(result, existing.email);
     // A successful login IS the proof that the new key works, so a same-key
     // re-login is legitimate (`allowSameKey`). The refusal exists for the
     // operator asserting an UNCHANGED key without logging in.
@@ -2674,59 +2711,40 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   // password on the next request — no session cookies, so the UI just
   // re-prompts. We don't accept the old-password proof here because the
   // caller already passed dashboard auth at the top of this function.
+  //
+  // V-21 (audit A22): validation AND commit are one transaction. The old
+  // order validated+persisted `apiKey` and only then looked at
+  // `dashboardPassword`, so a request answered with 400 had already rotated
+  // the chat key. setRuntimeCredentials() validates every field first and
+  // writes both in one atomic replace.
   if (subpath === '/settings/credentials' && method === 'PUT') {
     if (!body || typeof body !== 'object') {
       return json(res, 400, { error: 'Body must be a JSON object' });
     }
+    const hasApiKey = Object.prototype.hasOwnProperty.call(body, 'apiKey');
+    const hasPassword = Object.prototype.hasOwnProperty.call(body, 'dashboardPassword');
+    let committed;
+    try {
+      committed = setRuntimeCredentials({
+        ...(hasApiKey ? { apiKey: body.apiKey } : {}),
+        ...(hasPassword ? { dashboardPassword: body.dashboardPassword } : {}),
+      });
+    } catch (err) {
+      if (err?.code === 'ERR_CREDENTIAL_PERSIST_FAILED') {
+        // The file write failed and both fields were rolled back; saying
+        // "success" here would leave the operator with credentials that only
+        // exist until the next restart.
+        log.warn(`Settings: credential rotation was NOT persisted: ${err.cause?.message || err.message}`);
+        return json(res, 500, { error: 'ERR_CREDENTIAL_PERSIST_FAILED' });
+      }
+      return json(res, 400, { error: err.message });
+    }
     const out = {};
-    let touched = false;
-    if (Object.prototype.hasOwnProperty.call(body, 'apiKey')) {
-      const v = body.apiKey;
-      if (v != null && typeof v !== 'string') {
-        return json(res, 400, { error: 'apiKey must be a string' });
-      }
-      const trimmed = String(v ?? '').trim();
-      // Loose sanity: reject keys with whitespace / control chars. An
-      // empty string is the explicit "clear runtime override" signal.
-      if (trimmed && /[\s\x00-\x1f]/.test(trimmed)) {
-        return json(res, 400, { error: 'apiKey must not contain whitespace or control characters' });
-      }
-      if (trimmed && trimmed.length < 8) {
-        return json(res, 400, { error: 'apiKey must be at least 8 characters' });
-      }
-      setRuntimeApiKey(trimmed);
+    if (hasApiKey) {
       out.apiKeyUpdated = true;
-      out.apiKey_masked = maskApiKey(trimmed || getEffectiveApiKey());
-      touched = true;
+      out.apiKey_masked = maskApiKey(committed.apiKey || getEffectiveApiKey());
     }
-    if (Object.prototype.hasOwnProperty.call(body, 'dashboardPassword')) {
-      const v = body.dashboardPassword;
-      if (v != null && typeof v !== 'string') {
-        return json(res, 400, { error: 'dashboardPassword must be a string' });
-      }
-      const raw = String(v ?? '');
-      // SEC-04 (audit 2026-10-22): the length gate used to run on the raw
-      // string, so an all-whitespace value of >= 8 chars ("        ") passed
-      // it, got hashed, and became a password the login path can never match —
-      // checkAuth() rejects a blank header before hashing (SEC-01) and trims
-      // nothing else. The rotation silently disabled dashboard login and
-      // replaced the env fallback. Empty string stays the explicit "clear the
-      // runtime override" signal; a non-empty value that trims to empty is a
-      // blank password, not a clear, and must be rejected.
-      const pw = raw.trim();
-      if (raw && !pw) {
-        return json(res, 400, { error: 'dashboardPassword must not be blank' });
-      }
-      if (pw && pw.length < 8) {
-        return json(res, 400, { error: 'dashboardPassword must be at least 8 characters' });
-      }
-      setRuntimeDashboardPassword(pw);
-      out.dashboardPasswordUpdated = true;
-      touched = true;
-    }
-    if (!touched) {
-      return json(res, 400, { error: 'Provide apiKey, dashboardPassword, or both' });
-    }
+    if (hasPassword) out.dashboardPasswordUpdated = true;
     log.info(`Settings: credentials rotated from ${dashboardClientIp(req) || 'unknown'} (apiKey=${!!out.apiKeyUpdated}, dashboardPassword=${!!out.dashboardPasswordUpdated})`);
     return json(res, 200, { success: true, ...out });
   }
@@ -3372,7 +3390,17 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     const { flowId, code, proxy: loginProxy, autoAdd } = body || {};
     if (!flowId || !code) return json(res, 400, { error: 'ERR_EMAIL_FLOW_CODE_REQUIRED' });
     try {
-      const result = await emailLoginComplete(flowId, code, loginProxy?.host ? loginProxy : getProxyConfig().global);
+      // V-24: when the caller binds the exchange to an account, the flow's own
+      // identity must match it BEFORE the single-use code is spent. finalize
+      // re-checks before any mutation; this early check keeps a mismatch from
+      // costing the operator a second email.
+      const boundAccount = body?.accountId ? getAccountInternal(body.accountId) : null;
+      const result = await emailLoginComplete(
+        flowId,
+        code,
+        loginProxy?.host ? loginProxy : getProxyConfig().global,
+        { expectedIdentityEmail: boundAccount?.email },
+      );
       // No password exists in this flow, so there is nothing for the credential
       // store to persist — pass storeCredential:false regardless of the request.
       return json(res, 200, await finalizeWindsurfLogin(result, {
@@ -3444,12 +3472,21 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         const password = String(acct?.password || '').trim();
         try {
           const result = await processWindsurfLogin({ email, password, loginProxy, autoAdd, storeCredential, req });
-          results.push(result);
+          // V-25: /windsurf-login returns the raw key for a one-time export
+          // when autoAdd:false. A BATCH response has no such contract — every
+          // row is keyed by an address whose password the caller just sent, so
+          // a raw key here is only a leak. Mask it and keep the same shape.
+          if (result && result.apiKey) {
+            const { apiKey, ...rest } = result;
+            results.push({ ...rest, apiKey_masked: maskApiKey(apiKey) });
+          } else {
+            results.push(result);
+          }
         } catch (err) {
           results.push({
             success: false,
             email,
-            error: err.message,
+            error: err.code || String(err.message || 'ERR_LOGIN_FAILED').slice(0, 200),
             isAuthFail: !!err.isAuthFail,
             firebaseCode: err.firebaseCode,
           });
@@ -3464,7 +3501,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         successCount,
         failCount,
         results,
-      });
+      }, NO_STORE);
     } catch (err) {
       return json(res, 400, { error: err.message });
     }
@@ -3489,7 +3526,10 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
             email: item.label,
             error: item.error,
             lineNumber: item.lineNumber,
-            raw: item.raw,
+            // V-25: never `item.raw` — that string is the operator's pasted
+            // line (password/token included). The kind label is derived from
+            // the parsed shape, so it cannot contain any of the input.
+            detail: describeImportItem(item),
           });
           continue;
         }
@@ -3538,7 +3578,9 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
           } else {
             throw new Error('ERR_UNSUPPORTED_IMPORT_ITEM');
           }
-          result.proxy = item.proxyRaw || null;
+          // V-25: `proxyRaw` carried user:pass@; the label drops the userinfo
+          // and is what the dashboard shows / stores in login history.
+          result.proxy = redactedProxyLabel(item.proxy);
           result.importKind = item.kind;
           results.push(result);
         } catch (err) {
@@ -3546,11 +3588,13 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
             success: false,
             skipped: false,
             email: item.email || item.label || '',
-            error: err.message,
+            // Prefer the stable code; a bare Error message can carry upstream
+            // prose, so it is bounded as a last resort.
+            error: err.code || String(err.message || 'ERR_IMPORT_ITEM_FAILED').slice(0, 200),
             lineNumber: item.lineNumber,
-            raw: item.raw,
-            proxy: item.proxyRaw || null,
+            proxy: redactedProxyLabel(item.proxy),
             importKind: item.kind,
+            detail: describeImportItem(item),
           });
         }
       }
@@ -3564,7 +3608,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         failCount,
         skippedCount,
         results,
-      });
+      }, NO_STORE);
     } catch (err) {
       if (err instanceof BatchImportParseError) {
         return json(res, 400, { error: err.code });
