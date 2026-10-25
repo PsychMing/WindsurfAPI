@@ -220,6 +220,31 @@ describe('connect image capability gate — supports_images:false', () => {
     assert.equal(imageDrops() - before, 0);
     assert.equal(lines.some((l) => l.includes('images_dropped_capability')), false, 'no warn when nothing was dropped');
   });
+
+  // P2-3 (Kimi wave review): the answerability guard runs BEFORE stripping and
+  // counts a non-text part as content. An image-only last turn therefore passed
+  // it, was stripped to `content: []`, and the handler returned 200 while the
+  // builder encoded an empty user frame — which consecutive user turns can merge
+  // away, leaving the model to answer a stale earlier prompt. Nothing was left
+  // to answer, so the honest answer is a clear 400.
+  it('refuses an image-only last turn with a clear 400 instead of an empty user frame', async () => {
+    const before = imageDrops();
+    const messages = [{
+      role: 'user',
+      content: [{ type: 'image_url', image_url: { url: DATA_URL } }],
+    }];
+    const { value, lines } = await captureLogs(() => ask({ model: TEXT_ONLY, stream: false, messages }));
+    assert.equal(value.status, 400, JSON.stringify(value.body));
+    assert.equal(upstream.hits, 0, 'a turn with no answerable content must not reach the upstream');
+    assert.equal(value.body.error.type, 'invalid_request_error');
+    assert.equal(value.body.error.param, 'messages');
+    assert.match(value.body.error.message, /supports_images/,
+      'the error must name the capability that caused the strip');
+    assert.match(value.body.error.message, /image/i);
+    assert.equal(imageDrops() - before, 1, 'the block was still dropped and is counted');
+    assert.ok(lines.some((l) => /image-only|no answerable/i.test(l)),
+      `a warn must name the refusal; got:\n${lines.join('\n')}`);
+  });
 });
 
 describe('connect image capability gate — true and unknown are untouched', () => {

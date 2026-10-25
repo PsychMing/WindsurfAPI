@@ -1422,6 +1422,24 @@ function hasMultimodalContent(messages) {
   }));
 }
 
+/**
+ * True when a user turn still carries something the model can answer.
+ *
+ * The pre-dispatch answerability guard deliberately counts ANY non-text part as
+ * content (an image IS content). After the supports_images=false strip that
+ * assumption no longer holds, so the same question has to be asked again:
+ * whitespace-only text and a `content: []` left by stripping are both empty.
+ */
+function hasAnswerableUserContent(message) {
+  const content = message?.content;
+  if (typeof content === 'string') return content.trim().length > 0;
+  if (!Array.isArray(content)) return false;
+  return content.some((part) => {
+    if (typeof part?.text === 'string') return part.text.trim().length > 0;
+    return !!part && typeof part === 'object' && !!part.type && part.type !== 'text';
+  });
+}
+
 function strictReuseRetryMs(availability) {
   return Math.max(1000, availability?.retryAfterMs || CASCADE_REUSE_STRICT_RETRY_MS);
 }
@@ -3726,6 +3744,26 @@ async function _handleChatCompletionsInner(body, context = {}) {
         messages = stripped.messages;
         bumpConnect('images_dropped_capability', stripped.dropped);
         log.warn(`Chat[${reqId}]: DEVIN_CONNECT selector ${safeLogValue(selector)} declares supports_images=false in the live catalog — dropped ${stripped.dropped} image block(s) before the wire; text preserved (counted in images_dropped_capability)`);
+        // P2-3: the answerability guard above ran BEFORE this strip and counted
+        // the image as content. If the last user turn was ONLY that image there
+        // is nothing left to answer: sending it would encode an empty user frame
+        // (and consecutive user turns can merge it away entirely, leaving the
+        // model to answer a stale earlier prompt). Refuse with the reason.
+        const lastUser = messages.filter(m => m?.role === 'user').pop();
+        if (lastUser && !hasAnswerableUserContent(lastUser)) {
+          log.warn(`Chat[${reqId}]: DEVIN_CONNECT selector ${safeLogValue(selector)} declares supports_images=false and the last user turn contained only image block(s) — refusing with 400 (no answerable content remains after the strip)`);
+          return {
+            status: 400,
+            body: {
+              error: {
+                message: `The last user message contains only image content, and model \`${reqModelName}\` declares supports_images=false in the live catalog. Send the image together with text, or use a model whose /v1/models row advertises supports_images.`,
+                type: 'invalid_request_error',
+                param: 'messages',
+                code: 'image_only_turn_unsupported',
+              },
+            },
+          };
+        }
       }
     }
     // `parallel_tool_calls:false` is a caller PREFERENCE ("prefer one tool call per
