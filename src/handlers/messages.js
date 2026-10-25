@@ -143,25 +143,12 @@ function withUpstreamHeaders(response, headers) {
   return { ...response, headers: { ...headers, ...response.headers } };
 }
 
-// chat.js refuses `parallel_tool_calls:false` with 400 unsupported_parameter when the
-// upstream field that would honour it is off (the connect #11 passthrough). On THIS
-// surface the caller never wrote that field — messages.js maps their
-// `tool_choice.disable_parallel_tool_use` onto it (see the F2 mapping above). The raw
-// message is therefore wrong twice over: it names a field the client did not send,
-// and it contains the internal backend name, so clientFacingMessage() would replace
-// the whole thing with the generic "Invalid request" and leave the client no way to
-// know which parameter to change. Restate it in Anthropic vocabulary instead.
-const PARALLEL_HINT_REFUSED_MESSAGE =
-  'tool_choice.disable_parallel_tool_use is not supported on this deployment: the proxy cannot guarantee one tool call per turn, so the hint would be silently ignored. Remove it (or set it to false) to proceed.';
-
-function toAnthropicChatError(result, body) {
+// The chat handler's error body is OpenAI-shaped; this surface's is Anthropic-shaped.
+// Translate the type/status and carry the upstream transport headers.
+function toAnthropicChatError(result) {
   const err = result?.body?.error || {};
-  const message = err.param === 'parallel_tool_calls'
-    && body?.tool_choice?.disable_parallel_tool_use === true
-    ? PARALLEL_HINT_REFUSED_MESSAGE
-    : err.message;
   return withUpstreamHeaders(
-    toAnthropicError(result.status || 502, err.type, message),
+    toAnthropicError(result.status || 502, err.type, err.message),
     result.headers,
   );
 }
@@ -1916,7 +1903,7 @@ export async function handleMessages(body, context = {}) {
       // Only the error VOCABULARY is Anthropic-specific; Retry-After is HTTP, and the
       // comment on the streaming twin of this branch already says the mapping exists
       // "so the SDK applies correct retry/backoff" — which is precisely the header.
-      return toAnthropicChatError(result, body);
+      return toAnthropicChatError(result);
     }
     return { status: 200, body: openAIToAnthropic(result.body, requestedModel, msgId, cachePolicy, body.stop_sequences, toolNameMap) };
   }
@@ -1940,7 +1927,7 @@ export async function handleMessages(body, context = {}) {
     // The OpenAI path returned a non-stream error (e.g. 403 model_not_entitled,
     // 503 capacity_error) before any byte streamed — map it to the Anthropic
     // error enum so the SDK applies correct retry/backoff.
-    return toAnthropicChatError(streamResult, body);
+    return toAnthropicChatError(streamResult);
   }
 
   return {

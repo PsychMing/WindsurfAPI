@@ -1171,8 +1171,8 @@ export function isToolChoicePassthroughEnabled(env = process.env) {
 }
 
 /**
- * True when the caller demanded sequential tool calls (`parallel_tool_calls:false`)
- * and this build would silently drop that demand.
+ * True when the caller asked for sequential tool calls (`parallel_tool_calls:false`)
+ * and this build will serve the request WITHOUT honouring that hint.
  *
  * The hint can only be honoured natively, through #11 `disable_parallel_tool_calls`,
  * which is opt-in because its tag is unconfirmed (see the header above). With the
@@ -1180,13 +1180,17 @@ export function isToolChoicePassthroughEnabled(env = process.env) {
  * the model is free to return N calls in one turn — the live matrix measured 4/4
  * models doing exactly that with the flag set false (evidence/ToolMatrixLive.md §8).
  *
- * Serialising at the proxy is NOT an alternative: the upstream decides the call
- * count inside one turn, so emitting only the first of N would discard work the
+ * This is a PREFERENCE, not a correctness requirement, so the handler serves the
+ * request, logs the drop once per process and counts it
+ * (`parallel_tool_calls_hint_ignored`). It used to answer 400 `unsupported_parameter`
+ * instead, which made Codex CLI 0.164 — it sends the hint on every request — fail on
+ * its first turn under the shipped default (evidence/ClientSandboxes.md §3.3 C1).
+ *
+ * Serialising at the proxy is NOT an alternative either: the upstream decides the
+ * call count inside one turn, so emitting only the first of N would discard work the
  * model already performed and the client would never learn the rest existed.
- * Callers therefore get an explicit 400 (handlers/chat.js) rather than a silent
- * downgrade of a correctness requirement.
  */
-export function isParallelToolCallsUnsupported(parallelToolCalls, env = process.env) {
+export function isParallelToolCallsHintIgnored(parallelToolCalls, env = process.env) {
   return parallelToolCalls === false && !isToolChoicePassthroughEnabled(env);
 }
 

@@ -107,6 +107,18 @@ const _counters = {
   // direct buildGetChatMessageRequest() caller skipped streamChat's resolver.
   // The image is not sent; the log line names the host. Production should stay 0.
   remote_image_unresolved: 0,
+  // Requests that asked for `parallel_tool_calls:false` (OpenAI) /
+  // `tool_choice.disable_parallel_tool_use` (Anthropic) while the #11
+  // `disable_parallel_tool_calls` passthrough was OFF, i.e. the hint was accepted
+  // and served but not honoured — the upstream may return several calls in one
+  // turn. Counted per request, because the log line for it is once per process.
+  //
+  // Non-zero is EXPECTED, not a fault: Codex CLI 0.164 sends the hint on every
+  // request (evidence/ClientSandboxes.md §3.3 C1). It is the signal that would
+  // justify calibrating #11 (DEVIN_CONNECT_TOOL_CHOICE=1 or a tag override).
+  // Deliberately NOT an errorCount signal: nothing failed, and a caller preference
+  // must never degrade account health.
+  parallel_tool_calls_hint_ignored: 0,
   // liveness probe pre-emptively recovered a dying token
   liveness_recovered: 0,
   // SessionReauth: accounts benched because a free GetUserStatus probe confirmed

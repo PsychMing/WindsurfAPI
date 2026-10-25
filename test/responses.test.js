@@ -1572,11 +1572,11 @@ describe('H-1 (audit 2026-07-13): input_image string image_url normalizes to obj
 });
 
 describe('parallel_tool_calls on /v1/responses (F1, DataAuditTools)', () => {
-  // The Responses surface accepted `parallel_tool_calls` and never read it, so
-  // the chat route's honesty gate (400 unsupported_parameter when the #11
-  // passthrough is off) was unreachable from here. Forwarding the field is the
-  // whole fix: the chat handler owns the decision and honours it when
-  // DEVIN_CONNECT_TOOL_CHOICE=1.
+  // The Responses surface accepted `parallel_tool_calls` and never read it. Forwarding
+  // the field is still the whole fix — the chat handler owns the decision: it honours
+  // the hint when DEVIN_CONNECT_TOOL_CHOICE=1 and otherwise serves the request while
+  // counting the drop. It never refuses it (Codex 0.164 sends the field on every
+  // request; a 400 there made the CLI unusable — evidence/CodexParallelFix.md).
   it('forwards the field instead of dropping it', () => {
     assert.equal(responsesToChat({ input: 'hi', parallel_tool_calls: false }).parallel_tool_calls, false);
     assert.equal(responsesToChat({ input: 'hi', parallel_tool_calls: true }).parallel_tool_calls, true);
@@ -1604,24 +1604,45 @@ describe('parallel_tool_calls on /v1/responses (F1, DataAuditTools)', () => {
       },
     });
     assert.equal(result.status, 200, JSON.stringify(result.body));
-    assert.equal(captured.parallel_tool_calls, false, 'the chat gate must be able to see the hint');
+    assert.equal(captured.parallel_tool_calls, false, 'the chat handler must be able to see the hint');
   });
 
-  it('surfaces the chat route 400 for parallel_tool_calls:false when the passthrough is off', async () => {
+  it('serves a Codex-shaped request with parallel_tool_calls:false when the passthrough is off', async () => {
     const prevConnect = process.env.DEVIN_CONNECT;
     const prevChoice = process.env.DEVIN_CONNECT_TOOL_CHOICE;
     process.env.DEVIN_CONNECT = '1';
     delete process.env.DEVIN_CONNECT_TOOL_CHOICE;
+    const seen = [];
+    __setConnectDeps({
+      toChatCompletion: async (params) => {
+        seen.push(params);
+        return {
+          status: 200,
+          body: {
+            id: 'chatcmpl-test',
+            model: 'claude-5-fable-medium',
+            choices: [{ index: 0, message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+          },
+        };
+      },
+    });
     try {
       const result = await handleResponses({
         model: 'claude-5-fable-medium',
         input: 'hi',
+        tools: [{
+          type: 'function',
+          name: 'functions__exec',
+          description: 'run a command',
+          parameters: { type: 'object', properties: { command: { type: 'string' } } },
+        }],
         parallel_tool_calls: false,
       }, { handleChatCompletions });
-      assert.equal(result.status, 400, JSON.stringify(result.body));
-      assert.equal(result.body.error.code, 'unsupported_parameter');
-      assert.equal(result.body.error.param, 'parallel_tool_calls');
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(seen.length, 1, 'the request must reach the model');
+      assert.equal(seen[0].parallelToolCalls, false);
     } finally {
+      __resetConnectDeps();
       if (prevConnect === undefined) delete process.env.DEVIN_CONNECT;
       else process.env.DEVIN_CONNECT = prevConnect;
       if (prevChoice === undefined) delete process.env.DEVIN_CONNECT_TOOL_CHOICE;
