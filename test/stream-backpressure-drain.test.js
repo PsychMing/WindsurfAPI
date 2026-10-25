@@ -319,7 +319,7 @@ describe('SEED-C2: the Cascade stream honours writer backpressure', () => {
     assert.equal(framesOf(res).filter((p) => p === '[DONE]').length, 1);
   });
 
-  it('the failure-path DONE cannot overtake a blocked synthetic finish frame', async () => {
+  it('the failure-path error frame cannot overtake a blocked terminal frame', async () => {
     seed('c2-failure-finish');
     let calls = 0;
     class ThrowingClient {
@@ -342,18 +342,18 @@ describe('SEED-C2: the Cascade stream honours writer backpressure', () => {
       { model: MODEL, messages: [{ role: 'user', content: 'hi' }], stream: true },
       ctx,
     );
-    // role(1) + content(2) + synthetic finish(3).
+    // role(1) + content(2) + error frame(3).
     const res = controlledRes({ falseAt: 3 });
     const done = result.handler(res);
     await settle();
 
     assert.equal(calls, 1, 'no retry once bytes are on the wire');
-    assert.equal(res.writes.length, 3, 'the synthetic finish frame is the last byte written');
-    assert.ok(!framesOf(res).includes('[DONE]'), 'the failure DONE waits for the synthetic finish frame');
+    assert.equal(res.writes.length, 3, 'the error frame is the last byte written');
+    assert.ok(!framesOf(res).includes('[DONE]'), 'a failed stream never gets the clean-end sentinel');
 
     res.emit('drain');
     await done;
-    assert.equal(framesOf(res).at(-1), '[DONE]', 'the stream still terminates cleanly');
+    assert.match(framesOf(res).at(-1), /"error"/, 'the stream terminates with the honest error frame');
   });
 
   it('aborts a half-open client at the max drain wait and returns the account', async () => {

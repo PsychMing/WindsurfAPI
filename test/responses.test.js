@@ -1200,6 +1200,30 @@ describe('handleResponses streaming', () => {
     assert.equal(modelCalled, false);
   });
 
+  it('rejects a forced function tool_choice absent from tools instead of pruning it', async () => {
+    // A07/KH-003: a forced function that is not declared used to be dropped,
+    // leaving the model free to answer as if nothing was forced. It must be a
+    // 400 before any model turn.
+    let modelCalled = false;
+    const result = await handleResponses({
+      model: 'claude-sonnet-4.6',
+      input: 'Hello',
+      stream: false,
+      tools: [{ type: 'function', name: 'Read', parameters: { type: 'object' } }],
+      tool_choice: { type: 'function', name: 'Bash' },
+    }, {
+      async handleChatCompletions() {
+        modelCalled = true;
+        throw new Error('must not call the model');
+      },
+    });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.error.type, 'invalid_request_error');
+    assert.equal(result.body.error.param, 'tool_choice');
+    assert.equal(result.body.error.code, 'tool_choice_tool_not_declared');
+    assert.equal(modelCalled, false);
+  });
+
   it('emits the Responses text event sequence and response.completed', async () => {
     const result = await handleResponses({ model: 'claude-sonnet-4.6', input: 'Hello', stream: true }, {
       async handleChatCompletions(body) {

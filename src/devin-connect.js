@@ -296,17 +296,103 @@ function deriveDeviceBytes(seed, info, len) {
   return Buffer.concat(out).subarray(0, len);
 }
 
+// ── File/document content (P-03) ─────────────────────────────────────────
+//
+// The GetChatMessage ChatMessage wire has NO attachment field. Its calibrated
+// shape is {uuid #1, role #2, text #3, tool_call_id #7, images #10} plus the
+// optional reasoning tag (see encodeChatMessage below); `text` is a single
+// string. So a typed file/document block cannot be "preserved through the
+// builder": there is nowhere on the wire to put it. `messageText()` used to
+// filter only `{type:'text'}` parts, which turned a Responses `input_file`
+// (or Chat `file`) block into '' — the model answered the instruction without
+// the document and no layer reported the loss.
+//
+// Cascade is different: image.js `extractImages` turns PDF file blocks into
+// text before the prompt is built, so responses.js deliberately keeps the
+// typed block. This module is the Connect boundary and must refuse instead of
+// silently flattening. The handler raises the 400 before account acquisition;
+// buildGetChatMessageRequest repeats the check for direct callers.
+
+const FILE_CONTENT_TYPES = new Set(['file', 'input_file', 'document']);
+const NON_FILE_CONTENT_TYPES = new Set([
+  'text', 'input_text', 'output_text', 'image', 'image_url', 'input_image',
+  'input_audio', 'audio', 'thinking', 'tool_use', 'tool_result',
+]);
+
+/** True for a content block carrying a file/document payload. */
+export function isFileContentPart(part) {
+  if (!part || typeof part !== 'object') return false;
+  const type = String(part.type || '').toLowerCase();
+  if (FILE_CONTENT_TYPES.has(type)) return true;
+  // Known text/image/tool blocks are never file payloads, even if a client
+  // attaches an unrelated `file` property.
+  if (NON_FILE_CONTENT_TYPES.has(type)) return false;
+  // Shape-only / defensive variants: {file:{...}} with no type (or an unknown
+  // type), or the Responses `file_data` / `file_id` fields at the top level.
+  if (part.file && typeof part.file === 'object') return true;
+  if (typeof part.file_data === 'string' && part.file_data) return true;
+  if (typeof part.file_id === 'string' && part.file_id) return true;
+  return false;
+}
+
+/** First file/document block in a content array, or null. */
+export function findFileContentPart(content) {
+  if (!Array.isArray(content)) return null;
+  for (const part of content) {
+    if (isFileContentPart(part)) return part;
+  }
+  return null;
+}
+
+/** First file/document block anywhere in a [{role, content}] message list. */
+export function findFilePartInMessages(messages) {
+  if (!Array.isArray(messages)) return null;
+  for (const msg of messages) {
+    const found = findFileContentPart(msg?.content);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * Stable 400-class error for a file/document block the Connect wire cannot
+ * carry. `param` names the request field the caller must change: `input` on
+ * /v1/responses, `messages` on /v1/chat/completions.
+ */
+export function unsupportedFilePartError(part, { param = 'input' } = {}) {
+  const type = String(part?.type || 'file').toLowerCase();
+  const rawName = part?.file?.filename || part?.filename || part?.file?.name || '';
+  const name = String(rawName).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').slice(0, 120);
+  const label = name ? `${type} "${name}"` : type;
+  const error = new Error(
+    `Unsupported content part (${label}): the Devin Connect backend carries only text and images `
+    + '(ChatMessage has no file/document field), so this payload cannot reach the model. '
+    + `Remove it from \`${param}\` or use a backend/model that supports document input.`,
+  );
+  error.code = 'unsupported_input_file';
+  error.param = param;
+  error.status = 400;
+  return error;
+}
+
 /**
  * Flatten an OpenAI-style message content into plain text. Cloud GetChatMessage
  * takes a single string per ChatMessage; structured/tool content is degraded to
  * text the same way the legacy Raw path does (see windsurf.js).
+ *
+ * File/document parts are NOT silently flattened (P-03): they would become ''
+ * here while `hasMultimodalContent`/the answerability guard still counted them
+ * as content. They throw the stable unsupported-input error instead.
  */
 export function messageText(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
+    const filePart = findFileContentPart(content);
+    if (filePart) throw unsupportedFilePartError(filePart);
     return content.filter(c => c?.type === 'text').map(c => c.text).join('\n');
   }
   if (content == null) return '';
+  if (isFileContentPart(content)) throw unsupportedFilePartError(content);
   return JSON.stringify(content);
 }
 
@@ -1480,6 +1566,12 @@ function buildCompletionConfig({ maxTokens, temperature, topK, topP, maxNewlines
 export function buildGetChatMessageRequest({ token, messages, model, sessionId, completion, tools, nativeToolCall = false, deviceSeed, userJwt, toolChoice, parallelToolCalls, env = process.env, sessionModelConfig, continuityTrail } = {}) {
   if (!token) throw new Error('DEVIN_CONNECT: missing session token');
   if (!model) throw new Error('DEVIN_CONNECT: missing model selector');
+  // P-03: refuse a file/document payload before any encoding. ChatMessage has
+  // no attachment field, and messageText() would otherwise flatten the block
+  // to '' and let the turn run without the document. This is the last-line
+  // guard for direct builder callers; the HTTP handlers reject even earlier.
+  const unsupportedFilePart = findFilePartInMessages(messages);
+  if (unsupportedFilePart) throw unsupportedFilePartError(unsupportedFilePart);
 
   // Probe: gated replay of reasoning into tag #11 (or #9 for negative control).
   // Fact A3 (2026-08-03): upstream swe-1-7 accepts reasoning tags (#11, #9) without error

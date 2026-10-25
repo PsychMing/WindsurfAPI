@@ -608,7 +608,7 @@ class GeminiStreamTranslator {
         // the truncation guard in finish() — verified: a mid-stream death returned
         // finishReason:'STOP' with no error frame, telling the client the answer
         // was complete. Same guard as messages.js and responses.js.
-        if (chunk.__synthetic_finish) this.sawSyntheticFinish = true;
+        if (chunk.__synthetic_finish || chunk.__windsurf_end_reason === 'upstream_truncated') this.sawSyntheticFinish = true;
         else this.sawTerminalSignal = true;
         this.finishReason = mapFinishReason(choice.finish_reason);
       }

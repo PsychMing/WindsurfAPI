@@ -441,9 +441,12 @@ describe('Anthropic messages request translation', () => {
     assert.equal(capturedBody.tools, undefined);
   });
 
-  it('drops a forced server-side tool_choice when the matching tool was stripped', async () => {
+  it('rejects a forced server-side tool_choice instead of silently dropping the choice', async () => {
+    // A07/KH-003: dropping the choice left the model free to answer as if the
+    // caller had not forced `advisor` at all. The proxy cannot execute that
+    // tool, so the only honest outcome is a 400 before any upstream call.
     let capturedBody = null;
-    await handleMessages({
+    const result = await handleMessages({
       model: 'claude-sonnet-4.6',
       tools: [
         { type: 'advisor_20260301', name: 'advisor', model: 'claude-opus-4-6' },
@@ -463,9 +466,11 @@ describe('Anthropic messages request translation', () => {
         };
       },
     });
-    assert.equal(capturedBody.tools.length, 1);
-    assert.equal(capturedBody.tools[0].function.name, 'Read');
-    assert.equal(capturedBody.tool_choice, undefined);
+    assert.equal(result.status, 400);
+    assert.equal(result.body.error.type, 'invalid_request_error');
+    assert.equal(result.body.error.param, 'tool_choice');
+    assert.equal(result.body.error.code, 'unsupported_server_side_tool');
+    assert.equal(capturedBody, null, 'the rejected request must not reach the upstream');
   });
 
   it('streams tail tool_use without a preceding thinking block when reasoning hid the tool call', async () => {

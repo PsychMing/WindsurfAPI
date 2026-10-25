@@ -142,46 +142,28 @@ describe('stream error protocol', () => {
     assert.equal(events[0].data.error.type, 'overloaded_error');
   });
 
-  it('closes partial OpenAI streams without appending an error JSON frame', () => {
-    const res = fakeRes();
-    const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-
-    send({
-      id: 'chatcmpl_partial',
-      object: 'chat.completion.chunk',
-      created: 1,
-      model: 'claude-sonnet-4.6',
-      choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }],
-    });
-    send({
-      id: 'chatcmpl_partial',
-      object: 'chat.completion.chunk',
-      created: 1,
-      model: 'claude-sonnet-4.6',
-      choices: [{ index: 0, delta: { content: 'partial answer' }, finish_reason: null }],
-    });
-
+  it('partial content then upstream deadline emits a structured error and never finish_reason:stop or [DONE]', async () => {
+    // Direct helper contract: an error after content is an explicit error
+    // frame, not a fabricated successful terminal.
+    const helperRes = fakeRes();
+    const send = (data) => helperRes.write(`data: ${JSON.stringify(data)}\n\n`);
     finishPartialStreamAfterError({
       id: 'chatcmpl_partial',
       created: 1,
       model: 'claude-sonnet-4.6',
       send,
-      res,
+      res: helperRes,
+      error: {
+        message: 'upstream deadline',
+        type: 'upstream_deadline_exceeded',
+        code: 'windsurf_provider_deadline',
+      },
     });
-    res.end();
+    assert.match(helperRes.body, /"error"/);
+    assert.equal(helperRes.body.includes('"finish_reason":"stop"'), false);
+    assert.equal(helperRes.body.includes('[DONE]'), false);
 
-    assert.equal(res.body.includes('"error"'), false);
-    const frames = res.body
-      .split('\n\n')
-      .filter(Boolean)
-      .map(frame => frame.split('\n').find(line => line.startsWith('data: '))?.slice(6))
-      .filter(Boolean);
-    assert.equal(frames.at(-1), '[DONE]');
-    const finish = JSON.parse(frames.at(-2));
-    assert.equal(finish.choices[0].finish_reason, 'stop');
-  });
-
-  it('does not append stream error JSON after content already reached the client', async () => {
+    // Real handler: the failure tail must take the same honest path.
     const account = addAccountByKey(`partial-deadline-${Date.now()}-${Math.random().toString(36).slice(2)}`, 'partial-deadline');
     createdAccountIds.push(account.id);
 
@@ -214,16 +196,11 @@ describe('stream error protocol', () => {
     await result.handler(res);
 
     assert.match(res.body, /partial answer/);
-    assert.equal(res.body.includes('"error"'), false);
-    const frames = res.body
-      .split('\n\n')
-      .filter(Boolean)
-      .filter(frame => !frame.startsWith(':'))
-      .map(frame => frame.split('\n').find(line => line.startsWith('data: '))?.slice(6))
-      .filter(Boolean);
-    assert.equal(frames.at(-1), '[DONE]');
-    const finish = JSON.parse(frames.at(-2));
-    assert.equal(finish.choices[0].finish_reason, 'stop');
+    assert.match(res.body, /"error"/);
+    assert.equal(res.body.includes('"finish_reason":"stop"'), false,
+      'a dead turn must not be closed as a successful stop');
+    assert.equal(res.body.includes('[DONE]'), false,
+      'a failed stream must not claim a clean finish');
   });
 
   it('still sends a structured stream error when only an empty role chunk was emitted, without [DONE]', async () => {

@@ -7,6 +7,8 @@
 
 import { randomUUID } from 'crypto';
 import { handleChatCompletions, normalizeOpenAIErrorType, connectErrorToHttp, hasPerUserScope } from './chat.js';
+import { selectBackend } from '../backend-router.js';
+import { findFilePartInMessages, unsupportedFilePartError } from '../devin-connect.js';
 import { getResponse, putResponse, deleteResponse, isResponseStoreEnabled, wantsPersistence } from '../response-store.js';
 import { safeLogValue } from '../log-safety.js';
 import { log } from '../config.js';
@@ -102,6 +104,27 @@ function normalizeMessageContent(content, { toolOutput = false } = {}) {
         if (part.detail) img.detail = part.detail;
         else if (raw && typeof raw === 'object' && raw.detail) img.detail = raw.detail;
         out.push({ type: 'image_url', image_url: img });
+      } else {
+        out.push(part);
+      }
+    } else if (part.type === 'input_file' || part.type === 'file' || part.type === 'document') {
+      // P-03: keep the typed file/document block intact. Cascade's
+      // image.js:extractImages turns PDF data URLs into model-visible text;
+      // the Devin Connect path has no attachment field, so responsesToChat
+      // rejects the request below when that backend is selected instead of
+      // letting messageText() flatten the block to ''. Never drop it here:
+      // that would also hide the block from Cascade.
+      //
+      // Responses `input_file` puts `file_data` / `filename` at the TOP level;
+      // Chat Completions nests them under `file`, which is the only shape
+      // image.js:extractImages reads. Normalise the Responses shape so Cascade
+      // does not skip the canonical payload.
+      if (!part.file && (part.file_data || part.file_id || part.filename)) {
+        const file = {};
+        if (part.filename) file.filename = part.filename;
+        if (part.file_data) file.file_data = part.file_data;
+        if (part.file_id) file.file_id = part.file_id;
+        out.push({ ...part, file });
       } else {
         out.push(part);
       }
@@ -451,15 +474,30 @@ function requestedResponseToolChoiceName(toolChoice) {
 function pruneResponseToolChoice(toolChoice, forwardedTools) {
   const normalized = normalizeResponseToolChoice(toolChoice);
   if (normalized == null) return undefined;
-  if (normalized === 'auto' || normalized === 'required' || normalized === 'none') return normalized;
+  const forwardedCount = Array.isArray(forwardedTools) ? forwardedTools.length : 0;
+  if (normalized === 'none') return normalized;
+  if (normalized === 'auto') return forwardedCount ? normalized : undefined;
+  if (normalized === 'required') {
+    if (!forwardedCount) {
+      const err = new Error("Invalid 'tool_choice': tool_choice 'required' cannot be satisfied because no executable tools remain.");
+      err.param = 'tool_choice';
+      err.code = 'tool_choice_tool_not_declared';
+      throw err;
+    }
+    return normalized;
+  }
 
   const requested = requestedResponseToolChoiceName(toolChoice);
   const availableNames = new Set((forwardedTools || []).map(t => t.function?.name || t.name).filter(Boolean));
   const forcedName = normalized.function?.name || '';
   if (forcedName) {
     if (availableNames.has(forcedName)) return normalized;
-    log.warn(`responses: dropped forced tool_choice "${requested || forcedName}" because the matching tool was not forwarded (available=[${[...availableNames].join(',') || 'none'}])`);
-    return undefined;
+    // A07/KH-003: never drop a forced choice. The caller asked for a specific
+    // tool; continuing auto would hide that the tool was unavailable.
+    const err = new Error(`Invalid 'tool_choice': function '${requested || forcedName}' not found in 'tools'.`);
+    err.param = 'tool_choice';
+    err.code = 'tool_choice_tool_not_declared';
+    throw err;
   }
 
   // A forced server-executed tool_choice never reaches this point:
@@ -573,6 +611,13 @@ export function responsesToChat(body) {
           role,
           content: normalizeMessageContent(item.content),
         });
+      } else if (item.type === 'input_file' || item.type === 'file' || item.type === 'document') {
+        // P-03: a file item sent at the top level of `input` (instead of inside
+        // a message's content array) used to fall through every branch and
+        // vanish before the backend saw it. Materialise it as a user content
+        // part so Cascade can extract it and the Connect guard can reject it.
+        flushToolCalls.flush();
+        messages.push({ role: 'user', content: normalizeMessageContent([item]) });
       } else if (item.type === 'function_call') {
         flushToolCalls.add(item);
       } else if (item.type === 'function_call_output') {
@@ -617,6 +662,7 @@ export function responsesToChat(body) {
       },
     };
   }
+
   return {
     model: body.model || 'claude-sonnet-4.6',
     messages,
@@ -769,13 +815,26 @@ export function chatToResponse(chatBody, requestedModel, responseId = genRespons
   // incomplete. Verified after aligning them: a tool-call turn still closes as
   // `completed` on both paths, and only length / content_filter yields
   // `incomplete`.
-  const truncated = finishReason === 'length' || finishReason === 'content_filter';
+  //
+  // A06/KH-018: chat.js marks a Cascade poll truncation with
+  // `_windsurf_end_reason:'upstream_truncated'`. That is NOT a caller-imposed
+  // output cap — it means the upstream never finished the turn — so it must
+  // report `upstream_incomplete` (not max_output_tokens) and must not be
+  // committed to the response store (see commit() below).
+  const upstreamTruncated = choice._windsurf_end_reason === 'upstream_truncated';
+  const truncated = upstreamTruncated || finishReason === 'length' || finishReason === 'content_filter';
   return {
     id: responseId,
     object: 'response',
     created_at: chatBody.created || Math.floor(Date.now() / 1000),
     status: truncated ? 'incomplete' : 'completed',
-    ...(truncated ? { incomplete_details: { reason: finishReason === 'length' ? 'max_output_tokens' : 'content_filter' } } : {}),
+    ...(truncated ? {
+      incomplete_details: {
+        reason: upstreamTruncated
+          ? 'upstream_incomplete'
+          : (finishReason === 'length' ? 'max_output_tokens' : 'content_filter'),
+      },
+    } : {}),
     // The SERVED name wins over the requested one, matching /v1/messages
     // (messages.js `result.model || model`). chat.js reports what actually ran —
     // the requested name for a mapped alias, the real selector when a request
@@ -988,7 +1047,12 @@ class ResponsesStreamTranslator {
       // cancel, provider deadline, ECONNRESET).
       if (choice.finish_reason) {
         this.streamFinishReason = choice.finish_reason;
-        if (!chunk.__synthetic_finish) this.sawTerminalChunk = true;
+        // A06: an upstream-truncated length terminal is fabricated too; the
+        // namespaced marker covers builds/routes that do not carry the private
+        // __synthetic_finish flag.
+        if (!chunk.__synthetic_finish && chunk.__windsurf_end_reason !== 'upstream_truncated') {
+          this.sawTerminalChunk = true;
+        }
       }
       const delta = choice.delta || {};
       if (delta.reasoning_content) this.emitReasoningDelta(delta.reasoning_content);
@@ -1860,6 +1924,30 @@ export async function handleResponses(body, deps = {}) {
     };
   }
 
+  // P-03: the Devin Connect wire has no file/document field. responsesToChat
+  // deliberately preserves typed file blocks for Cascade's image.js extractor,
+  // so the backend-aware rejection belongs here: check the merged conversation
+  // before dispatch, account acquisition, or any socket, and return 400 naming
+  // `input`. Checking AFTER the previous_response_id merge also covers a stored
+  // history written before this guard existed.
+  if (selectBackend({ modelInfo: null }).flow === 'devin_connect') {
+    const filePart = findFilePartInMessages(chatBody.messages || []);
+    if (filePart) {
+      const err = unsupportedFilePartError(filePart, { param: 'input' });
+      return {
+        status: 400,
+        body: {
+          error: {
+            message: err.message,
+            type: 'invalid_request_error',
+            param: err.param,
+            code: err.code,
+          },
+        },
+      };
+    }
+  }
+
   // The conversation to persist for the NEXT turn: everything the upstream saw.
   const priorMessages = chatBody.messages || [];
   // `terminal` carries the status this request REPORTED to the client, so a later
@@ -1869,6 +1957,12 @@ export async function handleResponses(body, deps = {}) {
   // not the raw request string) so a later retrieval cannot contradict it.
   const commit = (assistantMessage, terminal = {}, servedModel = requestedModel) => {
     if (!isResponseStoreEnabled() || !chainable) return;
+    // A06/KH-018: an upstream-truncated turn is not a completed assistant
+    // reply. Committing it would poison the next request's context with a
+    // half answer the client only saw as `incomplete` (or never received).
+    // A LEGITIMATE length/content_filter truncation is still chainable — only
+    // `upstream_incomplete` (the upstream never finished) is excluded.
+    if (terminal.incompleteReason === 'upstream_incomplete') return;
     try {
       const stored = putResponse(
         responseId,
@@ -2011,7 +2105,10 @@ export async function handleResponses(body, deps = {}) {
       // exists to plug, on the failure side. chat.js's post-error path writes an
       // explicit error chunk before `[DONE]`; here the failure is already in the
       // terminal event, so the sentinel must simply not be written.
-      if (translator.finished && !translator.failed && !realRes.writableEnded) realRes.write('data: [DONE]\n\n');
+      // A06/KH-024: `aborted` is an upstream truncation, not a clean end. A
+      // relay that sees [DONE] treats the stream as whole, which would erase
+      // the only failure signal the Responses client got.
+      if (translator.finished && !translator.failed && !translator.aborted && !realRes.writableEnded) realRes.write('data: [DONE]\n\n');
       if (!realRes.writableEnded) realRes.end();
     },
   };

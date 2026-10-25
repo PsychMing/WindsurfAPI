@@ -735,14 +735,51 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
     }
     return toolChoice;
   };
+  // A07/KH-003: a forced/required choice that cannot survive conversion is a
+  // 400, never a silent downgrade to auto. Dropping it left the model free to
+  // answer as if the caller had not asked for that tool at all.
+  const toolChoiceContractError = (detail) => {
+    const err = new Error(`Invalid 'tool_choice': ${detail}.`);
+    err.param = 'tool_choice';
+    err.code = 'tool_choice_tool_not_declared';
+    err.status = 400;
+    return err;
+  };
   const pruneToolChoice = (toolChoice, forwardedTools) => {
-    if (!toolChoice || !forwardedTools.length) return undefined;
+    if (!toolChoice) return undefined;
+    if (toolChoice === 'none') return 'none';
+    if (toolChoice === 'auto') return forwardedTools.length ? 'auto' : undefined;
+    if (toolChoice === 'required') {
+      if (!forwardedTools.length) {
+        throw toolChoiceContractError("tool_choice 'required' cannot be satisfied because no executable tools remain");
+      }
+      return 'required';
+    }
     if (toolChoice.type === 'function') {
       const names = new Set(forwardedTools.map(t => t.function?.name).filter(Boolean));
-      return names.has(toolChoice.function?.name) ? toolChoice : undefined;
+      if (!names.has(toolChoice.function?.name)) {
+        throw toolChoiceContractError(`function '${toolChoice.function?.name || ''}' not found in 'tools'`);
+      }
+      return toolChoice;
     }
     return toolChoice;
   };
+  // A07/KH-003: refuse a forced server-side tool BEFORE pruneToolChoice sees
+  // only the post-filter list, so the error names the real reason instead of a
+  // generic "not declared".
+  if (body.tool_choice?.type === 'tool' && body.tool_choice.name) {
+    const declared = (body.tools || []).find(t => t?.name === body.tool_choice.name);
+    if (!declared) {
+      throw toolChoiceContractError(`function '${body.tool_choice.name}' not found in 'tools'`);
+    }
+    if (declared.type && SERVER_SIDE_ANTHROPIC_TOOL_TYPES.has(declared.type)) {
+      const err = new Error(`Server-executed tool "${declared.type}" is not supported by this proxy: it requires an executor that runs on this server, and this proxy has none.`);
+      err.param = 'tool_choice';
+      err.code = 'unsupported_server_side_tool';
+      err.status = 400;
+      throw err;
+    }
+  }
   const messages = [];
   const toolNameById = new Map();
   // T2 (Thinking-core): capture the LAST assistant turn's incoming thinking before
@@ -1411,7 +1448,10 @@ class AnthropicStreamTranslator {
   }
 
   startBlock(type, extra = {}) {
-    this.closeCurrentBlock();
+    // closeCurrentBlock() validates the accumulated tool JSON before closing a
+    // tool_use block. A false result means it refused to close a malformed call
+    // and already failed the stream, so no new block may be opened.
+    if (!this.closeCurrentBlock()) return false;
     this.current = { type, index: this.blockIndex };
     let content_block;
     if (type === 'text') content_block = { type: 'text', text: '' };
@@ -1434,15 +1474,28 @@ class AnthropicStreamTranslator {
         model: this.model,
       });
     }
+    return true;
   }
 
   closeCurrentBlock() {
-    if (!this.current) return;
+    if (!this.current) return true;
     // BUG3: before stopping a tool_use block, flush any buffered arg fragments
     // WHILE the block is still the open/current one. After content_block_stop
     // the index is closed and any input_json_delta against it would be invalid.
     if (this.current.type === 'tool_use') {
-      this.flushToolArgs(this.toolBufForBlockIndex(this.current.index));
+      const buf = this.toolBufForBlockIndex(this.current.index);
+      this.flushToolArgs(buf);
+      // KH-017: a tool_use block may only close when everything the client has
+      // accumulated forms ONE complete JSON value. Flushing the final fragment
+      // and then unconditionally sending content_block_stop made a truncated
+      // call (`{"path"`) look successful: finish() went on to message_delta /
+      // message_stop, and the client executed a tool_use whose input JSON cannot
+      // be parsed. Refuse the close and fail the stream instead — no
+      // content_block_stop, no message_stop, no executable call.
+      if (!this.toolArgsValid(buf)) {
+        this.failInvalidToolBlock(buf, this.current.index);
+        return false;
+      }
     }
     // A thinking block should close with a signature_delta BEFORE content_block_stop
     // (Anthropic sequence: start → thinking_delta* → signature_delta → stop). Only
@@ -1460,12 +1513,28 @@ class AnthropicStreamTranslator {
     this.send('content_block_stop', { type: 'content_block_stop', index: this.current.index });
     this.blockIndex++;
     this.current = null;
+    return true;
+  }
+
+  // Fail the turn for a tool_use block whose accumulated arguments are not one
+  // complete JSON value. The block is dropped WITHOUT a content_block_stop:
+  // sending one would tell the client the malformed input is complete and
+  // executable. error() sets messageStopped, so no later message_delta /
+  // message_stop can turn this into a successful turn.
+  failInvalidToolBlock(buf, index) {
+    const bytes = (buf?.argsBuffered || '').length + (buf?.pendingArgs || '').length;
+    if (this.current && this.current.index === index) this.current = null;
+    this.error({
+      status: 502,
+      type: 'upstream_error',
+      message: `Upstream tool call "${buf?.name || 'unknown'}" (id=${buf?.id || 'none'}) ended with incomplete or invalid JSON arguments (${bytes} byte(s))`,
+    });
   }
 
   emitTextDelta(text) {
     if (!text) return;
     if (this.holdIfToolBlockOpen('text', text)) return;
-    if (this.current?.type !== 'text') this.startBlock('text');
+    if (this.current?.type !== 'text' && !this.startBlock('text')) return;
     this.send('content_block_delta', {
       type: 'content_block_delta',
       index: this.current.index,
@@ -1476,7 +1545,7 @@ class AnthropicStreamTranslator {
   emitThinkingDelta(text) {
     if (!text) return;
     if (this.holdIfToolBlockOpen('thinking', text)) return;
-    if (this.current?.type !== 'thinking') this.startBlock('thinking');
+    if (this.current?.type !== 'thinking' && !this.startBlock('thinking')) return;
     this.send('content_block_delta', {
       type: 'content_block_delta',
       index: this.current.index,
@@ -1508,6 +1577,17 @@ class AnthropicStreamTranslator {
   toolArgsComplete(buf) {
     const json = (buf?.argsBuffered || '') + (buf?.pendingArgs || '');
     if (!json) return false;
+    try { JSON.parse(json); return true; } catch { return false; }
+  }
+
+  // Close-time counterpart to toolArgsComplete(). An empty buffer IS valid here:
+  // content_block_start already published `input: {}`, and a tool call with no
+  // argument deltas is a legitimate zero-argument call. Any non-empty byte
+  // sequence must parse as one complete JSON value — partial JSON (`{"path"`)
+  // and malformed JSON (`{"path": }`) are both refused by closeCurrentBlock().
+  toolArgsValid(buf) {
+    const json = (buf?.argsBuffered || '') + (buf?.pendingArgs || '');
+    if (!json) return true;
     try { JSON.parse(json); return true; } catch { return false; }
   }
 
@@ -1597,7 +1677,8 @@ class AnthropicStreamTranslator {
     );
     // Open this tool's block the first time we have both id and a settled name.
     // If a TEXT/thinking block is current, startBlock closes it first, so on
-    // return `this.current` is guaranteed to be THIS tool's block.
+    // success `this.current` is guaranteed to be THIS tool's block. A false
+    // return means a prior malformed tool block failed the stream — stop here.
     //
     // Do NOT open a second tool_use block while one is still current: an
     // Anthropic tool_use block can never be reopened, so opening B here would
@@ -1608,7 +1689,7 @@ class AnthropicStreamTranslator {
     // that all but the first call buffer instead of streaming their args.
     if (buf.blockIndex == null && buf.id && buf.name && nameSettled
         && this.current?.type !== 'tool_use') {
-      this.startBlock('tool_use', { id: buf.id, name: buf.name });
+      if (!this.startBlock('tool_use', { id: buf.id, name: buf.name })) return;
       buf.blockIndex = this.current.index;
     }
     // Always accumulate into pendingArgs, then attempt a guarded flush. The flush
@@ -1705,7 +1786,7 @@ class AnthropicStreamTranslator {
         // BUG1's guard below — verified: a mid-stream death reported
         // stop_reason:'end_turn' with no error frame, telling Claude Code the
         // truncated answer was complete.
-        if (chunk.__synthetic_finish) this.sawSyntheticFinish = true;
+        if (chunk.__synthetic_finish || chunk.__windsurf_end_reason === 'upstream_truncated') this.sawSyntheticFinish = true;
         else this.sawTerminalSignal = true;
         // SEED-C3a: the generation layer reports WHICH stop sequence truncated
         // the answer on this terminal choice (only the internal Messages route
@@ -1774,7 +1855,12 @@ class AnthropicStreamTranslator {
     // content) no longer reaches here: the BUG1 guard above now catches a missing
     // terminal signal regardless of whether content started.
     if (!this.messageStarted) this.startMessage();
-    this.closeCurrentBlock();
+    // KH-017: this is the close that used to flush the final fragment and send
+    // content_block_stop without checking the accumulated bytes. If they are not
+    // complete JSON, closeCurrentBlock() fails the stream (error event, no
+    // content_block_stop) and returns false — finish() must stop here rather
+    // than going on to message_delta/message_stop.
+    if (!this.closeCurrentBlock()) return;
     // NOTE: `messageStopped` is deliberately NOT set yet — error() below is a
     // no-op once it is, and the unrepresentable-tool check must be able to fail
     // the stream. Nothing between here and that check can re-enter finish().
@@ -1785,7 +1871,9 @@ class AnthropicStreamTranslator {
     let unrepresentable = null;
     for (const buf of this.toolCallBufs.values()) {
       if (buf.blockIndex == null && buf.id && buf.name) {
-        this.startBlock('tool_use', { id: buf.id, name: buf.name });
+        // startBlock() closes the previously opened held tool first; if that
+        // one carried malformed JSON it has already failed the stream.
+        if (!this.startBlock('tool_use', { id: buf.id, name: buf.name })) return;
         buf.blockIndex = this.current.index;
         // The name may have been split across deltas; the block is opened only
         // at finish in that case, so flush the arguments that accumulated while
@@ -1801,8 +1889,9 @@ class AnthropicStreamTranslator {
     }
     // The held tools opened above are current one at a time; close the last one
     // so every content_block_start has its content_block_stop before the
-    // message_delta. No-op when the loop opened nothing.
-    this.closeCurrentBlock();
+    // message_delta. No-op when the loop opened nothing. A malformed final tool
+    // fails here exactly like the streaming one above (no message_delta).
+    if (!this.closeCurrentBlock()) return;
     if (unrepresentable) {
       // error() returns immediately once messageStopped is set, so this check
       // runs while the guard is still clear and aborts before message_delta:
@@ -1992,7 +2081,25 @@ export async function handleMessages(body, context = {}) {
   // false → byte-identical to the pre-cc translation for every other client.
   const ccActive = !!context.ccCompat?.active;
   const promptEstimate = { tokens: 0 };
-  const openaiBody = anthropicToOpenAI(body, ccActive, promptEstimate);
+  let openaiBody;
+  try {
+    openaiBody = anthropicToOpenAI(body, ccActive, promptEstimate);
+  } catch (err) {
+    // A07/KH-003: only the tool/choice contract is a client error; anything
+    // else is a real conversion fault and must not be relabelled as 400.
+    if (err?.status !== 400) throw err;
+    return {
+      status: 400,
+      body: {
+        error: {
+          message: err.message,
+          type: 'invalid_request_error',
+          ...(err.param ? { param: err.param } : {}),
+          ...(err.code ? { code: err.code } : {}),
+        },
+      },
+    };
+  }
   if (toolHygieneEnabled()) {
     openaiBody.messages = normalizeHistoryTail(
       normalizeToolIdsInMessages(openaiBody.messages, { seed: msgId }),

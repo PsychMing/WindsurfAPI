@@ -33,13 +33,17 @@ async function run(options = {}) {
     },
     end() { this.endAttempts += 1; if (options.endFail) boom(); this.writableEnded = true; },
   };
-  // Collaborator contract: this unchanged helper emits one finish then DONE.
-  // The separate full-handler integration test also exercises its real definition.
-  function finishPartialStreamAfterError({ id, created, model, send, res, internalRoute }) {
+  // A06 collaborator contract: a failure after content is an explicit error
+  // frame, not a fabricated stop. The separate full-handler test exercises the
+  // real definition.
+  function finishPartialStreamAfterError({ send, error }) {
+    send({ error: error || { message: 'upstream failed', type: 'upstream_error' } });
+  }
+  function finishTruncatedStream({ id, created, model, send, internalRoute }) {
     send({ id, object: 'chat.completion.chunk', created, model,
-      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      choices: [{ index: 0, delta: {}, finish_reason: 'length' }],
+      __windsurf_end_reason: 'upstream_truncated',
       ...(internalRoute ? { __synthetic_finish: true } : {}) });
-    if (res && !res.writableEnded) res.write('data: [DONE]\n\n');
   }
   const deps = {
     options, res, visited, lastErr: new Error('upstream failed'), model: 'model', modelKey: 'model',
@@ -66,7 +70,9 @@ async function run(options = {}) {
     reasoningDedup: { release() { visited.push('dedup'); if (options.dedupFail) boom(); return ''; } },
     // The stop gate is owned outside this extracted continuation; real handler tests cover its bytes.
     flushContentGate: options.gateFail ? boom : () => {},
-    shouldFallbackThinkingToText: () => false, finishPartialStreamAfterError: options.helperFail ? boom : finishPartialStreamAfterError,
+    shouldFallbackThinkingToText: () => false,
+    finishPartialStreamAfterError: options.helperFail ? boom : finishPartialStreamAfterError,
+    finishTruncatedStream: options.helperFail ? boom : finishTruncatedStream,
     chatStreamError: (message, type, code) => ({ error: { message, type, code } }),
     // C2 writer gate. This harness models a writable that never reports
     // backpressure, so the gate is a no-op here: the assertions below stay about
@@ -109,11 +115,20 @@ test('R4 a broken warning logger uses the fallback sink and still ends without D
   assert.equal(r.res.endAttempts, 1);
 });
 
-test('R4 a failed DONE write on a partial failure keeps the synthetic finish and still ends', async () => {
-  const r = await run({ partial: true, doneWrite: true });
-  assert.ok(r.writes.some(x => x.includes('"finish_reason":"stop"')), 'the synthetic finish must already be on the wire');
-  assert.equal(r.writes.some(x => x.includes('"error"')), false, 'a partial failure has no error frame');
-  assert.match(r.warnings.join(''), /stage=done/);
+test('R4 a partial failure emits a structured error and never a synthetic stop or DONE', async () => {
+  const r = await run({ partial: true });
+  assert.ok(r.writes.some(x => x.includes('"error"')), 'the error frame is the honest terminal');
+  assert.equal(r.writes.some(x => x.includes('"finish_reason":"stop"')), false,
+    'a dead turn must not be dressed up as a successful stop');
+  assert.equal(done(r), 0);
+  assert.equal(r.res.writableEnded, true);
+  assert.equal(r.res.endAttempts, 1);
+});
+
+test('R4 a failed error-frame write on a partial failure is isolated and still ends', async () => {
+  const r = await run({ partial: true, errorWrite: true });
+  assert.equal(done(r), 0);
+  assert.match(r.warnings.join(''), /stage=finish-frame/);
   assert.equal(r.res.writableEnded, true);
   assert.equal(r.res.endAttempts, 1);
 });
@@ -127,22 +142,12 @@ test('R4 a flush failure does not suppress other flushes or the error frame', as
   assert.equal(r.res.endAttempts, 1);
 });
 
-test('R4 a failed held tail or synthetic finish cannot prevent partial DONE', async () => {
-  for (const flags of [{ dedupFail: true }, { finishWrite: true }, { helperFail: true }]) {
+test('R4 a failed held tail or error-frame write cannot prevent termination', async () => {
+  for (const flags of [{ dedupFail: true }, { helperFail: true }]) {
     const r = await run({ partial: true, internal: true, ...flags });
-    assert.equal(done(r), 1);
-    assert.equal(r.writes.some(x => x.includes('"error"')), false);
+    assert.equal(done(r), 0, 'a partial failure never gets the clean-end sentinel');
     assert.match(r.warnings.join(''), /stage=(dedup-tail|finish-frame)/);
-  }
-});
-
-test('R4 synthetic finish markers remain internal-only and successful termination is single-shot', async () => {
-  for (const internal of [false, true]) {
-    const r = await run({ partial: true, internal });
-    const finish = JSON.parse(r.writes[0].slice(6));
-    assert.equal(finish.choices[0].finish_reason, 'stop');
-    assert.equal(Object.hasOwn(finish, '__synthetic_finish'), internal);
-    assert.equal(done(r), 1);
+    assert.equal(r.res.writableEnded, true);
   }
 });
 

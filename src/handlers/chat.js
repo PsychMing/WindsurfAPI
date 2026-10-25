@@ -4,7 +4,7 @@
  */
 
 import { createHash, randomUUID } from 'crypto';
-import { WindsurfClient, contentToString, isCascadeTransportError, acquireLsUseOrThrow, detachedClaimLostError } from '../client.js';
+import { WindsurfClient, contentToString, isCascadeTransportError, acquireLsUseOrThrow, detachedClaimLostError, classifyCascadeEnd } from '../client.js';
 import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountInternal, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, markSelectorIneligible, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, isAllConnectAccountsUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, recordAccountAttempt, ensureDeviceSeed, requestReauthCheck, getConnectSelectorImageCapabilityForAccount } from '../auth.js';
 
 import { isStickyEnabled, setStickyBinding, peekStickyBinding } from '../account/sticky-session.js';
@@ -62,7 +62,7 @@ import { acpVisionEnabled } from '../devin-acp.js';
 import { selectBackend, usesCascadeFlow } from '../backend-router.js';
 import { toChatCompletion as _toChatCompletion, streamChatCompletion as _streamChatCompletion } from '../devin-connect-openai.js';
 import { resolveConnectSelector, DROUGHT_SAFE_SELECTORS, getConnectSelectorImageCapability } from '../devin-connect-models.js';
-import { getToolDefTags, parseToolCallTagMap, isParallelToolCallsHintIgnored, stripImageParts } from '../devin-connect.js';
+import { getToolDefTags, parseToolCallTagMap, isParallelToolCallsHintIgnored, stripImageParts, findFilePartInMessages, unsupportedFilePartError } from '../devin-connect.js';
 import { recordRateLimitBurstEvent, RATE_LIMIT_BURST_WINDOW_MS } from '../rate-limit-burst.js';
 import { isRouterModel, assignModel as _assignModel } from '../devin-connect-catalog.js';
 import { bumpConnect } from '../devin-connect-metrics.js';
@@ -419,6 +419,55 @@ export function filterToolCallsByAllowlist(toolCalls, tools) {
   return filtered;
 }
 
+/**
+ * A07/KH-003: validate the ORIGINAL tool/choice pair before any filtering.
+ *
+ * `effectiveToolsForToolChoice` is a filter, not a validator: a forced
+ * `{type:'function', function:{name:'X'}}` that names a tool the caller never
+ * declared reduces the effective list to empty. The request then runs with no
+ * tools and no error, so the caller cannot tell its forced tool was discarded.
+ * OpenAI itself rejects that request with a 400; this returns the same shape.
+ *
+ * Also refuse a `tool_choice` that names a server-executed tool: the proxy has
+ * no executor for it, and silently dropping the choice would let the model
+ * answer as if the caller had not forced anything.
+ */
+export function validateToolChoiceContract(tools, toolChoice) {
+  if (!toolChoice || typeof toolChoice !== 'object') return null;
+  const rejectedType = firstUnsupportedServerToolType([toolChoice]);
+  if (rejectedType) {
+    const err = chatServerSideToolUnsupported(rejectedType, 'tool_choice');
+    return {
+      status: 400,
+      body: {
+        error: {
+          message: err.message,
+          type: 'invalid_request_error',
+          param: err.param,
+          code: err.code,
+        },
+      },
+    };
+  }
+  const forced = toolChoice.function?.name || toolChoice.name || '';
+  if (!forced) return null;
+  const declared = toolNameList(tools);
+  if (!declared.includes(forced)) {
+    return {
+      status: 400,
+      body: {
+        error: {
+          message: `Invalid 'tool_choice': function '${forced}' not found in 'tools'.`,
+          type: 'invalid_request_error',
+          param: 'tool_choice',
+          code: 'tool_choice_tool_not_declared',
+        },
+      },
+    };
+  }
+  return null;
+}
+
 export function effectiveToolsForToolChoice(tools, toolChoice) {
   if (!Array.isArray(tools) || tools.length === 0) return tools || [];
   if (toolChoice === 'none') return [];
@@ -608,6 +657,10 @@ export function connectErrorToHttp(code) {
     // occurred") or 502 upstream_error (verbatim passthrough) — both tell a
     // client to retry a request that can never succeed.
     case 'REQUEST_REJECTED': return { status: 400, type: 'invalid_request_error' };
+    // P-03: a file/document block cannot ride ChatMessage (text #3 + images #10
+    // only). The handler rejects it before dispatch; this is the backstop for a
+    // direct builder throw that reaches the shared error mapper.
+    case 'unsupported_input_file': return { status: 400, type: 'invalid_request_error' };
     case 'NO_TOKEN': return { status: 401, type: 'authentication_error' };
     case 'TIMEOUT': return { status: 504, type: 'timeout_error' };
     // Absolute wall-clock deadline (upstream hung the full window). Same 504
@@ -709,38 +762,62 @@ export function normalizeOpenAIErrorBody(body, status) {
 /**
  * Close a stream that already delivered content and THEN failed.
  *
- * The `finish_reason:'stop'` here is SYNTHETIC — the upstream never sent one, it
- * died mid-answer. Injecting "[Error: ...]" as a content delta instead would
- * corrupt the assistant message (clients render it verbatim as model output), so
- * a clean close is the right wire shape for a direct OpenAI client.
+ * A06/KH-002: this used to fabricate `finish_reason:'stop'` (plus `[DONE]`),
+ * i.e. it told every direct `/v1/chat/completions` client that a dead turn was
+ * a normal completion. A synthetic stop is not a terminal the client can act
+ * on: it cannot distinguish it from a real answer, and the internal translators
+ * had to carry a private `__synthetic_finish` marker just to undo the lie.
  *
- * But the internal translators must be able to tell this apart from a real
- * completion. The /v1/responses translator keys its truncation detection on
- * "did a terminal chunk arrive", and a synthetic terminal chunk satisfied that
- * check — so a half answer closed as `response.completed` AND entered the
- * response store as the next turn's context, on the DEFAULT (Cascade) backend.
- * The connect path was covered because it raises STREAM_TRUNCATED instead; this
- * path had no such signal.
+ * The honest wire shape is an explicit error frame. `[DONE]` is deliberately
+ * NOT written: it is the OpenAI "clean finish" sentinel, and a relay that sees
+ * it treats the stream as whole (the same rule the pre-content failure path
+ * already follows). The partial content the client already received stays on
+ * the wire; the error frame is the terminal signal.
  *
- * `__synthetic_finish` carries that signal. It is emitted ONLY on the internal
- * translator routes (messages / gemini / responses), so the wire a direct
- * `/v1/chat/completions` client sees is byte-identical to before.
+ * The frame is handed back to the caller so a sequential (awaiting) caller can
+ * wait for the socket. A synchronous caller keeps today's shape: its `send`
+ * returns undefined, so the returned value is undefined too.
  */
-export function finishPartialStreamAfterError({ id, created, model, send, res, internalRoute = false }) {
-  // C2: the frame is handed back to the caller so a sequential (awaiting)
-  // caller can wait for the socket. A synchronous caller keeps today's shape:
-  // its `send` returns undefined, so the returned value is undefined too.
+export function finishPartialStreamAfterError({ id, created, model, send, res, internalRoute = false, error = null }) {
+  const message = typeof error === 'string' ? error : error?.message;
+  const type = (typeof error === 'object' && error?.type) || 'upstream_error';
+  const code = (typeof error === 'object' && error?.code) || 'STREAM_TRUNCATED';
+  const retryAfterMs = Number(error?.retry_after_ms);
+  const written = typeof send === 'function'
+    ? send({
+      error: {
+        message: message || 'Upstream stream ended before completion (response is incomplete)',
+        type,
+        ...(code ? { code } : {}),
+        ...(Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? { retry_after_ms: retryAfterMs } : {}),
+      },
+    })
+    : undefined;
+  return written;
+}
+
+/**
+ * Close a stream whose Cascade poll loop stopped BEFORE the upstream said the
+ * turn was done (`max_wait` / `stall_warm`). The partial bytes are already on
+ * the wire, so the truthful OpenAI terminal is `finish_reason:'length'` — not
+ * `'stop'`. `__windsurf_end_reason` distinguishes an upstream truncation from a
+ * caller-imposed output cap for clients that care; internal translators also
+ * receive `__synthetic_finish` so they do not treat this fabricated terminal as
+ * proof the turn completed (and therefore never commit it to the response
+ * store).
+ */
+export function finishTruncatedStream({ id, created, model, send, internalRoute = false, finishReason = 'length', endReason = 'upstream_truncated' }) {
   const written = typeof send === 'function'
     ? send({
       id,
       object: 'chat.completion.chunk',
       created,
       model,
-      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+      __windsurf_end_reason: endReason,
       ...(internalRoute ? { __synthetic_finish: true } : {}),
     })
     : undefined;
-  if (res && !res.writableEnded) res.write('data: [DONE]\n\n');
   return written;
 }
 
@@ -3292,6 +3369,14 @@ async function _handleChatCompletionsInner(body, context = {}) {
   const max_tokens = Number.isFinite(body.max_completion_tokens)
     ? body.max_completion_tokens
     : body.max_tokens;
+  // A07/KH-003: a forced choice must name a tool that exists in the ORIGINAL
+  // tools[] and must not name a server-executed type. Validate before
+  // effectiveToolsForToolChoice turns a typo/mismatch into an empty list.
+  const toolChoiceError = validateToolChoiceContract(tools, tool_choice);
+  if (toolChoiceError) {
+    log.warn(`Chat[${reqId}]: rejecting tool_choice contract — ${safeLogValue(toolChoiceError.body.error.code)}`);
+    return toolChoiceError;
+  }
   const effectiveTools = effectiveToolsForToolChoice(tools, tool_choice);
   // v2.0.66: merge reasoning_effort into the model id BEFORE alias
   // resolution so `gpt-5.5 + reasoning.effort=xhigh` resolves to
@@ -3638,6 +3723,29 @@ async function _handleChatCompletionsInner(body, context = {}) {
   // the backend. Unmapped names degrade to the free-tier selector downstream.
   if (selectBackend({ modelInfo }).flow === 'devin_connect') {
     const reqModelName = accessFallbackModel || reqModel || config.defaultModel;
+    // P-03: ChatMessage (GetChatMessage) has text #3 and images #10 only — no
+    // attachment field. A file/document block would be flattened to '' by
+    // messageText() and the turn would run without the document. Refuse before
+    // ACP reroute, prompt assembly, account acquisition, or any socket. The
+    // Responses surface names its request field `input`; direct chat calls use
+    // `messages`. Cascade is untouched: image.js:extractImages extracts PDFs.
+    const filePart = findFilePartInMessages(messages);
+    if (filePart) {
+      const param = body.__route === 'responses' ? 'input' : 'messages';
+      const err = unsupportedFilePartError(filePart, { param });
+      log.warn(`Chat[${reqId}]: DEVIN_CONNECT rejecting file/document content part before any upstream call (${param}) — ChatMessage has no attachment field`);
+      return {
+        status: 400,
+        body: {
+          error: {
+            message: err.message,
+            type: 'invalid_request_error',
+            param: err.param,
+            code: err.code,
+          },
+        },
+      };
+    }
     // VISION reroute: when ACP vision is explicitly enabled, keep using the real
     // Devin CLI for its full multimodal session semantics. The direct Connect
     // path below can also carry source=USER images #10, including SWE-1.7, but ACP
@@ -4859,7 +4967,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
         // as 401, and a rate limit as 429 — not a blanket 502.
         const { status, type } = connectErrorToHttp(r.err.code);
         log.error(`Chat[${reqId}]: DEVIN_CONNECT error (${r.err.code || 'UPSTREAM_ERROR'} -> ${status}): ${r.err.message}`);
-        return { status, body: { error: { message: r.err.message, type, code: r.err.code || null } } };
+        return { status, body: { error: {
+          message: r.err.message,
+          type,
+          code: r.err.code || null,
+          ...(r.err.param ? { param: r.err.param } : {}),
+        } } };
       }
       // r.kind === 'dead' — the session token couldn't be revived on this account.
       if (acct) reportDeadToken(currentApiKeyForId(acct.id, acct.apiKey));
@@ -5658,7 +5771,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
       // for so the cascade pool entry gets indexed under both keys.
       reuseEnabled ? { reuseEntry, lsPort: ls.port, apiKey: acct.apiKey, accountId: acct.id, callerKey, cachePolicy, fpOpts, aliasModelKey: context.__aliasModelKey || null } : null,
       modelInfo?.provider || null,
-      emulateTools, toolPreamble, wantJson, cachePolicy, wantThinking, tools, body.__route || 'chat',
+      // A07/KH-004: pass the EFFECTIVE list, not the raw request tools[]. The
+      // stream path already receives effectiveTools (deps.tools below); the
+      // non-stream path used the raw list, so tool_choice:'none' or a forced
+      // choice was enforced in the preamble but not in any parse/recovery
+      // filter — a fake XML/thinking call for an excluded tool still surfaced.
+      emulateTools, toolPreamble, wantJson, cachePolicy, wantThinking, effectiveTools, body.__route || 'chat',
       nativeOpts,
       // v2.0.88 (audit H-3) — when this is the inner-pass of an auto-
       // fallback retry, the outer wrapper threads the ORIGINAL request's
@@ -5913,6 +6031,64 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
         generatorOffset: chunks.generatorOffset,
       };
       serverUsage = chunks.usage || null;
+      // A06/KH-018: the Cascade poll loop can return a truncated or empty turn
+      // as a normal array (`max_wait` / `stall_warm` / `idle_empty`). Never let
+      // that become a 200 `stop` response or a cache entry. A truncation keeps
+      // the partial text but is typed `length`; an empty/failed turn is an
+      // upstream error with no successful body.
+      if (chunks.endReason != null) {
+        const cascadeTerminal = classifyCascadeEnd(chunks.endReason, {
+          totalYielded: allText.length,
+          totalThinking: allThinking.length,
+          toolCallCount: Array.isArray(chunks.toolCalls) ? chunks.toolCalls.length : 0,
+        });
+        if (!cascadeTerminal.ok) {
+          const usage = buildUsageBody(chunks.usage || null, messages, allText, allThinking, cachePolicy);
+          recordRequest(model, false, Date.now() - startTime, accountId);
+          try { recordAccountAttempt({ id: accountId }, { model, outcome: 'upstream_error', status: cascadeTerminal.status || 502 }); } catch {}
+          if (cascadeTerminal.kind === 'truncated') {
+            const truncatedMessage = { role: 'assistant', content: allText || null };
+            if (allThinking) truncatedMessage.reasoning_content = allThinking;
+            return {
+              status: 200,
+              body: {
+                id, object: 'chat.completion', created, model,
+                system_fingerprint: systemFingerprint(model),
+                service_tier: DEFAULT_SERVICE_TIER,
+                choices: [{
+                  index: 0,
+                  message: truncatedMessage,
+                  finish_reason: 'length',
+                  _windsurf_end_reason: 'upstream_truncated',
+                  _windsurf_truncated: true,
+                }],
+                usage,
+                __windsurf_incomplete: true,
+              },
+            };
+          }
+          // Kimi's empty upstream deserves its existing actionable message.
+          if (cascadeTerminal.kind === 'empty' && /^kimi/i.test(String(modelKey || '')) && !allText && !allThinking) {
+            return {
+              status: 502,
+              reuseEntryInvalid: true,
+              body: { error: {
+                message: `${model} 在 Cascade 上游当前不可用（返回空响应）。请换用 claude-sonnet-4.6、gemini-2.5-flash 或 glm-4.7。`,
+                type: 'upstream_model_unavailable',
+              } },
+            };
+          }
+          return {
+            status: cascadeTerminal.status || 502,
+            reuseEntryInvalid: true,
+            body: { error: {
+              message: cascadeTerminal.message,
+              type: cascadeTerminal.type,
+              code: cascadeTerminal.code,
+            } },
+          };
+        }
+      }
       if (nativeBridgeOn) {
         // v2.0.65: planner-native trajectory steps come back via
         // chunks.toolCalls with `cascade_native: true`. Translate each
@@ -6141,6 +6317,21 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
                 for (const c of retryChunks) {
                   if (c.text) retryText += c.text;
                   if (c.thinking) retryThinking += c.thinking;
+                }
+                // A06/A07 recovery path: a correction retry that itself ended
+                // truncated/empty must not be parsed into an executable call
+                // (or a "successful" narrative) from a half turn.
+                if (retryChunks.endReason != null) {
+                  const retryTerminal = classifyCascadeEnd(retryChunks.endReason, {
+                    totalYielded: retryText.length,
+                    totalThinking: retryThinking.length,
+                    toolCallCount: Array.isArray(retryChunks.toolCalls) ? retryChunks.toolCalls.length : 0,
+                  });
+                  if (!retryTerminal.ok) {
+                    log.warn(`Chat[non-stream]: NLU retry ended ${retryChunks.endReason} — discarding its partial output`);
+                    retryText = '';
+                    retryThinking = '';
+                  }
                 }
                 const retryParsed = parseToolCallsFromText(retryText, { modelKey, provider, route });
                 let retryCalls = filterToolCallsByAllowlist(retryParsed.toolCalls || [], tools);
@@ -7786,6 +7977,43 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // data callback, so the tail flush must not overtake an emission
             // still waiting on the writer.
             if (pendingEmission) await pendingEmission;
+            // A06/KH-018: `max_wait` / `stall_warm` / `idle_empty` return
+            // chunks normally, so without this check the success tail below
+            // would pool the cascade, cache the text and write
+            // finish_reason:"stop". Convert the poll loop's typed terminal
+            // into the same failure continuation a thrown upstream error
+            // takes; it flushes what was delivered and emits `length` for a
+            // truncation or an explicit error for an empty turn.
+            if (cascadeResult?.endReason != null) {
+              const cascadeYielded = Number.isFinite(cascadeResult.totalYielded)
+                ? cascadeResult.totalYielded
+                : (Array.isArray(cascadeResult)
+                  ? cascadeResult.reduce((n, c) => n + (c?.text?.length || 0), 0)
+                  : accText.length);
+              const cascadeThinking = Number.isFinite(cascadeResult.totalThinking)
+                ? cascadeResult.totalThinking
+                : (Array.isArray(cascadeResult)
+                  ? cascadeResult.reduce((n, c) => n + (c?.thinking?.length || 0), 0)
+                  : accThinking.length);
+              const cascadeToolCount = Array.isArray(cascadeResult.toolCalls)
+                ? cascadeResult.toolCalls.length
+                : collectedToolCalls.length;
+              const cascadeTerminal = classifyCascadeEnd(cascadeResult.endReason, {
+                totalYielded: cascadeYielded,
+                totalThinking: cascadeThinking,
+                toolCallCount: cascadeToolCount,
+              });
+              if (!cascadeTerminal.ok) {
+                const err = new Error(cascadeTerminal.message);
+                err.type = cascadeTerminal.type;
+                err.code = cascadeTerminal.code;
+                err.status = cascadeTerminal.status;
+                err.cascadeTerminal = cascadeTerminal;
+                // The trajectory is half-finished; never return it to the pool.
+                err.reuseEntryInvalid = true;
+                throw err;
+              }
+            }
             // Flush order matters:
             //   1. NativeFunctionCallStreamParser tail → may produce provider
             //      native tool_calls withheld from content deltas
@@ -8516,11 +8744,17 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           const deadlineExceeded = isUpstreamDeadlineExceeded(lastErr) || lastErr?.type === 'upstream_deadline_exceeded' || isBudgetExceededError(lastErr);
           // Prefer upstream_transient over an account-limit diagnosis for transport failures.
           const lastIsTransport = isCascadeTransportError(lastErr);
+          // A06: a typed Cascade terminal (max_wait/stall_warm/idle_empty) must
+          // survive the generic classification instead of being flattened to
+          // `upstream_error`.
+          const cascadeTerminal = lastErr?.cascadeTerminal || null;
           // A deadline/budget stop outranks the transient-account diagnosis: the
           // chain stopped because the request ran out of time/turns, not because
           // every account was broken. A budget message is already specific, so
           // do not replace it with the ~240s provider-deadline text.
-          const errMsg = deadlineExceeded
+          const errMsg = cascadeTerminal
+            ? sanitizeText(lastErr?.message || cascadeTerminal.message || 'Cascade turn ended incomplete')
+            : deadlineExceeded
             ? (isBudgetExceededError(lastErr) || lastErr?.detachedClaimLost
               ? sanitizeText(lastErr?.message || 'request budget exhausted')
               : upstreamDeadlineExceededMessage(model))
@@ -8535,12 +8769,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             : rl.allLimited
             ? `${model} 所有账号均已达速率限制，请 ${Math.ceil(rl.retryAfterMs / 1000)} 秒后重试`
             : sanitizeText(lastErr?.message || 'no accounts');
-          return { temporaryUnavailable, allInternal, poolExhausted, poolTimedOut, deadlineExceeded, errMsg };
+          return { temporaryUnavailable, allInternal, poolExhausted, poolTimedOut, deadlineExceeded, errMsg, cascadeTerminal };
         }) || {
           temporaryUnavailable: { allUnavailable: false }, allInternal: false,
-          poolExhausted: false, poolTimedOut: false, deadlineExceeded: false, errMsg: 'Stream failed',
+          poolExhausted: false, poolTimedOut: false, deadlineExceeded: false, errMsg: 'Stream failed', cascadeTerminal: null,
         };
-        const { temporaryUnavailable, allInternal, poolExhausted, poolTimedOut, deadlineExceeded, errMsg } = failure;
+        const { temporaryUnavailable, allInternal, poolExhausted, poolTimedOut, deadlineExceeded, errMsg, cascadeTerminal } = failure;
         await failureStage('classification-log', () => {
           if (allInternal) log.error('Chat stream: all attempts hit an upstream transient error');
         });
@@ -8620,67 +8854,92 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         }
         await failureStage('content-gate-tail', async () => { await settleWriter(); if (!writerGone()) await flushContentGate(); });
         // A detached claim that lost ownership must not be dressed up as a
-        // completed turn: no synthetic finish_reason:"stop" and no [DONE],
-        // even when the prefix already reached the client. The error frame
-        // below is the honest terminal for this stream.
+        // completed turn: no terminal at all and no [DONE], even when the
+        // prefix already reached the client. The error frame below is the
+        // honest terminal for this stream.
         const claimLost = lastErr?.detachedClaimLost === true;
+        // A06: a typed Cascade terminal overrides the generic pool/transport
+        // classification. Without this an `idle_empty` would surface as a
+        // generic `upstream_error` and a `max_wait` as `upstream_error` too,
+        // losing the actionable type/code.
+        const errType = cascadeTerminal?.type || (deadlineExceeded
+          ? 'upstream_deadline_exceeded'
+          : allInternal
+            ? 'upstream_transient_error'
+            : poolExhausted
+              ? 'ls_pool_exhausted'
+              : poolTimedOut
+                ? 'capacity_error'
+                : (temporaryUnavailable.allUnavailable || lastErr?.type === 'rate_limit_exceeded')
+                  ? 'rate_limit_exceeded'
+                  : 'upstream_error');
+        const errCode = cascadeTerminal?.code || (deadlineExceeded
+          ? 'windsurf_provider_deadline'
+          : (temporaryUnavailable.allUnavailable || lastErr?.type === 'rate_limit_exceeded')
+            ? 'RATE_LIMITED'
+            : (poolExhausted || poolTimedOut)
+              ? 'CAPACITY'
+              : allInternal
+                ? 'UPSTREAM_INTERNAL'
+                : null);
+        // Carry the hint for EVERY class that has one, not only 429: a
+        // pre-content 503 (CAPACITY / budget) also benefits from telling the
+        // client when to retry, and the commit gate turns it into a real
+        // `Retry-After` header.
+        const retryAfterMs = Number.isFinite(temporaryUnavailable.retryAfterMs) && temporaryUnavailable.retryAfterMs > 0
+          ? temporaryUnavailable.retryAfterMs
+          : (Number.isFinite(lastErr?.retry_after_ms) ? lastErr.retry_after_ms : null);
         if (emittedClientPayload && !claimLost) {
-          // Keep the existing synthetic-finish contract on internal routes.
-          // Suppress its local DONE write; the independent stage below owns it.
-          await failureStage('finish-frame', async () => {
-            await settleWriter();
-            if (writerGone()) return undefined;
-            return finishPartialStreamAfterError({ id, created, model, send, res: null,
-              internalRoute: !isOpenAIClient });
-          });
-          await failureStage('partial-log', () => {
-            log.warn(`Stream: partial response delivered then failed (${safeKeyRef(errMsg, 'error')})`);
-          });
+          if (cascadeTerminal?.kind === 'truncated') {
+            // The poll loop stopped early but bytes are already on the wire.
+            // A length terminal is the truthful OpenAI shape; internal
+            // translators get __synthetic_finish and must not treat it as a
+            // completed turn (so nothing is stored/chained).
+            await failureStage('finish-frame', async () => {
+              await settleWriter();
+              if (writerGone()) return undefined;
+              return finishTruncatedStream({ id, created, model, send,
+                internalRoute: !isOpenAIClient });
+            });
+            await failureStage('partial-log', () => {
+              log.warn(`Stream: partial response truncated (${safeKeyRef(errMsg, 'error')})`);
+            });
+          } else {
+            // KH-002: an error after content is an error, not a synthetic
+            // finish_reason:"stop". No [DONE]: the error frame is terminal.
+            await failureStage('finish-frame', async () => {
+              await settleWriter();
+              if (writerGone()) return undefined;
+              return finishPartialStreamAfterError({ id, created, model, send, res: null,
+                internalRoute: !isOpenAIClient,
+                error: {
+                  message: errMsg,
+                  type: errType,
+                  code: errCode,
+                  ...(retryAfterMs ? { retry_after_ms: retryAfterMs } : {}),
+                } });
+            });
+            await failureStage('partial-log', () => {
+              log.warn(`Stream: partial response delivered then failed (${safeKeyRef(errMsg, 'error')})`);
+            });
+          }
         } else {
           await failureStage('error-frame', async () => {
-            const errType = deadlineExceeded
-              ? 'upstream_deadline_exceeded'
-              : allInternal
-                ? 'upstream_transient_error'
-                : poolExhausted
-                  ? 'ls_pool_exhausted'
-                  : poolTimedOut
-                    ? 'capacity_error'
-                    : (temporaryUnavailable.allUnavailable || lastErr?.type === 'rate_limit_exceeded')
-                      ? 'rate_limit_exceeded'
-                      : 'upstream_error';
-            const errCode = deadlineExceeded
-              ? 'windsurf_provider_deadline'
-              : (temporaryUnavailable.allUnavailable || lastErr?.type === 'rate_limit_exceeded')
-                ? 'RATE_LIMITED'
-                : (poolExhausted || poolTimedOut)
-                  ? 'CAPACITY'
-                  : allInternal
-                    ? 'UPSTREAM_INTERNAL'
-                    : null;
-            // Carry the hint for EVERY class that has one, not only 429: a
-            // pre-content 503 (CAPACITY / budget) also benefits from telling the
-            // client when to retry, and the commit gate turns it into a real
-            // `Retry-After` header.
-            const retryAfterMs = Number.isFinite(temporaryUnavailable.retryAfterMs) && temporaryUnavailable.retryAfterMs > 0
-              ? temporaryUnavailable.retryAfterMs
-              : (Number.isFinite(lastErr?.retry_after_ms) ? lastErr.retry_after_ms : null);
             await settleWriter();
             if (writerGone()) return;
             await send(chatStreamError(errMsg, errType, errCode, retryAfterMs ? { retry_after_ms: retryAfterMs } : null));
           });
         }
         await failureStage('done', async () => {
-          // A pre-content failure has no completed turn to close. [DONE] is the
-          // OpenAI "clean finish" marker; writing it after the error frame lets
-          // clients and relays treat a failed request as an empty success. The
-          // DEVIN_CONNECT path already guards the same sentinel with
-          // terminalOk || contentEmitted (see the stream-exit block above).
-          // A lost detached claim is the same rule even when content was
-          // emitted: the stream is incomplete, so it gets the error frame and
-          // no sentinel.
+          // [DONE] is the OpenAI "clean finish" marker. It is written ONLY for
+          // a truncation terminal (where finish_reason:"length" already told
+          // the client the answer is incomplete). An error frame must never be
+          // followed by it: a relay would read a failed request as a clean
+          // empty success. A lost detached claim gets neither.
           await settleWriter();
-          if (emittedClientPayload && !claimLost) writeRaw('data: [DONE]\n\n');
+          if (emittedClientPayload && !claimLost && cascadeTerminal?.kind === 'truncated') {
+            writeRaw('data: [DONE]\n\n');
+          }
         });
         await failureStage('end', () => {
           if (!res.writableEnded) res.end();

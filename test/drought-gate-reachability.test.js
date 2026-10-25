@@ -218,6 +218,10 @@ describe('drought gate structure — escape points (#234)', () => {
     const ACCEPTED_ESCAPES = [
       { match: /handleSpecialAgentChatCompletion/, why: 'ACP vision reroute → special_agent namespace' },
       { match: /code: 'model_not_found'/, why: 'unresolvable model name → precise 400' },
+      // P-03: the Connect ChatMessage wire has no attachment field. A
+      // file/document part is a request-shape error, not a pool-state question,
+      // so its stable 400 must answer before the drought 503.
+      { match: /unsupportedFilePartError/, why: 'file/document content cannot ride the Connect wire → stable 400' },
     ];
 
     const escapes = [];

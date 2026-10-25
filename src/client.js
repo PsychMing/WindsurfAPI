@@ -539,6 +539,80 @@ export function shouldColdStall({ elapsed, coldStallMs, sawActive, sawText, tota
   return elapsed > coldStallMs && sawActive && !sawText && (totalThinking || 0) === 0 && (toolCallCount || 0) === 0;
 }
 
+// A06/KH-018: Cascade's polling loop has terminal reasons that are NOT a
+// normal completion. Before this, `max_wait` (poll window expired while the
+// model was still generating) and `stall_warm` (the loop gave up on a warm
+// stall and "accepted partial") returned their chunks as if the turn had
+// ended, and `idle_empty` returned an empty turn. Chat then wrote
+// finish_reason:"stop" and Responses stored the half answer as completed —
+// the interruption was invisible to every surface.
+//
+// This classifier is the single source of truth for "did this poll loop
+// actually finish the turn?". `idle_done` and `native_tool_call` are the only
+// successful exits. A poll-window/stall exit with any output is a truncation
+// (Chat can report `length`); an exit with no output at all is an upstream
+// error, never a successful empty completion.
+export function classifyCascadeEnd(endReason, { totalYielded = 0, totalThinking = 0, toolCallCount = 0 } = {}) {
+  if (endReason == null) return { ok: true, kind: 'legacy', truncated: false };
+  if (endReason === 'idle_done' || endReason === 'native_tool_call') {
+    return { ok: true, kind: 'done', truncated: false };
+  }
+  const hasOutput = (totalYielded || 0) > 0 || (totalThinking || 0) > 0 || (toolCallCount || 0) > 0;
+  if (endReason === 'idle_empty') {
+    return {
+      ok: false,
+      kind: 'empty',
+      truncated: false,
+      status: 502,
+      type: 'upstream_empty_response',
+      code: 'EMPTY_RESPONSE',
+      message: 'Cascade returned no text and no tool call',
+    };
+  }
+  if (endReason === 'max_wait') {
+    if (!hasOutput) {
+      return {
+        ok: false,
+        kind: 'empty',
+        truncated: false,
+        status: 504,
+        type: 'upstream_deadline_exceeded',
+        code: 'windsurf_provider_deadline',
+        message: 'Cascade produced no output before its poll window expired',
+      };
+    }
+    return {
+      ok: false,
+      kind: 'truncated',
+      truncated: true,
+      status: 200,
+      type: 'upstream_truncated',
+      code: 'CASCADE_TRUNCATED',
+      message: 'Cascade exceeded its poll window before completing; the answer is truncated',
+    };
+  }
+  if (endReason === 'stall_warm') {
+    return {
+      ok: false,
+      kind: 'truncated',
+      truncated: true,
+      status: 200,
+      type: 'upstream_truncated',
+      code: 'CASCADE_TRUNCATED',
+      message: 'Cascade stalled after partial output; the answer is truncated',
+    };
+  }
+  return {
+    ok: false,
+    kind: 'incomplete',
+    truncated: false,
+    status: 502,
+    type: 'upstream_error',
+    code: 'CASCADE_INCOMPLETE',
+    message: `Cascade ended without a terminal signal (${endReason})`,
+  };
+}
+
 function isCompletedReadUrlNativeResult(tc) {
   return !!(tc?.cascade_native
     && tc.name === 'read_url_content'
@@ -1889,6 +1963,23 @@ export class WindsurfClient {
         log.warn(`Cascade max_wait dump: head="${head}"${tail ? ` ... tail="${tail}"` : ''}`);
       }
 
+      // A06/KH-018: expose the poll loop's terminal state on the returned
+      // array. Callers must not have to infer "the turn finished" from the
+      // presence of text: max_wait/stall_warm return partial chunks and
+      // idle_empty returns none, and all three used to look like a clean
+      // completion to both Chat response builders.
+      const terminal = classifyCascadeEnd(endReason, {
+        totalYielded,
+        totalThinking,
+        toolCallCount: toolCalls.length,
+      });
+      chunks.endReason = endReason;
+      chunks.truncated = terminal.truncated === true;
+      chunks.incomplete = terminal.ok !== true;
+      chunks.terminal = terminal;
+      chunks.totalYielded = totalYielded;
+      chunks.totalThinking = totalThinking;
+      chunks.sawText = sawText;
       onEnd?.(chunks);
 
       // ── Real token usage via GetCascadeTrajectoryGeneratorMetadata ──
