@@ -178,9 +178,12 @@
     "dialog": "Dialog",
     "recentRequests": "Recent requests table",
     "statsLog": "Request log table",
-    "statsAggGroup": "Aggregate dimension"
+    "statsAggGroup": "Aggregate dimension",
+    "openNav": "Open navigation",
+    "scrollableTable": "Scrollable table"
   },
   "action": {
+    "retry": "Retry",
     "checkUpdate": "Check Update",
     "restartService": "Restart Service",
     "applyUpdate": "Update & Restart",
@@ -227,6 +230,7 @@
     "verifyAndLogin": "Verify & Log In"
   },
   "batchOps": {
+    "confirmTypeCount": "Type {{count}} to confirm deleting accounts outside this page",
     "selected": "{{count}} selected",
     "selectedAll": "All {{count}} matching selected",
     "selectAll": "Select all",
@@ -242,6 +246,7 @@
     "done": "{{ok}} succeeded / {{fail}} failed"
   },
   "status": {
+    "saved": "Saved",
     "active": "Active",
     "disabled": "Disabled",
     "error": "Error",
@@ -1033,6 +1038,7 @@
     "confirmClear": "Clear the runtime override and fall back to the .env value?"
   },
   "confirm": {
+    "typeToConfirm": "Type {{text}} to confirm",
     "saveDiffTitle": "Review changes before saving",
     "saveDiffStat": "{{add}} added / {{del}} removed",
     "saveDiffNoChange": "No changes to save.",
@@ -1977,6 +1983,8 @@
     "restartCount": "Restarts"
   },
   "overview": {
+    "errorTitle": "Overview unavailable",
+    "staleSince": "Showing last-good data from {{time}}. Refresh failed: {{error}}",
     "poolHealth": {
       "healthy": "Healthy",
       "throttled": "Throttled",

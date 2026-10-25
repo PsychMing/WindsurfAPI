@@ -65,6 +65,27 @@ export const UI_BORDERS = ['--border-control'];
 /** Accent interaction states used as rings/borders — graphical 3:1 floor. */
 export const ACCENT_STATES = ['--accent-hover', '--accent-active', '--accent-focus'];
 
+/** Status fills and their explicit hover fills; each carries its own on-* label
+ *  (P1-C3 removed brightness() filters so hover is a measured pair, not a
+ *  post-processed one). */
+export const STATUS_FILLS = {
+  '--success': '--success-hover',
+  '--warn': '--warn-hover',
+  '--error': '--error-hover',
+  '--info': '--info-hover',
+};
+
+export const ON_FILL = {
+  '--on-success': '--success',
+  '--on-warn': '--warn',
+  '--on-error': '--error',
+  '--on-info': '--info',
+};
+
+/** Runtime-scoped custom properties the GlowGrid writes from JS; they are not
+ *  declared in the stylesheet by design. Everything else must resolve. */
+export const RUNTIME_VARS = ['--gg-delay', '--gg-dur', '--gg-hit-tint'];
+
 export const TEXT_FLOOR = 4.5;
 export const GRAPHICAL_FLOOR = 3;
 export const LADDER_FLOOR = 1.08;
@@ -103,9 +124,27 @@ function onBackground(vars, fgName, bgName, baseName = '--surface') {
   return fg.a < 1 ? composite(fg, bg) : fg;
 }
 
+/** Every `var(--x)` reference must resolve to a declared custom property (or an
+ *  allowlisted runtime-scoped one). This catches the class of bug where
+ *  `var(--muted)` silently inherits instead of using the muted ramp. */
+export function undefinedCustomProperties(html = readDashboardHtml()) {
+  const declared = new Set();
+  for (const m of html.matchAll(/(--[A-Za-z0-9_-]+)\s*:/g)) declared.add(m[1]);
+  const missing = new Set();
+  for (const m of html.matchAll(/var\(\s*(--[A-Za-z0-9_-]+)/g)) {
+    const name = m[1];
+    if (!declared.has(name) && !RUNTIME_VARS.includes(name)) missing.add(name);
+  }
+  return [...missing].sort();
+}
+
 export function lintDashboardContrast(html = readDashboardHtml()) {
   const problems = [];
   const { light, dark } = themeMaps(html);
+
+  for (const token of undefinedCustomProperties(html)) {
+    problems.push(`undefined custom property referenced: ${token}`);
+  }
 
   for (const [theme, vars] of Object.entries({ light, dark })) {
     const surface = color(vars, '--surface');
@@ -163,15 +202,17 @@ export function lintDashboardContrast(html = readDashboardHtml()) {
       }
     }
 
-    // 4. Filled blocks: the label colour on the fill. Status fills carry the
-    // same --on-accent label as the accent fill (buttons, chips, meters).
+    // 4. Filled blocks: the label colour on the fill and its explicit hover
+    // fill. P1-C3 replaced brightness() filters with these measured pairs.
     const onAccent = color(vars, '--on-accent');
-    for (const fill of ['--accent', '--success', '--warn', '--error', '--info']) {
-      const ratio = contrastRatio(onAccent, color(vars, fill));
-      if (ratio < TEXT_FLOOR) problems.push(`${theme}: --on-accent is ${ratio}:1 on ${fill} (needs ${TEXT_FLOOR})`);
+    const fillPairs = [['--on-accent', '--accent'], ['--on-accent', '--accent-hover']];
+    for (const [label, fill] of Object.entries(ON_FILL)) {
+      fillPairs.push([label, ON_FILL[label]], [label, STATUS_FILLS[ON_FILL[label]]]);
     }
-    const accentRatio = contrastRatio(onAccent, color(vars, '--accent-hover'));
-    if (accentRatio < TEXT_FLOOR) problems.push(`${theme}: --on-accent is ${accentRatio}:1 on --accent-hover (needs ${TEXT_FLOOR})`);
+    for (const [label, fill] of fillPairs) {
+      const ratio = contrastRatio(color(vars, label), color(vars, fill));
+      if (ratio < TEXT_FLOOR) problems.push(`${theme}: ${label} is ${ratio}:1 on ${fill} (needs ${TEXT_FLOOR})`);
+    }
 
     for (const brand of ['google', 'github']) {
       const fg = color(vars, `--brand-${brand}-fg`);
