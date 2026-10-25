@@ -98,7 +98,7 @@ added by raw token (the current pooled free account, id `70da7667`) has none, so
 it can fail over to other pool members but cannot self-heal its own token. To
 enable self-heal, re-add the account through the email/password login path with
 `DEVIN_CONNECT_CRED_KEY` set — the password is then auto-stored encrypted
-(`src/auth.js:1495-1500`). See §5.
+(`src/auth.js:1981`). See §5.
 
 ## 3. Deploy steps (operator runs on homecloud)
 
@@ -388,7 +388,8 @@ DEVIN_CONNECT_ASSIGN_TAGS="req_model_uid=2,req_cascade_id=3,resp_assignment=1,as
 # Extra router names/prefixes:  DEVIN_CONNECT_ROUTER_MODELS="auto,smart-*"
 ```
 
-The defaults above are the post-`86d5543` set (2026-10-15): the request now carries
+The defaults above are the post-`86d5543` set (2026-10-15), read from
+`ASSIGN_TAGS_DEFAULT` (`src/devin-connect-catalog.js:521-527`): the request now carries
 `cascade_id` (#3, the schema marks it required) and `ModelAssignment`'s `model_uid` /
 assignment-blob numbers were corrected (they had been swapped). An `.env` that pinned the
 old set — `req_model_uid=2,resp_assignment=1,asg_model_uid=1,asg_jwt=2,asg_harness=3` — must
@@ -476,13 +477,37 @@ capture that contradicts them:**
 | `2` | `stop` | free-tier normal completion (verified) |
 | `4` | `stop` | **paid teams** normal completion, calibrated 2026-07-27 — three probes on claude-sonnet-4.6 (`max_tokens` 300 / 8 / 40) all returned 4, and the `max_tokens=300` one answered "HI" (2 chars, unambiguously complete) |
 
-Every OTHER value maps to `stop`. The earlier best-effort guesses (`3 → length`,
-`5 → content_filter`), inferred from the variant NAME order, have been **retired**:
-value 4 proved that method wrong, and the cost of a wrong guess is asymmetric.
-A spurious `length` or `content_filter` closes a `/v1/responses` turn as
-`response.incomplete` (a whole-turn hard failure for Codex-style clients), and
-`content_filter` additionally surfaces on `/v1/messages` as Anthropic
-`stop_reason:'refusal'` — reporting a completed answer as the model refusing.
+`mapFinishReason` reads the descriptor-backed `STOP_REASON_DEFAULT` table
+(`src/devin-connect.js:2884-2899`) and applies `DEVIN_CONNECT_STOP_REASON_MAP`
+overrides on top (`:2920-2938`). The shipped map is:
+
+| value | maps to | note |
+|---|---|---|
+| `0` | `stop` | `STOP_REASON_UNSPECIFIED` |
+| `1` | `length` | `INCOMPLETE` |
+| `2` | `stop` | **live-anchored** free-tier normal completion (verified) |
+| `3` | `length` | `MAX_TOKENS` |
+| `4` | `stop` | **live-anchored** paid teams normal completion, calibrated 2026-07-27 — three probes on claude-sonnet-4.6 (`max_tokens` 300 / 8 / 40) all returned 4, and the `max_tokens=300` one answered "HI" (2 chars, unambiguously complete) |
+| `5` | `length` | `MAX_NEWLINES` |
+| `6` | `stop` | `EXIT_SCOPE` |
+| `7` | `stop` | `NONFINITE_LOGIT_OR_PROB` |
+| `8` | `stop` | `FIRST_NON_WHITESPACE_LINE` |
+| `9` | `length` | `PARTIAL` |
+| `10` | `tool_calls` | `FUNCTION_CALL` |
+| `11` | `content_filter` | `CONTENT_FILTER` |
+| `12` | `stop` | `NON_INSERTION` |
+| `13` | `error` | `ERROR` |
+
+Only values **outside 0–13** (or non-numeric) fall back to `stop`
+(`src/devin-connect.js:2994-3002`, logged once per distinct value). The earlier
+wording — "every other value maps to
+`stop`", with `3 → length` and `5 → content_filter` described as retired guesses —
+was wrong: `3 → length` and `5 → length` are live, and `5` is `MAX_NEWLINES`, not
+`CONTENT_FILTER` (`11`). A spurious `length` or `content_filter` closes a
+`/v1/responses` turn as `response.incomplete` (a whole-turn hard failure for
+Codex-style clients), and `content_filter` additionally surfaces on `/v1/messages`
+as Anthropic `stop_reason:'refusal'` — reporting a completed answer as the model
+refusing.
 
 **Truncation is detected from usage, not from the enum.** `resolveFinishReason`
 reports `length` when `completion_tokens` lands exactly on the cap the caller
@@ -493,20 +518,27 @@ as truncated is the more harmful error: clients that auto-continue on `length`
 would loop on a finished response.
 
 An operator with a real capture is a better authority than either mechanism and
-can override the whole table — an explicit override for a value also takes
-precedence over the usage inference:
+can override any integer — the value must be one of `stop` / `length` /
+`tool_calls` / `content_filter` (`src/devin-connect.js:2927`) — and an explicit
+override for a value also takes precedence over the usage inference:
 
 ```sh
-DEVIN_CONNECT_STOP_REASON_MAP="1=stop,2=stop,3=length,5=content_filter"
+# Example: treat INCOMPLETE (1) and ERROR (13) as clean stops.
+DEVIN_CONNECT_STOP_REASON_MAP="1=stop,13=stop"
 ```
+
+The old example `"1=stop,2=stop,3=length,5=content_filter"` was wrong twice: it
+mapped `5` (`MAX_NEWLINES`) to `content_filter`, and it presented default entries
+as if they were calibrations. `11` is `CONTENT_FILTER`; `8` is
+`FIRST_NON_WHITESPACE_LINE → stop`.
 
 Unknown values always fall back to `stop` so a finished stream is never an error.
 Note: both historical probes (free tier 16 vs 1000, paid 16 vs 4096) saw the cap
 ignored — but BOTH ran while the encoder had `max_tokens` on the wrong field (#3,
 which is `max_newlines`; corrected 2026-08-09, see §8.9). Neither probe therefore
 measured `max_tokens` at all. Re-run them before concluding anything about upstream
-enforcement, and note that a genuinely truncated turn is still what pinning 3/5
-requires.
+enforcement, and note that a genuinely truncated turn is what the `3 → length` /
+`5 → length` entries describe; change them only from a real capture.
 
 ### 8.8 Live re-login recovery check (real credentials, zero-billable)
 
@@ -594,12 +626,13 @@ prompt via emulation, which works on every model. The request builder forwards
 To enable after a paid capture (§8.5) reveals the ToolDef inner tags:
 
 ```sh
-DEVIN_CONNECT_TOOL_DEF_TAGS="10,1,2,3"   # outer,name,description,schema
+DEVIN_CONNECT_TOOL_DEF_TAGS="outer=10,name=1,description=2,parameters=3"
 ```
 
-Order: outer repeated tag (verified =10), then the name/description/schema
-subfield tags. Malformed or wrong-arity → fails closed to emulation (never a
-broken frame). Live-verified: forwarding tools with the gate OFF produces an
+Named form (the supported one; the legacy positional `10,1,2,3` is back-compat
+only and must be exactly four numbers). Order: outer repeated tag (verified =10),
+then the name/description/schema subfield tags. Malformed or wrong-arity → fails
+closed to emulation (never a broken frame). Live-verified: forwarding tools with the gate OFF produces an
 identical, working request (zero regression). Response-side `ChatToolCall`
 decoding (`arguments_json`/`id`/`invalid_json_str`) still needs a paid capture
 and is tracked separately under #49.
