@@ -114,10 +114,10 @@ chat 面此前接受 `{type:'web_search'}` / `{type:'code_interpreter'}` 等并�
 | Linux（HMC）Node 24.21.0 | `npm run test:release` | 6,772 tests / **6,767 pass / 0 fail / 5 skip** | GOAL 矩阵 @ `e3cc399` |
 | Linux（HMC）Node 22.23.4 | `npm run test:release` | 6,772 tests / **6,767 pass / 0 fail / 5 skip** | GOAL 矩阵 @ `e3cc399` |
 | Windows 合并树（前序全量） | `npm run gate` | PASS — 6,674 pass / 0 fail / 97 skip（551 文件） | GOAL 矩阵 @ `e3cc399` |
-| wire vs v3.10.1 | `WIRE_BASE_TREE=<v3.10.1 checkout> npm run gate:release` | **[UNVERIFIED]** — 逐字节比较仍在跑（WireMutationMatrix） | — |
-| 全量 mutation sweep（92 份 spec） | `for s in test/mutations/*.json; do npm run mutate -- "$s"; done` | **[UNVERIFIED]** — 同上；本版只跑了静态形状与变更域基线 | — |
+| wire vs v3.10.1 | `WIRE_BASE_TREE=/tmp/wave3-wire-base WIRE_BASE_REQUIRED=1 WIRE_BASE_TAG=v3.10.1 WIRE_BASE_SHA=b00b3b9a… node --import ./test/setup-env.mjs --test test/wire-byte-identity.test.js` | **PASS — 270/270**，0 mismatch；`WIRE_PROVENANCE_COMPARED {"compared":270,"expected":270,"base_head":"b00b3b9a…"}`，`tag_ref_verified true`，tested/base 两侧 clean | HMC @ `e3cc399`（node v24.21.0）；TAP `1/1 pass`，log sha256 `84496fb1…`（10,386 B） |
+| 全量 mutation sweep（92 份 spec） | `node scripts/mutation-sweep.mjs --report-dir /tmp/wa-sweep-e3cc399` | **PASS — 92/92 spec**；822 executed = **808 caught + 14 条声明的 `expectCaught:false`**，0 意外幸存、0 drift、0 untrustworthy；wall 2,953 s（49 m 13 s） | HMC @ `e3cc399`（node v24.21.0）；`sweep.out` sha256 `c20e7bac…`；逐 spec 执行数 = 其 JSON `mutations.length`，幸存数 = 其声明数 |
 
-本表数字产生于本版提交前的同一棵树；提交本身只回填这张表。`npm run gate` 的摘要逐字如下：
+本表数字产生于本版提交前的同一棵树（`e3cc399`；wire 与 mutation 两行在 HMC 上对该 commit 的 clone 实测，两侧 `git status --porcelain` 均为空）；发布提交只回填这张表。`npm run gate` 的摘要逐字如下：
 
 ```
 PASS spec-static-check exit=0
@@ -134,8 +134,8 @@ INCREMENTAL GATE: PASS exit=0
 
 ## 已知 / 尚未验证
 
-- **wire 未测**：本版没有任何 `wire` 逐字节对比数字。v3.10.1 的 270/270 是上一版的，不能外推。`test/wire-byte-identity.test.js` 在本机按设计跳过（无 `WIRE_BASE_TREE`），已声明为 inert。
-- **全量 mutation sweep 未测**：只确认了 92 份 spec / 822 条突变的**静态**一致性，以及变更域基线的 0 drift。逐条执行突变体是 Linux 全门禁配方的事，本版尚未产出结果。
+- **wire 已实测，但只覆盖请求体**：`e3cc399` 对 `v3.10.1`（`b00b3b9`，annotated tag 已验证）**270/270** 逐字节一致，0 mismatch（HMC，见门禁表）。比较范围是 9 组历史 × 5 条 prepare 路由 × 2 native × 3 环境 = 270 个 protobuf 请求体；HTTP/Connect 帧与响应流按设计不在内。本机（Windows）无 `WIRE_BASE_TREE` 时该测试按设计跳过，已声明为 inert。
+- **全量 mutation sweep 已实测**：92/92 spec、822 条全部执行，808 被捕获 + 14 条 spec 自带的 `expectCaught:false`，0 drift、0 untrustworthy（HMC，2,953 s，见门禁表）。14 条幸存者是各 spec 文档化的不可达/等价分支，不是漂移。
 - **真实 Codex CLI 修复后未重跑**：客户端级 PASS 属于修复前基线（只有打开 `DEVIN_CONNECT_TOOL_CHOICE=1` 才 3/3）；修复后的 200 由探针与单元测试证明，未用真实 CLI 复验。
 - **S7 的修法方向是推断**：`swe-1-5` 该落 `MODEL_SWE_1_5_SLOW` 还是 `kimi_k2` 只有快照证据，原证据里已标注。
 - **托管 CI / 发布产物未验证**：本版在本地分支准备，tag、CI、HMC 部署与 cosign 资产都要在合并后另行执行与核对。
