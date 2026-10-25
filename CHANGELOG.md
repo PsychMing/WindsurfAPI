@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 214 份发布说明</a> ·
+  <a href="docs/releases/">全部 215 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **214** 份,v2.0.6 → v3.141.592654 |
+| 发布说明 | **215** 份,v2.0.6 → v3.141.592655 |
 | git tag | 214 个（2026-10-23 实测；以 `git tag \| wc -l` 为准） |
-| 当前 | **v3.141.592654**(2026-10-25) |
+| 当前 | **v3.141.592655**(2026-10-25) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -41,6 +41,10 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.141.592655](docs/releases/RELEASE_NOTES_3.141.592655.md) · 2026-10-25
+
+wave-4–7 七条修复与三份基础设施:`supports_images` 从广告变成门(显式 false 才剥离并计数,按服务账号取能力位,终端空图片轮 400)、#273 乱序 `tool_result` 移到调用之后(本版唯一有意 wire 变化,270 个比较中 12 个,允许列表逐条声明)、#159 `success` 作为可用信号并按 GetUserStatus 新鲜度设界、失败尝试历史与 billed 窗口保护、上游显式 4xx 校验拒绝从 503 改为 400 `REQUEST_REJECTED`、support bundle 解析并脱敏请求凭据/省略不可证明的二进制 leg、未验证登记册与 §0 src-lag 守卫。wire 对 v3.141.592654 **258 相同 + 12 声明 = 270/270**;全量 mutation **96/96 spec / 855 条**（841 捕获 + 14 条声明,0 drift）。
 
 ### [v3.141.592654](docs/releases/RELEASE_NOTES_3.141.592654.md) · 2026-10-25
 

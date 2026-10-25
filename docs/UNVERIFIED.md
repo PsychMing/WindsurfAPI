@@ -13,18 +13,19 @@
 
 | 项 | 值 |
 |---|---|
-| 扫描 | `docs/releases/*.md` 共 214 个文件 |
-| 命中 | 24 个文件 / 24 个小节 |
-| bullet | 72 条 |
+| 扫描 | `docs/releases/*.md` 共 215 个文件 |
+| 命中 | 25 个文件 / 25 个小节 |
+| bullet | 81 条 |
 | 已复核 | 2 |
-| 仍缺 | 70 |
+| 仍缺 | 79 |
 | 已修 | 0 |
-| 无 marker | 7 |
+| 无 marker | 16 |
 
 ## 按 release
 
 | release | 小节 | bullet | 已复核 | 仍缺 | 已修 | 无 marker |
 |---|---:|---:|---:|---:|---:|---:|
+| [3.141.592655](releases/RELEASE_NOTES_3.141.592655.md) | 1 | 9 | 0 | 9 | 0 | 9 |
 | [3.141.592654](releases/RELEASE_NOTES_3.141.592654.md) | 1 | 7 | 0 | 7 | 0 | 7 |
 | [3.10.0](releases/RELEASE_NOTES_3.10.0.md) | 1 | 3 | 0 | 3 | 0 | 0 |
 | [3.9.60](releases/RELEASE_NOTES_3.9.60.md) | 1 | 2 | 0 | 2 | 0 | 0 |
@@ -49,6 +50,24 @@
 | [3.9.41](releases/RELEASE_NOTES_3.9.41.md) | 1 | 6 | 0 | 6 | 0 | 0 |
 | [3.9.40](releases/RELEASE_NOTES_3.9.40.md) | 1 | 3 | 0 | 3 | 0 | 0 |
 | [3.9.39](releases/RELEASE_NOTES_3.9.39.md) | 1 | 3 | 0 | 3 | 0 | 0 |
+
+## 3.141.592655 — `docs/releases/RELEASE_NOTES_3.141.592655.md`
+
+1 个小节 · 9 条：已复核 0 · 仍缺 9 · 已修 0（无 marker 9）
+
+小节 `## 已知 / 尚未验证`（`:88`）
+
+| # | 位置 | bullet | marker | 状态 |
+|---:|---|---|---|---|
+| 1 | `RELEASE_NOTES_3.141.592655.md:92` | **wire 已实测，但只覆盖请求体**：本版本地对 v3.141.592654（`d5e7ace`，annotated tag 已验证）**258 个逐字节相同 + 12 个声明差异 = 270/270 对账**；同一矩阵在 master 上对同一基线得到相同的 12 个差异，且只回退 `tool-emulation.js` 后 270/270，证明差异因果上就是 #273。比较范围仍是 9 组历史 × 5 条 prepare 路由 × 2 native × 3 环境 = 270 个 protobuf 请求体；HTTP/Connect 帧与响应流不在内。 | — | 仍缺 |
+| 2 | `RELEASE_NOTES_3.141.592655.md:93` | **expected-diff 允许列表是自失效的**：比较基线一旦包含 #273，12 条必须删除，否则 wire 门报 stale。它是逐比较的，不是全局放行。 | — | 仍缺 |
+| 3 | `RELEASE_NOTES_3.141.592655.md:94` | **全量 mutation sweep**：96 份 spec / 855 条突变，结果见门禁表；Windows 本机仍不能跑 mutation harness（需要受信 POSIX git）。 | — | 仍缺 |
+| 4 | `RELEASE_NOTES_3.141.592655.md:95` | **真实客户端未重跑**：wave-7 的图片、顺序、账号真相、计费历史修复由单元测试、真实 handler 与捕获帧探针证明；没有用真实 Claude Code / Codex / Devin 客户端复验这些路径。 | — | 仍缺 |
+| 5 | `RELEASE_NOTES_3.141.592655.md:96` | **#273.2 未校准**：多帧 reasoning 重复只复现了 fixture 行为（raw 3 份 / 预处理后 2 份，与 issue 一致），缺真实 Devin 客户端抓包；编码器未改。 | — | 仍缺 |
+| 6 | `RELEASE_NOTES_3.141.592655.md:97` | **#149 是政策决策**：静态基表保持一个模型，依据是历史测量与 #155 的 probe 说明；没有在本版重新对免费账号做 live entitlement 探测。 | — | 仍缺 |
+| 7 | `RELEASE_NOTES_3.141.592655.md:98` | **support bundle 的边界**：凭据值在 staging 树中逐字节证明已移除；二进制请求里的 prompt/system 文本不扫描邮箱（它是用户内容，且已在 README 声明会打包）；prompt 文本里粘贴的、与请求元数据无关的 opaque 凭据无法被识别。未用真实付费账号的凭据 trace 复验。 | — | 仍缺 |
+| 8 | `RELEASE_NOTES_3.141.592655.md:99` | **本机门禁的 inert 声明**：Windows 没有 `/usr/bin/git`，`test/devin-connect-relogin-live.test.js` 未武装，`test/mutate-verify-harness.test.js` / `test/self-update-untracked-safety.test.js` 因 `REAL_GIT` 为 null 不执行，`detach-soak` / `detach-ls-pool-pressure` 在本机整文件跳过——这 5 个按 `GATE_INERT_SKIP_PATHS` 声明，不当作绿。`test/wire-byte-identity.test.js` 也声明了，但本次运行存在本机基线（`.claude/worktrees/wire-base` @ `d5e7ace`），它实际执行并通过，所以被报 unused；没有基线的主机仍会整文件跳过。 | — | 仍缺 |
+| 9 | `RELEASE_NOTES_3.141.592655.md:100` | **托管 CI / 发布产物未验证**：本版在本地分支准备；tag、release workflow、HMC 部署与 cosign 资产都要在合并后另行执行与核对。 | — | 仍缺 |
 
 ## 3.141.592654 — `docs/releases/RELEASE_NOTES_3.141.592654.md`
 
