@@ -720,9 +720,12 @@ node scripts/support-bundle.mjs
 ```
 
 它把最近 5 个 trace 目录、`/health` 的 commit、版本和**脱敏后的**开关快照打进
-`support-bundle-<utc>.zip`，旁边还有一份 `manifest.json`（文件清单 + sha256）。打包前会用
-仓库的 secret 规则逐个文件扫描，命中即拒绝打包（exit 1，不写任何文件）。trace 里有 prompt
-片段、没有 key，但仍是私有现场：只附在 issue 里，不要贴到公开渠道。
+`support-bundle-<utc>.zip`，旁边还有一份 `manifest.json`（文件清单 + sha256）。打包前先脱敏：
+文本 leg 里的凭证字段、账号邮箱和预签名 URL 查询参数替换为 `[redacted]`；上游请求 protobuf
+里 ClientMetadata 的会话 token / user JWT 替换为 `[redacted]`；无法脱敏的二进制 leg 不打包，
+只在 manifest 里记 path + size + sha256。然后用仓库的 secret 规则逐个文件扫描，命中即拒绝打包
+（exit 1，不写任何文件）。trace 里有 prompt 片段、没有 key，但仍是私有现场：只附在 issue 里，
+不要贴到公开渠道。
 
 排查请求链路时,**发真实请求看响应,别只读代码** —— 这是协议转换网关,两层
 key、四条出口路径,读代码容易推错。
