@@ -138,9 +138,15 @@ handles multiple calls perfectly well and still sends `false` on every request.
 | `test/mutations/parallel-tool-calls.json` | 10 mutations re-pinned to the new policy (the regression itself, silent drop, switch-blind predicate, missing counter, per-request warn, ungreppable warn, wire forwarding, both `connectParams` threadings, F2 mapping). `expectBaselinePass` re-measured to 12. |
 | `test/mutations/retry-after-route-parity.json` | anchor repaired (`toAnthropicChatError(result)`), the call site the parameter removal changed. |
 | `docs/ENV-SWITCHES.md:225` | the `DEVIN_CONNECT_TOOL_CHOICE` row now documents serve + warn + counter instead of the 400. |
+| `docs/DEVIN-CONNECT-CUTOVER.md` §7 | known-limits entry: the hint is served but not honoured by default, with the log event and counter named. |
+| `.env.example` | declares `DEVIN_CONNECT_TOOL_CHOICE` / `DEVIN_CONNECT_TOOL_CHOICE_TAGS` — the runbook mention would otherwise be undiscoverable from the file readers consult, which the prose-docs guard enforces. |
 | `evidence/CodexParallel-probe.mjs` | re-runnable reproduction (§2). |
 
 ## 5. Verification
+
+Logs cited below live in the lane evidence directory
+`C:/Users/dwgx1/.dwgx/ops/artifacts/windsurfapi-autonomous-20261022/evidence/`
+(the `…/evidence/` prefix in this memo).
 
 Acceptance command (brief), final tree (`5a5095b` + docs), plus the three focused
 suites and the two guards this lane touches:
