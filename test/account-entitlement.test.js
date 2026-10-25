@@ -135,3 +135,72 @@ describe('getAvailableModelsForAccount — uses authoritative allowlist post-sta
     assert.ok(!got.includes('glm-4.7'));
   });
 });
+
+// #159 (audit C1-02). `updateCapability(..., true, 'success')` is the only
+// writer for UID-only models (no enum, so GetUserStatus cannot classify them)
+// and for models reached outside the cascade allowlist. Both gates used to
+// ignore that reason: `availableModels` — which chat.js gates routing on —
+// dropped the model, and the routing gate fell back to the static free table.
+// Measured on the audited tree for a free account holding
+// `glm-5.1: {ok:true, reason:'success'}`: available=false, allowed=false.
+describe('#159 — a measured success is an available signal', () => {
+  const successAccount = () => ({
+    tier: 'free',
+    userStatusLastFetched: Date.now(),
+    capabilities: { 'glm-5.1': { ok: true, reason: 'success', lastCheck: 1 } },
+  });
+
+  it('lists a success-reason model in availableModels', () => {
+    assert.ok(getAvailableModelsForAccount(successAccount()).includes('glm-5.1'));
+  });
+
+  it('routes a success-reason model', () => {
+    assert.equal(isModelAllowedForAccount(successAccount(), 'glm-5.1'), true);
+  });
+
+  it('lists a UID-only user_status model instead of only routing it', () => {
+    // glm-5.1 is enumValue:0, so the post-status branch used to consult only
+    // the tier table for it while isModelAllowedForAccount trusted the
+    // capability — the list said no, routing said yes.
+    const account = {
+      tier: 'free',
+      userStatusLastFetched: Date.now(),
+      capabilities: { 'glm-5.1': { ok: true, reason: 'user_status', lastCheck: 1 } },
+    };
+    assert.equal(isModelAllowedForAccount(account, 'glm-5.1'), true);
+    assert.ok(getAvailableModelsForAccount(account).includes('glm-5.1'));
+  });
+
+  it('keeps the list and the routing gate in agreement across capability reasons', () => {
+    const account = {
+      tier: 'free',
+      userStatusLastFetched: Date.now(),
+      capabilities: {
+        'gemini-2.5-flash': { ok: true, reason: 'user_status', lastCheck: 1 },
+        'glm-4.7': { ok: true, reason: 'success', lastCheck: 1 },
+        'kimi-k2': { ok: false, reason: 'not_entitled', lastCheck: 1 },
+        'claude-opus-4.6': { ok: false, reason: 'user_status', lastCheck: 1 },
+        'glm-5.1': { ok: true, reason: 'user_status', lastCheck: 1 },
+        'kimi-k2-6': { ok: false, reason: 'model_error', lastCheck: 1 },
+      },
+    };
+    const listed = new Set(getAvailableModelsForAccount(account));
+    for (const key of Object.keys(account.capabilities)) {
+      assert.equal(listed.has(key), isModelAllowedForAccount(account, key),
+        `${key}: availableModels and isModelAllowedForAccount must agree`);
+    }
+  });
+
+  it('does not let an authoritative negative leak in through the tier table', () => {
+    // not_entitled must outrank the static tier list in both directions.
+    const account = {
+      tier: 'free',
+      userStatusLastFetched: Date.now(),
+      capabilities: {
+        'gemini-2.5-flash': { ok: false, reason: 'not_entitled', lastCheck: 1 },
+      },
+    };
+    assert.equal(isModelAllowedForAccount(account, 'gemini-2.5-flash'), false);
+    assert.ok(!getAvailableModelsForAccount(account).includes('gemini-2.5-flash'));
+  });
+});

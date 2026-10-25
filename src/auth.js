@@ -1928,6 +1928,15 @@ export function setAccountBlockedModels(id, blockedModels) {
   return true;
 }
 
+// Capability reasons that are positive evidence the account can call the
+// model right now. `user_status` is GetUserStatus's authoritative allowlist
+// (cascade_allowed_models_config); `success` is written by updateCapability()
+// after a real call completed. Both gates below read this one set — #159 was
+// exactly those two gates disagreeing about which reasons count, so a model
+// that routed fine was missing from availableModels (and, for UID-only models,
+// the reverse).
+const AVAILABLE_CAPABILITY_REASONS = new Set(['user_status', 'success']);
+
 /**
  * Resolve whether `modelKey` is callable on this account.
  *
@@ -1935,7 +1944,9 @@ export function setAccountBlockedModels(id, blockedModels) {
  *   1. blocklist always wins (manual operator override)
  *   2. if GetUserStatus has filled `capabilities[key].reason='user_status'`
  *      that's the upstream-authoritative answer (cascade_allowed_models_config)
- *      — trust it directly, regardless of static tier table
+ *      — trust it directly, regardless of static tier table. A measured
+ *      `reason='success'` (the model has actually run on this account) is
+ *      trusted the same way; `not_entitled` is its negative arm.
  *   3. otherwise fall back to the tier static allowlist (UID-only models,
  *      pre-status accounts, unknown tier)
  *
@@ -1958,9 +1969,10 @@ export function isModelAllowedForAccount(account, modelKey) {
   if (!account.tierManual) {
     // GetUserStatus writes both arms — `user_status` for allowed and
     // `not_entitled` for denied — into capabilities, keyed by enum.
-    // Either reason means the upstream allowlist has already spoken.
+    // Either reason means the upstream allowlist has already spoken, and
+    // `success` means the model actually answered this account.
     const cap = account.capabilities?.[modelKey];
-    if (cap?.reason === 'user_status' || cap?.reason === 'not_entitled') {
+    if (cap?.reason === 'not_entitled' || AVAILABLE_CAPABILITY_REASONS.has(cap?.reason)) {
       return cap.ok === true;
     }
   }
@@ -2157,18 +2169,28 @@ export function getAvailableModelsForAccount(account) {
   if (account.tierManual || !account.userStatusLastFetched || !account.capabilities) {
     return tierModels.filter(m => !blocked.has(m));
   }
-  // After GetUserStatus: per-account allowlist is authoritative for every
-  // enum-keyed catalog entry; UID-only entries (no enum) fall back to tier.
+  // After GetUserStatus: a capability verdict is authoritative for every
+  // catalog entry, enum-keyed or not. `user_status` (upstream allowlist) and
+  // `success` (the model actually ran here) are positive; `not_entitled` is
+  // negative. Entries with no verdict fall back to the tier table — which for
+  // UID-only models is the only source, since GetUserStatus cannot classify
+  // them (it returns allowlists by enum only).
   const allowed = [];
   for (const [key, info] of Object.entries(MODELS)) {
     if (blocked.has(key)) continue;
     if (!isModelAllowedByCloudCatalog(key, process.env, account.id)) continue;
-    if (info.enumValue && info.enumValue > 0) {
-      const cap = account.capabilities[key];
-      if (cap?.reason === 'user_status' && cap.ok === true) allowed.push(key);
-    } else if (tierModels.includes(key)) {
-      allowed.push(key);
+    const cap = account.capabilities[key];
+    if (AVAILABLE_CAPABILITY_REASONS.has(cap?.reason)) {
+      // Same precedence as isModelAllowedForAccount: the verdict outranks the
+      // tier table, so the list and the routing decision cannot disagree.
+      if (cap.ok === true) allowed.push(key);
+      continue;
     }
+    if (info.enumValue && info.enumValue > 0) {
+      // Enum-keyed and classified as unavailable by GetUserStatus.
+      continue;
+    }
+    if (tierModels.includes(key)) allowed.push(key);
   }
   return allowed;
 }
