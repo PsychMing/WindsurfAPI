@@ -19,6 +19,7 @@ import { buildToolNameMap, restoreToolName } from '../tool-names.js';
 import { createToolIdAllocator, normalizeToolIdsInMessages, toolHygieneEnabled } from '../tool-ids.js';
 import { normalizeHistoryTail } from '../history-normalize.js';
 import { leakTraceEnabled, thinkMarkersIn, leakSample } from '../leak-trace.js';
+import { recordToolDeferLoading } from './cc-compat.js';
 
 function genMsgId() {
   return 'msg_' + randomUUID().replace(/-/g, '').slice(0, 24);
@@ -473,6 +474,72 @@ function invalidRequest(message) {
   return { status: 400, body: { type: 'error', error: { type: 'invalid_request_error', message } } };
 }
 
+// CL2 (Claude Code 2.1.306, beta `context-management-2025-06-27`): the client
+// now sends `context_management.edits[]` asking the API to prune history. The
+// upstream has no equivalent directive, so every edit must either be satisfied
+// by this bridge's own translation or be refused with an actionable 400 —
+// silently dropping it would let a caller's context bound go unenforced.
+//
+// Supported: `clear_thinking_20251015`. anthropicToOpenAI already drops every
+// incoming thinking block before forwarding (the upstream cannot consume them:
+// no real signature, and the K2 family ignores the candidate tag), so the
+// edit's context-growth intent holds for any `keep` value. `keep` is still
+// shape-validated so a malformed edit fails loudly instead of half-applying.
+// Refused: `clear_tool_uses_20250919` (token-triggered pruning of
+// tool_use/tool_result pairs is a server-side edit with no upstream
+// counterpart; accepting it while forwarding the full history would silently
+// ignore the bound) and any unknown edit type.
+const SUPPORTED_CONTEXT_EDITS = new Set(['clear_thinking_20251015']);
+const CONTEXT_MANAGEMENT_ACTION =
+  'Remove the unsupported edit from context_management.edits (or disable context editing in the client) and retry.';
+
+// Anthropic error objects have no `param`/`code`, but both are additive and the
+// OpenAI-dialect code names the failure precisely. `unsupported_parameter` is
+// the same code chat.js uses for a request field this deployment cannot honour.
+function unsupportedParameter(param, message) {
+  return {
+    status: 400,
+    body: { type: 'error', error: { type: 'invalid_request_error', message, param, code: 'unsupported_parameter' } },
+  };
+}
+
+// `keep` for clear_thinking_20251015: "all" | "none" | {type:"thinking_turns",
+// value:<positive integer>}. Anything else is a malformed request, not an
+// unsupported feature, so it gets invalid_request_error.
+function validateThinkingKeep(keep, where) {
+  if (keep == null || keep === 'all' || keep === 'none') return null;
+  if (typeof keep !== 'object' || Array.isArray(keep)) {
+    return invalidRequest(`${where}.keep must be 'all', 'none', or { type: 'thinking_turns', value: <positive integer> }`);
+  }
+  if (keep.type !== 'thinking_turns') return invalidRequest(`${where}.keep.type must be 'thinking_turns'`);
+  if (!Number.isInteger(keep.value) || keep.value < 1) {
+    return invalidRequest(`${where}.keep.value must be a positive integer`);
+  }
+  return null;
+}
+
+function validateContextManagement(cm) {
+  if (cm == null) return null;
+  if (typeof cm !== 'object' || Array.isArray(cm)) return invalidRequest('context_management must be an object');
+  if (cm.edits == null) return null;
+  if (!Array.isArray(cm.edits)) return invalidRequest('context_management.edits must be an array');
+  for (let i = 0; i < cm.edits.length; i++) {
+    const edit = cm.edits[i];
+    const where = `context_management.edits[${i}]`;
+    if (!edit || typeof edit !== 'object' || Array.isArray(edit)) return invalidRequest(`${where} must be an object`);
+    if (typeof edit.type !== 'string' || !edit.type) return invalidRequest(`${where}.type is required`);
+    if (!SUPPORTED_CONTEXT_EDITS.has(edit.type)) {
+      return unsupportedParameter(
+        `${where}.type`,
+        `context_management edit type "${edit.type}" is not supported by this proxy. Supported: clear_thinking_20251015. ${CONTEXT_MANAGEMENT_ACTION}`,
+      );
+    }
+    const keepErr = validateThinkingKeep(edit.keep, where);
+    if (keepErr) return keepErr;
+  }
+  return null;
+}
+
 // C4: a cache_control breakpoint must be { type: 'ephemeral', ttl?: '5m'|'1h' }.
 // Non-ephemeral types and unknown ttl values were silently accepted (ttl fell
 // back to 5m); official behavior is a 400. Returns an error {status,body} or null.
@@ -502,6 +569,10 @@ export function validateMessagesRequest(body) {
   if (typeof mt !== 'number' || !Number.isInteger(mt) || mt < 1) {
     return invalidRequest('max_tokens must be a positive integer');
   }
+  // CL2: context_management edits are either satisfied locally or refused —
+  // never silently dropped (Claude Code 2.1.306 sends one on every turn).
+  const cmErr = validateContextManagement(body.context_management);
+  if (cmErr) return cmErr;
   // C3/C4: walk every block that can carry a cache_control breakpoint in the
   // same tools → system → messages prefix order extractCachePolicy uses.
   let breakpointCount = 0;
@@ -642,6 +713,18 @@ import { neutralizeClientIdentity } from './identity-neutralize.js';
 
 function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
   const cachePolicy = extractCachePolicy(body, promptEstimate);
+  // CL2: context_management is validated at the entry point
+  // (validateMessagesRequest). clear_thinking_20251015 needs no translation:
+  // the message loop below already drops every incoming thinking block, so the
+  // forwarded history contains none — the strictest form of the edit. Log a
+  // real pruning request (keep !== "all") so the substitution is visible;
+  // keep:"all" is the 2.1.306 default and needs no per-turn line.
+  for (const edit of (Array.isArray(body.context_management?.edits) ? body.context_management.edits : [])) {
+    if (edit?.type === 'clear_thinking_20251015' && edit.keep != null && edit.keep !== 'all') {
+      const keep = typeof edit.keep === 'object' ? `thinking_turns:${edit.keep?.value}` : edit.keep;
+      log.info(`messages: context_management clear_thinking_20251015 keep=${keep} — incoming thinking blocks are already dropped before forwarding (edit satisfied)`);
+    }
+  }
   const historyToolNames = [];
   for (const m of body.messages || []) {
     if (m?.role !== 'assistant' || !Array.isArray(m.content)) continue;
@@ -813,6 +896,13 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
   const droppedServerTools = [];
   const convertedServerTools = [];
   const droppedDuplicateTools = [];
+  // CL3 (Claude Code 2.1.306 `defer_loading`): two buckets, both logged below.
+  // honored = a deferred tool with no declared parameters, dropped because
+  // there is no schema to load and the client forbids calling it; ignored = a
+  // deferred tool WITH a schema, forwarded anyway because the upstream has no
+  // tool-loading protocol (see the branch in the reduce).
+  const deferredPlaceholders = [];
+  const deferredIgnored = [];
   // GFHarness: duplicate tool names were forwarded verbatim — a caller function
   // named `web_search` plus the web_search_20250305 conversion produced
   // `tools: ["web_search", "web_search"]`. Duplicate names are ambiguous for the
@@ -849,6 +939,31 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       }
       return acc;
     }
+    // CL3: Anthropic deferred tool loading. `defer_loading:true` says "do not
+    // put this schema in the model's context; the client will load it later".
+    // The upstream has no tool-loading protocol we can speak — devin-connect.js
+    // has proprietary custom_tool/defer_loading ToolDef tags, but their field
+    // numbers are uncalibrated and emitting one risks a broken frame — so:
+    //   • no declared parameters (Claude Code's DeferredToolPlaceholder: empty
+    //     schema, "never call this tool"): drop it. There is nothing to load
+    //     and forwarding it only invites a call the client cannot answer.
+    //   • a schema-bearing deferred tool: forward it in full and count it as
+    //     `tool_defer_loading_ignored`. Dropping it would leave the tool
+    //     permanently uncallable (a ToolSearch result is text, not a
+    //     declaration), so the deviation is made visible instead of silent.
+    // `defer_loading` itself is never forwarded — the OpenAI-shaped tool has no
+    // slot for it.
+    if (t?.defer_loading === true) {
+      const schema = t.input_schema;
+      const hasDeclaredParams = !!schema && typeof schema === 'object' && (
+        (schema.properties && typeof schema.properties === 'object' && Object.keys(schema.properties).length > 0)
+        || (Array.isArray(schema.required) && schema.required.length > 0)
+      );
+      if (!hasDeclaredParams) {
+        deferredPlaceholders.push(t.name || '(unnamed)');
+        return acc;
+      }
+    }
     const name = toolNameMap?.toUpstream.get(t.name) ?? t.name;
     if (typeof name === 'string' && name) {
       if (emittedToolNames.has(name)) {
@@ -857,6 +972,10 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       }
       emittedToolNames.add(name);
     }
+    // Count only what is actually forwarded: a schema-bearing deferred tool
+    // that lost the dedupe race is already reported by droppedDuplicateTools,
+    // so counting it as an ignored deferral too would double-report it.
+    if (t?.defer_loading === true) deferredIgnored.push(t.name || '(unnamed)');
     acc.push({
       type: 'function',
       function: {
@@ -875,6 +994,17 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
   }
   if (droppedDuplicateTools.length) {
     log.warn(`messages: dropped ${droppedDuplicateTools.length} duplicate tool definition(s) [${[...new Set(droppedDuplicateTools)].join(',')}] — one definition per name, first caller definition wins`);
+  }
+  // CL3: one structured line per request that carried deferred tools, plus the
+  // process counters exposed through getCcCompatStats() (dashboard diagnostics).
+  if (deferredPlaceholders.length || deferredIgnored.length) {
+    recordToolDeferLoading({ honored: deferredPlaceholders.length, ignored: deferredIgnored.length });
+  }
+  if (deferredPlaceholders.length) {
+    log.info(`messages: dropped ${deferredPlaceholders.length} deferred tool placeholder(s) [${[...new Set(deferredPlaceholders)].join(',')}] — defer_loading honored (no schema to load, never callable by design)`);
+  }
+  if (deferredIgnored.length) {
+    log.warn(`messages: tool_defer_loading_ignored count=${deferredIgnored.length} tools=[${[...new Set(deferredIgnored)].join(',')}] — upstream has no tool-loading protocol; schemas forwarded so the tools stay callable`);
   }
   const mappedToolChoice = body.tool_choice ? mapAnthropicToolChoice(body.tool_choice) : undefined;
   const forwardedToolChoice = pruneToolChoice(
