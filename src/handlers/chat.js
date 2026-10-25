@@ -51,7 +51,7 @@ import {
 } from './tool-emulation.js';
 import {
   getNativeBridgeDecision, buildReverseLookup,
-  buildAdditionalStepsFromHistory, parseNativeFunctionCallsFromText,
+  buildNativeToolHistory, parseNativeFunctionCallsFromText,
   NativeFunctionCallStreamParser, TOOL_MAP, isNativeBridgeAccountAllowed,
   hasNativeBridgeAccountGate, nativeAllowlistNameForTool,
 } from '../cascade-native-bridge.js';
@@ -5094,9 +5094,13 @@ async function _handleChatCompletionsInner(body, context = {}) {
   }
   const toolPartition = toolRouting.partition;
   const nativeBridgeOn = toolRouting.nativeBridgeOn;
-  const nativeAdditionalSteps = nativeBridgeOn
-    ? buildAdditionalStepsFromHistory(messages || [])
-    : [];
+  // Full candidate history: the wire call sites trim it to the delta when a
+  // cascade is reused, and `emulationMessages` carries the unmapped pairs the
+  // bridge cannot encode.
+  const nativeHistory = nativeBridgeOn
+    ? buildNativeToolHistory(messages || [])
+    : null;
+  const nativeAdditionalSteps = nativeHistory ? nativeHistory.steps : [];
   const nativeAllowlist = nativeBridgeOn
     ? Array.from(new Set(toolPartition.mapped
         .map(t => nativeAllowlistNameForTool(t?.function?.name))
@@ -5238,18 +5242,27 @@ async function _handleChatCompletionsInner(body, context = {}) {
     log.info(`Chat[${reqId}]: disabled user-message tool fallback for Opus 4.x multimodal turn`);
   }
   // Native bridge mutates the message list differently from emulation:
-  // tool_result turns become additional_steps[9] entries on the proto, not
-  // synthetic <tool_result> user turns in the conversation text. We strip
-  // those tool messages and assistant tool_calls entries from the cascade
-  // message list so the planner only sees real human / assistant text plus
-  // its trajectory inheritance — duplicate context would confuse it.
+  // mapped tool_result turns become additional_steps[9] entries on the
+  // proto, so their call/result pairs are removed from the conversation
+  // text to avoid duplicate context. Unmapped calls, lossy translations and
+  // orphan tool results stay and are folded by the emulation normalizer —
+  // the bridge must not discard history it cannot encode (V-13 / KH-034).
   let cascadeMessages;
   if (nativeBridgeOn) {
-    cascadeMessages = (messages || []).filter(m => {
-      if (m?.role === 'tool') return false;
-      if (m?.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length && !m.content) return false;
-      return true;
-    });
+    const retained = nativeHistory?.emulationMessages || [];
+    const hasToolHistory = retained.some(m => m?.role === 'tool'
+      || (m?.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length));
+    cascadeMessages = hasToolHistory
+      ? normalizeMessagesForCascade(retained, emulationTools, {
+          // The proto-level tool_calling_section already carries the unmapped
+          // tool definitions; this call only folds their history to text.
+          injectUserPreamble: false,
+          modelKey: routingModelKey,
+          provider: modelInfo?.provider || null,
+          route: body.__route || 'chat',
+          toolChoice: tool_choice,
+        })
+      : retained;
   } else if (emulateTools) {
     cascadeMessages = normalizeMessagesForCascade(messages, effectiveTools, {
       injectUserPreamble: !disableUserToolFallback,
@@ -5273,6 +5286,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
     enabled: true,
     allowlist: nativeAllowlist,
     additionalSteps: nativeAdditionalSteps,
+    // Index of the newest pending tool round inside additionalSteps; the wire
+    // call sites slice from here when the cascade is reused.
+    deltaStart: nativeHistory ? nativeHistory.deltaStart : 0,
     callerLookup: buildReverseLookup(nativeCallerTools),
     callerTools: nativeCallerTools,
     environment: callerEnv || '',
@@ -6017,7 +6033,14 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
         displayModel: model,
         nativeMode: nativeBridgeOn,
         nativeAllowlist: nativeOpts?.allowlist || null,
-        additionalSteps: nativeOpts?.additionalSteps || null,
+        // A resumed cascade already holds every earlier observation step;
+        // sending the full history again would duplicate them in its
+        // trajectory. A fresh cascade still receives all of it.
+        additionalSteps: nativeBridgeOn
+          ? (poolCtx?.reuseEntry
+              ? (nativeOpts?.additionalSteps || []).slice(nativeOpts?.deltaStart || 0)
+              : (nativeOpts?.additionalSteps || null))
+          : null,
         signal,
       });
       for (const c of chunks) {
@@ -7943,7 +7966,13 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 displayModel: model,
                 nativeMode: nativeBridgeOn,
                 nativeAllowlist: nativeOpts?.allowlist || null,
-                additionalSteps: nativeOpts?.additionalSteps || null,
+                // Same delta rule as the non-stream path: a reused cascade
+                // already holds the earlier rounds.
+                additionalSteps: nativeBridgeOn
+                  ? (reuseEntry
+                      ? (nativeOpts?.additionalSteps || []).slice(nativeOpts?.deltaStart || 0)
+                      : (nativeOpts?.additionalSteps || null))
+                  : null,
               });
             } else {
               await client.rawGetChatMessage(messages, modelEnum, modelUid, {

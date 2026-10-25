@@ -591,7 +591,12 @@ describe('native history truth (V-13)', () => {
     ];
 
     // A fresh cascade never saw the earlier round, so it gets the full history.
-    assert.equal(buildAdditionalStepsFromHistory(messages).length, 2);
+    const fresh = buildNativeToolHistory(messages);
+    assert.equal(fresh.steps.length, 2);
+    // The full build exposes where the new round starts, so the wire can
+    // slice instead of encoding the history a second time.
+    assert.equal(fresh.deltaStart, 1);
+    assert.deepEqual(fresh.steps.slice(fresh.deltaStart), buildAdditionalStepsFromHistory(messages, { reuse: true }));
 
     // The reused cascade already holds call_1's step; re-injecting it would
     // duplicate the observation in its trajectory.
