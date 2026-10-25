@@ -2303,6 +2303,12 @@ export function buildUsageBody(serverUsage, messages, completionText, thinkingTe
 // Indirection layer for the connect network calls + re-login, so the failover
 // loop below can be exercised offline. Production wires the real modules;
 // __setConnectDeps swaps in fakes for tests, __resetConnectDeps restores.
+//
+// O3: one-time notice when session continuity is OFF. The reuse-ON path has always
+// logged its session_id; a default deployment (reuse OFF) logged nothing, so the
+// 7/7-fresh-id capture in evidence/ClientSandboxes.md §5.3 was invisible from the
+// logs. Info once per process + debug per request keeps the signal without noise.
+let _connectSessionSourceNoted = false;
 let _connectDeps = {
   toChatCompletion: _toChatCompletion,
   streamChatCompletion: _streamChatCompletion,
@@ -3968,6 +3974,15 @@ async function _handleChatCompletionsInner(body, context = {}) {
       const reasoningTrail = getSessionConnectReasoningTrail(callerKey || '', connectMessages);
       if (reasoningTrail) connectParams.continuityTrail = reasoningTrail;
       log.info(`Chat[${reqId}]: DEVIN_CONNECT session reuse active → session_id=${connectSessionId}${modelCfg ? ` model_config=stable turn=${modelCfg.turn}` : ''} acct=${ccAcct?.account?.id || 'env-token'}`);
+    } else {
+      // O3: name the source on the DEFAULT path too. Without this line an operator
+      // cannot tell a fresh-per-request uuid (#16) from a lost reuse hit, and the
+      // upstream velocity limiter sees every turn as a new session.
+      log.debug(`Chat[${reqId}]: DEVIN_CONNECT session_id source=fresh-per-request (DEVIN_CONNECT_SESSION_REUSE off)`);
+      if (!_connectSessionSourceNoted) {
+        _connectSessionSourceNoted = true;
+        log.info(`Chat[${reqId}]: DEVIN_CONNECT session_id source=fresh-per-request (DEVIN_CONNECT_SESSION_REUSE off — every request mints a new #16; enable it for multi-turn continuity)`);
+      }
     }
     if (ccAcct) {
       connectParams.token = ccAcct.apiKey;

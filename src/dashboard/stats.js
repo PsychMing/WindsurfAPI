@@ -290,7 +290,9 @@ function usageTokenCounts(usage) {
   const prompt = nonNeg(usage.prompt_tokens);
   const cacheRead = nonNeg(bd?.cache_read_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens);
   const cacheWrite = nonNeg(bd?.cache_write_tokens ?? usage.cache_creation_input_tokens);
-  const fresh = nonNeg(bd?.fresh_input_tokens ?? Math.max(0, prompt - cacheRead));
+  // Connect usage carries the fresh bucket explicitly because its prompt_tokens
+  // includes cache_write (O2); `prompt - cached` would count the write as fresh.
+  const fresh = nonNeg(bd?.fresh_input_tokens ?? usage.fresh_input_tokens ?? Math.max(0, prompt - cacheRead));
   const tokensOut = nonNeg(bd?.output_tokens ?? usage.completion_tokens ?? usage.output_tokens);
   if (!fresh && !cacheRead && !cacheWrite && !tokensOut) return null;
   return { tokensIn: fresh + cacheRead + cacheWrite, tokensOut, cacheRead, cacheWrite };
@@ -715,12 +717,14 @@ export function resetStats() {
  *
  * Accepts the OpenAI-shaped usage object that buildUsageBody returns —
  * cascade_breakdown is the authoritative source when present, otherwise
- * fall back to standard fields.
+ * fall back to standard fields. Connect usage (O2) has no cascade_breakdown but
+ * carries `fresh_input_tokens` at the top level, because there prompt_tokens
+ * includes cache_write and `prompt - cached` would book the write as fresh.
  */
 export function recordTokenUsage(usage, model = null) {
   if (!usage || typeof usage !== 'object') return;
   const bd = usage.cascade_breakdown || null;
-  const fresh = bd?.fresh_input_tokens ?? Math.max(0, (usage.prompt_tokens || 0) - (usage.prompt_tokens_details?.cached_tokens || usage.cache_read_input_tokens || 0));
+  const fresh = bd?.fresh_input_tokens ?? usage.fresh_input_tokens ?? Math.max(0, (usage.prompt_tokens || 0) - (usage.prompt_tokens_details?.cached_tokens || usage.cache_read_input_tokens || 0));
   const cacheR = bd?.cache_read_tokens ?? (usage.prompt_tokens_details?.cached_tokens || usage.cache_read_input_tokens || 0);
   const cacheW = bd?.cache_write_tokens ?? (usage.cache_creation_input_tokens || 0);
   const output = bd?.output_tokens ?? (usage.completion_tokens || usage.output_tokens || 0);

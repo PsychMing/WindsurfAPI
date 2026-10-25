@@ -284,8 +284,12 @@ Conclusions:
   here.** The PR's mechanism conclusion (rotating accounts re-pays for context)
   still holds — it is demonstrated by the Claude row above — but the GPT numbers
   in that table should not be treated as calibration data.
-- `prompt_tokens` excludes both cached and created tokens (Claude reports
-  `prompt=3` while 2268 ride the cache fields), consistent with #118.
+- **Historic note, superseded by O2 (2026-10-25):** at calibration time
+  `prompt_tokens` excluded both cached and created tokens (Claude reported
+  `prompt=3` while 2268 rode the cache fields), matching #118. That made a
+  cache-WRITE turn report the tiny fresh tail as the prompt; it now reports
+  `fresh + cache_read + cache_write`. The raw counters in the table above are
+  unchanged — only the wire mapping changed (see §8.6).
 
 **`actual_model_uid` (#47) — independently re-confirmed.** The dump shows
 `sub #7.9 string="claude-sonnet-4-6"`, i.e. the concrete model rides the #7
@@ -312,6 +316,19 @@ the transport — so `CALIBRATE_MODEL=claude-sonnet-4.6` (dotted alias) produced
 which is precisely the state a paid calibration run is trying to diagnose. Two paid
 runs were burned on this. `scripts/devin-connect-calibrate.mjs` now resolves the
 alias itself and logs `resolved alias X -> selector Y`, so either form works.
+
+**Alias vs selector on the client surface (O1, measured 2026-10-25).** Two
+spellings that look like the same model select DIFFERENT upstream variants:
+
+| Client asks for | Upstream selector | Notes |
+|---|---|---|
+| `claude-sonnet-4.6` (dotted) | `claude-sonnet-4-6-thinking` | curated alias default; thinking tokens, credit 6 |
+| `claude-sonnet-4-6` (dashed) | `claude-sonnet-4-6` | base catalog selector; no reasoning_content, credit 4 |
+
+Both resolve `mapped:true`; the alias is deliberate (only the dotted family carries
+the `-thinking` default) and must not be "fixed". A client that wants the base model
+has to use the dashed catalog spelling — omp 18.12.6 asks for the dotted name, so
+every omp turn on the windsurf group runs the thinking variant.
 
 ### 8.1 Verify paid selectors are actually reachable (#15/#28)
 
@@ -424,9 +441,20 @@ instead of billing:
 DEVIN_CONNECT_BILLING_TAGS=cache_read_tokens=5,cache_write_tokens=4
 ```
 
-`usage` then gains `prompt_tokens_details.cached_tokens` (from cache_read) and
-`cache_creation_input_tokens` (from cache_write). Unset = the cache-only default.
-Set `off` = neither cache key present.
+`usage` then gains `prompt_tokens_details.cached_tokens` (from cache_read),
+`fresh_input_tokens` (from prompt) and `cache_creation_input_tokens` (from
+cache_write). Unset = the cache-only default. Set `off` = no cache counters
+decoded; `prompt_tokens_details.cached_tokens: 0` and `fresh_input_tokens` still
+come from the prompt/completion fields, which are always decoded.
+
+**`prompt_tokens` is the full input on this path** (O2, measured 2026-10-25):
+`fresh + cache_read + cache_write`, so a cache-WRITE turn no longer reports the
+tiny fresh remainder as the prompt (omp showed "3 in" for an 11.5k prompt on 2/7
+turns — exactly the two prefix-miss turns). `total_tokens = prompt_tokens +
+completion_tokens` always; `WINDSURFAPI_STRICT_USAGE_TOTAL` is a no-op here. The
+Cascade path keeps the #118 split (cache_write outside `prompt_tokens`), which is
+why consumers must read `fresh_input_tokens` instead of re-deriving
+`prompt_tokens - cached_tokens`.
 
 ### 8.7 finish_reason calibration (already live, free-tier safe)
 
@@ -582,3 +610,42 @@ carries `toolCalls: [{ id, name, arguments }]`. Off (default) → `toolCalls` is
 null and prompt emulation (`parseToolCallsFromText`) owns tool calls on every
 model, exactly as today. The decode is a pure read; an uncalibrated or absent tag
 map has zero behavioral effect.
+
+### 8.11 Session continuity (`DEVIN_CONNECT_SESSION_REUSE`) — default OFF
+
+Every DEVIN_CONNECT request carries a protobuf session id in field `#16`. With
+the switch unset (the shipped default), the handler mints a fresh `randomUUID()`
+per call, so one multi-turn dialog looks like N brand-new sessions to the
+upstream velocity limiter and prompt-cache reuse depends on prefix luck.
+
+Measured 2026-10-25 (omp 18.12.6, 7 requests, 3 conversations): **7/7 distinct
+session ids**, including three consecutive turns of one conversation. That is
+the documented default behaviour, not a lost client path — the client never
+sends a session id.
+
+With reuse ON, `src/session-continuity.js` derives a stable id from the
+conversation's own completed request/response pair chain (never from
+requestId/IP/timestamp); parallel dialogs on the same key stay independent.
+In-memory only, 30-minute TTL, 500 tracked dialogs by default:
+
+```sh
+DEVIN_CONNECT_SESSION_REUSE=1
+# Optional features — both require the main gate:
+DEVIN_CONNECT_MODEL_CONFIG_STABLE=0     # stable #15.1 + monotonic #15.2
+DEVIN_CONNECT_SESSION_REASONING_INJECT=0
+# Store sizing (only meaningful while reuse is on):
+DEVIN_CONNECT_SESSION_TTL_MS=1800000
+DEVIN_CONNECT_SESSION_MAX_STATES=500
+```
+
+Turning it on is a POLICY change, not a bug fix: the upstream session-limit
+behaviour behind it is why the default stayed off. The 2026-10-25 capture did
+NOT run with the gate on, so its effect on cache-hit rate and velocity limiting
+is `[INFERENCE]` from the code path, not a measurement.
+
+**Observability (added with O2/O3).** The handler now always names the source:
+reuse ON logs `DEVIN_CONNECT session reuse active → session_id=… acct=…`; reuse
+OFF logs `DEVIN_CONNECT session_id source=fresh-per-request
+(DEVIN_CONNECT_SESSION_REUSE off …)` once at info and per request at debug. A
+default deployment can therefore tell "continuity is off" from "reuse was
+expected but missed".

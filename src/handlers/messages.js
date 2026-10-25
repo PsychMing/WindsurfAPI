@@ -1126,21 +1126,33 @@ function buildAnthropicUsage(usage, cachePolicy = null) {
     }
   }
   // v2.0.68 (#118): Anthropic semantics for input_tokens DIFFER from OpenAI.
-  // OpenAI: prompt_tokens = freshInput + cacheRead (cached_tokens is a subset;
-  //         cache_creation ships SEPARATELY, not inside prompt_tokens).
+  // OpenAI: prompt_tokens = the full input the model processed.
   // Anthropic: input_tokens = freshInput ONLY; cache_read_input_tokens and
   //            cache_creation_input_tokens are siblings (mutually exclusive).
-  // Real upstream path (chat.js buildUsageBody): prompt_tokens already excludes
-  // cache_creation, so freshInput = promptTotal - cacheRead is correct and we
-  // must NOT subtract creation again.
+  //
+  // The two producers disagree on whether cache_creation lives INSIDE
+  // prompt_tokens: chat.js buildUsageBody (Cascade) excludes it, while the
+  // connect normalizer (O2) includes it because the upstream reports the written
+  // prefix as input. Neither can be re-derived from promptTotal alone, so both
+  // emit an explicit fresh bucket when they have one:
+  //   - connect: `usage.fresh_input_tokens` (top level)
+  //   - Cascade: `usage.cascade_breakdown.fresh_input_tokens`
+  // Prefer those; the arithmetic fallback stays for hand-built/synthetic blocks.
   // B6: the LOCAL-estimate fallback path is different — promptTotal there is the
   // whole-request estimate that INCLUDES the cacheable prefix now counted in
   // cacheCreationFlat. Subtract it too so the three buckets
   // (input / cache_creation / cache_read) are mutually exclusive and don't
   // double-count the prefix. Negative values clamp to 0 (defensive).
+  const connectFresh = usage.fresh_input_tokens;
+  const cascadeFresh = usage.cascade_breakdown?.fresh_input_tokens;
+  const reportedFresh = connectFresh != null && Number.isFinite(Number(connectFresh))
+    ? Math.max(0, Number(connectFresh))
+    : (cascadeFresh != null && Number.isFinite(Number(cascadeFresh))
+      ? Math.max(0, Number(cascadeFresh))
+      : null);
   const freshInput = usedEstimate
     ? Math.max(0, promptTotal - cacheRead - cacheCreationFlat)
-    : Math.max(0, promptTotal - cacheRead);
+    : (reportedFresh != null ? reportedFresh : Math.max(0, promptTotal - cacheRead));
   return {
     input_tokens: freshInput,
     output_tokens: usage.completion_tokens || usage.output_tokens || 0,

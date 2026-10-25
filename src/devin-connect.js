@@ -33,7 +33,6 @@ import { randomUUID, randomBytes, createHmac } from 'crypto';
 import * as _wireFs from 'fs';
 import * as _wirePath from 'path';
 import { log } from './config.js';
-import { strictUsageTotal } from './runtime-config.js';
 import {
   writeMessageField, writeStringField, writeVarintField, writeFixed64Field,
   parseFields, getField, getAllFields,
@@ -2720,11 +2719,26 @@ function stopReasonMap(env = process.env) {
  * implementation rather than a copy — the earlier test mirrored this arithmetic
  * inline, which meant degrading the production path did not fail it.
  *
- * Same semantics the Cascade path settled on (#118):
- *   prompt_tokens  = fresh input + cache_read   (cached_tokens is a SUBSET detail)
- *   total_tokens   = prompt + completion + cache_write  (full billable cost)
- *   cache_write stays OUT of prompt_tokens — it is generation-side and ships on
- *   cache_creation_input_tokens.
+ * Connect semantics (O2, evidence/ClientSandboxes.md §5.3):
+ *   prompt_tokens  = fresh + cache_read + cache_write  (the input the model processed)
+ *   total_tokens   = prompt + completion               (identity holds by construction)
+ *   prompt_tokens_details.cached_tokens = cache_read   (a SUBSET of prompt_tokens)
+ *   cache_creation_input_tokens        = cache_write   (Anthropic sibling for relays)
+ *   fresh_input_tokens                 = fresh         (explicit bucket; see below)
+ *
+ * Why cache_write is INSIDE prompt_tokens here while the Cascade path keeps it out
+ * (#118): on a connect cache-write turn the upstream reports the prefix it just
+ * processed on tag 4 and only the new tail on tag 2. Measured on claude-sonnet-4.6:
+ * round-1 write=14361, round-2 read=14356 + fresh=5 — i.e. the write IS the same
+ * input, not a generation-side extra. Excluding it made omp render "3 in" for an
+ * 11.5k prompt on 2/7 turns, and those two turns were exactly the prefix-miss
+ * (cache-write) requests. The Cascade split stays as #118 chose it, so consumers
+ * must NOT re-derive fresh as `prompt - cached` on this shape: `fresh_input_tokens`
+ * carries it explicitly (auth.js fullBillableTokens, messages.js, dashboard stats).
+ *
+ * `prompt_tokens_details` is emitted even when the upstream reported no cache read
+ * (tag 5 is absent on a write turn). Omitting it made the breakdown vanish on
+ * exactly the responses that needed explaining.
  *
  * Returns null for a missing usage block so callers can pass it straight through.
  */
@@ -2734,27 +2748,17 @@ export function normalizeConnectUsage(lastUsage) {
   const cacheRead = lastUsage.cache_read_tokens || 0;
   const cacheWrite = lastUsage.cache_write_tokens || 0;
   const completion = lastUsage.completion || 0;
-  const promptTokens = fresh + cacheRead;
-  // WINDSURFAPI_STRICT_USAGE_TOTAL=1 restores OpenAI's arithmetic identity
-  // (total == prompt + completion) for clients that validate it. Off by default: the
-  // identity break is cosmetic for nearly every consumer, whereas dropping cache_write
-  // from the total under-reports real spend, so spec-strictness is the opt-in.
-  //
-  // IMPORTED rather than re-parsed here. This line used to be its own
-  // `String(process.env...) === '1'`, which meant the "only the literal 1 counts" rule —
-  // the one with an explicit assertion behind it — bound chat.js and silently not this
-  // module. Two copies of an env parse is one copy too many when the thing it gates is
-  // billing-shaped.
-  const strictTotal = strictUsageTotal();
+  // cache_write is input on this path, so it is part of prompt_tokens and must not
+  // be added to the total a second time. WINDSURFAPI_STRICT_USAGE_TOTAL is therefore
+  // a no-op here — the OpenAI identity already holds (asserted in
+  // test/strict-usage-total.test.js so a future re-split has to revisit it).
+  const promptTokens = fresh + cacheRead + cacheWrite;
   return {
     prompt_tokens: promptTokens,
     completion_tokens: completion,
-    total_tokens: strictTotal
-      ? promptTokens + completion
-      : promptTokens + completion + cacheWrite,
-    ...(lastUsage.cache_read_tokens != null
-      ? { prompt_tokens_details: { cached_tokens: cacheRead } }
-      : {}),
+    total_tokens: promptTokens + completion,
+    prompt_tokens_details: { cached_tokens: cacheRead },
+    fresh_input_tokens: fresh,
     ...(lastUsage.cache_write_tokens != null
       ? { cache_creation_input_tokens: cacheWrite }
       : {}),
@@ -3305,19 +3309,17 @@ export async function* streamChat({
           // defaulted call's truncation undetectable — the stream would stop at the
           // wire cap and still report a clean 'stop'.
           reason: resolveFinishReason(lastFinish, finishUsage, completion?.maxTokens ?? WIRE_DEFAULT_MAX_TOKENS, env),
-          // Same normalization the Cascade path already applies (chat.js, #118):
-          // prompt_tokens INCLUDES cache_read (cached_tokens is a SUBSET detail of
-          // it, per OpenAI's shape), and total_tokens carries the full cost
-          // including cache_write so per-account accounting stays honest.
-          //
-          // Without this the connect path reported the upstream's raw fresh-input
-          // figure as prompt_tokens, so on a cache-hit turn it emitted
-          // cached_tokens=1765 alongside prompt_tokens=3 — a superset field larger
-          // than the field it is a subset of — and total_tokens=158 against ~1768
-          // real input tokens, a ~91% under-report. Every relay in front of this
-          // proxy (one-api / new-api and friends) meters from exactly these
-          // numbers, and all four protocol routes read this one object, so fixing
-          // it at the birth point corrects them together. Live-reproduced.
+          // Normalized at the birth point, so all four protocol routes read one
+          // object: prompt_tokens is the FULL input (fresh + cache_read +
+          // cache_write), cached_tokens is its SUBSET detail, and total_tokens is
+          // prompt + completion. Without this the connect path reported the
+          // upstream's raw fresh-input figure as prompt_tokens, so on a cache-hit
+          // turn it emitted cached_tokens=1765 alongside prompt_tokens=3 — a
+          // superset field larger than the field it is a subset of — and on a
+          // cache-WRITE turn it showed "3 in" for an 11.5k prompt (O2,
+          // evidence/ClientSandboxes.md §5.3). Every relay in front of this proxy
+          // (one-api / new-api and friends) meters from exactly these numbers.
+          // Live-reproduced.
           usage: finishUsage,
           // Billing detail (credit/acu cost) only present when an operator has
           // calibrated DEVIN_CONNECT_BILLING_TAGS against a paid token. Null on

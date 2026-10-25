@@ -81,11 +81,29 @@ describe('resolveConnectSelector', () => {
   it('maps claude friendly names to their captured upstream selectors', () => {
     assert.equal(resolveConnectSelector('claude-opus-4.8').selector, 'claude-opus-4-8-medium');
     // Dashed bare form is a real catalog selector (base model) → resolves to itself;
-    // the dotted family alias keeps the curated -thinking default.
-    assert.equal(resolveConnectSelector('claude-sonnet-4-6').selector, 'claude-sonnet-4-6');
-    assert.equal(resolveConnectSelector('claude-sonnet-4.6').selector, 'claude-sonnet-4-6-thinking');
+    // the dotted family alias keeps the curated -thinking default. Both are MAPPED:
+    // O1 (evidence/ClientSandboxes.md §5.3) is this alias working as designed, so the
+    // escape hatch is the explicit dashed spelling, not an alias change.
+    assert.deepEqual(resolveConnectSelector('claude-sonnet-4-6'),
+      { selector: 'claude-sonnet-4-6', mapped: true });
+    assert.deepEqual(resolveConnectSelector('claude-sonnet-4.6'),
+      { selector: 'claude-sonnet-4-6-thinking', mapped: true });
     assert.equal(resolveConnectSelector('claude-sonnet-4.5').selector, 'MODEL_PRIVATE_2');
     assert.equal(resolveConnectSelector('claude-haiku-4-5').selector, 'MODEL_PRIVATE_11');
+  });
+
+  it('keeps the base sonnet model reachable under its explicit spelling (O1)', () => {
+    // O1 (evidence/ClientSandboxes.md §5.3): omp asked for the dotted alias and got
+    // the thinking variant — that is the documented SELECTOR_MAP default, NOT a bug.
+    // The base (non-thinking) model is a real catalog selector, so the escape hatch
+    // must keep working: an explicit dashed spelling resolves to itself, mapped:true,
+    // and is a DIFFERENT upstream selector from the dotted alias.
+    const base = resolveConnectSelector('claude-sonnet-4-6');
+    const dotted = resolveConnectSelector('claude-sonnet-4.6');
+    assert.deepEqual(base, { selector: 'claude-sonnet-4-6', mapped: true });
+    assert.deepEqual(dotted, { selector: 'claude-sonnet-4-6-thinking', mapped: true });
+    assert.notEqual(base.selector, dotted.selector,
+      'the two spellings intentionally select different variants');
   });
 
   it('maps gpt and gemini families', () => {
