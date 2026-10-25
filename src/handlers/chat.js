@@ -5,7 +5,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { WindsurfClient, contentToString, isCascadeTransportError, acquireLsUseOrThrow, detachedClaimLostError } from '../client.js';
-import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountInternal, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, markSelectorIneligible, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, isAllConnectAccountsUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, recordAccountAttempt, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
+import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountInternal, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, markSelectorIneligible, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, isAllConnectAccountsUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, recordAccountAttempt, ensureDeviceSeed, requestReauthCheck, getConnectSelectorImageCapabilityForAccount } from '../auth.js';
 
 import { isStickyEnabled, setStickyBinding, peekStickyBinding } from '../account/sticky-session.js';
 import { resolveModel, getModelInfo, pickRateLimitFallback, isModelDisabledUpstream, getModelCaps } from '../models.js';
@@ -3710,62 +3710,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
       };
     }
     // Upstream-declared image capability (GetCliModelConfigs #5, the same bit
-    // /v1/models advertises). Until this gate no request path read it, so an
-    // image was forwarded to a model the same server had just told the client
-    // was text-only (C3-01).
+    // /v1/models advertises) is applied AFTER account acquisition below — it is
+    // an account-specific forwarding policy, not a pool-wide fact (P2-2).
     //
-    // Only an EXPLICIT false gates: a missing bit is unknown and must never be
-    // read as "no" — the same three-state rule as disabled (#4). Unknown models
-    // keep the historical wire byte-for-byte.
-    //
-    // Why STRIP and not a 400: the live catalog measured 2026-10-25 was 240 rows
-    // (224 true / 0 false / 16 silent, evidence/Wave4-Images.md), so no model
-    // exercises the false arm and there is no capture of one rejecting an image.
-    // Refusing on a bit whose false arm has never been observed is the class of
-    // bug the Codex `parallel_tool_calls` 400 was (see the comment below): a hard
-    // failure derived from an unverified declaration, breaking a working client.
-    // Dropping the images preserves the text turn; the counter and the warn make
-    // the drop visible instead of silent.
-    //
-    // Placed after selector resolution + the strict-model guard (so the bit is
-    // looked up for the selector that will actually be sent, not the raw alias)
-    // and before prompt assembly, account acquisition, and the wire builder —
-    // every surface that delegates to this handler (/v1/chat/completions,
-    // /v1/responses, /v1/messages) is covered here and nowhere else. The ACP
-    // vision reroute above is a different transport (local Devin CLI) and returns
-    // before selector resolution; this bit belongs to the direct Connect wire.
-    // Text-only requests skip the catalog scan entirely.
-    const imageCapability = hasMultimodalContent(messages)
-      ? getConnectSelectorImageCapability(selector)
-      : null;
-    if (imageCapability === false) {
-      const stripped = stripImageParts(messages);
-      if (stripped.dropped > 0) {
-        messages = stripped.messages;
-        bumpConnect('images_dropped_capability', stripped.dropped);
-        log.warn(`Chat[${reqId}]: DEVIN_CONNECT selector ${safeLogValue(selector)} declares supports_images=false in the live catalog — dropped ${stripped.dropped} image block(s) before the wire; text preserved (counted in images_dropped_capability)`);
-        // P2-3: the answerability guard above ran BEFORE this strip and counted
-        // the image as content. If the last user turn was ONLY that image there
-        // is nothing left to answer: sending it would encode an empty user frame
-        // (and consecutive user turns can merge it away entirely, leaving the
-        // model to answer a stale earlier prompt). Refuse with the reason.
-        const lastUser = messages.filter(m => m?.role === 'user').pop();
-        if (lastUser && !hasAnswerableUserContent(lastUser)) {
-          log.warn(`Chat[${reqId}]: DEVIN_CONNECT selector ${safeLogValue(selector)} declares supports_images=false and the last user turn contained only image block(s) — refusing with 400 (no answerable content remains after the strip)`);
-          return {
-            status: 400,
-            body: {
-              error: {
-                message: `The last user message contains only image content, and model \`${reqModelName}\` declares supports_images=false in the live catalog. Send the image together with text, or use a model whose /v1/models row advertises supports_images.`,
-                type: 'invalid_request_error',
-                param: 'messages',
-                code: 'image_only_turn_unsupported',
-              },
-            },
-          };
-        }
-      }
-    }
     // `parallel_tool_calls:false` is a caller PREFERENCE ("prefer one tool call per
     // turn"), not a correctness requirement. The connect upstream can only be told
     // about it through #11 `disable_parallel_tool_calls` — an opt-in field whose tag
@@ -4089,6 +4036,78 @@ async function _handleChatCompletionsInner(body, context = {}) {
       }
     }
     const ccAcct = __sHit ? null : await acquireConnectAccount(context.signal, callerKey, selector, context.budget || null);
+    // Upstream-declared image capability (GetCliModelConfigs #5, the same bit
+    // /v1/models advertises). Until this gate no request path read it, so an
+    // image was forwarded to a model the same server had just told the client
+    // was text-only (C3-01).
+    //
+    // PER ACCOUNT (P2-2): the catalog is account-scoped and `supports_images` is
+    // a forwarding policy for the account that will serve THIS request. The
+    // pool-wide union is first-writer-wins, so reading it here let one account's
+    // true mask another's false — or strip a true peer's valid image — depending
+    // only on sync order. Resolve the bit from the acquired account; an account
+    // with no synced rows, no row for this selector, or a silent row is UNKNOWN
+    // and forwards (never "no"). The env-token fallback has no pooled account, so
+    // it keeps the union.
+    //
+    // Only an EXPLICIT false gates: a missing bit is unknown and must never be
+    // read as "no" — the same three-state rule as disabled (#4). Unknown models
+    // keep the historical wire byte-for-byte.
+    //
+    // Why STRIP and not a 400: the live catalog measured 2026-10-25 was 240 rows
+    // (224 true / 0 false / 16 silent, evidence/Wave4-Images.md), so no model
+    // exercises the false arm and there is no capture of one rejecting an image.
+    // Refusing on a bit whose false arm has never been observed is the class of
+    // bug the Codex `parallel_tool_calls` 400 was: a hard failure derived from an
+    // unverified declaration, breaking a working client. Dropping the images
+    // preserves the text turn; the counter and the warn make the drop visible
+    // instead of silent. An image-ONLY last turn has no text to preserve and is
+    // refused below (P2-3).
+    //
+    // The strip must touch BOTH arrays: `messages` is the caller-shaped history
+    // and `connectMessages` is what was normalized (preamble/merge) from it just
+    // above; only the latter rides the wire.
+    if (!__sHit && hasMultimodalContent(messages)) {
+      const imageCapability = ccAcct
+        ? getConnectSelectorImageCapabilityForAccount(ccAcct.id, selector)
+        : getConnectSelectorImageCapability(selector);
+      if (imageCapability === false) {
+        const stripped = stripImageParts(messages);
+        const wireStripped = Array.isArray(connectMessages) ? stripImageParts(connectMessages) : null;
+        const dropped = wireStripped ? wireStripped.dropped : stripped.dropped;
+        messages = stripped.messages;
+        if (wireStripped) connectMessages = wireStripped.messages;
+        if (dropped > 0) {
+          bumpConnect('images_dropped_capability', dropped);
+          log.warn(`Chat[${reqId}]: DEVIN_CONNECT selector ${safeLogValue(selector)} declares supports_images=false for account ${ccAcct ? safeAccountRef(ccAcct) : 'env-token'} in the live catalog — dropped ${dropped} image block(s) before the wire; text preserved (counted in images_dropped_capability)`);
+          // P2-3: the answerability guard ran BEFORE this strip and counted the
+          // image as content. If the last user turn was ONLY that image there is
+          // nothing left to answer: sending it would encode an empty user frame
+          // (and consecutive user turns can merge it away entirely, leaving the
+          // model to answer a stale earlier prompt). Refuse with the reason.
+          const wireMessages = Array.isArray(connectMessages) ? connectMessages : messages;
+          const lastUser = wireMessages.filter(m => m?.role === 'user').pop();
+          if (lastUser && !hasAnswerableUserContent(lastUser)) {
+            log.warn(`Chat[${reqId}]: DEVIN_CONNECT selector ${safeLogValue(selector)} declares supports_images=false and the last user turn contained only image block(s) — refusing with 400 (no answerable content remains after the strip)`);
+            if (ccAcct) {
+              try { refundReservation(ccAcct.apiKey, ccAcct.reservationTimestamp); } catch {}
+              try { releaseAccountById(ccAcct.id); } catch {}
+            }
+            return {
+              status: 400,
+              body: {
+                error: {
+                  message: `The last user message contains only image content, and model \`${reqModelName}\` declares supports_images=false in the live catalog. Send the image together with text, or use a model whose /v1/models row advertises supports_images.`,
+                  type: 'invalid_request_error',
+                  param: 'messages',
+                  code: 'image_only_turn_unsupported',
+                },
+              },
+            };
+          }
+        }
+      }
+    }
     const connectParams = {
       messages: connectMessages,
       model: selector,

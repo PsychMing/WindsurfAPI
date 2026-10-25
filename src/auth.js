@@ -1417,6 +1417,41 @@ function unionConnectCatalogRows() {
 }
 
 /**
+ * The live catalog's EXPLICIT image capability for ONE account's selector row.
+ *
+ * `supports_images` is a forwarding policy about the account that will actually
+ * serve the request, not a pool-wide discovery fact: two accounts can disagree
+ * for the same selector (the catalog is account-scoped), and the first-writer
+ * union is the wrong answer for both directions — one account's `true` would
+ * forward an image to a `false` peer, and one account's `false` would strip a
+ * valid image from a `true` peer depending only on sync order.
+ *
+ * Three-state on purpose, matching `getConnectSelectorImageCapability`:
+ * `true`/`false` only when THIS account's row carries a boolean; `null` when
+ * the account has no synced rows, the selector is absent, or the row stayed
+ * silent. Unknown MUST forward — never read it as "no".
+ *
+ * @param {string} accountId
+ * @param {string} selector resolved canonical selector
+ * @returns {boolean|null}
+ */
+export function getConnectSelectorImageCapabilityForAccount(accountId, selector) {
+  const key = String(selector || '').trim();
+  if (!key || !accountId) return null;
+  const rows = _connectCatalogRowsByAccount.get(accountId);
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  for (const row of rows) {
+    if (typeof row === 'string') {
+      if (row.trim() === key) return null;
+      continue;
+    }
+    if (row?.selector !== key) continue;
+    return typeof row.supportsImages === 'boolean' ? row.supportsImages : null;
+  }
+  return null;
+}
+
+/**
  * Publish the pool-wide live union together with whether the frozen snapshot is
  * still needed by any active account that lacks last-known-good rows.
  *
