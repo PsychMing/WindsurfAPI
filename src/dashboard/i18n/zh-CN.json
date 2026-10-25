@@ -178,9 +178,12 @@
     "dialog": "对话框",
     "recentRequests": "最近请求表格",
     "statsLog": "请求日志表格",
-    "statsAggGroup": "聚合维度"
+    "statsAggGroup": "聚合维度",
+    "openNav": "打开导航",
+    "scrollableTable": "可滚动表格"
   },
   "action": {
+    "retry": "重试",
     "checkUpdate": "检查更新",
     "restartService": "重启服务",
     "applyUpdate": "一键更新并重启",
@@ -227,6 +230,7 @@
     "verifyAndLogin": "验证并登录"
   },
   "batchOps": {
+    "confirmTypeCount": "请输入 {{count}} 以确认删除本页之外的账号",
     "selected": "已选 {{count}} 个",
     "selectedAll": "已选当前筛选的全部 {{count}} 个",
     "selectAll": "全选",
@@ -242,6 +246,7 @@
     "done": "{{ok}} 成功 / {{fail}} 失败"
   },
   "status": {
+    "saved": "已保存",
     "active": "正常",
     "disabled": "已禁用",
     "error": "错误",
@@ -1033,6 +1038,7 @@
     "confirmClear": "清除运行时覆盖，回退 .env 值？"
   },
   "confirm": {
+    "typeToConfirm": "输入 {{text}} 以确认",
     "saveDiffTitle": "保存前确认改动",
     "saveDiffStat": "新增 {{add}} 行 / 删除 {{del}} 行",
     "saveDiffNoChange": "没有可保存的改动。",
@@ -1977,6 +1983,8 @@
     "restartCount": "重启次数"
   },
   "overview": {
+    "errorTitle": "概览暂不可用",
+    "staleSince": "显示 {{time}} 的最后成功数据。刷新失败：{{error}}",
     "poolHealth": {
       "healthy": "健康",
       "throttled": "限流中",
