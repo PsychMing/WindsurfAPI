@@ -22,6 +22,7 @@ import http2 from 'node:http2';
 import { endOfStreamEnvelope, unwrapRequest, wrapEnvelope } from '../../src/connect.js';
 import { getField, parseFields, writeMessageField, writeStringField, writeVarintField } from '../../src/proto.js';
 import { FAKE_LS_TEXT } from './fake-cascade-ls-constants.mjs';
+import { isConnectContentType, terminateRpcWithStatus } from './fake-grpc-trailers.mjs';
 
 const FIRST_READ_DELAY_MS = 200;
 
@@ -47,7 +48,7 @@ function grpcFrame(payload) {
 
 function responseBody(payload, headers) {
   const contentType = String(headers['content-type'] || '');
-  if (contentType.includes('application/connect+proto')) {
+  if (isConnectContentType(contentType)) {
     return Buffer.concat([wrapEnvelope(payload, { compress: false }), endOfStreamEnvelope()]);
   }
   return grpcFrame(payload);
@@ -104,6 +105,7 @@ function cascadeState(cascadeId) {
 
 const server = http2.createServer();
 server.on('stream', (stream, headers) => {
+  terminateRpcWithStatus(stream);
   const chunks = [];
   stream.on('data', chunk => chunks.push(chunk));
   stream.on('error', () => {});

@@ -42,6 +42,7 @@ import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import http2 from 'node:http2';
+import { terminateRpcWithStatus, isConnectContentType } from './helpers/fake-grpc-trailers.mjs';
 import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
@@ -249,7 +250,7 @@ function grpcFrame(payload) {
 
 function responseBody(payload, headers) {
   const contentType = String(headers['content-type'] || '');
-  if (contentType.includes('application/connect+proto')) {
+  if (isConnectContentType(contentType)) {
     return Buffer.concat([wrapEnvelope(payload, { compress: false }), endOfStreamEnvelope()]);
   }
   return grpcFrame(payload);
@@ -257,7 +258,7 @@ function responseBody(payload, headers) {
 
 function errorBody(message, headers) {
   const contentType = String(headers['content-type'] || '');
-  if (contentType.includes('application/connect+proto')) {
+  if (isConnectContentType(contentType)) {
     const body = Buffer.from(JSON.stringify({ error: { message } }));
     const frame = Buffer.alloc(5 + body.length);
     frame[0] = 0x02;
@@ -328,7 +329,7 @@ async function withFakeLanguageServer(handler, fn) {
     sessions.add(session);
     session.on('close', () => sessions.delete(session));
   });
-  server.on('stream', handler);
+  server.on('stream', (stream, headers) => { terminateRpcWithStatus(stream); handler(stream, headers); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   try {
