@@ -364,6 +364,69 @@ export function extractInlineImages(content) {
   return images;
 }
 
+/**
+ * True for a content block that would ride the connect wire as an image.
+ * Mirrors the two extractors (extractInlineImages above, remoteImageUrl below)
+ * rather than a looser `type.startsWith('image')`: a PDF dressed as an Anthropic
+ * image block is a document (extractInlineImages skips it), and a bare
+ * `image_url` string without `.url` extracts to nothing.
+ */
+function isWireImageBlock(block) {
+  if (!block || typeof block !== 'object') return false;
+  const type = String(block.type || '').toLowerCase();
+  if (type === 'image') {
+    const src = block.source || {};
+    const mime = String(src.media_type || '').toLowerCase();
+    if (mime === 'application/pdf') return false;
+    return (src.type === 'base64' || !src.type) && !!src.data;
+  }
+  if (type === 'image_url') {
+    const url = block.image_url?.url;
+    return typeof url === 'string' && url.length > 0;
+  }
+  // Responses-API shape; responses.js normalises it to image_url before the chat
+  // handler, but a direct caller of this helper should still lose the image.
+  if (type === 'input_image') {
+    const raw = block.image_url;
+    if (typeof raw === 'string') return raw.length > 0;
+    return typeof raw?.url === 'string' && raw.url.length > 0;
+  }
+  return false;
+}
+
+/**
+ * Remove wire-bound image blocks from OpenAI/Anthropic-shaped messages.
+ *
+ * Used when the live catalog EXPLICITLY declares the resolved selector
+ * text-only (supports_images=false): the text turn is preserved, the images are
+ * not sent, and the caller counts what was dropped. System turns are skipped —
+ * they are hoisted into the text-only system_prompt field (#2), so an image
+ * there was never going to ride the wire and counting it would be a false drop.
+ *
+ * Copy-on-write: the caller's array and message objects are never mutated (the
+ * same params object is re-passed on retry/failover). Returns the input array
+ * unchanged when nothing was dropped.
+ *
+ * @param {Array} messages
+ * @returns {{messages: Array, dropped: number}}
+ */
+export function stripImageParts(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return { messages, dropped: 0 };
+  let out = null;
+  let dropped = 0;
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!msg || msg.role === 'system' || !Array.isArray(msg.content)) continue;
+    const kept = msg.content.filter((block) => !isWireImageBlock(block));
+    const removed = msg.content.length - kept.length;
+    if (!removed) continue;
+    dropped += removed;
+    if (!out) out = messages.slice();
+    out[i] = { ...msg, content: kept };
+  }
+  return { messages: out || messages, dropped };
+}
+
 // ─── Remote image_url resolution (http/https) ───────────────────────────────
 //
 // `extractInlineImages` is SYNCHRONOUS and only understands data: URLs, so an
