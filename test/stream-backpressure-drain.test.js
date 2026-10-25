@@ -25,6 +25,8 @@ import { EventEmitter } from 'node:events';
 
 import { addAccountByKey, getAccountInternal, getApiKey, removeAccount } from '../src/auth.js';
 import { handleChatCompletions } from '../src/handlers/chat.js';
+import { handleMessages } from '../src/handlers/messages.js';
+import { handleGemini } from '../src/handlers/gemini.js';
 import { endOfStreamEnvelope, wrapEnvelope } from '../src/connect.js';
 import { writeMessageField, writeStringField, writeVarintField } from '../src/proto.js';
 
@@ -598,5 +600,99 @@ describe('SEED-C2: the real cascadeChat poll loop awaits its consumer', () => {
       );
       assert.ok(sawNativeCall || sawNativeResult, 'a native cascade step reached the callback path');
     });
+  });
+});
+
+// ── D8: the same contract through the two capture-response translators ────────
+//
+// The Cascade poll loop (src/client.js) awaits `onChunk`, and chat.js holds the
+// chunk boundary on the bounded writer — but the Anthropic and Gemini translators
+// wrote to the real socket themselves and their `createCaptureRes` returned a
+// constant `true`, so the verdict never reached that writer. These arms drive the
+// shipped translator seam with a producer that awaits exactly like the poll loop
+// (the real loop's await is pinned by the describe above), so a regression here is
+// the seam and not the fake.
+describe('D8: the translated routes hold the Cascade producer on the real socket', () => {
+  it('Messages: the chunk boundary is held at the refused frame and resumes on drain', async () => {
+    seed('d8-messages');
+    const ctx = cascadeContextFor();
+    const result = await handleMessages(
+      { model: MODEL, stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      ctx,
+    );
+    assert.equal(result.stream, true);
+
+    // message_start(1) + typed ping(2) + content_block_start(3) + the alpha
+    // delta(4). The producer is held at the chunk boundary after this chunk.
+    const res = controlledRes({ falseAt: 4 });
+    const done = result.handler(res);
+    await settle();
+
+    assert.equal(res.writes.length, 4, `the translated stream stops at the false frame, got ${res.writes.length}`);
+    assert.equal(res.falseSignals, 1);
+    assert.equal(ctx.progress.chunksProduced, 1, 'the poll loop is held inside its first chunk');
+    assert.equal(ctx.progress.completed, 0, 'the turn has not completed upstream');
+
+    res.emit('drain');
+    await done;
+
+    const body = res.writes.join('');
+    assert.equal(body.split('"text":"alpha"').length - 1, 1, 'the delta is delivered exactly once');
+    assert.equal(body.split('event: message_stop').length - 1, 1, 'exactly one terminal event');
+    assert.equal(ctx.progress.completed, 1, 'the producer ran to completion after the drain');
+  });
+
+  it('Gemini: the chunk boundary is held at the refused frame and resumes on drain', async () => {
+    seed('d8-gemini');
+    const ctx = cascadeContextFor();
+    const result = await handleGemini(
+      MODEL,
+      { contents: [{ role: 'user', parts: [{ text: 'hi' }] }] },
+      ctx,
+      { stream: true, alt: null },
+    );
+    assert.equal(result.stream, true);
+
+    // Frame 1 is the opening `[{...alpha...}` of the streamed JSON array.
+    const res = controlledRes({ falseAt: 1 });
+    const done = result.handler(res);
+    await settle();
+
+    assert.equal(res.writes.length, 1, `the translated stream stops at the false frame, got ${res.writes.length}`);
+    assert.equal(res.falseSignals, 1);
+    assert.equal(ctx.progress.chunksProduced, 1, 'the poll loop is held inside its first chunk');
+    assert.equal(ctx.progress.completed, 0);
+
+    res.emit('drain');
+    await done;
+
+    const frames = JSON.parse(res.writes.join(''));
+    const text = frames
+      .flatMap((f) => f.candidates || [])
+      .flatMap((c) => c.content?.parts || [])
+      .map((p) => p.text || '')
+      .join('');
+    assert.equal(text, 'alpha', 'the delta is delivered exactly once');
+    assert.equal(frames.filter((f) => f.candidates?.[0]?.finishReason).length, 1, 'exactly one terminal frame');
+    assert.equal(ctx.progress.completed, 1, 'the producer ran to completion after the drain');
+  });
+
+  it('a client close settles the translated wait without more bytes', async () => {
+    seed('d8-close');
+    const ctx = cascadeContextFor();
+    const result = await handleMessages(
+      { model: MODEL, stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      ctx,
+    );
+    const res = controlledRes({ falseAt: 4 });
+    const done = result.handler(res);
+    await settle();
+    assert.equal(res.writes.length, 4);
+
+    res.emit('close');
+    await done;
+
+    assert.equal(res.writes.length, 4, 'no frame is written after the client is gone');
+    assert.equal(ctx.progress.completed, 0, 'the producer is not driven to completion');
   });
 });
