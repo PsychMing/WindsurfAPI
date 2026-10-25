@@ -7,6 +7,10 @@ branch `fix/v23-argument-integrity`. Red worktree `…/w16x-fixv23-red`, detache
 recreate with `git worktree add --detach <path> b3877065` plus a copy of
 `test/response-store-argument-integrity.test.js`). Node v24.19.0. No push, no tag.
 
+Branch commits: `6667635c` (source fix + tests + this file) and `18b40e92`
+(docs-only §0 backfill; the docs freshness guard requires §0 to name the last
+`src/` commit, and a commit cannot name itself — same pattern as `b3877065`).
+
 Audit row: `evidence/audit/VERDICT.md:52` V-23 (A21), P2, accepted. Cited snapshot
 lines `src/response-store.js:331-352,440,512-521` correspond to `entryFixedBytes` /
 `truncateMessages` / `capEntryBytes` + `trimContentToFit` in this base; the two
@@ -155,14 +159,20 @@ TEST_DISCOVERY 575 unique files
 EXIT=0  ℹ tests 7030  ℹ pass 6933  ℹ fail 0  ℹ cancelled 0  ℹ skipped 97
 ```
 
-Log: `evidence/FixV23/full-suite.log`.
+Log: `evidence/FixV23/full-suite.log` (final HEAD `18b40e92`).
 
-One note on the path there: the first full run failed only
-`docs.guard-passes-with-self-tests` because a comment I added quoted the
-mutation-spec anchor `current.slice(0, keep) + TRUNCATION_MARKER` a second time, and
-`test/docs-consistency-guard.test.js` requires every spec anchor to appear exactly
-once. The comment was reworded (no mutation spec changed) and the guard plus the
-whole suite went green.
+Two blockers were hit on the way there, both recorded rather than smoothed over:
+
+1. The first full run failed only `docs.guard-passes-with-self-tests` because a
+   comment I added quoted the mutation-spec anchor
+   `current.slice(0, keep) + TRUNCATION_MARKER` a second time, and
+   `test/docs-consistency-guard.test.js` requires every spec anchor to appear
+   exactly once (`mutation anchors that do not match exactly once`). The comment was
+   reworded; no mutation spec changed.
+2. The first full run AFTER committing failed only the §0 freshness assertion —
+   `§0 master SHA 5d603c3d… predates 1 src/ change(s); update §0 to HEAD` — which is
+   structural for any `src/` commit. `18b40e92` backfills §0 to `6667635c`; the
+   guard is 47/47 and the suite is green at `18b40e92`.
 
 ## Out of scope (observed, not changed)
 
