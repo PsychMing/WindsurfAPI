@@ -35,6 +35,7 @@ import { restartLsForProxy } from '../langserver.js';
 import { getLsStatus, stopLanguageServerAndWait, startLanguageServer, isLanguageServerRunning, getLsAdmissionStatus } from '../langserver.js';
 import { getStats, getRequestLog, resetStats, recordRequest, exportStats, importStats } from './stats.js';
 import { getConnectMetrics, resetConnectMetrics } from '../devin-connect-metrics.js';
+import { getCascadeImageMetrics, resetCascadeImageMetrics } from '../cascade-image-metrics.js';
 import { detachedRegistry, cascadeDetachEnabled } from '../detached-registry.js';
 import { getStickyStats, isStickyEnabled } from '../account/sticky-session.js';
 import { getResponseStoreStats } from '../response-store.js';
@@ -2158,10 +2159,16 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       poolHealth: getPoolHealthWindow(),
       sticky: { enabled: isStickyEnabled(), ...getStickyStats() },
       responseStore: getResponseStoreStats(),
+      // Cascade replayed-history images: how many historical images rode field 6
+      // vs how many were dropped (cap / bytes / truncated / no vision mode). The
+      // drop path also logs `cascade_image_history_dropped`; this makes it
+      // countable instead of grep-only.
+      cascadeImages: getCascadeImageMetrics(),
     });
   }
   if (subpath === '/connect-metrics' && method === 'DELETE') {
     resetConnectMetrics();
+    resetCascadeImageMetrics();
     return json(res, 200, { success: true });
   }
 

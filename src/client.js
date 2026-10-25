@@ -13,6 +13,7 @@ import { execSync } from 'child_process';
 import { dirname } from 'node:path';
 import { log } from './config.js';
 import { extractImages } from './image.js';
+import { bumpCascadeImage } from './cascade-image-metrics.js';
 import { closeSessionForPort, grpcFrame, grpcUnary, grpcStream } from './grpc.js';
 import { beginLsUse, endLsUse, getLsEntryByPort } from './langserver.js';
 import { CC_CONTENT_MARKERS } from './handlers/cc-compat.js';
@@ -286,6 +287,55 @@ function cascadeHistoryBudget(modelUid) {
   return normal;
 }
 
+// ── Replayed-history images (SendUserCascadeMessage field 6) ─────────────
+//
+// WIRE CAPABILITY (read from the builders in src/windsurf.js): the replayed
+// history is ONE text blob — field 2 TextOrScopeItem{text=1} — and images are a
+// FLAT, message-level repeated field: field 6 ImageData{base64_data=1,
+// mime_type=2}. There is no per-history-message image slot, so the wire cannot
+// attribute an image to a turn; what it CAN do is carry every image on the same
+// message. Before this, only the newest turn was extracted, so an image from
+// turn 1..n-1 reached the model as the literal placeholder
+// "[Image omitted from text history]" — silently, with no counter anywhere.
+//
+// Now every replayed turn is extracted with the SAME guards as the current turn
+// (extractImages → SSRF / size / mime / decode gates), its images are appended
+// to field 6 after the current turn's images, and the turn's text carries a
+// numbered marker per attached image so the model can tell them apart. The
+// addition is bounded (count + bytes) and prefers the most recent turns;
+// anything that does not fit is counted and logged as
+// `cascade_image_history_dropped`, never dropped silently.
+const CASCADE_HISTORY_IMAGES_ENV = 'CASCADE_MAX_HISTORY_IMAGES';
+const CASCADE_HISTORY_IMAGE_BYTES_ENV = 'CASCADE_MAX_HISTORY_IMAGE_BYTES';
+// 4 images × the 400 KB re-encode target (image.js IMAGE_MAX_BYTES): the same
+// order of magnitude as the text budget, and small enough that the LS panel
+// payload stays well clear of the ~30 KB ceiling class of failures.
+const DEFAULT_CASCADE_HISTORY_IMAGES = 4;
+const DEFAULT_CASCADE_HISTORY_IMAGE_BYTES = 1_600_000;
+
+// 0 is meaningful here (drop every historical image = the pre-fix behaviour,
+// still counted), so this is NOT positiveIntEnv.
+function nonNegativeIntEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw == null || String(raw).trim() === '') return fallback;
+  const n = Number(String(raw).trim());
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+}
+
+function cascadeHistoryImageCaps() {
+  return {
+    maxImages: nonNegativeIntEnv(CASCADE_HISTORY_IMAGES_ENV, DEFAULT_CASCADE_HISTORY_IMAGES),
+    maxBytes: nonNegativeIntEnv(CASCADE_HISTORY_IMAGE_BYTES_ENV, DEFAULT_CASCADE_HISTORY_IMAGE_BYTES),
+  };
+}
+
+function countImageLikeBlocks(content) {
+  if (!Array.isArray(content)) return 0;
+  let n = 0;
+  for (const part of content) if (isImageLikeBlock(part)) n++;
+  return n;
+}
+
 /**
  * Build the history suffix whose lines plus `openingText` fit `budgetBytes`.
  *
@@ -295,27 +345,150 @@ function cascadeHistoryBudget(modelUid) {
  * (3x). `openingText` is the system prompt prepended to the same prompt,
  * counted with the same encoder. The guarantee covers the history lines and
  * the system prompt; wrapper text added by the caller (conversation intro,
- * latest turn, truncation note) is outside this budget.
+ * latest turn, truncation note, image markers) is outside this budget.
+ *
+ * `bodyForTurn(i)` substitutes an image-aware body for a turn (undefined =
+ * plain `contentToString`). Entries are returned oldest-first so the caller can
+ * render them again with per-turn additions without redoing the truncation.
  */
-function buildCascadeHistoryLines(convo, budgetBytes, openingText = '') {
-  const lines = [];
+function buildCascadeHistoryEntries(convo, budgetBytes, openingText = '', bodyForTurn = null) {
+  const entries = [];
   let historyBytes = Buffer.byteLength(String(openingText ?? ''), 'utf8');
   let firstIncluded = 0;
   for (let i = convo.length - 2; i >= 0; i--) {
     const m = convo[i];
     const tag = m.role === 'user' ? 'human' : 'assistant';
-    const line = `<${tag}>\n${escapeHistoryTag(contentToString(m.content), tag)}\n</${tag}>`;
-    const lineBytes = Buffer.byteLength(line, 'utf8');
-    if (historyBytes + lineBytes > budgetBytes && lines.length > 0) {
+    const body = (bodyForTurn ? bodyForTurn(i) : undefined) ?? contentToString(m.content);
+    const lineBytes = Buffer.byteLength(`<${tag}>\n${escapeHistoryTag(body, tag)}\n</${tag}>`, 'utf8');
+    if (historyBytes + lineBytes > budgetBytes && entries.length > 0) {
       log.info(`Cascade: trimmed history at turn ${i}/${convo.length} (${Math.round(historyBytes/1024)}KB kept, ${convo.length - 2 - i} turns dropped)`);
       firstIncluded = i + 1;
       break;
     }
-    lines.unshift(line);
+    entries.unshift({ index: i, tag, body });
     historyBytes += lineBytes;
     firstIncluded = i;
   }
-  return { lines, firstIncluded };
+  return { entries, firstIncluded };
+}
+
+function renderCascadeHistoryLines(entries, bodyForEntry = null) {
+  return entries.map((entry) => {
+    const body = (bodyForEntry ? bodyForEntry(entry) : undefined) ?? entry.body;
+    return `<${entry.tag}>\n${escapeHistoryTag(body, entry.tag)}\n</${entry.tag}>`;
+  });
+}
+
+/**
+ * Emit the structured drop record. One line, stable key first, so an operator
+ * can grep `cascade_image_history_dropped` and see exactly how many attachments
+ * vanished, why, and that the wire (not the caller) is the limit.
+ */
+function reportCascadeImageHistoryDrops(stats, meta) {
+  const dropped = stats.droppedCap + stats.droppedBytes + stats.droppedTruncated + stats.droppedNoVision;
+  if (stats.attached) bumpCascadeImage('cascade_image_history_attached', stats.attached);
+  if (!dropped) return;
+  bumpCascadeImage('cascade_image_history_dropped', dropped);
+  log.warn(
+    `cascade_image_history_dropped count=${dropped}`
+    + ` (cap=${stats.droppedCap} bytes=${stats.droppedBytes} truncated=${stats.droppedTruncated} no_vision=${stats.droppedNoVision})`
+    + ` turns=${meta.turns} attached=${stats.attached}`
+    + ' — SendUserCascadeMessage carries images only as one flat message-level list (field 6),'
+    + ' so these could not be replayed with their turn',
+  );
+}
+
+/**
+ * Assemble the replayed multi-turn prompt AND the flat field-6 image list.
+ *
+ * Shared by the fresh path and the post-resume rebuild so the two cannot
+ * disagree about which images ride the wire (the GPT-08 lesson: two copies of
+ * "which turns fit" drifted and one of them stopped updating coverage).
+ *
+ * `allowHistoryImages` is the vision gate: Cascade only renders field 6 in
+ * DEFAULT planner mode, which `buildSendCascadeMessageRequest` selects when
+ * `nativeMode` is on or when images are attached and no emulated tool preamble
+ * exists. Attaching historical images in NO_TOOL mode would add bytes the model
+ * never sees and would flip planner mode behind the caller's back, so they are
+ * counted as `no_vision` drops instead.
+ */
+async function buildCascadeMultiTurnPrompt(convo, { budgetBytes, openingText = '', allowHistoryImages = true } = {}) {
+  const caps = cascadeHistoryImageCaps();
+  const latest = convo[convo.length - 1];
+  const latestExtracted = await extractImages(latest?.content ?? '');
+  const images = [...latestExtracted.images];
+
+  const stats = { attached: 0, droppedCap: 0, droppedBytes: 0, droppedTruncated: 0, droppedNoVision: 0 };
+  const extractedByTurn = new Map(); // turn index -> { text, kept, omitted }
+  let keptCount = 0;
+  let keptBytes = 0;
+
+  // Pass 1 — newest first: decide which replayed turns contribute images.
+  // Extraction stops as soon as the caps are exhausted, so an old remote
+  // image_url is never fetched just to be thrown away.
+  for (let i = convo.length - 2; i >= 0; i--) {
+    const content = convo[i]?.content;
+    if (!Array.isArray(content) || !content.some(isImageLikeBlock)) continue;
+    if (!allowHistoryImages) {
+      stats.droppedNoVision += countImageLikeBlocks(content);
+      continue;
+    }
+    if (caps.maxImages === 0 || keptCount >= caps.maxImages || keptBytes >= caps.maxBytes) {
+      stats.droppedCap += countImageLikeBlocks(content);
+      continue;
+    }
+    const extracted = await extractImages(content);
+    // A turn whose image blocks produced nothing (guard rejection, failed
+    // fetch, unsupported mime) keeps its plain `contentToString` body: the
+    // placeholder stays in the text, and the guard already logged the reason.
+    if (!extracted.images.length) continue;
+    const kept = [];
+    for (const image of extracted.images) {
+      const bytes = image.base64_data.length;
+      if (kept.length >= caps.maxImages - keptCount || keptBytes + bytes > caps.maxBytes) {
+        stats.droppedBytes += 1;
+        continue;
+      }
+      kept.push(image);
+      keptBytes += bytes;
+    }
+    keptCount += kept.length;
+    extractedByTurn.set(i, { text: extracted.text, kept, omitted: extracted.images.length - kept.length });
+  }
+
+  // Pass 2 — the truncation measurement, unchanged: turn bodies without the
+  // markers (markers are wrapper text, like the intro and the truncation note).
+  const { entries, firstIncluded } = buildCascadeHistoryEntries(
+    convo, budgetBytes, openingText, (i) => extractedByTurn.get(i)?.text,
+  );
+
+  // Pass 3 — number the images that survived truncation, in chronological
+  // order, after the current turn's images (field 6 keeps insertion order, so
+  // marker #k is the k-th image the model sees).
+  const bodies = new Map();
+  for (const entry of entries) {
+    const extracted = extractedByTurn.get(entry.index);
+    if (!extracted) continue;
+    let body = extracted.text;
+    for (const image of extracted.kept) {
+      images.push(image);
+      stats.attached += 1;
+      body += `\n[Image #${images.length} attached to this request — from an earlier turn]`;
+    }
+    for (let n = 0; n < extracted.omitted; n++) body += '\n[Image omitted from text history]';
+    bodies.set(entry.index, body);
+  }
+  // Turns that were extracted but then truncated carry images that never reach
+  // the wire: count them, they are the silent case this whole path exists for.
+  for (const [index, extracted] of extractedByTurn) {
+    if (bodies.has(index)) continue;
+    stats.droppedTruncated += extracted.kept.length + extracted.omitted;
+  }
+
+  const lines = renderCascadeHistoryLines(entries, (entry) => bodies.get(entry.index));
+  const text = `The following is a multi-turn conversation. You MUST remember and use all information from prior turns.\n\n${lines.join('\n\n')}\n\n<human>\n${latestExtracted.text}\n</human>`;
+  reportCascadeImageHistoryDrops(stats, { turns: convo.length });
+  return { text, images, firstIncluded };
 }
 
 const CASCADE_TIMEOUTS = {
@@ -900,19 +1073,28 @@ export class WindsurfClient {
         if (!isResume && sysText) text = sysText + '\n\n' + text;
       } else {
         const maxHistoryBytes = cascadeHistoryBudget(modelUid);
-        const { lines, firstIncluded } = buildCascadeHistoryLines(convo, maxHistoryBytes, sysText);
+        // Vision gate: Cascade only renders field 6 in DEFAULT planner mode,
+        // which buildSendCascadeMessageRequest picks for native mode or for
+        // "images and no emulated tool preamble". In NO_TOOL mode (toolPreamble
+        // present, no native bridge) the historical images would be bytes the
+        // model never sees, so they are counted as no_vision drops instead.
+        const allowHistoryImages = !!nativeMode || !toolPreamble;
+        const built = await buildCascadeMultiTurnPrompt(convo, {
+          budgetBytes: maxHistoryBytes,
+          openingText: sysText,
+          allowHistoryImages,
+        });
+        const { firstIncluded } = built;
         historyCoverage = {
           droppedTurnCount: firstIncluded,
           firstIncludedTurnIndex: firstIncluded,
           totalTurns: convo.length,
         };
-        const latest = convo[convo.length - 1];
-        const extracted = await extractImages(latest?.content ?? '');
-        text = `The following is a multi-turn conversation. You MUST remember and use all information from prior turns.\n\n${lines.join('\n\n')}\n\n<human>\n${extracted.text}\n</human>`;
+        text = built.text;
         if (firstIncluded > 0) {
           text = `<truncation_note>The conversation above is truncated — ${firstIncluded} earlier turns were dropped due to length limits. The user's original task and the most recent tool results are preserved. Do NOT ask the user to repeat their task; continue from the latest context.</truncation_note>\n\n` + text;
         }
-        images = extracted.images;
+        images = built.images;
         if (sysText) text = sysText + '\n\n' + text;
       }
       if (images.length) log.info(`Cascade: attaching ${images.length} image(s) to field 6`);
@@ -946,15 +1128,21 @@ export class WindsurfClient {
         // number. Fresh includes system-prompt overhead while this historical rebuild
         // path starts at zero; preserve those existing budgets and report each
         // actual suffix rather than promising identical counts for every input.
-        const { lines, firstIncluded } = buildCascadeHistoryLines(convo, cascadeHistoryBudget(modelUid));
+        // Images go through the SAME builder as the fresh path — a rebuilt
+        // history must carry exactly what a fresh one would (the GPT-08 lesson).
+        const allowHistoryImages = !!nativeMode || !toolPreamble;
+        const built = await buildCascadeMultiTurnPrompt(convo, {
+          budgetBytes: cascadeHistoryBudget(modelUid),
+          allowHistoryImages,
+        });
+        const { firstIncluded } = built;
         historyCoverage = {
           droppedTurnCount: firstIncluded,
           firstIncludedTurnIndex: firstIncluded,
           totalTurns: convo.length,
         };
-        const latest = convo[convo.length - 1];
-        const extracted = await extractImages(latest?.content ?? '');
-        text = `The following is a multi-turn conversation. You MUST remember and use all information from prior turns.\n\n${lines.join('\n\n')}\n\n<human>\n${extracted.text}\n</human>`;
+        text = built.text;
+        images = built.images;
         if (sysText) text = sysText + '\n\n' + text;
         log.info('Cascade: rebuilt full history after resume failure');
       };
