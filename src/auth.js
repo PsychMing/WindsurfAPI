@@ -2266,6 +2266,24 @@ function clearBanState(account) {
   account._banSignalLastMessage = '';
 }
 
+// `disabled` and `banned` are OPERATOR terminal states, not health verdicts.
+// A request acquired before the operator flipped the switch can report its
+// outcome afterwards, and every background recovery RPC (auto re-login,
+// liveness probe, Firebase token refresh) can finish after it. None of those
+// may leave these states — only an explicit operator action (setAccountStatus /
+// resetAccountErrors) can. One predicate so every path agrees on the vocabulary.
+function isOperatorTerminalStatus(status) {
+  return status === 'disabled' || status === 'banned';
+}
+
+// Identity check for work that spanned an await: the account object captured
+// before the RPC must still be the live row in the pool. `id` alone is not
+// enough — a delete + re-add (or a test seam) can reuse it, and publishing a
+// stale RPC result onto the new row is exactly the cross-epoch bug this guards.
+function isCurrentAccount(account) {
+  return Boolean(account) && accounts.find(a => a.id === account.id) === account;
+}
+
 // ─── Session re-auth (`status: 'reauth'`) ───────────────────────────────────
 // A `devin-session-token$` account whose server-side session_id was retired is
 // unrecoverable without a fresh login. A bare UNAUTHORIZED on the data path is
@@ -2432,6 +2450,12 @@ export async function requestReauthCheck(id, { source = 'request', force = false
     // The key was replaced while the probe was in flight: its verdict is about
     // a credential that is no longer in the pool.
     if (account.apiKey !== token) return { checked: false, reason: 'TOKEN_CHANGED' };
+    // The row itself can be removed/re-added while the probe is pending. Never
+    // publish the old object's verdict onto a new lifetime with the same id.
+    if (!isCurrentAccount(account)) return { checked: false, reason: 'ACCOUNT_CHANGED' };
+    // Operator terminal states outrank a probe verdict: an ALIVE response may
+    // clear reauth, but it must not clear a disable/ban issued mid-probe.
+    if (isOperatorTerminalStatus(account.status)) return { checked: false, reason: 'NOT_ELIGIBLE' };
     if (result?.alive) {
       const cleared = clearNeedsReauth(id, { reason: 'probe_alive' });
       return { checked: true, alive: true, cleared, status: account.status };
@@ -2725,6 +2749,14 @@ export async function reLoginAccount(id, { force = false, signal } = {}) {
   if (!getBackendSwitch('autoRelogin')) return false;
   const account = accounts.find(a => a.id === id);
   if (!account) return false;
+  // Operator terminal states are authoritative: a disabled/banned account must
+  // not spend a login attempt, and a successful login cannot un-ban it. Only an
+  // explicit operator reset leaves these states.
+  if (isOperatorTerminalStatus(account.status)) {
+    log.debug(`re-login ${safeAccountRef(account)} skipped: operator ${account.status}`);
+    return false;
+  }
+  const tokenAtStart = account.apiKey;
 
   const { isCredStoreEnabled, getCredential } = _reloginDeps
     || await import('./devin-connect-credentials.js');
@@ -2764,10 +2796,28 @@ export async function reLoginAccount(id, { force = false, signal } = {}) {
       return false;
     }
     try {
+      // Revalidate after the queued wait: the operator may have disabled,
+      // banned, removed or re-keyed the row while this attempt held no slot.
+      if (!isCurrentAccount(account) || isOperatorTerminalStatus(account.status) || account.apiKey !== tokenAtStart) {
+        log.debug(`re-login ${safeAccountRef(account)} skipped: account changed while queued`);
+        return false;
+      }
       const proxy = getEffectiveProxy(account.id) || null;
       const { windsurfLogin } = _reloginDeps || await import('./dashboard/windsurf-login.js');
       const result = await windsurfLogin(account.email, password, proxy);
       if (!result?.apiKey) throw new Error('login returned no apiKey');
+      // The login RPC is the longest await in this path. Revalidate identity,
+      // operator intent and the credential epoch BEFORE committing anything: a
+      // disable/ban issued while the login was in flight wins, and a removed or
+      // re-added row must never receive the old attempt's token.
+      if (!isCurrentAccount(account) || isOperatorTerminalStatus(account.status)) {
+        log.warn(`re-login ${safeAccountRef(account)} result discarded: account is ${account.status} or no longer in the pool`);
+        return false;
+      }
+      if (account.apiKey !== tokenAtStart) {
+        log.warn(`re-login ${safeAccountRef(account)} result discarded: credential changed during login`);
+        return false;
+      }
       const apiKeyChanged = account.apiKey !== result.apiKey;
       const previousKey = account.apiKey;
       account.apiKey = result.apiKey;
@@ -2780,12 +2830,16 @@ export async function reLoginAccount(id, { force = false, signal } = {}) {
       const wasReauth = account.status === 'reauth';
       account.status = 'active';
       account.errorCount = 0;
+      account.erroredAt = 0;
       account._errorAt = 0;
       account._reloginAt = Date.now();
       // A successful login proves the NEW token works, so the evidence behind a
       // previous reauth verdict is dead — dropping it is what makes the state
       // change structural rather than a second flag to remember.
       delete account.reauth;
+      // A fresh credential also invalidates a stale ban-signal streak; the ban
+      // STATUS itself was refused above, so this cannot erase an operator ban.
+      clearBanState(account);
       saveAccounts();
       trySyncModelCatalog();
       log.info(`re-login OK: ${safeAccountRef(account)} → fresh session token`);
@@ -2829,11 +2883,21 @@ export async function reLoginAccount(id, { force = false, signal } = {}) {
 export async function probeAndRecoverConnectAccount(id, { signal } = {}) {
   const account = accounts.find(a => a.id === id);
   if (!account) return { alive: false, code: 'NO_ACCOUNT' };
+  // The periodic sweep also filters these, but the function is a public seam:
+  // probing a parked credential is pointless and its verdict must never revive it.
+  if (isOperatorTerminalStatus(account.status)) return { alive: false, code: 'NOT_ELIGIBLE' };
+  const tokenAtStart = account.apiKey;
 
   const { checkSessionLiveness } = (_reloginDeps && _reloginDeps.checkSessionLiveness)
     ? _reloginDeps
     : await import('./devin-connect-catalog.js');
-  const result = await checkSessionLiveness({ token: account.apiKey, signal });
+  const result = await checkSessionLiveness({ token: tokenAtStart, signal });
+  // The probe is an await: revalidate the row and credential before applying
+  // its verdict. A delete + re-add or a token replacement makes the result
+  // belong to a dead lifetime; an operator disable/ban outranks it entirely.
+  if (!isCurrentAccount(account)) return { alive: false, code: 'ACCOUNT_CHANGED' };
+  if (account.apiKey !== tokenAtStart) return { alive: false, code: 'TOKEN_CHANGED' };
+  if (isOperatorTerminalStatus(account.status)) return { alive: false, code: 'NOT_ELIGIBLE' };
   if (result.alive) {
     // A previously-errored account that now probes alive is healthy again.
     if (account.status === 'error') {
@@ -2863,7 +2927,11 @@ export async function probeAndRecoverConnectAccount(id, { signal } = {}) {
     // revived on this account. The probe already answered UNAUTHORIZED for the
     // CURRENT key, so record the terminal state instead of leaving the account
     // to flap back through the error TTL and burn a login attempt every cycle.
-    else markNeedsReauth(id, { source: 'liveness', code: result.code });
+    // Revalidate once more: the failed re-login was another await, and a row
+    // removed/re-added or parked during it must not receive this old verdict.
+    else if (isCurrentAccount(account) && account.apiKey === tokenAtStart && !isOperatorTerminalStatus(account.status)) {
+      markNeedsReauth(id, { source: 'liveness', code: result.code });
+    }
     return { alive: false, recovered: Boolean(fresh), code: result.code };
   }
   return { alive: false, code: result.code };
@@ -4114,6 +4182,11 @@ function isRateLimitedForModel(account, modelKey, now) {
 export function reportError(apiKey, { windowMs = getBreakerTunable('errorWindowMs'), selector = null } = {}) {
   const account = accounts.find(a => a.apiKey === apiKey);
   if (!account) return;
+  // Operator terminal states are authoritative. A request acquired before the
+  // disable/ban can report its failure afterwards; counting it would walk the
+  // account into 'error' — a SELF-HEALING state whose TTL hands the credential
+  // back to selection. Only an explicit operator reset may leave these states.
+  if (isOperatorTerminalStatus(account.status)) return;
   // SessionReauth: the token is retired upstream and out of rotation. Counting
   // errors here would only walk it toward 'error' — a SELF-HEALING state — and
   // maybeRecoverErrorAccount would then hand the dead key back to selection.
@@ -4176,12 +4249,19 @@ export function reportSuccess(apiKey) {
   const account = accounts.find(a => a.apiKey === apiKey);
   if (!account) return;
   recordHealthEvent(account, 'o');
-  if (account.errorCount > 0) {
-    account.errorCount = 0;
-    // SessionReauth: a success clears the error budget but must NOT promote a
-    // retired token to active — that would re-create the 401 loop from the
-    // other direction. The status leaves 'reauth' only with a fresh token.
-    if (account.status !== 'reauth') account.status = 'active';
+  const hadErrors = account.errorCount > 0;
+  const wasErrored = account.status === 'error';
+  if (hadErrors) account.errorCount = 0;
+  // A success is evidence about the CREDENTIAL, not about operator intent.
+  // Only the self-healing 'error' state may be promoted; 'active' is a no-op,
+  // while 'disabled'/'banned' are terminal until an explicit operator reset and
+  // 'reauth' only leaves with a fresh token. This is the late-outcome guard:
+  // the request may have been acquired before the operator flipped the switch.
+  if (wasErrored) {
+    account.status = 'active';
+    account.erroredAt = 0;
+    trySyncModelCatalog();
+  } else if (hadErrors && !isOperatorTerminalStatus(account.status)) {
     trySyncModelCatalog();
   }
   account.internalErrorStreak = 0;
@@ -4551,6 +4631,9 @@ export function looksLikeBanSignal(message) {
 export function reportBanSignal(apiKey, message, { windowMs = 30 * 60 * 1000 } = {}) {
   const account = accounts.find(a => a.apiKey === apiKey);
   if (!account) return false;
+  // Operator terminal states are authoritative: a late ban-shaped error must
+  // not replace a disable with a ban (or refresh an existing ban's evidence).
+  if (isOperatorTerminalStatus(account.status)) return false;
   const now = Date.now();
   const last = account._banSignalAt || 0;
   account._banSignalAt = now;
@@ -6159,12 +6242,23 @@ async function refreshAllFirebaseTokens({ skipBusy = false } = {}) {
         continue;
       }
     }
+    const tokenAtStart = a.apiKey;
     try {
       const proxy = getEffectiveProxy(a.id) || null;
       const { idToken, refreshToken: newRefresh } = await refreshFirebaseToken(a.refreshToken, proxy);
+      // The refresh RPC is an await: revalidate identity, operator intent and
+      // the credential epoch before committing either half of the token pair.
+      if (!isCurrentAccount(a) || a.status !== 'active' || a.apiKey !== tokenAtStart) {
+        log.debug(`Firebase refresh ${a.id} result discarded: account changed during refresh`);
+        continue;
+      }
       a.refreshToken = newRefresh;
       // Re-register to get a fresh API key (may be the same key)
       const { apiKey } = await reRegisterWithCodeium(idToken, proxy);
+      if (!isCurrentAccount(a) || a.status !== 'active' || a.apiKey !== tokenAtStart) {
+        log.debug(`Firebase refresh ${a.id} key discarded: account changed during re-register`);
+        continue;
+      }
       if (apiKey && apiKey !== a.apiKey) {
         log.info(`Firebase refresh: ${safeAccountRef(a)} got new API key`);
         const previousKey = a.apiKey;
@@ -6176,6 +6270,12 @@ async function refreshAllFirebaseTokens({ skipBusy = false } = {}) {
       a._refreshFailStreak = 0;
       saveAccounts();
     } catch (e) {
+      // A failure that happened after the operator parked the row must not
+      // accumulate a fail streak or downgrade anything — the row is terminal.
+      if (!isCurrentAccount(a) || a.status !== 'active') {
+        log.debug(`Firebase refresh ${a.id} failure ignored: account changed during refresh`);
+        continue;
+      }
       log.warn(`Firebase refresh ${safeAccountRef(a)} failed: ${e.message}`);
       // AP-RISK-4: a refresh failure means the stored token may be dead. If we
       // do nothing, the account stays 'active' and keeps getting selected with
@@ -6289,6 +6389,10 @@ export async function initAuth() {
     const LIVENESS_INTERVAL = Number(process.env.DEVIN_CONNECT_LIVENESS_INTERVAL_MS) || 10 * 60 * 1000;
     const sweep = async () => {
       for (const a of accounts) {
+        // Operator-parked rows are terminal: never spend an upstream probe on
+        // them, and never let a probe verdict revive one. Re-checked inside
+        // probeAndRecoverConnectAccount for the status change during the await.
+        if (isOperatorTerminalStatus(a.status)) continue;
         if (!String(a.apiKey || '').startsWith('devin-session-token$')) continue;
         try { await probeAndRecoverConnectAccount(a.id); }
         catch (e) { log.warn(`Liveness sweep ${a.id} failed: ${e.message}`); }
