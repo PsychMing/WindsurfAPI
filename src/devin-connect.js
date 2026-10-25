@@ -764,7 +764,8 @@ export function getToolDefTags(env = process.env, { useDefault = false } = {}) {
 // Normalize an OpenAI/MCP function-parameters JSON Schema into the minimal,
 // well-formed shape upstream accepts. Real clients (OpenCode, MCP servers) emit
 // schemas with missing/loose fields or proprietary keys ($schema, unevaluated
-// keywords) that a strict upstream can reject (→ UPSTREAM_INTERNAL). Portable
+// keywords) that a strict upstream can reject (→ `invalid_argument` → 400
+// REQUEST_REJECTED). Portable
 // hardening (kiro's normalize_json_schema, repo-hank9999): guarantee an object
 // schema with a `properties` object and a string[] `required`, and DROP keys the
 // upstream doesn't want ($schema). Non-destructive to the caller's real schema
@@ -2489,6 +2490,21 @@ export function parseResetDuration(text) {
   return Math.min(ms, 6 * 3600_000);
 }
 
+// gRPC 4xx-class statuses that mean "the REQUEST itself is invalid" — the
+// upstream request VALIDATOR refused these bytes. `invalid_argument` is measured
+// for both an unsupported image (evidence/AccountMatrix.md §7.1) and a malformed
+// tool history (#273.1: "There is an issue with this request, please try a
+// different model."); `failed_precondition` is its sibling status. The quota-dry
+// body also rides `failed_precondition`, which is why the narrower QUOTA_EXHAUSTED
+// text arm runs BEFORE these codes are claimed.
+//
+// Permanent by construction: identical bytes fail identically on every retry, and
+// nothing here is evidence about the account or its credential.
+const REQUEST_REJECTION_CODES = new Set(['invalid_argument', 'failed_precondition']);
+function isRequestRejectionCode(code) {
+  return typeof code === 'string' && REQUEST_REJECTION_CODES.has(code);
+}
+
 /**
  * @param {string} text   raw body or trailer message
  * @param {string|null} code  upstream code if already known
@@ -2555,7 +2571,16 @@ export function classifyUpstreamError(text, code = null, status = null) {
   // Observed live (free account <redacted>): GetUserStatus + liveness
   // both pass while completions return this 3/3 with fresh trace IDs. Distinct
   // from the gRPC `internal` code handled above.
-  if (/internal error occurred/i.test(lc)) {
+  //
+  // The TEXT alone is not the verdict: an explicit 4xx-class VALIDATOR code wins
+  // over it. Measured 2026-10-25 (evidence/AccountMatrix.md §7.1), an image sent
+  // to a model whose /v1/models row OMITS `supports_images` returned a 106-byte
+  // trailer `{"error":{"code":"invalid_argument","message":"an internal error
+  // occurred"}}` — the validator refusing these exact bytes, identical on every
+  // retry. Claiming it here surfaced a permanent capability rejection as 503
+  // UPSTREAM_INTERNAL and charged the internal-error breaker. See the
+  // REQUEST_REJECTED arm at the end of this function.
+  if (/internal error occurred/i.test(lc) && !isRequestRejectionCode(code)) {
     return { code: 'UPSTREAM_INTERNAL', message: body || 'DEVIN_CONNECT: upstream internal error' };
   }
   // CONTENT POLICY block (2026-07-10, live-confirmed). Upstream returns
@@ -2656,6 +2681,33 @@ export function classifyUpstreamError(text, code = null, status = null) {
   if (status === 429 || /rate.?limit|too many requests|resource_exhausted/i.test(lc) || code === 'resource_exhausted') {
     return { code: 'RATE_LIMITED', message: body || 'DEVIN_CONNECT: rate limited' };
   }
+  // ── REQUEST VALIDATOR REJECTION (4xx-class) ─────────────────────────────
+  // `invalid_argument` / `failed_precondition` that matched no narrower verdict:
+  // the upstream refused the REQUEST, not the account. Measured shapes are the
+  // §7.1 image frame handled above (its text arm is skipped when the code is in
+  // this set) and #273.1's "There is an issue with this request, please try a
+  // different model." Both are permanent — the same bytes fail identically on
+  // every retry — yet they used to surface as 503 (UPSTREAM_INTERNAL) or 502
+  // (verbatim passthrough), telling clients to retry something that can never
+  // succeed.
+  //
+  // 400 invalid_request_error with the upstream message PLUS the capability hint
+  // the caller needs to act on: the §7.1 rows are exactly the models whose
+  // /v1/models row omits `supports_images`. Keep the hint free of the internal
+  // leak markers messages.js generalizes on (devin_connect / session token /
+  // failover / ...), or an Anthropic client would receive the generic text.
+  // NO account penalty (the token is alive) and NO in-process retry
+  // (isRetryable excludes the code).
+  if (isRequestRejectionCode(code)) {
+    const detail = body || `upstream rejected the request (${code})`;
+    return {
+      code: 'REQUEST_REJECTED',
+      message: `${detail} [upstream rejected the request as invalid (${code}): the selected model `
+        + 'may not support this input — e.g. an image on a model whose /v1/models row omits '
+        + 'supports_images — or the message/tool shape is unsupported. Check supports_images in '
+        + 'GET /v1/models and retry with a capable model or request shape]',
+    };
+  }
   return { code: code || 'UPSTREAM_ERROR', message: body || `DEVIN_CONNECT upstream error${status ? ` (HTTP ${status})` : ''}` };
 }
 
@@ -2681,7 +2733,13 @@ export function isRetryable(err) {
   // same-token retry just amplifies load, #35). Short-circuit BEFORE the 5xx
   // status branch, which would otherwise re-admit it when the fault arrives as
   // a genuine 5xx rather than in a 401/403 shell (audit F4).
-  if (err.code === 'UPSTREAM_INTERNAL') return false;
+  //
+  // REQUEST_REJECTED joins it for the same reason and one more: the rejection is
+  // about the BYTES, so a replay is guaranteed to fail identically. The 5xx
+  // status branch would otherwise re-admit it when the upstream wraps the
+  // validator verdict in a 5xx shell (measured delivery mode for transient
+  // faults), turning a permanent 400-class verdict into a retry storm.
+  if (err.code === 'UPSTREAM_INTERNAL' || err.code === 'REQUEST_REJECTED') return false;
   if (err.code && RETRYABLE_CODES.has(err.code)) return true;
   // HTTP 5xx (except 501) are transient; 4xx are not.
   if (typeof err.status === 'number') return err.status >= 500 && err.status !== 501;

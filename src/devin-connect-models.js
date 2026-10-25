@@ -213,8 +213,11 @@ const SELECTOR_MAP = new Map(Object.entries({
 
 // The set of selectors the live catalog actually exposes (committed snapshot,
 // frame-verified 2026-06-30). A value written to GetChatMessageRequest #21 that
-// is NOT in this set makes the upstream return UPSTREAM_INTERNAL (frame-proven
-// 2026-07-04: bare "claude-opus-4-8" failed, "claude-opus-4-8-medium" 200'd).
+// is NOT in this set is refused by the upstream request validator as
+// `invalid_argument` — surfaced as 400 REQUEST_REJECTED since the 2026-10-25
+// mapping fix (before that it read as 503 UPSTREAM_INTERNAL and charged the
+// internal-error breaker). Frame-proven 2026-07-04: bare "claude-opus-4-8"
+// failed, "claude-opus-4-8-medium" 200'd.
 // Used as a last-line existence guard on enum/dash-form passthrough. Ships under
 // src/ (NOT test/) so it is present in the Docker image — the Dockerfile only
 // COPYs src/, so a runtime read from test/ crashes the container on boot. Loaded
@@ -362,8 +365,10 @@ export function setLiveCatalogSelectors(catalog, { includeSnapshotFallback = fal
       // effort tiers of one family SHARE one alias — claude-opus-4-7-{low,medium,
       // high,max} all alias to "claude-opus-4.7"). The upstream does NOT accept an
       // alias as a model name — writing a bare family alias to GetChatMessageRequest
-      // #21 trips UPSTREAM_INTERNAL and burns the account (frame-proven: only the
-      // full "-medium" form 200s). Folding aliases in here made resolveConnectSelector
+      // #21 trips the request validator (`invalid_argument` → 400 REQUEST_REJECTED;
+      // before the 2026-10-25 mapping fix it read as UPSTREAM_INTERNAL and burned
+      // the account). Frame-proven: only the full "-medium" form 200s. Folding
+      // aliases in here made resolveConnectSelector
       // return mapped:true for a family alias not covered by SELECTOR_MAP (e.g.
       // "gpt-5.6-sol") and pass that bad form straight through. Aliases are handled
       // by the hand-maintained SELECTOR_MAP (which resolves them to a real selector);
@@ -556,8 +561,9 @@ export function resolveConnectSelector(model, {
   // SHAPE on the normalized key and look the UPPERCASE form up: a client may copy
   // the enum verbatim (MODEL_GPT_5_2_LOW), lowercase it, or prepend a provider
   // prefix, and the old raw-string test let only the first of those through
-  // (S5: 96 probed rows). A blind MODEL_* passthrough is what re-introduces
-  // UPSTREAM_INTERNAL on drift, so the existence check stays.
+  // (S5: 96 probed rows). A blind MODEL_* passthrough is what re-introduces a
+  // request-validator rejection (`invalid_argument` → 400 REQUEST_REJECTED) on
+  // drift, so the existence check stays.
   const enumForm = norm.toUpperCase();
   if (/^MODEL_[A-Z0-9_]+$/.test(enumForm)
     && isKnownConnectSelector(enumForm, { allowSnapshotFallback })) {

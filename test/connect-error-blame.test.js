@@ -59,8 +59,13 @@ describe('request-side failures never evict the account', () => {
   // healthy account in 3 calls. TIMEOUT and DEADLINE_EXCEEDED are upstream stalls
   // (devin-connect.js says so in its own comments); NO_TOKEN is a CONFIGURATION
   // fault, so charging account health for it is doubly wrong.
+  // REQUEST_REJECTED joined when the 4xx-class validator rejection (gRPC
+  // invalid_argument / failed_precondition — unsupported image or malformed tool
+  // history) was separated from UPSTREAM_INTERNAL: the upstream refused the
+  // REQUEST, the token is alive, so a caller looping on an unsupported image must
+  // not walk the pool offline (evidence/AccountMatrix.md §7.1).
   const REQUEST_SIDE = ['UPSTREAM_ERROR', 'CONTENT_BLOCKED', 'MODEL_BLOCKED', 'STREAM_TRUNCATED',
-    'TIMEOUT', 'DEADLINE_EXCEEDED', 'NO_TOKEN'];
+    'TIMEOUT', 'DEADLINE_EXCEEDED', 'NO_TOKEN', 'REQUEST_REJECTED'];
 
   for (const code of REQUEST_SIDE) {
     it(`${code} x3 keeps the account in rotation (fault is in the request)`, () => {
