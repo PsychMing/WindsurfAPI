@@ -26,6 +26,7 @@ scripts/*
 !scripts/check-dashboard-copy.mjs
 !scripts/verify-release-assets.mjs
 !scripts/secret-scan.mjs
+!scripts/support-bundle.mjs
 !scripts/run-test-shard.mjs
 !scripts/run-tests.mjs
 !scripts/spec-static-check.mjs
@@ -127,6 +128,9 @@ docs/*.bak
 .trace/
 .wire-dump/
 .wire-dump-pull/
+# Support bundles (trace archives can carry prompt fragments — attach, never commit)
+support-bundle-*.zip
+support-bundle-*.manifest.json
 
 # Exported chat-session transcripts (/export output — never commit)
 2026-*-local-command-*.txt

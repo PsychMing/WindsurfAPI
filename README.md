@@ -712,6 +712,18 @@ flowchart TD
 | 改大 `.env` 里的 timeout 但 `context deadline exceeded` 还在 | 那个超时不在这一层。见下面同名问答 |
 | 一开就"所有账号 rate-limited",怀疑代理坏了 | 大概率是 IP 级冷却,不是账号问题也不是代理问题 |
 
+**要别人帮看一条请求？先打包现场**：用 `WINDSURFAPI_TRACE=1` 复现一次（默认写到
+`.trace/`，可用 `WINDSURFAPI_TRACE_DIR` 指定目录），然后：
+
+```bash
+node scripts/support-bundle.mjs
+```
+
+它把最近 5 个 trace 目录、`/health` 的 commit、版本和**脱敏后的**开关快照打进
+`support-bundle-<utc>.zip`，旁边还有一份 `manifest.json`（文件清单 + sha256）。打包前会用
+仓库的 secret 规则逐个文件扫描，命中即拒绝打包（exit 1，不写任何文件）。trace 里有 prompt
+片段、没有 key，但仍是私有现场：只附在 issue 里，不要贴到公开渠道。
+
 排查请求链路时,**发真实请求看响应,别只读代码** —— 这是协议转换网关,两层
 key、四条出口路径,读代码容易推错。
 

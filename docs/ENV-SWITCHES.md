@@ -183,7 +183,7 @@ checkout 账号（`acct === null`），成功尾必须把 usage 记到条目 own
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `WINDSURFAPI_TRACE` | 关 | 是否写 trace（`trace.js`，`\|\| ''` 后 `=== '1'`）。注意它**不门控** `WINDSURFAPI_TRACE_DIR` —— `traceRoot()` 无条件读目录变量，只是没开 trace 时不往里写。 |
+| `WINDSURFAPI_TRACE` | 关 | 是否写 trace（`trace.js`，`\|\| ''` 后 `=== '1'`）。注意它**不门控** `WINDSURFAPI_TRACE_DIR` —— `traceRoot()` 无条件读目录变量，只是没开 trace 时不往里写。排查完用 `node scripts/support-bundle.mjs` 把最近几个 trace 目录打包成 `support-bundle-<utc>.zip`（先跑 secret scan，命中即拒绝），见 README「出问题了先看这里」。 |
 | `WINDSURFAPI_TRACE_DIR` | `<cwd>/.trace` | trace 落盘根目录（`trace.js` 的 `traceRoot()`，`devin-connect.js` 写上游 wire 字节时也读同一个变量）。每个请求一个子目录，按固定 leg 名分片：`01-client-req` / `02-routing` / `03-upstream-req` / `04-upstream-res` / `05-client-res`。**上一行说过它不受 `WINDSURFAPI_TRACE` 门控**；此前只作为那条说明的一部分出现，没有自己的条目。 |
 | `WINDSURFAPI_PROTO_TRACE_DIR` | `/data/proto-trace` | proto trace 落盘目录（`\|\| '/data/proto-trace'`）。注意这是**绝对路径**默认值，和 `WINDSURFAPI_TRACE_DIR`（默认 `<cwd>/.trace`）不是一套。 |
 | `WINDSURFAPI_PROTO_TRACE_STRINGS` | 关 | 把 proto 字段的**字符串内容**写进 trace（`proto-trace.js:814`，`=== '1'`）。关闭时只落 sha256，不落原文。开启后走 `redactPreview()` 脱敏：命名密钥（`devin-session-token`/`api_key`/`idToken`/`refreshToken` 等）、邮箱、任何 32+ 字符的高熵串都替换成 `<redacted>`，再截断到 240 字符。**即便如此，开启后 trace 里会有真实 prompt 片段**，排查完就关。 |
