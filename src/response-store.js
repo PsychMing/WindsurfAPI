@@ -451,9 +451,53 @@ function ensureSweepTimer() {
 }
 
 /**
+ * The one sentence a conversation carries when the store dropped turns from it.
+ *
+ * Dropping turns must never be SILENT: the next turn replays this list as context,
+ * and a model handed a history that begins mid-stream cannot tell that earlier
+ * turns existed — it answers fluently about a conversation it never saw. The
+ * wording is load-bearing: handlers/responses.js strips exactly this shape
+ * (`^\[\.\.\. \d+ earlier message\(s\) dropped by the response store[^\]]*\]\n\n`)
+ * before serving an answer, so the notice stays in the CHAINED context without
+ * being presented to the client as model output.
+ *
+ * `setting` names the limit that bound, so an operator reading the conversation
+ * knows which knob to raise.
+ */
+function droppedTurnsNotice(count, setting) {
+  return `[... ${count} earlier message(s) dropped by the response store to stay `
+    + `within ${setting} ...]\n\n`;
+}
+
+/**
+ * Copy-on-write prepend of `note` to `messages[index]`. Returns a new array and a
+ * new message object; a parts-array content gets a leading text block instead of
+ * being flattened, so the turn keeps the structure the next replay expects.
+ *
+ * Prepending to an existing message rather than inserting one is deliberate: a new
+ * message would change the conversation's role sequence, which the connect wire
+ * layer is sensitive to.
+ */
+function prependNotice(messages, index, note) {
+  const out = messages.slice();
+  const target = { ...out[index] };
+  if (typeof target.content === 'string') target.content = note + target.content;
+  else if (Array.isArray(target.content)) target.content = [{ type: 'text', text: note }, ...target.content];
+  else target.content = note;
+  out[index] = target;
+  return out;
+}
+
+/**
  * Keep the conversation within MAX_MESSAGES, preserving the leading system
  * message(s) — dropping those loses the agent's instructions and changes
  * behaviour far more than dropping middle turns.
+ *
+ * A count-trimmed conversation is NOT the same conversation any more, so the
+ * result carries a drop notice (see droppedTurnsNotice). Each limiter reports the
+ * turns IT dropped: when the byte ceiling later drops further, the surviving
+ * conversation carries that stage's notice instead. The count is a floor for the
+ * total in that combined case, never a claim that nothing was lost.
  */
 function truncateMessages(messages) {
   if (messages.length <= MAX_MESSAGES) return messages;
@@ -476,7 +520,20 @@ function truncateMessages(messages) {
   const head = messages.slice(0, Math.min(lead, MAX_MESSAGES - 1));
   const tailBudget = MAX_MESSAGES - head.length;
   const tail = tailBudget > 0 ? messages.slice(-tailBudget) : [];
-  return [...head, ...tail];
+  const out = [...head, ...tail];
+  const dropped = messages.length - out.length;
+  // Unreachable while MAX_MESSAGES >= 1 (the head is clamped to MAX-1, so a tail
+  // survives), but the guard keeps a future bound from turning this into a notice
+  // that claims a drop it did not make.
+  if (dropped <= 0) return out;
+  // Where the notice goes: the message immediately AFTER the gap, i.e. the first
+  // surviving turn. When that is also the LAST message (a huge system block leaves
+  // exactly one turn of tail budget), prepending would rewrite the very turn the
+  // store exists to preserve byte-identically, so the notice goes on the other side
+  // of the seam — the last surviving head message, equally adjacent to the gap.
+  const seam = head.length < out.length - 1 ? head.length : Math.max(0, head.length - 1);
+  log.warn(`[response-store] dropped ${dropped} message(s) to fit RESPONSE_STORE_MAX_MESSAGES`);
+  return prependNotice(out, seam, droppedTurnsNotice(dropped, 'RESPONSE_STORE_MAX_MESSAGES'));
 }
 
 // No single conversation may claim more than this share of the whole budget.
@@ -538,17 +595,13 @@ function capEntryBytes(messages, limit = MAX_ENTRY_BYTES) {
   // exists to remove. Small-VPS operators are explicitly told to lower this budget,
   // so the shape is ordinary rather than adversarial.
   const dropped = messages.length - trimmed.length;
-  if (dropped > 0 && trimmed.length) {
-    const note = `[... ${dropped} earlier message(s) dropped by the response store to stay `
-      + 'within RESPONSE_STORE_MAX_BYTES ...]\n\n';
-    const first = { ...trimmed[0] };
-    // Prepended to the first SURVIVING message rather than added as a new one:
-    // inserting a message would change the conversation's role sequence, which the
-    // connect wire layer is sensitive to.
-    if (typeof first.content === 'string') first.content = note + first.content;
-    else if (Array.isArray(first.content)) first.content = [{ type: 'text', text: note }, ...first.content];
-    else first.content = note;
-    trimmed[0] = first;
+  // Prepended to the first SURVIVING message rather than added as a new one:
+  // inserting a message would change the conversation's role sequence, which the
+  // connect wire layer is sensitive to (see prependNotice).
+  const marked = dropped > 0 && trimmed.length
+    ? prependNotice(trimmed, 0, droppedTurnsNotice(dropped, 'RESPONSE_STORE_MAX_BYTES'))
+    : trimmed;
+  if (marked !== trimmed) {
     log.warn(`[response-store] dropped ${dropped} message(s) to fit RESPONSE_STORE_MAX_BYTES`);
   }
   // Last resort: a conversation whose SINGLE message already exceeds the ceiling
@@ -557,8 +610,8 @@ function capEntryBytes(messages, limit = MAX_ENTRY_BYTES) {
   // an operator configures a small budget (a 10MB request body, the server cap,
   // lands as ~20MB accounted). The marker keeps the truncation visible to whoever
   // reads the chained context instead of silently changing what the model saw.
-  if (approxBytes(trimmed) > limit) return trimContentToFit(trimmed, limit);
-  return trimmed;
+  if (approxBytes(marked) > limit) return trimContentToFit(marked, limit);
+  return marked;
 }
 
 const TRUNCATION_MARKER = '\n\n[... truncated by the response store to stay within RESPONSE_STORE_MAX_BYTES ...]';
@@ -569,6 +622,36 @@ const TRUNCATION_MARKER = '\n\n[... truncated by the response store to stay with
 // upstream rejects the whole conversation. `type` is the block discriminator the
 // wire layer dispatches on; `role` and `name` are likewise structural.
 const UNSHRINKABLE_KEYS = new Set(['type', 'role', 'id', 'tool_call_id', 'name']);
+
+// Tool-call arguments are JSON TEXT, not prose: `tool_calls[i].function.arguments`
+// in the Chat shape and `function_call.arguments` in the Responses shape are both
+// documents the next turn replays verbatim. Appending TRUNCATION_MARKER to one
+// produced `{"path":"/tmp/a","content":"xxxx[... truncated ...]"` — a string that
+// no longer parses, so the upstream rejects the conversation (or the model reasons
+// about garbage) with nothing in the stored history saying why.
+//
+// The whole value is replaced instead, by a marker that is ITSELF valid JSON. The
+// call keeps its id and function name, so the tool result still pairs; only the
+// payload is gone, and the loss is explicit in a field a client can parse.
+const ARGUMENTS_TRUNCATION_JSON = JSON.stringify({
+  __truncated__: '[... tool call arguments truncated by the response store to stay '
+    + 'within RESPONSE_STORE_MAX_BYTES ...]',
+});
+
+// Cheap structural test, deliberately not JSON.parse: an arguments string can be
+// megabytes and every trim pass would re-pay the parse. Tool-call arguments are a
+// JSON object (the OpenAI contract), so the first non-space byte is the whole
+// question; anything else was never parseable JSON and keeps the prefix cut.
+function looksLikeJsonDocument(value) {
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    // space, tab, LF, VT, FF, CR, BOM — whitespace JSON.stringify never emits but
+    // a hand-written client might.
+    if (c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0b || c === 0x0c || c === 0x0d || c === 0xfeff) continue;
+    return c === 0x7b /* { */ || c === 0x5b /* [ */;
+  }
+  return false;
+}
 
 /**
  * Every string in a message that MAY be shortened, as a path from the message
@@ -606,9 +689,14 @@ function shrinkableSlots(node, path = [], depth = 0, out = [], seen = new WeakSe
     for (const [key, value] of entries) {
       if (typeof value === 'string') {
         if (typeof key === 'string' && UNSHRINKABLE_KEYS.has(key)) continue;
-        // Below the marker length, replacing the text with the marker would GROW it.
-        if (value.length <= TRUNCATION_MARKER.length + 1) continue;
-        out.push({ path: [...path, key], len: value.length });
+        // `arguments` is a DOCUMENT, not prose: it gets the whole-value JSON
+        // replacement instead of the prefix cut. The floor differs because the two
+        // replacements differ, and a replacement that is not shorter would make the
+        // trim loop grow the value it is trying to shrink.
+        const json = key === 'arguments' && looksLikeJsonDocument(value);
+        const floor = (json ? ARGUMENTS_TRUNCATION_JSON.length : TRUNCATION_MARKER.length) + 1;
+        if (value.length <= floor) continue;
+        out.push({ path: [...path, key], len: value.length, json });
       } else if (value && typeof value === 'object') {
         shrinkableSlots(value, [...path, key], depth + 1, out, seen);
       }
@@ -657,6 +745,7 @@ function withStringAt(node, path, value) {
  */
 function trimContentToFit(messages, limit = MAX_ENTRY_BYTES) {
   let out = messages.map(m => ({ ...m }));
+  let compactedArguments = 0;
   // Shrink from the LARGEST string field down until the entry fits. The field may
   // live inside a content-block array or inside a tool_call, not only at
   // `m.content` — see shrinkableSlots.
@@ -670,19 +759,36 @@ function trimContentToFit(messages, limit = MAX_ENTRY_BYTES) {
     // No candidate left: the remaining bytes are structural (ids, keys,
     // discriminators, typed arrays). The caller must reject, never store over-cap.
     if (!biggest) return null;
-    const keep = Math.max(1, Math.min(
-      Math.floor(biggest.len / 2),
-      biggest.len - TRUNCATION_MARKER.length - 1,
-    ));
-    if (keep >= biggest.len) return null;
     const [msgIndex, ...rest] = biggest.path;
     const current = rest.reduce((n, k) => n[k], out[msgIndex]);
-    const cut = current.slice(0, keep) + TRUNCATION_MARKER;
+    let cut;
+    if (biggest.json) {
+      // Valid JSON in, valid JSON out. The old prefix cut with the plain-text
+      // marker appended is not JSON any more, and the next turn replays it
+      // verbatim as the tool call's arguments.
+      cut = ARGUMENTS_TRUNCATION_JSON;
+      compactedArguments++;
+    } else {
+      const keep = Math.max(1, Math.min(
+        Math.floor(biggest.len / 2),
+        biggest.len - TRUNCATION_MARKER.length - 1,
+      ));
+      if (keep >= biggest.len) return null;
+      cut = current.slice(0, keep) + TRUNCATION_MARKER;
+    }
+    // Progress is what makes the loop terminate. shrinkableSlots' floor already
+    // guarantees a shorter replacement; this is the belt to that suspenders, and it
+    // turns any future candidate that cannot shrink into a rejected write instead of
+    // a hang.
+    if (typeof current !== 'string' || cut.length >= current.length) return null;
     // The block STRUCTURE is preserved: only the string at this path changes, so a
     // `{type:'text', text}` block stays a text block and the next turn can still be
     // replayed from the array. `rest` is never empty — shrinkableSlots always
     // appends at least one key to the message index.
     out[msgIndex] = withStringAt(out[msgIndex], rest, cut);
+  }
+  if (compactedArguments) {
+    log.warn(`[response-store] replaced oversized tool call arguments in ${compactedArguments} slot(s)`);
   }
   return out;
 }
