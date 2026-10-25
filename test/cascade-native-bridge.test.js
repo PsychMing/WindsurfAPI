@@ -20,9 +20,10 @@ import assert from 'node:assert/strict';
 import {
   TOOL_MAP, CASCADE_STEP,
   canMapAllTools, partitionTools, shouldUseNativeBridge,
-  buildAdditionalStep, buildAdditionalStepsFromHistory, buildReverseLookup,
+  buildAdditionalStep, buildAdditionalStepsFromHistory, buildNativeToolHistory, buildReverseLookup,
   parseNativeFunctionCallsFromText, NativeFunctionCallStreamParser,
 } from '../src/cascade-native-bridge.js';
+import { normalizeMessagesForCascade } from '../src/handlers/tool-emulation.js';
 import {
   parseTrajectorySteps,
   buildSendCascadeMessageRequest,
@@ -391,7 +392,7 @@ describe('buildAdditionalStep / buildAdditionalStepsFromHistory', () => {
     const buf = buildAdditionalStep('view_file', {
       absolute_path_uri: 'file:///foo.ts',
       content: 'console.log("hi")',
-    });
+    }, { observed: true });
     assert.ok(Buffer.isBuffer(buf));
     const fields = parseFields(buf);
     const typeField = getField(fields, 1, 0);
@@ -408,7 +409,7 @@ describe('buildAdditionalStep / buildAdditionalStepsFromHistory', () => {
       command_line: 'echo hi',
       full_output: 'hi\n',
       exit_code: 0,
-    });
+    }, { observed: true });
     const fields = parseFields(buf);
     assert.equal(getField(fields, 1, 0).value, 21, 'CortexStepType.RUN_COMMAND is 21');
     const body = parseFields(getField(fields, 28, 2).value);
@@ -477,6 +478,174 @@ describe('buildAdditionalStep / buildAdditionalStepsFromHistory', () => {
     ];
     const steps = buildAdditionalStepsFromHistory(messages);
     assert.equal(steps.length, 0);
+  });
+});
+
+// V-13 (KH-034) — history truth: a step is only complete when the caller
+// actually reported a result; a failed shell command keeps its non-zero
+// status; unmapped history stays visible to the emulation path; and a
+// reused cascade receives only the rounds it has not already seen.
+describe('native history truth (V-13)', () => {
+  const callMsg = (id, name, args, extra = {}) => ({
+    role: 'assistant',
+    content: null,
+    tool_calls: [{
+      id,
+      type: 'function',
+      function: { name, arguments: JSON.stringify(args) },
+    }],
+    ...extra,
+  });
+  const resultMsg = (id, content, extra = {}) => ({ role: 'tool', tool_call_id: id, content, ...extra });
+
+  function decodeRunCommand(buf) {
+    const fields = parseFields(buf);
+    assert.equal(getField(fields, 1, 0).value, 21, 'CortexStepType.RUN_COMMAND is 21');
+    return {
+      status: getField(fields, 4, 0).value,
+      body: parseFields(getField(fields, 28, 2).value),
+    };
+  }
+
+  it('an unobserved call never becomes DONE and a failed Bash keeps its non-zero exit_code', () => {
+    // Layer 1: the encoder itself refuses to stamp DONE without an observation.
+    assert.equal(
+      buildAdditionalStep('run_command', { command_line: 'ls' }),
+      null,
+      'no observation means no completed step',
+    );
+
+    // Layer 2: history conversion drops the unobserved call instead of
+    // telling the planner it ran with empty output.
+    const unobserved = buildAdditionalStepsFromHistory([
+      { role: 'user', content: 'go' },
+      callMsg('call_unobserved', 'Bash', { command: 'ls' }),
+    ]);
+    assert.equal(unobserved.length, 0, 'an assistant tool_call with no result is not a DONE step');
+
+    // A failed Bash result carries its exit status. The step is DONE because
+    // the command completed — not because it succeeded.
+    const failedText = 'Exit code: 2\nOutput:\nls: cannot access /nope';
+    const failed = buildAdditionalStepsFromHistory([
+      { role: 'user', content: 'go' },
+      callMsg('call_failed', 'Bash', { command: 'ls /nope' }),
+      resultMsg('call_failed', failedText),
+    ]);
+    assert.equal(failed.length, 1);
+    const decoded = decodeRunCommand(failed[0]);
+    assert.equal(decoded.status, 3, 'status DONE means the step completed, not that it succeeded');
+    assert.equal(getField(decoded.body, 6, 0).value, 2, 'a failed Bash keeps its non-zero exit_code');
+    const combined = parseFields(getField(decoded.body, 21, 2).value);
+    assert.equal(getField(combined, 1, 2).value.toString('utf8'), failedText);
+    assert.equal(
+      getField(decoded.body, 4, 2),
+      null,
+      'one authoritative output field: combined_output only, no duplicated stdout',
+    );
+
+    // Success keeps 0 — the fix must not turn every command into a failure.
+    const ok = buildAdditionalStepsFromHistory([
+      { role: 'user', content: 'go' },
+      callMsg('call_ok', 'Bash', { command: 'true' }),
+      resultMsg('call_ok', 'Exit code: 0\n'),
+    ]);
+    assert.equal(getField(decodeRunCommand(ok[0]).body, 6, 0).value, 0);
+
+    // Anthropic-style failures carry no numeric code; they must still not be
+    // replayed as success (proto3 reads an absent field as 0).
+    const toolError = buildAdditionalStepsFromHistory([
+      { role: 'user', content: 'go' },
+      callMsg('call_err', 'Bash', { command: 'nope' }),
+      resultMsg('call_err', '[tool error] bash: nope: command not found'),
+    ]);
+    assert.equal(
+      getField(decodeRunCommand(toolError[0]).body, 6, 0).value,
+      1,
+      'a signalled failure without a numeric code is encoded non-zero, never 0',
+    );
+
+    const flagged = buildAdditionalStepsFromHistory([
+      { role: 'user', content: 'go' },
+      callMsg('call_flag', 'Bash', { command: 'nope' }),
+      resultMsg('call_flag', 'bash: nope: command not found', { is_error: true }),
+    ]);
+    assert.equal(getField(decodeRunCommand(flagged[0]).body, 6, 0).value, 1);
+
+    // codex-style structured shell results keep their exit status too.
+    const json = buildAdditionalStepsFromHistory([
+      { role: 'user', content: 'go' },
+      callMsg('call_json', 'Bash', { command: 'nope' }),
+      resultMsg('call_json', JSON.stringify({ output: 'boom', metadata: { exit_code: 127 } })),
+    ]);
+    assert.equal(getField(decodeRunCommand(json[0]).body, 6, 0).value, 127);
+  });
+
+  it('a reused cascade receives only the new tool round, not the already-injected prefix', () => {
+    const messages = [
+      { role: 'user', content: 'u1' },
+      callMsg('call_1', 'Read', { file_path: '/a' }),
+      resultMsg('call_1', 'A'),
+      { role: 'assistant', content: 'read a' },
+      callMsg('call_2', 'Read', { file_path: '/b' }),
+      resultMsg('call_2', 'B'),
+    ];
+
+    // A fresh cascade never saw the earlier round, so it gets the full history.
+    assert.equal(buildAdditionalStepsFromHistory(messages).length, 2);
+
+    // The reused cascade already holds call_1's step; re-injecting it would
+    // duplicate the observation in its trajectory.
+    const delta = buildAdditionalStepsFromHistory(messages, { reuse: true });
+    assert.equal(delta.length, 1, 'only the newest pending round is new');
+    const body = parseFields(getField(parseFields(delta[0]), 14, 2).value);
+    assert.equal(getField(body, 4, 2).value.toString('utf8'), 'B');
+
+    // A reused cascade whose newest turn is a user message has nothing new.
+    assert.equal(
+      buildAdditionalStepsFromHistory([...messages, { role: 'user', content: 'next' }], { reuse: true }).length,
+      0,
+    );
+
+    // The trailing round is only a delta when it has observations; an
+    // unanswered proposal is not a completed step.
+    assert.equal(
+      buildAdditionalStepsFromHistory(messages.slice(0, 5), { reuse: true }).length,
+      0,
+    );
+  });
+
+  it('unmapped and orphan tool history survives in the emulation message list', () => {
+    const messages = [
+      { role: 'user', content: 'u1' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: 'call_mapped', type: 'function', function: { name: 'Bash', arguments: '{"command":"ls"}' } },
+          { id: 'call_unmapped', type: 'function', function: { name: 'get_weather', arguments: '{"city":"x"}' } },
+        ],
+      },
+      resultMsg('call_mapped', 'Exit code: 0\nok'),
+      resultMsg('call_unmapped', 'sunny'),
+      resultMsg('call_orphan', 'orphan output'),
+    ];
+
+    const history = buildNativeToolHistory(messages);
+    assert.equal(history.steps.length, 1, 'only the mapped+observed call becomes a step');
+
+    // The mapped pair belongs to the bridge and must not be duplicated into
+    // the text history; the unmapped pair and the orphan result are retained.
+    const retained = history.emulationMessages;
+    assert.equal(retained.length, 4, 'user + assistant(unmapped call) + unmapped result + orphan result');
+    assert.deepEqual(retained[1].tool_calls.map(tc => tc.id), ['call_unmapped']);
+    assert.equal(retained[2].tool_call_id, 'call_unmapped');
+    assert.equal(retained[3].tool_call_id, 'call_orphan');
+
+    const folded = normalizeMessagesForCascade(retained, [fnTool('get_weather')], { injectUserPreamble: false });
+    const text = folded.map(m => (typeof m.content === 'string' ? m.content : '')).join('\n');
+    assert.match(text, /sunny/, 'the unmapped result reaches the model as emulated history');
+    assert.match(text, /orphan output/, 'an orphan result is not silently dropped');
+    assert.doesNotMatch(text, /Exit code: 0/, 'the bridge-owned result is not duplicated as text');
   });
 });
 
@@ -631,8 +800,8 @@ describe('buildSendCascadeMessageRequest — additional_steps on field 9', () =>
   });
 
   it('includes each step as repeated field 9', () => {
-    const stepA = buildAdditionalStep('view_file', { absolute_path_uri: 'file:///a', content: 'A' });
-    const stepB = buildAdditionalStep('run_command', { command_line: 'ls', full_output: 'a\n' });
+    const stepA = buildAdditionalStep('view_file', { absolute_path_uri: 'file:///a', content: 'A' }, { observed: true });
+    const stepB = buildAdditionalStep('run_command', { command_line: 'ls', full_output: 'a\n' }, { observed: true });
     const proto = buildSendCascadeMessageRequest(
       'k', 'cid', 'hi', 12345, 'MODEL_TEST', 'sess',
       { additionalSteps: [stepA, stepB] },

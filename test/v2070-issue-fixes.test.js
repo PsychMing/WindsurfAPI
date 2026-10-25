@@ -118,7 +118,7 @@ describe('#115 — Edit/MultiEdit → propose_code real ActionSpec encoding (v2.
       target_file_uri: 'file:///a.ts',
       replacement_chunks: [{ target: 'foo', replacement: 'bar' }],
       instruction: 'Rename foo to bar',
-    });
+    }, { observed: true });
     assert.ok(Buffer.isBuffer(buf));
     const top = parseFields(buf);
     // CortexTrajectoryStep.type=1 is CortexStepType.PROPOSE_CODE = 24 (the body rides oneof field 32)
@@ -163,7 +163,7 @@ describe('#115 — web_search ↔ cascade search_web (v2.0.70)', () => {
   });
 
   it('buildAdditionalStep("search_web") produces field 42 oneof', () => {
-    const buf = buildAdditionalStep('search_web', { query: 'q', domain: 'd.com', summary: 's' });
+    const buf = buildAdditionalStep('search_web', { query: 'q', domain: 'd.com', summary: 's' }, { observed: true });
     const top = parseFields(buf);
     assert.equal(getField(top, 1, 0).value, 33); // CortexStepType.SEARCH_WEB = 33; body is field 42
     const body = getField(top, 42, 2);
