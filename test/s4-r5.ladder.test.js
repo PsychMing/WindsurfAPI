@@ -36,6 +36,10 @@ async function run(pattern, env = {}, emittedInitially = false) {
     // means "no budget", which is the pre-budget behaviour these cases pin.
     context: {}, budgetExceededError: message => Object.assign(new Error(message), { code: 'DEADLINE_EXCEEDED' }),
     chatStreamError: (message, type, code) => ({ error: { message, type, code } }),
+    // D2: attemptStream decides whether to buffer the adapter's frames from the
+    // request's JSON Schema. This harness pins the failover ladder, so it runs
+    // the no-schema arm (frames pass straight to `send`).
+    jsonSchema: null,
     log: { info() {}, error() {} }, AbortController,
   };
   const body = `${topFunction('acquireConnectFailover')}\n${topFunction('connectFailoverMax')}\nreturn (async () => {

@@ -510,6 +510,13 @@ export function recordRequest(model, success, durationMs, accountId, extra = {})
   if (success) _state.successCount++;
   else _state.errorCount++;
 
+  // A cache-served turn is real client traffic but ZERO upstream consumption:
+  // no request reached the backend, so it must not charge the model's credit
+  // card. Before this flag the Connect replay arms called recordRequest like any
+  // completed turn, so every cache hit re-billed the answer it replayed. The row
+  // keeps the marker so the log can tell the two apart.
+  const cacheServed = extra?.cacheServed === true;
+
   // Per-model stats (includes a small ring buffer for p50/p95 latency).
   // Cap real-model cardinality: a brand-new key that would exceed the limit
   // gets folded into the shared '(other)' bucket instead (LRU eviction of the
@@ -578,7 +585,7 @@ export function recordRequest(model, success, durationMs, accountId, extra = {})
   // Store the charged amount (0 on failure); `success` is the explicit failed
   // flag, so the row and the card share one number.
   let credit = 0;
-  if (success) {
+  if (success && !cacheServed) {
     // Never let a prototype-shaped model name reach the catalog lookup either;
     // it cannot name a real price card.
     const costModel = typeof model === 'string' && !isUnsafeModelKey(model) ? model : null;
@@ -607,6 +614,7 @@ export function recordRequest(model, success, durationMs, accountId, extra = {})
     credit,
     status: Number.isFinite(extra?.status) ? extra.status : (success ? 200 : 500),
     tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0,
+    ...(cacheServed ? { cacheServed: true } : {}),
   };
   // Usage can legitimately arrive before its row (the DEVIN_CONNECT non-stream
   // path bills inside the attempt, then finalizes the account). The scope holds
