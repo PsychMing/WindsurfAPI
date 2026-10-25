@@ -597,6 +597,16 @@ export function connectErrorToHttp(code) {
     // auth or account fault). 400 invalid_request_error is the honest surface — the
     // caller must change the prompt, not retry or re-auth. NO account penalty.
     case 'CONTENT_BLOCKED': return { status: 400, type: 'invalid_request_error' };
+    // REQUEST_REJECTED: the upstream request VALIDATOR refused the request itself
+    // (gRPC invalid_argument / failed_precondition) — measured for an image sent
+    // to a model whose /v1/models row omits supports_images
+    // (evidence/AccountMatrix.md §7.1) and for a malformed native tool history
+    // (#273.1). The token is alive, the account is healthy, and identical bytes
+    // fail identically, so 400 invalid_request_error is the honest surface. This
+    // used to read as 503 UPSTREAM_INTERNAL (the body says "an internal error
+    // occurred") or 502 upstream_error (verbatim passthrough) — both tell a
+    // client to retry a request that can never succeed.
+    case 'REQUEST_REJECTED': return { status: 400, type: 'invalid_request_error' };
     case 'NO_TOKEN': return { status: 401, type: 'authentication_error' };
     case 'TIMEOUT': return { status: 504, type: 'timeout_error' };
     // Absolute wall-clock deadline (upstream hung the full window). Same 504
@@ -2718,6 +2728,13 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
     // prompt the caller sent; a single such request used to cascade the whole pool
     // to "exhausted (dead session tokens)". Release cleanly, exactly like a success.
     else if (err.code === 'CONTENT_BLOCKED') { /* no penalty — request content rejected, not an account fault */ }
+    // REQUEST_REJECTED is the same class as CONTENT_BLOCKED: the upstream
+    // VALIDATOR refused the request (unsupported image / capability, malformed
+    // tool history) while the session token stays alive. A caller looping on an
+    // image the selected model cannot take must not walk the pool offline, and
+    // the internal-error streak would quarantine a healthy account after two.
+    // Counted so the shape is visible; no cooldown, no re-login, no eviction.
+    else if (err.code === 'REQUEST_REJECTED') { bumpConnect('request_rejected'); }
     else if (err.code === 'ERR_CONNECT_ACCOUNT_HOST_NOT_ALLOWED') {
       // The account's stored apiServerUrl was refused by the allow-list before any
       // upstream call (DEVIN_CONNECT_ACCOUNT_HOST=1 path). The upstream never saw
@@ -3610,8 +3627,10 @@ async function _handleChatCompletionsInner(body, context = {}) {
     // does NOT resolve to any real DEVIN_CONNECT selector and would otherwise
     // silently degrade to the free-tier fallback — the client
     // asked for opus/gpt/etc. and unknowingly runs a different, free model
-    // (wrong output, wrong billing, and a junk name can trip UPSTREAM_INTERNAL
-    // and burn the account's health). Reject early with 400 instead of guessing.
+    // (wrong output, wrong billing, and a junk name trips the upstream request
+    // validator — invalid_argument, now surfaced as 400 REQUEST_REJECTED; before
+    // the 2026-10-25 mapping fix it read as UPSTREAM_INTERNAL and charged the
+    // account's health). Reject early with 400 instead of guessing.
     // The whitelist ceiling is the catalog snapshot (devin-catalog-snapshot.json);
     // set WINDSURFAPI_STRICT_MODEL=0 to restore the legacy silent-degrade if the
     // snapshot is stale and a genuinely-live selector is being rejected.
@@ -4492,9 +4511,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 // to the official `rate_limit_error` by the egress normalizer.
                 // SELECTOR_NOT_ELIGIBLE keeps the same type the non-stream path
                 // gets from connectErrorToHttp (403 model_not_available) instead
-                // of collapsing into a generic upstream_error.
+                // of collapsing into a generic upstream_error. REQUEST_REJECTED
+                // is a 400-class caller fault, so it carries
+                // invalid_request_error rather than a retryable upstream_error.
                 const streamErrType = r.err.code === 'RATE_LIMITED' ? 'rate_limit_exceeded'
-                  : (r.err.code === 'SELECTOR_NOT_ELIGIBLE' ? 'model_not_available' : 'upstream_error');
+                  : (r.err.code === 'SELECTOR_NOT_ELIGIBLE' ? 'model_not_available'
+                  : (r.err.code === 'REQUEST_REJECTED' ? 'invalid_request_error' : 'upstream_error'));
                 const retryAfterMs = r.err.code === 'RATE_LIMITED'
                   ? (Number.isFinite(r.err.resetMs) && r.err.resetMs > 0 ? r.err.resetMs : getBreakerTunable('rlBurstMs'))
                   : null;

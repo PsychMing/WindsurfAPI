@@ -55,6 +55,14 @@ const _counters = {
   // token; classified UPSTREAM_INTERNAL → streak-quarantine, NOT a re-login or
   // entitlement wall (#56/#57 shape, internal-error class)
   upstream_internal: 0,
+  // the upstream request VALIDATOR refused the request (gRPC invalid_argument /
+  // failed_precondition) — an unsupported image / model capability (measured
+  // 2026-10-25, evidence/AccountMatrix.md §7.1) or a malformed message/tool
+  // shape. Surfaced to the client as 400 invalid_request_error, never retried,
+  // and NEVER an account penalty: the token is alive and the account is healthy.
+  // A spike means callers are sending a shape the selected model cannot take;
+  // the client-facing message names supports_images in /v1/models.
+  request_rejected: 0,
   // upstream returned an unclassified error, or the gRPC `internal` class that
   // classifyUpstreamError documents as a PERMANENT CLIENT mistake (short
   // fingerprint / gzipped body). Neither is an account fault, so it is recorded
