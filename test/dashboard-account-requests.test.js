@@ -104,6 +104,68 @@ describe('account request ring', () => {
     assert.equal(page.items.at(-1).model, 'm3', 'the three oldest rows were evicted');
   });
 
+  // P2 (wave-7 review): failed attempts and billed rows used to compete for the
+  // same 100 slots, so a failure burst could evict every billed row and the
+  // summary — recomputed from survivors — read as "this account served
+  // nothing". Billed rows are the money truth: they are never evicted by a
+  // failure.
+  it('a failure burst cannot evict the billed window or zero its summary', () => {
+    const acct = { id: 'ring-billed-reserve' };
+    recordAccountRequest(acct, {
+      model: 'claude-sonnet-4',
+      usage: { prompt_tokens: 5, completion_tokens: 3 },
+      creditCost: 2,
+      acuCost: 1,
+      now: 1,
+    });
+    const before = getAccountRequests(acct.id).summary;
+
+    for (let i = 0; i < ACCOUNT_REQUEST_CAP; i++) {
+      recordAccountAttempt(acct, { model: 'claude-sonnet-4', outcome: 'rate_limited', status: 429, now: 10 + i });
+    }
+
+    const page = getAccountRequests(acct.id, { limit: ACCOUNT_REQUEST_CAP });
+    assert.equal(page.billed, 1, 'the billed row survives a full failure burst');
+    assert.equal(page.failed, ACCOUNT_REQUEST_CAP - 1, 'failures share the window but stay bounded');
+    assert.equal(page.total, ACCOUNT_REQUEST_CAP);
+    assert.deepEqual(page.summary, before, 'the billed summary is byte-for-byte unchanged');
+    assert.equal(page.items.filter((r) => r.billed === true).length, 1);
+  });
+
+  it('drops an incoming failure rather than evicting a billed row from a full billed window', () => {
+    const acct = { id: 'ring-billed-full' };
+    for (let i = 0; i < ACCOUNT_REQUEST_CAP; i++) {
+      recordAccountRequest(acct, { model: `m${i}`, usage: { prompt_tokens: 1 }, now: i });
+    }
+
+    recordAccountAttempt(acct, { model: 'm0', outcome: 'rate_limited', status: 429, now: 1000 });
+
+    const page = getAccountRequests(acct.id, { limit: ACCOUNT_REQUEST_CAP });
+    assert.equal(page.billed, ACCOUNT_REQUEST_CAP);
+    assert.equal(page.failed, 0, 'the failure had no slot it could take without evicting a billed row');
+    assert.equal(page.total, ACCOUNT_REQUEST_CAP);
+    assert.equal(page.items[0].model, `m${ACCOUNT_REQUEST_CAP - 1}`, 'the newest billed row is still newest');
+    assert.equal(page.items.at(-1).model, 'm0', 'no billed row was evicted');
+    assert.equal(page.summary.requests, ACCOUNT_REQUEST_CAP);
+  });
+
+  it('a newer billed row evicts the oldest failure before any billed row', () => {
+    const acct = { id: 'ring-failure-first' };
+    for (let i = 0; i < ACCOUNT_REQUEST_CAP - 1; i++) {
+      recordAccountRequest(acct, { model: `m${i}`, now: i });
+    }
+    recordAccountAttempt(acct, { model: 'fail', outcome: 'upstream_error', status: 502, now: 500 });
+
+    recordAccountRequest(acct, { model: 'newest', now: 600 });
+
+    const page = getAccountRequests(acct.id, { limit: ACCOUNT_REQUEST_CAP });
+    assert.equal(page.billed, ACCOUNT_REQUEST_CAP);
+    assert.equal(page.failed, 0);
+    assert.equal(page.items[0].model, 'newest');
+    assert.ok(!page.items.some((r) => r.model === 'fail'), 'the failure was the row evicted');
+    assert.equal(page.items.at(-1).model, 'm0', 'the oldest billed row was not displaced');
+  });
+
   it('keeps accounts isolated and forgets a removed account', () => {
     recordAccountRequest({ id: 'iso-a' }, { model: 'a' });
     recordAccountRequest({ id: 'iso-b' }, { model: 'b' });

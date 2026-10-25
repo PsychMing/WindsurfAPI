@@ -24,7 +24,7 @@ const AUTH_JS = readFileSync(new URL('../src/auth.js', import.meta.url), 'utf8')
 const HEAD = 'export async function fetchUserStatus(id, { allowLsStart = true } = {}) {';
 
 /** Run the real fetchUserStatus against a fixed GetUserStatus response. */
-function load(status, { account = {} } = {}) {
+function load(status, { account = {}, models = {} } = {}) {
   const start = AUTH_JS.indexOf(HEAD);
   assert.ok(start >= 0, 'fetchUserStatus must be present in src/auth.js');
   const end = AUTH_JS.indexOf('\n}\n', start);
@@ -45,7 +45,7 @@ function load(status, { account = {} } = {}) {
     getLsAdmissionForAccount: () => ({}),
     residentProbeSkip: () => null,
     saveAccounts: () => {},
-    MODELS: {},
+    MODELS: models,
     log: {
       debug: (...a) => lines.debug.push(a.join(' ')),
       info: (...a) => lines.info.push(a.join(' ')),
@@ -173,5 +173,44 @@ describe('#245 teams_tier log line — raw enum plus the tier it mapped to', () 
       assert.ok(!out.includes('user@example.com'), 'email is logged only as a hash');
       assert.ok(!out.includes('Real Name'), 'display label is logged only as a hash');
     }
+  });
+});
+
+// P2 (wave-7 review): GetUserStatus deliberately preserved a prior
+// `reason:'success'` when the refreshed allowlist omitted that enum, so a
+// Pro/trial success survived a downgrade or trial expiry indefinitely. The
+// refreshed snapshot is authoritative: an enum it no longer lists becomes
+// not_entitled, and only a call that succeeds AFTER the snapshot can restore
+// success (updateCapability writes the newer lastCheck).
+describe('P2 — a refreshed allowlist denial supersedes an older success', () => {
+  const MODELS_FIXTURE = {
+    'glm-4.7': { enumValue: 417 },
+    'kimi-k2': { enumValue: 323 },
+  };
+
+  it('writes not_entitled over a success the refreshed allowlist omits', async () => {
+    const { fn, account } = load(statusOf({
+      tierName: 'free', planName: 'Free',
+      allowedModels: [{ modelEnum: 417 }],
+    }), {
+      account: {
+        tier: 'pro',
+        capabilities: { 'kimi-k2': { ok: true, reason: 'success', lastCheck: 1 } },
+      },
+      models: MODELS_FIXTURE,
+    });
+
+    await fn('acct-1');
+
+    assert.deepEqual(
+      { ok: account.capabilities['glm-4.7'].ok, reason: account.capabilities['glm-4.7'].reason },
+      { ok: true, reason: 'user_status' },
+      'the enum the allowlist still lists stays positive',
+    );
+    assert.deepEqual(
+      { ok: account.capabilities['kimi-k2'].ok, reason: account.capabilities['kimi-k2'].reason },
+      { ok: false, reason: 'not_entitled' },
+      'the snapshot that omitted kimi-k2 is newer than the success and must win',
+    );
   });
 });

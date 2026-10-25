@@ -1928,14 +1928,42 @@ export function setAccountBlockedModels(id, blockedModels) {
   return true;
 }
 
-// Capability reasons that are positive evidence the account can call the
-// model right now. `user_status` is GetUserStatus's authoritative allowlist
+// One verdict helper for both gates below — #159 was exactly those two gates
+// disagreeing about which capability reasons count, so a model that routed
+// fine was missing from availableModels (and, for UID-only models, the
+// reverse). `user_status` is GetUserStatus's authoritative allowlist
 // (cascade_allowed_models_config); `success` is written by updateCapability()
-// after a real call completed. Both gates below read this one set — #159 was
-// exactly those two gates disagreeing about which reasons count, so a model
-// that routed fine was missing from availableModels (and, for UID-only models,
-// the reverse).
-const AVAILABLE_CAPABILITY_REASONS = new Set(['user_status', 'success']);
+// after a real call completed; `not_entitled` is the allowlist's negative arm.
+/**
+ * Resolve one capability entry into a routing verdict.
+ *
+ *   true  → positive evidence the model is callable now
+ *   false → authoritative negative evidence
+ *   null  → no verdict; callers fall back to the tier static allowlist
+ *
+ * A measured `success` is live evidence only while it is at least as new as
+ * the account's last GetUserStatus snapshot (`userStatusLastFetched`). A
+ * success recorded before that snapshot was measured under a possibly
+ * different entitlement — a Pro/trial success otherwise survives a downgrade
+ * or trial expiry and keeps a free account listing and routing a premium model
+ * the upstream has stopped entitling (wave-7 P2). For an enum-keyed model the
+ * newer snapshot is also authoritative about omission, so a stale success is a
+ * denial; GetUserStatus cannot classify UID-only models, so a stale success
+ * there falls back to the tier table instead.
+ */
+function capabilityVerdict(account, modelKey) {
+  const cap = account.capabilities?.[modelKey];
+  if (!cap) return null;
+  if (cap.reason === 'not_entitled') return false;
+  if (cap.reason === 'user_status') return cap.ok === true;
+  if (cap.reason === 'success') {
+    if (cap.ok !== true) return false;
+    const snapshotAt = account.userStatusLastFetched || 0;
+    if ((cap.lastCheck || 0) >= snapshotAt) return true;
+    return MODELS[modelKey]?.enumValue > 0 ? false : null;
+  }
+  return null;
+}
 
 /**
  * Resolve whether `modelKey` is callable on this account.
@@ -1946,7 +1974,8 @@ const AVAILABLE_CAPABILITY_REASONS = new Set(['user_status', 'success']);
  *      that's the upstream-authoritative answer (cascade_allowed_models_config)
  *      — trust it directly, regardless of static tier table. A measured
  *      `reason='success'` (the model has actually run on this account) is
- *      trusted the same way; `not_entitled` is its negative arm.
+ *      trusted only while it is fresh relative to that snapshot;
+ *      `not_entitled` is the allowlist's negative arm.
  *   3. otherwise fall back to the tier static allowlist (UID-only models,
  *      pre-status accounts, unknown tier)
  *
@@ -1969,12 +1998,10 @@ export function isModelAllowedForAccount(account, modelKey) {
   if (!account.tierManual) {
     // GetUserStatus writes both arms — `user_status` for allowed and
     // `not_entitled` for denied — into capabilities, keyed by enum.
-    // Either reason means the upstream allowlist has already spoken, and
-    // `success` means the model actually answered this account.
-    const cap = account.capabilities?.[modelKey];
-    if (cap?.reason === 'not_entitled' || AVAILABLE_CAPABILITY_REASONS.has(cap?.reason)) {
-      return cap.ok === true;
-    }
+    // `success` is a live measurement, bounded by the snapshot freshness rule
+    // in capabilityVerdict().
+    const verdict = capabilityVerdict(account, modelKey);
+    if (verdict !== null) return verdict;
   }
   const tierModels = getTierModels(account.tier || 'unknown', account.id);
   return tierModels.includes(modelKey);
@@ -2170,22 +2197,20 @@ export function getAvailableModelsForAccount(account) {
     return tierModels.filter(m => !blocked.has(m));
   }
   // After GetUserStatus: a capability verdict is authoritative for every
-  // catalog entry, enum-keyed or not. `user_status` (upstream allowlist) and
-  // `success` (the model actually ran here) are positive; `not_entitled` is
-  // negative. Entries with no verdict fall back to the tier table — which for
-  // UID-only models is the only source, since GetUserStatus cannot classify
+  // catalog entry, enum-keyed or not. `user_status` (upstream allowlist) and a
+  // fresh `success` (the model actually ran here) are positive; `not_entitled`
+  // is negative. Entries with no verdict fall back to the tier table — which
+  // for UID-only models is the only source, since GetUserStatus cannot classify
   // them (it returns allowlists by enum only).
   const allowed = [];
   for (const [key, info] of Object.entries(MODELS)) {
     if (blocked.has(key)) continue;
     if (!isModelAllowedByCloudCatalog(key, process.env, account.id)) continue;
-    const cap = account.capabilities[key];
-    if (AVAILABLE_CAPABILITY_REASONS.has(cap?.reason)) {
-      // Same precedence as isModelAllowedForAccount: the verdict outranks the
-      // tier table, so the list and the routing decision cannot disagree.
-      if (cap.ok === true) allowed.push(key);
-      continue;
-    }
+    // Same precedence as isModelAllowedForAccount: the verdict outranks the
+    // tier table, so the list and the routing decision cannot disagree.
+    const verdict = capabilityVerdict(account, key);
+    if (verdict === true) { allowed.push(key); continue; }
+    if (verdict === false) continue;
     if (info.enumValue && info.enumValue > 0) {
       // Enum-keyed and classified as unavailable by GetUserStatus.
       continue;
@@ -4218,7 +4243,9 @@ export function fullBillableTokens(usage) {
 // account (empty pool, un-attributed env-token call) writes nothing.
 // The consequences are stated on the drawer card, not just here:
 //   • billed rows carry tokens + cost; failed rows carry outcome/status at zero cost;
-//   • process-local and bounded (ACCOUNT_REQUEST_CAP rows per account);
+//   • process-local and bounded (ACCOUNT_REQUEST_CAP rows per account), with the
+//     window reserved for billed rows: failures are evicted first and an
+//     incoming failure is dropped rather than displacing a billed row;
 //   • never persisted — accounts.json stays free of request history;
 //   • no key material: model name, token counts, cost figures and outcome only.
 export const ACCOUNT_REQUEST_CAP = 100;
@@ -4252,7 +4279,22 @@ export function recordAccountRequest(account, { model = '', usage = null, credit
   let ring = _accountRequests.get(id);
   if (!ring) { ring = []; _accountRequests.set(id, ring); }
   ring.push(entry);
-  if (ring.length > ACCOUNT_REQUEST_CAP) ring.splice(0, ring.length - ACCOUNT_REQUEST_CAP);
+  if (ring.length > ACCOUNT_REQUEST_CAP) {
+    // Billed rows are the money truth; failed attempts are best-effort and
+    // share this window. Evict the oldest failure first so a failure burst can
+    // never erase the billed window and zero its summary (wave-7 P2). A new
+    // billed row evicts the oldest failure, or — when every slot is billed —
+    // the oldest billed row. An incoming failure with no failure slot to take
+    // is dropped rather than displacing a billed row.
+    const failedAt = ring.findIndex(r => r.billed === false);
+    if (failedAt !== -1) {
+      ring.splice(failedAt, 1);
+    } else if (isBilled) {
+      ring.splice(0, 1);
+    } else {
+      ring.pop(); // the just-pushed failure: no billed row may be displaced
+    }
+  }
   return entry;
 }
 
@@ -5529,12 +5571,14 @@ export async function fetchUserStatus(id, { allowLsStart = true } = {}) {
       if (allowedEnums.has(info.enumValue)) {
         account.capabilities[key] = { ok: true, lastCheck: Date.now(), reason: 'user_status' };
       } else {
-        const prev = account.capabilities[key];
-        if (!prev || prev.reason !== 'success') {
-          // Respect a previously-validated success (can happen if allowlist is
-          // cascade-only while the model was reached via legacy endpoint).
-          account.capabilities[key] = { ok: false, lastCheck: Date.now(), reason: 'not_entitled' };
-        }
+        // The refreshed allowlist is authoritative for enum-keyed models: an
+        // enum it no longer lists is not entitled NOW, even if a call succeeded
+        // under an older plan. Preserving the old `success` let a Pro/trial
+        // success outlive a downgrade or trial expiry, so a free account kept
+        // listing and routing a premium model the upstream had stopped
+        // entitling (wave-7 P2). A call that succeeds AFTER this snapshot
+        // re-establishes `success` through updateCapability().
+        account.capabilities[key] = { ok: false, lastCheck: Date.now(), reason: 'not_entitled' };
       }
     }
   }
