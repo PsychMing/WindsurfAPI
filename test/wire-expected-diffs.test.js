@@ -196,28 +196,12 @@ test('the schema rejects entries that could not be checked', () => {
   );
 });
 
-test('the checked-in allowlist is exactly the 12 measured #273 comparisons', () => {
-  const checkedIn = loadExpectedDiffs();
-  assert.equal(checkedIn.length, 12);
-  const envs = [
-    {},
-    { DEVIN_CONNECT_REPLAY_REASONING: '0' },
-    { DEVIN_CONNECT_REPLAY_REASONING: '0', DEVIN_CONNECT_IMAGE_TAG: '0' },
-  ];
-  const expectedCoordinates = [];
-  for (const route of ['normalize', 'strip']) {
-    for (const native of [false, true]) {
-      for (const env of envs) expectedCoordinates.push(coordinateKey({ fixture: 5, route, native, env }));
-    }
-  }
-  assert.deepEqual(checkedIn.map((item) => coordinateKey(item)).sort(), expectedCoordinates.sort());
-  for (const item of checkedIn) {
-    assert.match(item.reason, /^#273\b/);
-    assert.equal(item.expected.messageField, 3);
-    assert.equal(item.expected.bytes, item.native ? 1047 : 1055, `${item.id}: measured request length`);
-    assert.deepEqual(item.expected.beforeRoles, item.native ? [4, 2, 1] : [1, 2, 1]);
-    assert.deepEqual(item.expected.afterRoles, item.native ? [2, 4, 1] : [2, 1, 1]);
-  }
+test('the checked-in allowlist is empty after v3.141.592655 absorbed the #273 reorder', () => {
+  // The 12 measured #273 comparisons were removed once the compared release
+  // (v3.141.592655) contained the reorder; a stale entry now fails the wire gate
+  // instead of waiving anything. Keep this assertion exact: adding an entry is a
+  // deliberate act that must arrive with a fresh measurement and its own issue.
+  assert.deepEqual(loadExpectedDiffs(), []);
 });
 
 test('the protobuf helpers expose the message frames the verifier relies on', () => {
