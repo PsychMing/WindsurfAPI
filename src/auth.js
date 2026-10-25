@@ -856,6 +856,35 @@ function sanitizeModelRateLimits(map, now) {
   return out;
 }
 
+// Optional numeric account setting with THREE states: an explicit number, or
+// null = "no override, inherit the global default". Never coerce blindly:
+// Number(null), Number('') and Number(false) are all 0, so the historical
+// `Number.isFinite(Number(x))` guard silently turned inherit into an explicit
+// zero (a configured global reserve of $25 became "spend to the last cent") and
+// materialized it into accounts.json on the next save. Only a finite number or
+// a non-empty numeric string is an override; everything else is absence.
+function parseOptionalNumber(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+// v3.0.3: the serialized per-account spend-policy OVERRIDE. Empty when the
+// account inherits the global default, so an untouched accounts.json keeps its
+// previous shape and a restart cannot turn "inherit" into an explicit value.
+function serializeSpendPolicy(a) {
+  const reserve = parseOptionalNumber(a.onDemandReserve);
+  return {
+    ...(typeof a.spendOnDemand === 'boolean' ? { spendOnDemand: a.spendOnDemand } : {}),
+    ...(reserve !== null ? { onDemandReserve: reserve } : {}),
+  };
+}
+
 // F4: the serialized transient latch for one account. Empty when nothing is
 // live, so an unaffected accounts.json keeps its previous shape.
 function serializeRateLimitLatch(a, now) {
@@ -903,14 +932,18 @@ function _serializeAccounts() {
     // separate from transient rateLimitedUntil). Persisted so a restart mid-
     // cooldown doesn't immediately re-select a dry account and eat a 402.
     quotaResetAt: a.quotaResetAt || 0,
+    // V-18: provenance travels WITH a live deadline, so a restart cannot turn a
+    // live-402 window into one a weekly snapshot is allowed to clear.
+    ...(a.quotaResetAt > now && QUOTA_RESET_SOURCES.has(a.quotaResetSource)
+      ? { quotaResetSource: a.quotaResetSource }
+      : {}),
     // F4: transient rate-limit latch (account-wide + per-model/selector).
     // Persisted so a restart mid-cooldown doesn't immediately re-select the
     // account and eat another 429; expired entries are dropped at save time.
     ...serializeRateLimitLatch(a, now),
     // v3.0.3: per-account on-demand spend policy. Persisted only when the
     // operator set an explicit override; null = inherit the global default.
-    ...(typeof a.spendOnDemand === 'boolean' ? { spendOnDemand: a.spendOnDemand } : {}),
-    ...(Number.isFinite(Number(a.onDemandReserve)) ? { onDemandReserve: Number(a.onDemandReserve) } : {}),
+    ...serializeSpendPolicy(a),
     // RB2/B1: exponential-backoff episode streak. Persisted as "memory" (not a
     // disable state) so a restart doesn't reset a repeat-offender's ladder to
     // zero; losing it is harmless (backoff just restarts) so it's best-effort.
@@ -1112,6 +1145,12 @@ function _deserializeAccount(a, now = Date.now()) {
     userStatusLastFetched: a.userStatusLastFetched || 0,
     // RB2/B2 + B1: restore self-healing quota cooldown + backoff memory.
     quotaResetAt: a.quotaResetAt || 0,
+    // V-18: an unrecorded provenance (older accounts.json) stays null — unknown
+    // is never treated as "a snapshot wrote this", so the deadline is only
+    // cleared by expiry. A source without a live deadline is meaningless.
+    quotaResetSource: (a.quotaResetAt > now && QUOTA_RESET_SOURCES.has(a.quotaResetSource))
+      ? a.quotaResetSource
+      : null,
     // F4: restore the transient rate-limit latch. Same guard as save: only
     // finite future deadlines survive, clamped to the persistence cap; an
     // older accounts.json (written before these fields existed) loads clean.
@@ -1120,7 +1159,7 @@ function _deserializeAccount(a, now = Date.now()) {
     // v3.0.3: per-account on-demand spend policy overrides (null = inherit the
     // global runtime-config default). Only persisted when explicitly set.
     spendOnDemand: typeof a.spendOnDemand === 'boolean' ? a.spendOnDemand : null,
-    onDemandReserve: Number.isFinite(Number(a.onDemandReserve)) ? Number(a.onDemandReserve) : null,
+    onDemandReserve: parseOptionalNumber(a.onDemandReserve),
     _breakerStreak: a._breakerStreak || 0,
     // K8: per-account lifetime spend accumulator. Monotonic, survives log
     // rotation and restarts. `?? 0` so an older accounts.json (written before
@@ -3956,6 +3995,15 @@ function quotaCooldownEnabled() { return getQuotaTunable('cooldownEnabled'); }
 function quotaCooldownMs() { return getQuotaTunable('cooldownMs'); }
 function quotaDryThreshold() { return getQuotaTunable('dryThreshold'); }
 
+// Which dimension wrote account.quotaResetAt. One deadline is shared by two
+// writers with different evidence (a proactive weekly/balance snapshot and a
+// live 402), so the deadline alone cannot answer "may this snapshot clear it?".
+// Persisted with the deadline: after a restart the live-402 window must not
+// become clearable by unrelated weekly data. Unknown (older accounts.json, or a
+// hand-edited file) is NOT guessed — an unrecorded deadline is only cleared by
+// expiry.
+const QUOTA_RESET_SOURCES = new Set(['snapshot', 'live402']);
+
 // Resolve the effective on-demand spend policy for one account. Per-account
 // override (account.spendOnDemand / account.onDemandReserve) wins; otherwise the
 // global runtime-config default. spendOnDemand=false means "when the included
@@ -3967,8 +4015,8 @@ function resolveSpendPolicy(account) {
   const spend = typeof spendOverride === 'boolean'
     ? spendOverride
     : getQuotaTunable('spendOnDemand');
-  const reserveOverride = Number(account?.onDemandReserve);
-  const reserve = Number.isFinite(reserveOverride) && reserveOverride >= 0
+  const reserveOverride = parseOptionalNumber(account?.onDemandReserve);
+  const reserve = reserveOverride !== null && reserveOverride >= 0
     ? reserveOverride
     : getQuotaTunable('onDemandReserveUsd');
   return { spend, reserve };
@@ -4000,8 +4048,18 @@ export function applyQuotaSnapshot(account, weeklyPercent, now = Date.now()) {
   const onDemand = Number(account.credits?.balance);
   const hasSpendableBalance = spend && Number.isFinite(onDemand) && onDemand > reserve;
   if (w <= quotaDryThreshold() && !hasSpendableBalance) {
-    const alreadyCooled = account.quotaResetAt && account.quotaResetAt > now;
-    account.quotaResetAt = now + quotaCooldownMs();
+    const previous = account.quotaResetAt || 0;
+    const alreadyCooled = previous > now;
+    // MONOTONIC: a cooldown is a deadline, not a value. A later snapshot may
+    // extend it but must never pull it closer — a stale snapshot (or a lowered
+    // WINDSURFAPI_QUOTA_COOLDOWN_MS) re-entering an account before the upstream
+    // said it is usable just earns another 402.
+    const next = Math.max(previous, now + quotaCooldownMs());
+    account.quotaResetAt = next;
+    // PROVENANCE: record which dimension wrote the CURRENT deadline. Only that
+    // dimension may clear it (see the recovery branch). When this snapshot did
+    // not extend the deadline it is not the author — keep the existing source.
+    if (next > previous) account.quotaResetSource = 'snapshot';
     if (!alreadyCooled) {
       bumpConnect('quota_exhausted');
       log.warn(`Account ${safeAccountRef(account)} quota dry (weekly ${w}%) — quota cooldown ${Math.round(quotaCooldownMs() / 60000)}m (self-healing)`);
@@ -4009,8 +4067,22 @@ export function applyQuotaSnapshot(account, weeklyPercent, now = Date.now()) {
   } else if (account.quotaResetAt) {
     // Recovered included quota OR a spendable on-demand balance under the active
     // policy → clear ONLY the quota dimension, never the transient one.
-    account.quotaResetAt = 0;
-    log.info(`Account ${safeAccountRef(account)} quota recovered (weekly ${w}%) — quota cooldown cleared`);
+    //
+    // SAME-SOURCE ONLY: a weekly/balance snapshot is evidence about its own
+    // dimension. A live-402 deadline (markQuotaExhausted) is a NEWER statement
+    // that an actual request could not be served, and the snapshot carries no
+    // per-dimension timestamp to prove it is fresher — clearing it on unrelated
+    // weekly data re-entered an account the upstream had just rejected. An
+    // unrecorded source (accounts.json from a version that did not persist one)
+    // is treated the same way: unknown is never proof. Both self-heal on expiry.
+    const expired = account.quotaResetAt <= now;
+    if (expired || account.quotaResetSource === 'snapshot') {
+      account.quotaResetAt = 0;
+      account.quotaResetSource = null;
+      log.info(`Account ${safeAccountRef(account)} quota recovered (weekly ${w}%) — quota cooldown cleared`);
+    } else {
+      log.info(`Account ${safeAccountRef(account)} quota cooldown retained (weekly ${w}% is not evidence for the ${account.quotaResetSource || 'unknown'}-sourced deadline)`);
+    }
   }
 }
 
@@ -4033,8 +4105,8 @@ export function setAccountSpendPolicy(id, { spendOnDemand, reserve } = {}) {
     if (reserve === null || reserve === '') {
       account.onDemandReserve = null;
     } else {
-      const n = Number(reserve);
-      if (Number.isFinite(n) && n >= 0) account.onDemandReserve = n;
+      const n = parseOptionalNumber(reserve);
+      if (n !== null && n >= 0) account.onDemandReserve = n;
     }
   }
   saveAccounts();
@@ -4059,7 +4131,7 @@ export function getAccountSpendState(account, now = Date.now()) {
     spendOnDemand: spend,
     reserve,
     spendOverride: typeof account?.spendOnDemand === 'boolean' ? account.spendOnDemand : null,
-    reserveOverride: Number.isFinite(Number(account?.onDemandReserve)) ? Number(account.onDemandReserve) : null,
+    reserveOverride: parseOptionalNumber(account?.onDemandReserve),
     balance: hasBalance ? balance : null,
     cooled,
     quotaResetAt: cooled ? account.quotaResetAt : 0,
@@ -4086,8 +4158,13 @@ export function markQuotaExhausted(apiKey, durationMs = null, now = Date.now()) 
   // — R6 changes only the cooldown DIMENSION, not the health weighting.
   recordHealthEvent(account, 't');
   const ms = Number.isFinite(durationMs) && durationMs >= 1000 ? durationMs : quotaCooldownMs();
-  const alreadyCooled = account.quotaResetAt && account.quotaResetAt > now;
-  account.quotaResetAt = Math.max(account.quotaResetAt || 0, now + ms);
+  const previous = account.quotaResetAt || 0;
+  const alreadyCooled = previous > now;
+  account.quotaResetAt = Math.max(previous, now + ms);
+  // Provenance of the CURRENT deadline: this live 402 is its author only when it
+  // actually extended it. A longer snapshot-armed deadline keeps its own source,
+  // so a later recovery snapshot can still clear what it wrote.
+  if (account.quotaResetAt > previous) account.quotaResetSource = 'live402';
   if (!alreadyCooled) {
     log.warn(`Account ${safeAccountRef(account)} QUOTA_EXHAUSTED (live 402) — quota cooldown ${Math.round(ms / 60000)}m (self-healing)`);
   }
@@ -5469,13 +5546,21 @@ export async function refreshAccountBilling(id, { force = false, now = Date.now(
     const last = _billingSyncAt.get(id) || 0;
     if (now - last < interval) return { ok: true, skipped: true, reason: 'fresh' };
   }
+  // V-26: capture the credential epoch before the first await. The cost tier,
+  // promo and per-model rate below are plan facts of the credential that
+  // answered, so a re-login mid-flight must not publish them onto the new one.
+  const tokenAtStart = account.apiKey;
   const promise = (async () => {
     try {
       const { getCascadeModelConfigs } = _modelCatalogDeps?.getCascadeModelConfigs
         ? { getCascadeModelConfigs: _modelCatalogDeps.getCascadeModelConfigs }
         : await import('./windsurf-api.js');
       const proxy = getEffectiveProxy(account.id) || null;
-      const result = await getCascadeModelConfigs(account.apiKey, proxy);
+      const result = await getCascadeModelConfigs(tokenAtStart, proxy);
+      // Same identity + key pair the credit path and the liveness probes use.
+      if (!isCurrentAccount(account) || account.apiKey !== tokenAtStart) {
+        return { ok: false, error: 'ACCOUNT_CHANGED' };
+      }
       const merged = mergeCloudCostTiers(result?.configs, { accountId: account.id, now });
       if (merged.applied) _billingSyncAt.set(id, now);
       return { ok: true, ...merged };
@@ -5625,6 +5710,9 @@ function inferTier(caps, { floorTier = null } = {}) {
 export async function fetchUserStatus(id, { allowLsStart = true } = {}) {
   const account = accounts.find(a => a.id === id);
   if (!account) return null;
+  // V-26: a snapshot describes ONE credential at ONE point in time. Capture the
+  // epoch before the first await; the guard after the RPC compares against it.
+  const tokenAtStart = account.apiKey;
 
   const { WindsurfClient } = await import('./client.js');
   const { ensureLs, getLsFor } = await import('./langserver.js');
@@ -5641,12 +5729,25 @@ export async function fetchUserStatus(id, { allowLsStart = true } = {}) {
   const ls = getLsFor(proxy);
   if (!ls) { log.warn(`No LS for GetUserStatus on ${account.id}`); return null; }
 
-  const client = new WindsurfClient(account.apiKey, ls.port, ls.csrfToken);
+  // The RPC is sent with the credential captured at entry, so the response and
+  // the epoch we validate against describe the same credential.
+  const client = new WindsurfClient(tokenAtStart, ls.port, ls.csrfToken);
   let status;
   try {
     status = await client.getUserStatus();
   } catch (err) {
     log.warn(`GetUserStatus ${safeAccountRef(account)} failed: ${err.message}`);
+    return null;
+  }
+
+  // V-26: revalidate after the await. A re-login installs a new apiKey on this
+  // same row (setAccountTokens / reLoginAccount) and the row itself can be
+  // removed/re-added; publishing the OLD credential's tier, entitlement
+  // allowlist and capabilities onto the NEW lifetime would route models the new
+  // credential does not own. Same identity + key pair the guarded credit path
+  // and the liveness probes use — no second epoch vocabulary.
+  if (!isCurrentAccount(account) || account.apiKey !== tokenAtStart) {
+    log.info(`UserStatus ${safeAccountRef(account)} discarded: account/credential changed during the probe`);
     return null;
   }
 

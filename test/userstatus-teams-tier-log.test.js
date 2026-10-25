@@ -36,9 +36,13 @@ function load(status, { account = {}, models = {} } = {}) {
   assert.ok(block.includes('_client') && block.includes('_ls'), 'both network imports must be substituted');
 
   const acct = { id: 'acct-1', apiKey: 'sk-ws-01-secret-token', tier: 'unknown', ...account };
+  const accounts = [acct];
   const lines = { info: [], warn: [], debug: [], error: [] };
   const deps = {
-    accounts: [acct],
+    accounts,
+    // V-26: fetchUserStatus revalidates the row + credential after its RPC with
+    // the same identity predicate the rest of auth.js uses.
+    isCurrentAccount: (a) => Boolean(a) && accounts.find(x => x.id === a.id) === a,
     _client: { WindsurfClient: class { async getUserStatus() { return status; } } },
     _ls: { ensureLs: async () => {}, getLsFor: () => ({ port: 42100, csrfToken: 'csrf' }) },
     getEffectiveProxy: () => null,
