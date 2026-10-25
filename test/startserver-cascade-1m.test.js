@@ -94,8 +94,13 @@ server.on('stream', (stream, headers) => {
       }
     }
     if (method === 'GetCascadeTrajectory') body = writeVarintField(2, 1);
-    stream.respond({ ':status': 200, 'content-type': headers['content-type'] || 'application/connect+proto' });
-    stream.end(Buffer.concat([wrapEnvelope(body, { compress: false }), endOfStreamEnvelope()]));
+    // Unary RPCs answer with a bare message under `application/proto`; streaming
+    // RPCs keep the connect envelope plus end-of-stream frame (src/grpc.js).
+    const contentType = headers['content-type'] || 'application/connect+proto';
+    stream.respond({ ':status': 200, 'content-type': contentType });
+    stream.end(String(contentType).includes('application/proto')
+      ? body
+      : Buffer.concat([wrapEnvelope(body, { compress: false }), endOfStreamEnvelope()]));
   });
 });
 
@@ -189,7 +194,9 @@ it('the 900 KB 1M branch carries five of six 200 KB turns through the real route
   // The protocol's 1M marker rides the body, not the headers.
   assert.equal(readRequestedModelUid(payload), 'claude-sonnet-4-6-1m');
   assert.equal(headers['x-codeium-csrf-token'], 'csrf', 'captured the real transport request');
-  assert.match(String(headers['content-type']), /connect\+proto/);
+  // SendUserCascadeMessage is a unary RPC, so Connect frames it as
+  // `application/proto` with a bare message — not the streaming content type.
+  assert.match(String(headers['content-type']), /application\/proto/);
   assert.equal(headers[':path'], '/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage');
 
   assert.equal(result.body?.choices?.[0]?.message?.content, 'answer');

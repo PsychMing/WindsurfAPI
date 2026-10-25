@@ -238,6 +238,10 @@ describe('GAP-2: cancellation signals reach every outbound call', () => {
     } finally {
       http2.connect = savedConnect;
     }
+    // A real gRPC stream ends with a terminal status; without one the client
+    // now (correctly) reports a truncated response instead of a clean end.
+    req.emit('response', { ':status': 200 });
+    req.emit('trailers', { 'grpc-status': '0' });
     req.emit('end');
     await done;
     ac.abort();
