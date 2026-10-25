@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 213 份发布说明</a> ·
+  <a href="docs/releases/">全部 214 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **213** 份,v2.0.6 → v3.10.1 |
+| 发布说明 | **214** 份,v2.0.6 → v3.141.592654 |
 | git tag | 214 个（2026-10-23 实测；以 `git tag \| wc -l` 为准） |
-| 当前 | **v3.10.1**(2026-10-24) |
+| 当前 | **v3.141.592654**(2026-10-25) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -41,6 +41,10 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.141.592654](docs/releases/RELEASE_NOTES_3.141.592654.md) · 2026-10-25
+
+wave-3 七条修复:Cascade 重放历史图片不再静默丢弃、Codex `parallel_tool_calls:false` 从 400 改为服务并计数、chat 面对 server-executed 工具类型显式 400、Claude Code 2.1.306 的 `context_management`/`defer_loading`、usage 把 cache-write 计入输入、别名与方言整类修复、Responses/Gemini 参数保真与 `metadata` 回声。mutation 基线门默认改为按变更域测量。wire 与全量 mutation 尚未跑完(`[UNVERIFIED]`)。
 
 ### [v3.10.1](docs/releases/RELEASE_NOTES_3.10.1.md) · 2026-10-24
 
