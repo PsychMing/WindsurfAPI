@@ -36,6 +36,8 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 真实邮箱验证码的完整 `email/complete` → PostAuth → apiKey。
 - `[UNVERIFIED]` 真实 Devin host 的 `email/{start,complete}` 回退。
 - `[UNVERIFIED]` 进程级内存上限（本版承诺的是队列进度有界，不是 RSS 硬上限）。

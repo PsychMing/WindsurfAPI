@@ -43,6 +43,8 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 真实邮箱验证码的 `email/complete` 与 PostAuth。
 - `[UNVERIFIED]` 真实上游的预内容 429/503 状态（fake upstream 覆盖）。
 - `[UNVERIFIED]` 真实慢客户端与进程级内存。

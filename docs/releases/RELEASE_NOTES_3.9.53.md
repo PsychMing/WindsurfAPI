@@ -109,6 +109,8 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` `deploy/update.sh` 的 POSIX 集成夹具（12 条在 Windows 上按设计 skip）：真实 pull /
   健康门 / 回滚序列。
 - `[UNVERIFIED]` `docker compose config` 校验：本机 Docker CLI 29.7.2 在，但 daemon 未运行，矩阵按设计

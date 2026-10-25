@@ -30,6 +30,8 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 真实 `app.devin.ai` 的 `/billing/status` 抓包（池内无 session token，fixture 来自面板观测值）。
 - `[UNVERIFIED]` 修改后的 release job 真实跑一次（需要 tag）。
 - `[UNVERIFIED]` cosign/minisign 命令与 OCR/SARIF 执行（无密钥/无 provider token）。

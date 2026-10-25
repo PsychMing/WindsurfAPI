@@ -39,6 +39,8 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 真实 Devin CLI 的 ACP 工具调用与真实客户端渲染。
 - `[UNVERIFIED]` `/v1/responses` 的 ACP `tool_calls` 输出。
 - `[UNVERIFIED]` 真实浏览器之外的 dashboard 视口（只测 1440/390 两档）。

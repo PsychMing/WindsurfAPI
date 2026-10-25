@@ -33,6 +33,8 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 真实退役 session id 的探针行为（设计 §8-6）。
 - `[UNVERIFIED]` Node 22.13.0 的完整矩阵（策略已声明，矩阵待补）。
 - `[UNVERIFIED]` 真实浏览器上的 reauth 徽章/抽屉视觉。

@@ -71,10 +71,12 @@ CLI 的 `--model` 是否切换其底层 core，本仓库无法证明，仍需真
 
 ## 尚未验证
 
-- **无 live-account 验收**：本轮每个宿主上 `accounts.json` 都是 2 字节的空池。
-- **四个仪器仍未运行**：`WINDSURFAPI_LEAK_TRACE=1`、`DEVIN_CONNECT_DEBUG_META=1`、
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
+- `[UNVERIFIED]` **无 live-account 验收**：本轮每个宿主上 `accounts.json` 都是 2 字节的空池。
+- `[UNVERIFIED]` **四个仪器仍未运行**：`WINDSURFAPI_LEAK_TRACE=1`、`DEVIN_CONNECT_DEBUG_META=1`、
   `calibrate:devin`、`cascade-survival-probe.mjs`。
-- **`s2-b-frame-assembly` 的突变裁决仍然缺失**：它的突变本身破坏模块加载，harness 按设计拒绝
+- `[UNVERIFIED]` **`s2-b-frame-assembly` 的突变裁决仍然缺失**：它的突变本身破坏模块加载，harness 按设计拒绝
   把这种运行当作证据（拒绝 ≠ 判绿）。
 
 ## 验证记录

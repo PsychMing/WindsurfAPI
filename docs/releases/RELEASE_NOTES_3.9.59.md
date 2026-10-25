@@ -21,5 +21,7 @@
 
 ## 尚未验证
 
-- Release run `39871636798` **success**（Test + 两个单文件 + Docker + GitHub Release 全绿）。
-- `gh release view v3.9.59`：5 个资产（含 `SHA256SUMS`）；逐个计算哈希与清单比对 **4/4 OK**（本机 Git Bash 的 `sha256sum -c` 有兼容问题，直接比对为准）。
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
+- `[VERIFIED]` Release run `39871636798` **success**（Test + 两个单文件 + Docker + GitHub Release 全绿）。2026-10-25 复核：`gh run view 39871636798` → `conclusion: success`。
+- `[VERIFIED]` `gh release view v3.9.59`：5 个资产（含 `SHA256SUMS`）；逐个计算哈希与清单比对 **4/4 OK**（本机 Git Bash 的 `sha256sum -c` 有兼容问题，直接比对为准）。2026-10-25 复核：`gh release view v3.9.59` → 5 assets。

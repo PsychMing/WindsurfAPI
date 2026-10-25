@@ -31,5 +31,7 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 设计 §6.7 的 mutation 表与真实 soak；**默认关**，不开不影响现有路径。
 - `[UNVERIFIED]` 真实 Enterprise 账号的 `teams_tier` 行（无可用账号）。

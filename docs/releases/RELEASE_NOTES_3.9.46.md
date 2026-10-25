@@ -23,4 +23,6 @@
 
 ## 尚未验证
 
+> 全部历史缺口见 [尚未验证登记册](../UNVERIFIED.md)。
+
 - `[UNVERIFIED]` 真实账号在 15 分钟刷新周期后的 HMC 页面（部署后由 `refreshCredits` 自动清除旧值）。
