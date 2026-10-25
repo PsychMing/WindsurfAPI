@@ -1,7 +1,8 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { handleResponses, responsesToChat, chatToResponse } from '../src/handlers/responses.js';
+import { handleResponses, responsesToChat, chatToResponse, handleGetResponse } from '../src/handlers/responses.js';
 import { handleChatCompletions, __setConnectDeps, __resetConnectDeps } from '../src/handlers/chat.js';
+import { resetResponseStore } from '../src/response-store.js';
 
 function chatChunk(chunk) {
   return `data: ${JSON.stringify(chunk)}\n\n`;
@@ -1689,5 +1690,146 @@ describe('parallel_tool_calls honoured path through /v1/responses (F1)', () => {
       if (prevChoice === undefined) delete process.env.DEVIN_CONNECT_TOOL_CHOICE;
       else process.env.DEVIN_CONNECT_TOOL_CHOICE = prevChoice;
     }
+  });
+});
+
+// `metadata` (DataAuditTools F4) — the field exists to be ECHOED.
+//
+// A client tags a request (trace id, tenant) and reads the tag back off the
+// response object for its own bookkeeping. Nothing on this route read the field,
+// so it vanished behind a 200 with no signal, and a retrieved response could not
+// report it either because the store had no slot for it. The contract is OpenAI's:
+// a flat map of at most 16 string pairs, keys <= 64 chars, values <= 512 chars.
+describe('responses metadata echo and persistence', () => {
+  const CALLER = 'api:metadatametadatametadatametada:user:tagger';
+
+  beforeEach(() => resetResponseStore());
+
+  const reply = (content = 'ok') => ({
+    status: 200,
+    body: { id: 'chat_1', choices: [{ message: { role: 'assistant', content } }] },
+  });
+
+  it('echoes request metadata on the response object', async () => {
+    const result = await handleResponses(
+      { model: 'm', input: 'hi', metadata: { trace_id: 'abc', tenant: 'acme' } },
+      { handleChatCompletions: async () => reply(), context: { callerKey: CALLER } },
+    );
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.deepEqual(result.body.metadata, { trace_id: 'abc', tenant: 'acme' });
+  });
+
+  it('omits the field entirely when the request omits it — absence stays absent', async () => {
+    const result = await handleResponses(
+      { model: 'm', input: 'hi' },
+      { handleChatCompletions: async () => reply(), context: { callerKey: CALLER } },
+    );
+    assert.equal(result.status, 200);
+    assert.equal(Object.hasOwn(result.body, 'metadata'), false);
+  });
+
+  it('does not leak the tag into the upstream chat body as an unknown field', async () => {
+    const seen = [];
+    const result = await handleResponses(
+      { model: 'm', input: 'hi', metadata: { tag: 'x' } },
+      {
+        handleChatCompletions: async (body) => { seen.push(body); return reply(); },
+        context: { callerKey: CALLER },
+      },
+    );
+    assert.equal(result.status, 200);
+    assert.equal(Object.hasOwn(seen[0], 'metadata'), false,
+      'the chat surface drops metadata; forwarding it would be a second silent drop');
+    assert.equal(Object.hasOwn(seen[0], '__responseMetadata'), false,
+      'the internal carrier must be stripped before the upstream call');
+  });
+
+  it('echoes metadata on the streaming response object', async () => {
+    const result = await handleResponses({
+      model: 'claude-sonnet-4.6',
+      input: 'hi',
+      stream: true,
+      metadata: { trace_id: 'abc' },
+    }, {
+      async handleChatCompletions(body) {
+        return {
+          status: 200,
+          stream: true,
+          async handler(res) {
+            res.write(chatChunk({ id: 'chat_1', created: 123, model: body.model, choices: [{ index: 0, delta: { content: 'hi' } }] }));
+            res.write(chatChunk({ id: 'chat_1', created: 123, model: body.model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }));
+            res.end('data: [DONE]\n\n');
+          },
+        };
+      },
+    });
+    const res = fakeRes();
+    await result.handler(res);
+    const events = parseEvents(res.body);
+    const created = events.find(e => e.event === 'response.created');
+    const completed = events.find(e => e.event === 'response.completed');
+    assert.ok(created && completed, `terminal events missing: ${events.map(e => e.event).join(',')}`);
+    assert.deepEqual(created.data.response.metadata, { trace_id: 'abc' });
+    assert.deepEqual(completed.data.response.metadata, { trace_id: 'abc' });
+  });
+
+  it('preserves metadata through previous_response_id and GET /v1/responses/{id}', async () => {
+    const deps = { handleChatCompletions: async () => reply(), context: { callerKey: CALLER } };
+    const first = await handleResponses(
+      { model: 'm', input: 'turn 1', metadata: { trace_id: 'abc', tenant: 'acme' } }, deps);
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+
+    const second = await handleResponses(
+      { model: 'm', previous_response_id: first.body.id, input: 'turn 2' }, deps);
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.equal(Object.hasOwn(second.body, 'metadata'), false,
+      'metadata belongs to the response that carried it; it is not inherited');
+
+    const retrieved = handleGetResponse(first.body.id, { context: { callerKey: CALLER } });
+    assert.equal(retrieved.status, 200, JSON.stringify(retrieved.body));
+    assert.deepEqual(retrieved.body.metadata, { trace_id: 'abc', tenant: 'acme' },
+      'the chained lookup must not drop the stored tag');
+  });
+
+  it('treats an empty map and an explicit null as absent, so POST and GET agree', async () => {
+    const deps = { handleChatCompletions: async () => reply(), context: { callerKey: CALLER } };
+    for (const metadata of [{}, null]) {
+      const result = await handleResponses({ model: 'm', input: 'hi', metadata }, deps);
+      assert.equal(result.status, 200, JSON.stringify(metadata));
+      assert.equal(Object.hasOwn(result.body, 'metadata'), false, JSON.stringify(metadata));
+      const retrieved = handleGetResponse(result.body.id, { context: { callerKey: CALLER } });
+      assert.equal(retrieved.status, 200);
+      assert.equal(Object.hasOwn(retrieved.body, 'metadata'), false, JSON.stringify(metadata));
+    }
+  });
+
+  it('rejects metadata that violates the OpenAI contract with a 400 naming the field', async () => {
+    const cases = [
+      ['not an object', 'abc'],
+      ['an array', ['a']],
+      ['a non-string value', { a: 1 }],
+      ['a key longer than 64 characters', { ['k'.repeat(65)]: 'v' }],
+      ['a value longer than 512 characters', { a: 'v'.repeat(513) }],
+      ['more than 16 pairs', Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`k${i}`, 'v']))],
+    ];
+    for (const [label, metadata] of cases) {
+      const result = await handleResponses({ model: 'm', input: 'hi', metadata }, {
+        handleChatCompletions: async () => { throw new Error('must not reach the model'); },
+        context: { callerKey: CALLER },
+      });
+      assert.equal(result.status, 400, label);
+      assert.equal(result.body.error?.param, 'metadata', label);
+    }
+  });
+
+  it('accepts the contract maximum and echoes it unchanged', async () => {
+    const metadata = Object.fromEntries(
+      Array.from({ length: 16 }, (_, i) => [`k${i}`, 'v'.repeat(512)]));
+    const result = await handleResponses({ model: 'm', input: 'hi', metadata }, {
+      handleChatCompletions: async () => reply(), context: { callerKey: CALLER },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(Object.keys(result.body.metadata).length, 16);
+    assert.equal(result.body.metadata.k15.length, 512);
   });
 });

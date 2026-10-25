@@ -181,7 +181,61 @@ function strBytes(v, depth = 0) {
   return 0;
 }
 
-// Map<responseId, { messages, callerKey, model, createdAt, lastAccess, bytes }>
+// ── the `metadata` slot ─────────────────────────────────────────────────────
+// `metadata` is a top-level Responses parameter whose purpose is the ECHO: a
+// client tags a request (trace id, tenant) and reads the tag back off the
+// response object, including from a later GET. It is caller-controlled and stored
+// per response, so it must be bounded HERE even though handlers/responses.js
+// rejects a violating request with a 400 first: this module is a library with
+// other callers, and a slot whose size is whatever the request body said is a
+// memory amplifier the byte budget would never see if the field were excluded
+// from `bytes`.
+//
+// The caps are the OpenAI contract (16 pairs, keys <= 64 chars, values <= 512
+// chars). They are what bounds the slot: 16 * (64 + 512) chars is 18KB of
+// accounted memory at strBytes' 2 bytes per char, and there is no shape a caller
+// can send that exceeds it. Entries over a cap are DROPPED, never truncated — a
+// truncated trace id is a wrong trace id, and the HTTP boundary refuses such a
+// request before it reaches this function.
+const MAX_METADATA_KEYS = 16;
+const MAX_METADATA_KEY_CHARS = 64;
+const MAX_METADATA_VALUE_CHARS = 512;
+
+/**
+ * Copy `metadata` into the store's bounded slot, or return null.
+ *
+ * Only own enumerable STRING pairs are kept: a nested object or a number cannot
+ * be echoed as the flat map the Responses contract defines, and coercing it would
+ * change the caller's data. `__proto__` is skipped because the generic
+ * copy-on-read walk (copyStoredValue) assigns into a plain object, where that key
+ * would rewrite the prototype instead of surviving as a tag.
+ */
+function boundMetadata(metadata) {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const out = {};
+  let kept = 0;
+  for (const key of Object.keys(metadata)) {
+    if (kept >= MAX_METADATA_KEYS) break;
+    if (key === '__proto__') continue;
+    const value = metadata[key];
+    if (typeof value !== 'string') continue;
+    if (!key || key.length > MAX_METADATA_KEY_CHARS || value.length > MAX_METADATA_VALUE_CHARS) continue;
+    Object.defineProperty(out, key, { value, enumerable: true, configurable: true, writable: true });
+    kept++;
+  }
+  return kept ? out : null;
+}
+
+/** Accounted size of the metadata slot, in the same units as approxBytes. */
+function metadataBytes(metadata) {
+  if (!metadata) return 0;
+  let n = 0;
+  for (const [key, value] of Object.entries(metadata)) n += 32 + key.length * 2 + value.length * 2;
+  return n;
+}
+
+// Map<responseId, { messages, callerKey, model, status, incompleteReason, metadata,
+//                   createdAt, lastAccess, bytes }>
 // Map iteration order is maintained as least-recently-used order: every read and
 // refresh re-inserts, so the first key is always the LRU victim (O(1) eviction).
 const _entries = new Map();
@@ -516,7 +570,8 @@ export function wantsPersistence(store) {
  * @param {string} responseId  the id handed back to the client
  * @param {Array}  messages    FULL conversation for this turn (input + output)
  * @param {string} callerKey   tenant/identity scope
- * @param {object} [opts]      { model?: string, store?: boolean|string|number|null }
+ * @param {object} [opts]      { model?: string, store?: boolean|string|number|null,
+ *                               metadata?: object, status?: string, incompleteReason?: string|null }
  * @returns {boolean} true when persisted
  */
 export function putResponse(responseId, messages, callerKey, opts = {}) {
@@ -546,7 +601,12 @@ export function putResponse(responseId, messages, callerKey, opts = {}) {
   // Existing limiters are copy-on-write. Clone only the retained graph, so
   // discarded history is not copied and no stored object aliases the caller.
   const kept = copyStoredValue(capEntryBytes(truncateMessages(messages)));
-  const bytes = approxBytes(kept);
+  // The slot follows the same refresh rule as the other optional fields: an
+  // explicit value wins, an absent one keeps what the entry already had.
+  const metadata = opts.metadata === undefined
+    ? (existing?.metadata ?? null)
+    : boundMetadata(opts.metadata);
+  const bytes = approxBytes(kept) + metadataBytes(metadata);
   const createdAt = existing?.createdAt || now;
   const model = opts.model || existing?.model || null;
   // The turn's terminal status, so a later retrieval reports what the CREATING
@@ -557,7 +617,8 @@ export function putResponse(responseId, messages, callerKey, opts = {}) {
   if (existing) dropEntry(responseId);
   trackInsert(callerKey, bytes);
   _entries.set(responseId, {
-    messages: kept, callerKey, model, status, incompleteReason, createdAt, lastAccess: now, bytes,
+    messages: kept, callerKey, model, status, incompleteReason, metadata,
+    createdAt, lastAccess: now, bytes,
   });
   _bytes += bytes;
   _stats.stored++;
@@ -619,9 +680,11 @@ export function putResponse(responseId, messages, callerKey, opts = {}) {
  * model would answer with no context and the client could not tell.
  *
  * `createdAt` is returned so the retrieval endpoint can report the response's real
- * creation time instead of the time it happened to be read.
+ * creation time instead of the time it happened to be read, and `metadata` so the
+ * tag the creating request attached survives to a later GET.
  *
- * @returns {{ ok: true, messages: Array, model: string|null, createdAt: number }
+ * @returns {{ ok: true, messages: Array, model: string|null, createdAt: number,
+ *             metadata: object|null }
  *          | { ok: false, reason: 'disabled'|'not_found'|'expired'|'forbidden' }}
  */
 export function getResponse(responseId, callerKey) {
@@ -679,6 +742,10 @@ export function getResponse(responseId, callerKey) {
     createdAt: entry.createdAt,
     status: entry.status,
     incompleteReason: entry.incompleteReason,
+    // The tag the CREATING request attached, so a later GET reports the same
+    // metadata the response object carried. Copied like every other field a
+    // reader can reach: the entry must not be mutable through the result.
+    metadata: entry.metadata ? copyStoredValue(entry.metadata) : null,
   };
 }
 
