@@ -973,13 +973,17 @@ export function buildGetGeneratorMetadataRequest(cascadeId, offset = 0) {
  *   uint64 cache_read_tokens = 5;
  * }
  *
- * Returns null if nothing reported; otherwise an aggregated
- * {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, entryCount}
- * summed across every generator invocation (multi-model trajectories sum).
+ * Returns null only when the response carries no records at all; otherwise an
+ * aggregated {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+ * entryCount, hasUsage} summed across every generator invocation (multi-model
+ * trajectories sum). `hasUsage` is false when records came back but none of
+ * them carried a usage block — the counts are then zeros, not evidence that the
+ * turn was free.
  *
  * `entryCount` is the number of generator-metadata records returned by this
  * response. On resumed cascades we use it as the next offset so prior-turn
- * usage is not counted again.
+ * usage is not counted again — which is why it must survive a response whose
+ * records have no usage: the records still consumed window positions.
  */
 export function parseGeneratorMetadata(buf) {
   const fields = parseFields(buf);
@@ -1013,16 +1017,20 @@ export function parseGeneratorMetadata(buf) {
       found = true;
     }
   }
-  if (!found) return null;
+  // D5/F6: a record without a usage block still occupies a position in the
+  // metadata window. Returning null here threw that count away, and the caller's
+  // `?.entryCount || 0` then restarted the next window at record 0 — re-summing
+  // every earlier turn's tokens into this turn's usage. The count is reported
+  // either way; `hasUsage` says whether the token figures mean anything.
   return {
     inputTokens,
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
     entryCount: metaEntries.length,
+    hasUsage: found,
   };
 }
-
 // ─── Cascade response parsers ──────────────────────────────
 
 /** Parse StartCascadeResponse → cascade_id (field 1). */

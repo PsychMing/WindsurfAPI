@@ -4516,9 +4516,14 @@ async function _handleChatCompletionsInner(body, context = {}) {
               const _finishReason = __sHit.finishReason || 'stop';
               const _cachedStop = _st.hit ? _st.stop : (__sHit.stop || null);
               const _display = __sHit.displayModel || connectDisplayModel;
-              recordRequest(_display, true, 0, null);
+              // D4/V-27: no upstream turn ran, so nothing here is upstream
+              // consumption. The cached usage still rides the client's frames
+              // (it describes the answer it is replaying), but the dashboard
+              // ledger must not be charged again and the row is marked
+              // cache-served. Charging it made N identical requests report N
+              // upstream turns and N credit charges.
+              recordRequest(_display, true, 0, null, { cacheServed: true });
               const _use = __sHit.usage || cachedUsage(messages, _txt);
-              try { recordTokenUsage(_use, _display); } catch {}
               await send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
                 choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
               if (__sHit.thinking) {
@@ -4556,8 +4561,17 @@ async function _handleChatCompletionsInner(body, context = {}) {
           // would duplicate content, so we surface the error instead.
           const attemptStream = async (a) => {
             const params = a ? { ...connectParams, token: a.apiKey, deviceSeed: ensureDeviceSeed(a) } : connectParams;
+            // D2/V-10: a schema-constrained turn cannot be judged frame by frame
+            // — the verdict needs the whole payload, and the adapter writes every
+            // delta the moment it arrives. Buffer this attempt's frames instead of
+            // putting them on the wire: they are flushed in order once the payload
+            // conforms, and a non-conforming turn is replaced by one typed error.
+            // `emitted` therefore stays false until the flush, so pre-flush
+            // recovery (re-login, account failover) can still replay safely.
+            const schemaFrames = jsonSchema ? [] : null;
+            const sink = schemaFrames ? (data) => { schemaFrames.push(data); } : send;
             try {
-              const _sr = await streamChatCompletion(params, send, connectMeta);
+              const _sr = await streamChatCompletion(params, sink, connectMeta);
               // Dashboard token-usage breakdown from the streaming connect path
               // (the return value carries the terminal usage). Was discarded
               // before → "Token 用量分布" empty on connect deployments.
@@ -4572,7 +4586,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
               // the immutable account id (review #3).
               try { recordAccountSpend(a, _sr?.usage, connectSpendOpts(_sr?.billing)); } catch {}
               finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err: null });
-              return { kind: 'ok', sr: _sr };
+              return { kind: 'ok', sr: _sr, frames: schemaFrames };
             } catch (err) {
               // Client or server-level abort: the caller is gone (or the process
               // is shutting down). Don't penalize the account, don't log a scary
@@ -4606,13 +4620,16 @@ async function _handleChatCompletionsInner(body, context = {}) {
                   if (freshKey && !emitted) {
                     log.info(`Chat[${reqId}]: DEVIN_CONNECT re-login recovered token, replaying stream once`);
                     try {
-                      const _sr3 = await streamChatCompletion({ ...connectParams, token: freshKey }, send, connectMeta);
+                      // The first attempt may have buffered frames before it hit
+                      // the 401; the replay replaces them, never appends.
+                      if (schemaFrames) schemaFrames.length = 0;
+                      const _sr3 = await streamChatCompletion({ ...connectParams, token: freshKey }, sink, connectMeta);
                       try { recordTokenUsage(_sr3?.usage, connectDisplayModel); } catch {}
                       // Billing identity is the account, not the credential: the
                       // retry presented freshKey, but the row belongs to a.id.
                       try { recordAccountSpend({ accountId: a.id, apiKey: freshKey, attemptId: a.reservationTimestamp }, _sr3?.usage, connectSpendOpts(_sr3?.billing)); } catch {}
                       finalizeConnectAccount(a, { model: connectDisplayModel, selector, startTime: ccStart, err: null, credentialKey: freshKey });
-                      return { kind: 'ok', sr: _sr3 };
+                      return { kind: 'ok', sr: _sr3, frames: schemaFrames };
                     } catch (retryErr) {
                       // Client disconnected while re-login was in flight — stop cleanly.
                       if (abortController.signal.aborted || isAbortError(retryErr)) {
@@ -4699,6 +4716,35 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 if (abortController.signal.aborted) {
                   log.info(`Chat[${reqId}]: DEVIN_CONNECT stream completed after the client disconnected — skipping session commit, cache write and affinity`);
                 } else {
+                  if (r.frames) {
+                    // D2/V-10: the buffered payload is the only place a schema
+                    // verdict can be formed. A miss closes the turn exactly like
+                    // the Cascade stream does: one typed error frame, no stop, no
+                    // [DONE], and nothing cached or committed. Usage and account
+                    // spend were already recorded in attemptStream — the upstream
+                    // turn really ran; only its answer is unusable. A turn that
+                    // delivered tool calls has no JSON payload to judge (same rule
+                    // as the Cascade arm), so it keeps its normal terminal.
+                    const deliveredText = r.sr?.delivered ?? r.sr?.content ?? '';
+                    const hasToolCalls = (r.sr?.toolCalls?.length || 0) > 0;
+                    const violation = (deliveredText || !hasToolCalls)
+                      ? structuredOutputViolation(deliveredText, jsonSchema)
+                      : null;
+                    if (violation) {
+                      log.warn(`Chat[${reqId}]: structured output does not conform (${violation.path}: ${violation.message}) — closing the stream with a typed error`);
+                      terminalOk = false;
+                      await send(chatStreamError(
+                        `The model's answer does not conform to the requested JSON Schema (${violation.path}: ${violation.message}).`,
+                        'server_error',
+                        'STRUCTURED_OUTPUT_NOT_CONFORMING',
+                      ));
+                      break;
+                    }
+                    // Conforming: release the held frames in their original order,
+                    // through the same sequential writer as any other frame.
+                    for (const frame of r.frames) await send(frame);
+                    r.frames.length = 0;
+                  }
                   // Pin this conversation to the account that just served it, so the
                   // next turn reads the prompt cache back instead of re-writing it.
                   // Complementary to the pair-chain commit below: that keeps the
@@ -4912,8 +4958,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
       const _ncachedStop = _nst.hit ? _nst.stop : (__sHit.stop || null);
       const _nuse = __sHit.usage || cachedUsage(messages, _ntxt);
       const _nmodel = __sHit.displayModel || connectDisplayModel;
-      try { recordTokenUsage(_nuse, _nmodel); } catch {}
-      try { recordRequest(_nmodel, true, 0, null); } catch {}
+      // D4/V-27: same rule as the stream replay — the client keeps the cached
+      // usage block, the upstream ledger and the credit card are untouched.
+      try { recordRequest(_nmodel, true, 0, null, { cacheServed: true }); } catch {}
       const _nmsg = { role: 'assistant', content: _ntxt };
       if (__sHit.thinking) _nmsg.reasoning_content = __sHit.thinking;
       const _nchoice = { index: 0, message: _nmsg, finish_reason: _nfinishReason };
@@ -6140,14 +6187,13 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
         displayModel: model,
         nativeMode: nativeBridgeOn,
         nativeAllowlist: nativeOpts?.allowlist || null,
-        // A resumed cascade already holds every earlier observation step;
-        // sending the full history again would duplicate them in its
-        // trajectory. A fresh cascade still receives all of it.
-        additionalSteps: nativeBridgeOn
-          ? (poolCtx?.reuseEntry
-              ? (nativeOpts?.additionalSteps || []).slice(nativeOpts?.deltaStart || 0)
-              : (nativeOpts?.additionalSteps || null))
-          : null,
+        // D3/V-13: hand over the FULL mapped history plus the index where the
+        // newest pending round starts. cascadeChat slices it only while the send
+        // continues an existing trajectory — it is the one place that knows a
+        // resume was rejected and a fresh cascade was opened, and a fresh cascade
+        // must carry every earlier observation again.
+        additionalSteps: nativeBridgeOn ? (nativeOpts?.additionalSteps || null) : null,
+        additionalStepsFrom: nativeBridgeOn ? (nativeOpts?.deltaStart ?? 0) : 0,
         signal,
       });
       for (const c of chunks) {
@@ -8040,13 +8086,11 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 displayModel: model,
                 nativeMode: nativeBridgeOn,
                 nativeAllowlist: nativeOpts?.allowlist || null,
-                // Same delta rule as the non-stream path: a reused cascade
-                // already holds the earlier rounds.
-                additionalSteps: nativeBridgeOn
-                  ? (reuseEntry
-                      ? (nativeOpts?.additionalSteps || []).slice(nativeOpts?.deltaStart || 0)
-                      : (nativeOpts?.additionalSteps || null))
-                  : null,
+                // Same contract as the non-stream path (D3/V-13): the producer
+                // receives the full list + the newest-round index and decides per
+                // send, so a fresh restart after a dead resume re-sends all rounds.
+                additionalSteps: nativeBridgeOn ? (nativeOpts?.additionalSteps || null) : null,
+                additionalStepsFrom: nativeBridgeOn ? (nativeOpts?.deltaStart ?? 0) : 0,
               });
             } else {
               await client.rawGetChatMessage(messages, modelEnum, modelUid, {

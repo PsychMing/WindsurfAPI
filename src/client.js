@@ -951,7 +951,7 @@ export class WindsurfClient {
    */
   async cascadeChat(messages, modelEnum, modelUid, opts = {}) {
     let onChunk, onEnd, onError, signal, reuseEntry, toolPreamble, displayModel, nativeEnvironment;
-    let nativeMode, nativeAllowlist, additionalSteps, requestMaxWaitMs;
+    let nativeMode, nativeAllowlist, additionalSteps, additionalStepsFrom, requestMaxWaitMs;
     let resumeTurn, leaseHeld, detach, accountId, modelKey, lsGeneration, completion;
     // Lease seam. The handler owns the lease for a resumed request (it
     // acquired it before claim), so the producer must release exactly that
@@ -971,6 +971,11 @@ export class WindsurfClient {
       // carries fake "completed" trajectory steps for the caller's prior
       // tool turns so the planner reasons from post-tool state.
       nativeMode, nativeAllowlist, additionalSteps,
+      // D3/V-13: index of the newest pending tool round inside `additionalSteps`.
+      // Only a trajectory that already holds the earlier rounds may send from
+      // here; a fresh start (including a fresh restart after a dead resume) must
+      // carry the whole list, or the planner loses every earlier observation.
+      additionalStepsFrom,
       // Route-owned request budget: an upper bound on this turn's poll window.
       // The caller passes what the request has left; it can only shorten the
       // configured CASCADE_MAX_WAIT_MS, never extend it.
@@ -1030,8 +1035,17 @@ export class WindsurfClient {
       // from; the metadata RPC at the end is offset-scoped, and starting it at
       // 0 would sum every prior turn of this cascade (over-bill).
       let cascadeId;
+      // D3/V-13: true only while THIS send continues an existing upstream
+      // trajectory. A reuse entry without a cascade_id, a panel-state re-warm and
+      // an expired-resume restart all start a NEW trajectory, which therefore
+      // needs the full mapped tool history again.
+      let resumedTrajectory = false;
       let stepOffset = 0;
       let generatorOffset = 0;
+      // D5: whether this turn's metadata window start is actually known. A
+      // resume whose stored offset is missing and whose re-read fails must not be
+      // treated as "starts at record 0".
+      let generatorOffsetKnown = true;
       let text = '';
       let images = [];
       let historyCoverage = { droppedTurnCount: 0, firstIncludedTurnIndex: 0, totalTurns: 0 };
@@ -1045,6 +1059,7 @@ export class WindsurfClient {
       const openCascade = async () => {
         if (reuseEntry?.cascadeId) {
           log.debug(`Cascade resumed: ${reuseEntry.cascadeId}`);
+          resumedTrajectory = true;
           return reuseEntry.cascadeId;
         }
         const startProto = buildStartCascadeRequest(this.apiKey, sessionId);
@@ -1076,10 +1091,17 @@ export class WindsurfClient {
       stepOffset = Number.isInteger(reuseEntry?.stepOffset) && reuseEntry.stepOffset >= 0
         ? reuseEntry.stepOffset
         : 0;
+      // D5/F6: a resumed turn's metadata window start must be KNOWN before it is
+      // used. A missing (or null, "unknown") stored offset is re-read from the
+      // cascade below; if that read fails, the window stays unknown and this turn
+      // abstains from aggregate usage instead of asking from record 0 and
+      // re-billing every earlier turn.
       generatorOffset = Number.isInteger(reuseEntry?.generatorOffset) && reuseEntry.generatorOffset >= 0
         ? reuseEntry.generatorOffset
         : 0;
-      if (reuseEntry?.cascadeId && (!Number.isInteger(reuseEntry?.stepOffset) || !Number.isInteger(reuseEntry?.generatorOffset))) {
+      generatorOffsetKnown = !reuseEntry?.cascadeId
+        || (Number.isInteger(reuseEntry?.generatorOffset) && reuseEntry.generatorOffset >= 0);
+      if (reuseEntry?.cascadeId && (!Number.isInteger(reuseEntry?.stepOffset) || !generatorOffsetKnown)) {
         try {
           if (!Number.isInteger(reuseEntry?.stepOffset)) {
             const resumeStepsResp = await grpcUnary(
@@ -1089,18 +1111,27 @@ export class WindsurfClient {
             );
             stepOffset = parseTrajectorySteps(resumeStepsResp).length;
           }
-          if (!Number.isInteger(reuseEntry?.generatorOffset)) {
+          if (!generatorOffsetKnown) {
             const resumeMetaResp = await grpcUnary(
               this.port, this.csrfToken,
               `${LS_SERVICE}/GetCascadeTrajectoryGeneratorMetadata`,
               grpcFrame(buildGetGeneratorMetadataRequest(cascadeId, 0)),
               5000
             );
-            generatorOffset = parseGeneratorMetadata(resumeMetaResp)?.entryCount || 0;
+            // Only a real record count may seed the window. `?.entryCount || 0`
+            // turned "the RPC said nothing" into "start at record 0".
+            const resumeMeta = parseGeneratorMetadata(resumeMetaResp);
+            if (Number.isInteger(resumeMeta?.entryCount)) {
+              generatorOffset = resumeMeta.entryCount;
+              generatorOffsetKnown = true;
+            }
           }
         } catch (e) {
           log.warn(`Cascade resume snapshot failed: ${e.message}`);
         }
+      }
+      if (reuseEntry?.cascadeId && !generatorOffsetKnown) {
+        log.warn('Cascade resume: generator-metadata window start unknown — this turn will report no aggregate usage instead of re-summing from record 0');
       }
 
       text = '';
@@ -1186,6 +1217,20 @@ export class WindsurfClient {
       // single retry isn't enough there. Each retry does a full warmup
       // (fresh sessionId + panel init) + fresh StartCascade, with a
       // small backoff to let the LS settle.
+      // D3/V-13: the delta is a property of the SEND, not of the request. A
+      // resumed trajectory already holds the earlier rounds, so only the newest
+      // pending round may ride; a fresh one (first turn, or the restart after a
+      // dead resume) must carry every observed round or the planner reasons from
+      // tool results it cannot see. Evaluated on each attempt so the recovery
+      // retry sends the full list.
+      const effectiveAdditionalSteps = () => {
+        if (!Array.isArray(additionalSteps) || additionalSteps.length === 0) return null;
+        if (!resumedTrajectory) return additionalSteps;
+        const from = Number.isInteger(additionalStepsFrom) && additionalStepsFrom >= 0
+          ? additionalStepsFrom
+          : 0;
+        return additionalSteps.slice(from);
+      };
       const sendMessage = async () => {
         // Same best-effort JWT as the legacy channel (env-gated, default OFF);
         // a mint failure must not fail the cascade message.
@@ -1195,7 +1240,7 @@ export class WindsurfClient {
           nativeMode: !!nativeMode,
           nativeAllowlist: nativeAllowlist || null,
           nativeEnvironment: nativeEnvironment || '',
-          additionalSteps: additionalSteps || null,
+          additionalSteps: effectiveAdditionalSteps(),
           maxOutputTokens: completion?.maxTokens,
         }, userJwt);
         await grpcUnary(
@@ -1282,6 +1327,7 @@ export class WindsurfClient {
           // This is now a fresh cascade carrying full rebuilt history, not a
           // continuation of the expired trajectory. Poll from the beginning.
           reuseEntry = null;
+          resumedTrajectory = false;
           stepOffset = 0;
           generatorOffset = 0;
         }
@@ -1995,14 +2041,25 @@ export class WindsurfClient {
       // here just drops usage back to the chars/4 estimator, the response
       // itself is already formed.
       let serverUsage = null;
+      // D5/F6: `metaResult` carries the record count even when no record has a
+      // usage block; `serverUsage` only exists when the token figures are real.
+      let metaResult = null;
       try {
-        const metaReq = buildGetGeneratorMetadataRequest(cascadeId, generatorOffset);
-        const metaResp = await grpcUnary(
-          this.port, this.csrfToken,
-          `${LS_SERVICE}/GetCascadeTrajectoryGeneratorMetadata`,
-          grpcFrame(metaReq), 5000
-        );
-        serverUsage = parseGeneratorMetadata(metaResp);
+        if (!generatorOffsetKnown) {
+          // Asking from 0 here would report every earlier turn of this cascade
+          // as this turn's usage. Abstain instead: the step-level usage below is
+          // turn-scoped, so it stays honest.
+          log.warn('Cascade: generator-metadata window start unknown — skipping the aggregate usage read instead of re-summing from record 0');
+        } else {
+          const metaReq = buildGetGeneratorMetadataRequest(cascadeId, generatorOffset);
+          const metaResp = await grpcUnary(
+            this.port, this.csrfToken,
+            `${LS_SERVICE}/GetCascadeTrajectoryGeneratorMetadata`,
+            grpcFrame(metaReq), 5000
+          );
+          metaResult = parseGeneratorMetadata(metaResp);
+          if (metaResult?.hasUsage) serverUsage = metaResult;
+        }
       } catch (e) {
         log.debug(`GetCascadeTrajectoryGeneratorMetadata failed: ${e.message}`);
       }
@@ -2043,8 +2100,12 @@ export class WindsurfClient {
       if (turn) {
         try { chunks.turnSnapshot = turn.snapshot(); } catch { /* not resumable */ }
       }
-      chunks.generatorOffset = serverUsage?.entryCount != null
-        ? generatorOffset + serverUsage.entryCount
+      // D5/F6: the next window starts after every record this turn consumed,
+      // whether or not those records carried usage. Only a known start may be
+      // advanced; an unknown one stays null so the pool stores "unknown" and the
+      // next resume re-reads the count instead of re-summing from 0.
+      chunks.generatorOffset = generatorOffsetKnown && Number.isInteger(metaResult?.entryCount)
+        ? generatorOffset + metaResult.entryCount
         : null;
       chunks.toolCalls = toolCalls;
       chunks.usage = serverUsage;

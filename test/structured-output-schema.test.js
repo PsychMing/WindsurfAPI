@@ -274,3 +274,139 @@ describe('V-10: the Cascade stream reports a schema miss instead of a clean stop
     assert.ok(res.body.includes('data: [DONE]'));
   });
 });
+
+// D2 (V-10 follow-up, audit2/Transport.md A.1) — the Connect STREAM arm.
+//
+// MEASURED on the audited baseline: with DEVIN_CONNECT=1, stream:true and
+// response_format:json_schema, the adapter wrote every delta as it arrived and
+// the handler then reported success (finish_reason:'stop'), stored the payload
+// in the response cache and committed it to session continuity. Nothing on that
+// path called structuredOutputViolation(), so the caller's own validator
+// rejected a body this proxy had called a completed turn — and the next
+// identical request replayed the same non-conforming answer from the cache.
+//
+// The contract pinned here:
+//   * a non-conforming streamed payload never becomes a success, never reaches
+//     the response cache and never becomes a session-continuity record;
+//   * a conforming stream is unchanged (same content, same terminal, cached,
+//     committed);
+//   * the request that follows a rejected turn is served by upstream again
+//     (the rejection left no cache entry behind).
+
+/** Scripted adapter: each call takes the next queued payload. */
+function connectStreamDeps(payloads) {
+  const queue = [...payloads];
+  const calls = [];
+  const adapter = async (_params, send, meta) => {
+    const text = queue.length > 1 ? queue.shift() : queue[0];
+    calls.push(text);
+    const base = { id: meta.id, object: 'chat.completion.chunk', created: meta.created, model: meta.displayModel };
+    await send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
+    if (text) await send({ ...base, choices: [{ index: 0, delta: { content: text }, finish_reason: null }] });
+    await send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+    return {
+      content: text,
+      delivered: text,
+      reasoning: '',
+      finish_reason: 'stop',
+      usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+      toolCalls: [],
+      stop: null,
+    };
+  };
+  return { adapter, calls };
+}
+
+describe('D2: the Connect stream never reports a schema miss as a completed turn', () => {
+  let cacheClear;
+  let cacheStats;
+  let session;
+
+  beforeEach(async () => {
+    ({ cacheClear, cacheStats } = await import('../src/cache.js'));
+    session = await import('../src/session-continuity.js');
+    cacheClear();
+    session._resetForTests();
+  });
+
+  afterEach(() => {
+    delete process.env.DEVIN_CONNECT_SESSION_REUSE;
+    try { session?._resetForTests(); } catch {}
+    try { cacheClear?.(); } catch {}
+  });
+
+  it('invalid then valid: the bad turn is a typed failure that is neither cached nor committed', async () => {
+    process.env.DEVIN_CONNECT = '1';
+    process.env.DEVIN_CONNECT_SESSION_REUSE = '1';
+    seedAccount('connect-stream-schema');
+    const { adapter, calls } = connectStreamDeps(['{"answer":"twelve"}', '{"answer":12,"unit":"m"}']);
+    __setConnectDeps({ streamChatCompletion: adapter });
+
+    const body = schemaBody({ stream: true });
+    const first = await handleChatCompletions(body, { callerKey: CALLER });
+    assert.equal(first.status, 200);
+    assert.equal(first.stream, true);
+    const res = fakeRes();
+    await first.handler(res);
+
+    const chunks = frames(res);
+    const errors = chunks.filter((c) => c.error);
+    assert.equal(errors.length, 1, `expected one typed error frame, got ${JSON.stringify(chunks)}`);
+    assert.equal(errors[0].error.code, 'STRUCTURED_OUTPUT_NOT_CONFORMING');
+    assert.equal(chunks.some((c) => c.choices?.[0]?.finish_reason === 'stop'), false,
+      'finish_reason:stop would tell the caller its schema held');
+    assert.equal(res.body.includes('data: [DONE]'), false, 'no clean-finish sentinel on a failure');
+    assert.doesNotMatch(res.body, /"answer":"twelve"/, 'the non-conforming payload must not be delivered');
+    assert.equal(cacheStats().stores, 0, 'a rejected turn must not be cached');
+    // resolveSessionId anchors a state from turn 1 (by design), so the commit
+    // index is the observable: it only grows when a completed pair is stored.
+    assert.equal(session._getIndexStats().commitKeys, 0, 'a rejected turn must not become session continuity');
+
+    // Same body again: the rejection left no cache entry, so upstream runs and
+    // the now-conforming answer is served, cached and committed.
+    const second = await handleChatCompletions(body, { callerKey: CALLER });
+    const res2 = fakeRes();
+    await second.handler(res2);
+    assert.equal(calls.length, 2, 'the follow-up must reach upstream, not a cache replay');
+    const chunks2 = frames(res2);
+    assert.equal(chunks2.filter((c) => c.error).length, 0, JSON.stringify(chunks2));
+    assert.equal(
+      chunks2.flatMap((c) => c.choices || []).map((c) => c.delta?.content || '').join(''),
+      '{"answer":12,"unit":"m"}',
+    );
+    assert.equal(chunks2.some((c) => c.choices?.[0]?.finish_reason === 'stop'), true);
+    assert.ok(res2.body.includes('data: [DONE]'));
+    assert.equal(cacheStats().stores, 1, 'the conforming answer is cached');
+    assert.equal(session._getIndexStats().commitKeys, 1, 'the conforming answer is committed for reuse');
+  });
+
+  it('control: a conforming stream is unchanged and is served from cache on the repeat', async () => {
+    process.env.DEVIN_CONNECT = '1';
+    seedAccount('connect-stream-schema-ok');
+    const { adapter, calls } = connectStreamDeps(['{"answer":12,"unit":"m"}']);
+    __setConnectDeps({ streamChatCompletion: adapter });
+
+    const body = schemaBody({ stream: true });
+    const first = await handleChatCompletions(body, { callerKey: CALLER });
+    const res = fakeRes();
+    await first.handler(res);
+    const chunks = frames(res);
+    assert.deepEqual(
+      chunks.flatMap((c) => c.choices || []).map((c) => c.delta?.content || '').filter(Boolean),
+      ['{"answer":12,"unit":"m"}'],
+      'the conforming payload streams as one content delta, exactly as before',
+    );
+    assert.equal(chunks.some((c) => c.choices?.[0]?.finish_reason === 'stop'), true);
+    assert.ok(res.body.includes('data: [DONE]'));
+    assert.equal(cacheStats().stores, 1);
+
+    const second = await handleChatCompletions(body, { callerKey: CALLER });
+    const res2 = fakeRes();
+    await second.handler(res2);
+    assert.equal(calls.length, 1, 'the repeat is a cache hit — upstream must not run twice');
+    assert.equal(
+      frames(res2).flatMap((c) => c.choices || []).map((c) => c.delta?.content || '').join(''),
+      '{"answer":12,"unit":"m"}',
+    );
+  });
+});
