@@ -7,7 +7,7 @@
     {
       "name": "the PRIMARY loss returns: messages.js drops result.headers in the error translation, one step before the router",
       "file": "src/handlers/messages.js",
-      "anchor": "      return toAnthropicChatError(result, body);",
+      "anchor": "      return toAnthropicChatError(result);",
       "replacement": "      return toAnthropicError(result.status, result.body?.error?.type, result.body?.error?.message);"
     },
     {

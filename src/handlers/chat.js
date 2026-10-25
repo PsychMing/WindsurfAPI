@@ -61,7 +61,7 @@ import { acpVisionEnabled } from '../devin-acp.js';
 import { selectBackend, usesCascadeFlow } from '../backend-router.js';
 import { toChatCompletion as _toChatCompletion, streamChatCompletion as _streamChatCompletion } from '../devin-connect-openai.js';
 import { resolveConnectSelector, DROUGHT_SAFE_SELECTORS } from '../devin-connect-models.js';
-import { getToolDefTags, parseToolCallTagMap, isParallelToolCallsUnsupported } from '../devin-connect.js';
+import { getToolDefTags, parseToolCallTagMap, isParallelToolCallsHintIgnored } from '../devin-connect.js';
 import { recordRateLimitBurstEvent, RATE_LIMIT_BURST_WINDOW_MS } from '../rate-limit-burst.js';
 import { isRouterModel, assignModel as _assignModel } from '../devin-connect-catalog.js';
 import { bumpConnect } from '../devin-connect-metrics.js';
@@ -2332,6 +2332,10 @@ function streamChatCompletion(...args) { return _connectDeps.streamChatCompletio
 function assignModel(...args) { return _connectDeps.assignModel(...args); }
 function reLoginAccount(...args) { return _connectDeps.reLoginAccount(...args); }
 export function __setConnectDeps(overrides = {}) { _connectDeps = { ..._connectDeps, ...overrides }; }
+// The "hint dropped" notice is logged once per process (see the connect-flow gate in
+// handleChatCompletions), so tests need to re-arm it to assert the line.
+let _parallelHintWarned = false;
+export function __resetParallelToolCallsHintWarn() { _parallelHintWarned = false; }
 export function __resetConnectDeps() {
   _connectDeps = {
     toChatCompletion: _toChatCompletion,
@@ -3623,32 +3627,35 @@ async function _handleChatCompletionsInner(body, context = {}) {
         } },
       };
     }
-    // `parallel_tool_calls:false` is a caller CORRECTNESS hint ("emit at most one
-    // tool call per turn"), not a preference, and the connect upstream can only be
-    // told about it through #11 `disable_parallel_tool_calls` — an opt-in field
-    // whose tag is unconfirmed. With DEVIN_CONNECT_TOOL_CHOICE unset the field is
-    // not emitted and the hint used to be dropped in silence: the live matrix
-    // measured 4/4 connect models still returning two calls with the flag set
-    // false (evidence/ToolMatrixLive.md §8). Serialising here is not an option —
-    // the upstream decides the call count inside one turn, so emitting only the
-    // first of N would discard work the model already did. Refuse instead, and
-    // name the switch that makes the hint honourable.
+    // `parallel_tool_calls:false` is a caller PREFERENCE ("prefer one tool call per
+    // turn"), not a correctness requirement. The connect upstream can only be told
+    // about it through #11 `disable_parallel_tool_calls` — an opt-in field whose tag
+    // is unconfirmed (third-party .proto declaration order, never a wire capture).
+    // With DEVIN_CONNECT_TOOL_CHOICE unset the field is not emitted and the hint is
+    // dropped: the live matrix measured 4/4 connect models still returning two calls
+    // with the flag set false (evidence/ToolMatrixLive.md §8).
+    //
+    // This used to be a 400 `unsupported_parameter`. Both halves of that were wrong.
+    // (1) A preference is not a malformed request — refusing it discards work the
+    // proxy can serve. (2) It broke a shipped client outright: Codex CLI 0.164 sends
+    // `parallel_tool_calls:false` on EVERY request (29/29 captured,
+    // evidence/ClientSandboxes.md §3.3 C1), so under the shipped default its first
+    // turn got 400, Codex surfaced `turn.failed` and exited 1. A proxy must not turn
+    // a hint into an outage.
+    //
+    // Serve it, say the hint is being dropped ONCE per process (a warn per request
+    // would fire on every Codex turn and drown the real ones), and count EVERY
+    // occurrence in `parallel_tool_calls_hint_ignored`. The counter is the signal
+    // that would justify calibrating #11 — the drop is never silent.
     //
     // Scoped to the connect flow on purpose: the switch and the wire field are
-    // connect-only, so a Cascade request must never be refused over a connect
-    // knob. Placed with the other request-shape gates (after model resolution,
-    // before the drought/capacity checks and before any account is touched).
-    if (isParallelToolCallsUnsupported(body.parallel_tool_calls, process.env)) {
-      log.warn(`Chat[${reqId}]: DEVIN_CONNECT rejecting parallel_tool_calls:false — the #11 passthrough is off (DEVIN_CONNECT_TOOL_CHOICE is not "1")`);
-      return {
-        status: 400,
-        body: { error: {
-          message: 'This proxy cannot honour parallel_tool_calls:false on the DEVIN_CONNECT route: the upstream field that disables parallel tool calls is opt-in and currently off, so the hint would be silently ignored and the model could still return several tool calls in one turn. Remove parallel_tool_calls (or set it to true), or set DEVIN_CONNECT_TOOL_CHOICE=1 to forward disable_parallel_tool_calls upstream.',
-          type: 'invalid_request_error',
-          param: 'parallel_tool_calls',
-          code: 'unsupported_parameter',
-        } },
-      };
+    // connect-only, so a Cascade request is never affected by a connect knob.
+    if (isParallelToolCallsHintIgnored(body.parallel_tool_calls, process.env)) {
+      bumpConnect('parallel_tool_calls_hint_ignored');
+      if (!_parallelHintWarned) {
+        _parallelHintWarned = true;
+        log.warn(`Chat[${reqId}]: DEVIN_CONNECT event=parallel_tool_calls_hint_ignored — caller asked for parallel_tool_calls:false and the #11 passthrough is off (DEVIN_CONNECT_TOOL_CHOICE is not "1"; tag unconfirmed), so the request is served without the hint and the upstream may return several calls per turn. Counted per request; logged once per process.`);
+      }
     }
     // Drought gate (#234). It has to live INSIDE this short-circuit block: every
     // exit path of this block returns, so the Cascade-path gate further down

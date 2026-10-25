@@ -196,6 +196,14 @@ free-tier behavior; a sustained spike means the upstream is genuinely saturated
 - **Router models** (`adaptive`, `arena-*`): resolution via AssignModel is built
   but gated OFF (`DEVIN_CONNECT_ASSIGN_MODEL` unset) because the wire tags are
   inferred, not yet calibrated on a paid round-trip. §8 has the enable path.
+- **Sequential tool calls** (`parallel_tool_calls:false`, or Anthropic's
+  `tool_choice.disable_parallel_tool_use`): the request is always SERVED — the
+  field is a preference and never a 400 (Codex 0.164 sends it on every request;
+  the old refusal made the CLI unusable) — but the hint is only forwarded upstream
+  when `DEVIN_CONNECT_TOOL_CHOICE=1` (unconfirmed `#11` tag). Otherwise the model
+  may return several calls in one turn; the drop is logged once per process
+  (`event=parallel_tool_calls_hint_ignored`) and counted per request as
+  `parallel_tool_calls_hint_ignored` on `/dashboard/api/connect-metrics`.
 - **Billing passthrough**: cache token tags `5`/`4` ship ON by default.
   `committed_acu_cost` is descriptor-verified as top-level **double field 22**
   (`leookun/devin-2api` extract) but stays **opt-in** until a paid frame
