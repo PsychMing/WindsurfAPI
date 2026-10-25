@@ -181,6 +181,71 @@ function assertSupportedToolChoice(toolChoice) {
   }
 }
 
+// OpenAI's metadata contract. Kept next to the validator rather than in the store
+// so the HTTP boundary and the store's defence-in-depth caps can be read together.
+const METADATA_MAX_KEYS = 16;
+const METADATA_MAX_KEY_CHARS = 64;
+const METADATA_MAX_VALUE_CHARS = 512;
+
+function invalidMetadata(detail) {
+  const error = new Error(`Invalid 'metadata': ${detail}.`);
+  error.type = 'invalid_request_error';
+  error.param = 'metadata';
+  error.code = 'invalid_metadata';
+  return error;
+}
+
+/**
+ * Validate and copy the request's `metadata` map (DataAuditTools F4).
+ *
+ * `metadata` is a top-level Responses parameter whose only purpose is the ECHO: a
+ * client tags a request (trace id, tenant) and reads the tag back off the response
+ * object, including from a later GET. Nothing on this route read it, so the tag
+ * vanished behind a 200 with no signal — the exact silent-drop failure this file
+ * refuses elsewhere for tools and tool_choice.
+ *
+ * Validated rather than normalized, because the OpenAI contract is explicit (a
+ * flat map of at most 16 string pairs, keys <= 64 chars, values <= 512 chars) and
+ * coercing or truncating would change the caller's data while still claiming to
+ * echo it. `undefined`/`null` mean "no metadata": absence stays absent on the
+ * response object.
+ *
+ * Values are never logged. The error messages name the rule and the field, never
+ * the payload.
+ */
+export function normalizeResponseMetadata(metadata) {
+  if (metadata == null) return undefined;
+  if (typeof metadata !== 'object' || Array.isArray(metadata)) {
+    throw invalidMetadata('expected an object mapping string keys to string values');
+  }
+  const keys = Object.keys(metadata);
+  if (keys.length > METADATA_MAX_KEYS) {
+    throw invalidMetadata(`at most ${METADATA_MAX_KEYS} key-value pairs are allowed, got ${keys.length}`);
+  }
+  // An EMPTY map is not a tag. Reporting it as absent keeps the POST and the later
+  // GET identical (the store has no slot for zero entries) instead of echoing `{}`
+  // once and omitting it the next time the same response is read.
+  if (!keys.length) return undefined;
+  const out = {};
+  for (const key of keys) {
+    if (!key) throw invalidMetadata('keys must be non-empty strings');
+    if (key.length > METADATA_MAX_KEY_CHARS) {
+      throw invalidMetadata(`keys must be at most ${METADATA_MAX_KEY_CHARS} characters`);
+    }
+    const value = metadata[key];
+    if (typeof value !== 'string') {
+      throw invalidMetadata(`the value for '${key}' must be a string`);
+    }
+    if (value.length > METADATA_MAX_VALUE_CHARS) {
+      throw invalidMetadata(`values must be at most ${METADATA_MAX_VALUE_CHARS} characters`);
+    }
+    // defineProperty, not assignment: a key literally named `__proto__` is an own
+    // data property here instead of a prototype write.
+    Object.defineProperty(out, key, { value, enumerable: true, configurable: true, writable: true });
+  }
+  return out;
+}
+
 function encodeToolName(name, namespace = '') {
   const toolName = name || 'unknown';
   if (!namespace) return toolName;
@@ -426,6 +491,11 @@ function normalizeResponseTextFormat(format) {
 
 export function responsesToChat(body) {
   const messages = [];
+  // Validated here, where every other request field is read, and carried on the
+  // result as an internal field: `metadata` is not forwarded upstream (the chat
+  // surface has no such parameter), so the response object is the only place it
+  // can survive.
+  const metadata = normalizeResponseMetadata(body.metadata);
   const requestedTools = collectResponseTools(body);
   // No hosted-search or server-executed executor exists on this route (see
   // ../server-side-tools.js). Refuse BEFORE calling the model: letting the turn
@@ -569,6 +639,7 @@ export function responsesToChat(body) {
     // Internal, stripped before the upstream call (same convention as __route).
     ...(instructionsLead ? { __instructionsLead: instructionsLead } : {}),
     ...(hasNameRewrites && toolNameMap ? { __toolNameMap: toolNameMap } : {}),
+    ...(metadata ? { __responseMetadata: metadata } : {}),
   };
 }
 
@@ -678,7 +749,7 @@ function functionCallItem(toolCall, status = 'completed', requestedTools = [], t
   };
 }
 
-export function chatToResponse(chatBody, requestedModel, responseId = genResponseId(), msgId = genMessageId(), requestedTools = [], toolNameMap = null) {
+export function chatToResponse(chatBody, requestedModel, responseId = genResponseId(), msgId = genMessageId(), requestedTools = [], toolNameMap = null, metadata = null) {
   const choice = chatBody.choices?.[0] || {};
   const message = choice.message || {};
   const finishReason = choice.finish_reason || 'stop';
@@ -715,6 +786,9 @@ export function chatToResponse(chatBody, requestedModel, responseId = genRespons
     // max) while the stream path adopted the served name from the chunk. The
     // fallback still covers a result with no model field at all.
     model: chatBody.model || requestedModel,
+    // Echoed only when the caller sent it: absence stays absent rather than
+    // becoming `{}`, which would claim the caller attached an empty tag set.
+    ...(metadata ? { metadata } : {}),
     output,
     // Omitted, not zeroed, when the upstream reported nothing. `input_tokens: 0` is
     // an ASSERTION that the turn consumed no prompt tokens, which is false for any
@@ -729,10 +803,14 @@ export function chatToResponse(chatBody, requestedModel, responseId = genRespons
 }
 
 class ResponsesStreamTranslator {
-  constructor(res, responseId, model, requestedTools = [], toolNameMap = null) {
+  constructor(res, responseId, model, requestedTools = [], toolNameMap = null, metadata = null) {
     this.res = res;
     this.responseId = responseId;
     this.model = model;
+    // Same echo contract as the non-stream path: present on every response object
+    // the stream publishes (created / in_progress / completed / failed) when the
+    // caller sent it, absent otherwise.
+    this.metadata = metadata;
     this.requestedTools = Array.isArray(requestedTools) ? requestedTools : [];
     this.toolNameMap = toolNameMap;
     this.createdAt = Math.floor(Date.now() / 1000);
@@ -860,6 +938,7 @@ class ResponsesStreamTranslator {
       created_at: this.createdAt,
       status,
       model: this.model,
+      ...(this.metadata ? { metadata: this.metadata } : {}),
       output,
     };
   }
@@ -1575,6 +1654,9 @@ function storedResponseBody(responseId, entry) {
       ? { incomplete_details: { reason: entry.incompleteReason } }
       : {}),
     model: entry.model || null,
+    // The tag the CREATING request attached. Absent when it had none, for the
+    // same reason the POST omits it: `{}` would be an assertion the caller made.
+    ...(entry.metadata ? { metadata: entry.metadata } : {}),
     output,
     output_text: answer,
     // usage is OPTIONAL on the Response model in both official SDKs, and the store
@@ -1659,10 +1741,19 @@ export async function handleResponses(body, deps = {}) {
   const requestedModel = body.model || 'claude-sonnet-4.6';
   let chatBody;
   let toolNameMap = null;
+  let responseMetadata = null;
   try {
     chatBody = responsesToChat(body);
     toolNameMap = chatBody.__toolNameMap || null;
     delete chatBody.__toolNameMap;
+    // The tag the caller attached, validated by responsesToChat. Stripped here so
+    // it never reaches the upstream request body: it is a response-side echo, not
+    // a chat parameter.
+    responseMetadata = chatBody.__responseMetadata || null;
+    if ('__responseMetadata' in chatBody) {
+      chatBody = { ...chatBody };
+      delete chatBody.__responseMetadata;
+    }
   } catch (err) {
     return {
       status: 400,
@@ -1793,6 +1884,7 @@ export async function handleResponses(body, deps = {}) {
           store: body.store,
           status: terminal.status || 'completed',
           incompleteReason: terminal.incompleteReason || null,
+          metadata: responseMetadata,
         },
       );
       // putResponse's return value used to be dropped, so a refusal to store was
@@ -1817,7 +1909,7 @@ export async function handleResponses(body, deps = {}) {
     const result = await chatHandler({ ...chatBody, stream: false, __route: 'responses' }, context);
     if (result.status !== 200) return result;
     const msg = result.body?.choices?.[0]?.message;
-    const responseBody = chatToResponse(result.body, requestedModel, responseId, genMessageId(), requestedTools, toolNameMap);
+    const responseBody = chatToResponse(result.body, requestedModel, responseId, genMessageId(), requestedTools, toolNameMap, responseMetadata);
     // Record the status THIS response reported, so retrieval agrees with it.
     commit(msg ? {
       role: 'assistant',
@@ -1851,7 +1943,7 @@ export async function handleResponses(body, deps = {}) {
       'X-Accel-Buffering': 'no',
     },
     async handler(realRes) {
-      const translator = new ResponsesStreamTranslator(realRes, responseId, requestedModel, requestedTools, toolNameMap);
+      const translator = new ResponsesStreamTranslator(realRes, responseId, requestedModel, requestedTools, toolNameMap, responseMetadata);
       const captureRes = createCaptureRes(translator, realRes);
 
       realRes.on('close', () => {

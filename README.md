@@ -454,6 +454,11 @@ curl -X DELETE http://localhost:3003/v1/responses/resp_xxx -H "Authorization: Be
 > API key 时,两个调用方发相同的 `user` 会推导出逐字节相同的 callerKey,所以别把 id
 > 当成除"难猜"以外的任何保证。
 
+> `metadata` 是**回显字段**:请求里带上它,响应对象(含流式每一帧的 `response`)和之后的
+> `GET /v1/responses/{id}` 都原样带回,便于调用方挂 trace/租户标签。按 OpenAI 契约限制
+> 最多 16 对、键 ≤64 字符、值 ≤512 字符的字符串;超限返回 400 而不是静默丢弃。它**不会**
+> 转发给上游模型,也计入存储的字节预算。
+
 ### Cline / Cursor / Aider
 
 在客户端配置里 **Custom OpenAI Compatible**：

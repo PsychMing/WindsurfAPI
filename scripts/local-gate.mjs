@@ -83,24 +83,53 @@ export function inertSkipAllowlist(env = process.env) {
     .filter(Boolean));
 }
 
-export async function runGate(root = process.cwd()) {
+/**
+ * The gate's steps, in order.
+ *
+ * Two scopes, deliberately:
+ *   - INCREMENTAL (`npm run gate`): the baseline check measures only the specs the
+ *     diff can have moved. Fast enough to run on every branch, which is the only
+ *     reason anyone runs it.
+ *   - RELEASE (`npm run gate:release`, and the release workflow): `--all` measures
+ *     EVERY spec against its pin. This is the mode that catches a pin moved by a
+ *     change no spec's own test list names, and the tag checkout has no diff to
+ *     scope by anyway.
+ *
+ * Exported so test/local-gate.test.js asserts the wiring without running a suite.
+ */
+export function gateSteps({ release = false } = {}) {
+  return [
+    ['spec-static-check', process.execPath, ['scripts/spec-static-check.mjs']],
+    ['spec-baseline-check', process.execPath,
+      ['scripts/spec-baseline-check.mjs', ...(release ? ['--all'] : [])]],
+    ['secret-scan', process.execPath, ['scripts/secret-scan.mjs']],
+    ['test:release', process.execPath, [process.env.npm_execpath, 'run', '--silent', 'test:release']],
+    ['git diff --check', 'git', ['diff', '--check']],
+    ['git diff --cached --check', 'git', ['diff', '--cached', '--check']],
+  ];
+}
+
+/** Parse the CLI flags. An unknown flag is a hard error, never a silently ignored one. */
+export function parseGateArgs(argv) {
+  const options = { release: false };
+  for (const arg of argv) {
+    if (arg === '--release' || arg === '--all') { options.release = true; continue; }
+    throw new Error(`unknown option: ${arg}`);
+  }
+  return options;
+}
+
+export async function runGate(root = process.cwd(), options = {}) {
   // npm exposes the actual JS CLI path on Windows too. Launch it through Node rather
   // than spawning npm.cmd or interpolating command strings through a shell.
-  const npmCli = process.env.npm_execpath;
-  if (!npmCli) {
+  // gateSteps reads the same variable for the test:release step.
+  if (!process.env.npm_execpath) {
     console.error('GATE: FAIL exit=2 — invoke this entry point with npm run gate');
     return 2;
   }
   const env = { ...process.env, NO_COLOR: '1' };
   delete env.FORCE_COLOR; delete env.NODE_TEST_CONTEXT;
-  const steps = [
-    ['spec-static-check', process.execPath, ['scripts/spec-static-check.mjs']],
-    ['spec-baseline-check', process.execPath, ['scripts/spec-baseline-check.mjs']],
-    ['secret-scan', process.execPath, ['scripts/secret-scan.mjs']],
-    ['test:release', process.execPath, [npmCli, 'run', '--silent', 'test:release']],
-    ['git diff --check', 'git', ['diff', '--check']],
-    ['git diff --cached --check', 'git', ['diff', '--cached', '--check']],
-  ];
+  const steps = gateSteps(options);
   const results = [];
   for (const [name, command, args] of steps) {
     console.log(`\n=== ${name} ===`);
@@ -167,14 +196,15 @@ export async function runGate(root = process.cwd()) {
   }
   console.log('\n=== Local gate summary ===');
   for (const row of results) console.log(`${row.code === 0 ? 'PASS' : 'FAIL'} ${row.name} exit=${row.code}${row.detail ? ` — ${row.detail}` : ''}`);
-  console.log('SKIP mutation EXECUTION — this incremental gate checks spec shape, anchors and baseline'
+  console.log('SKIP mutation EXECUTION — this gate checks spec shape, anchors and baseline'
     + ' values, but does not run the mutants themselves; the Linux full-gate recipe runs the sweep.');
   const code = results.some(row => row.untrustworthy) ? 2 : results.some(row => row.code !== 0) ? 1 : 0;
-  console.log(`INCREMENTAL GATE: ${code ? 'FAIL' : 'PASS'} exit=${code}`);
+  const mode = options.release ? 'RELEASE' : 'INCREMENTAL';
+  console.log(`${mode} GATE: ${code ? 'FAIL' : 'PASS'} exit=${code}`);
   return code;
 }
 
 if (resolve(process.argv[1] || '') === resolve(fileURLToPath(import.meta.url))) {
-  try { process.exitCode = await runGate(); }
+  try { process.exitCode = await runGate(process.cwd(), parseGateArgs(process.argv.slice(2))); }
   catch (error) { console.error(`GATE: FAIL exit=2 — ${error.message}`); process.exitCode = 2; }
 }

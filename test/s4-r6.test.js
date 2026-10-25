@@ -12,6 +12,9 @@ function load(limit = value => value) {
   const _entries = new Map(), _tenantCounts = new Map(), _tenantBytes = new Map();
   const deps = {
     ENABLED: true, MAX_ENTRIES: 500, MAX_BYTES: 10000000, MIN_TENANT_BYTES: 1000,
+    // The metadata slot's caps are module constants, like the other limits above:
+    // the extracted body reads them from this scope, so they must be supplied.
+    MAX_METADATA_KEYS: 16, MAX_METADATA_KEY_CHARS: 64, MAX_METADATA_VALUE_CHARS: 512,
     _entries, _tenantCounts, _tenantBytes, _stats: { stored: 0, hits: 0, misses: 0, expires: 0, rejected: 0, evictions: 0 },
     wantsPersistence: x => x !== false, ensureSweepTimer() {},
     tenantOf: x => x, oldestId: () => _entries.keys().next().value,
@@ -31,7 +34,7 @@ function load(limit = value => value) {
     assert.ok(start >= 0 && end > start, `plain function ${name} must be present`);
     return source.slice(start, end);
   }
-  return new Function(...Object.keys(deps), `let _bytes = 0;\n${extractPlain('copyStoredValue')}\n${extract('putResponse')}\n${extract('getResponse')}\nreturn {putResponse,getResponse};`)(...Object.values(deps));
+  return new Function(...Object.keys(deps), `let _bytes = 0;\n${extractPlain('copyStoredValue')}\n${extractPlain('boundMetadata')}\n${extractPlain('metadataBytes')}\n${extract('putResponse')}\n${extract('getResponse')}\nreturn {putResponse,getResponse};`)(...Object.values(deps));
 }
 function history() {
   return [{ role: 'user', content: [{ type: 'text', text: 'original' },
