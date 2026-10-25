@@ -146,6 +146,8 @@ support-bundle-*.manifest.json
 # OTA 回滚点（运行时记录，勿提交）
 data/self-update-before.json
 data/self-update-before.pending.json
+data/self-update-journal.json
+data/self-update-docker.json
 
 # Machine-local; never product
 .DS_Store

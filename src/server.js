@@ -36,7 +36,7 @@ import { resolveClineCompat, stripClineNamespace } from './handlers/cline-compat
 import { resolveCcCompat, stripCcNamespace } from './handlers/cc-compat.js';
 import { isExperimentalEnabled, getBackendSwitch } from './runtime-config.js';
 import { resolveModel, getModelInfo } from './models.js';
-import { handleDashboardApi, parseProxyUrl, validateProxyHost, verifyAdminRequest } from './dashboard/api.js';
+import { handleDashboardApi, parseProxyUrl, validateProxyHost, verifyAdminRequest, validateDashboardRequestHost } from './dashboard/api.js';
 import { recordRequest, updateRequest } from './dashboard/request-ring.js';
 import { withStatsScope, finalizeStatsScope } from './dashboard/stats.js';
 import { setAccountProxy } from './dashboard/proxy-config.js';
@@ -516,6 +516,17 @@ async function route(req, res) {
   }
 
   // ─── API endpoints (require API key) ────────────────────
+
+  // D1 (audit2/Server.md S02): `/auth/*` is an operator surface. In the
+  // documented open-local mode verifyAdminRequest authenticates purely from
+  // the loopback socket, which a DNS-rebinding page also satisfies — so a
+  // rebinding Host could list/add/delete pool accounts. Apply the same
+  // Host/X-Forwarded-Host boundary as `/dashboard/api/*` BEFORE the API-key
+  // gate, the brute-force counters, or any body read: a rejected Host has no
+  // account delta and cannot spend auth attempts.
+  if (path === '/auth' || path.startsWith('/auth/')) {
+    if (!validateDashboardRequestHost(req, res)) return;
+  }
 
   if (!validateApiKey(extractToken(req))) {
     // v2.0.61 (#110): clearer error so operators know the issue is
