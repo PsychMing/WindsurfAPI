@@ -1,7 +1,9 @@
 # FixD7 — gRPC/Connect terminal truth (G1, G2, G3, G4)
 
 Lane: worktree `C:/Users/dwgx1/.dwgx/ops/artifacts/windsurfapi-autonomous-20261026/w17x-FixD7`,
-branch `fix/d7-grpc-terminal-truth` from master `2598299e`. No default was flipped:
+branch `fix/d7-grpc-terminal-truth` from master `2598299e`. Two commits: `597cb903` (the fix)
+and a docs-only follow-up (§0 → `597cb903` in `HANDOFF-2026-10-15.md`, which the repo's
+`docs-consistency-guard` demands once a branch touches `src/`). No default was flipped:
 `GRPC_PROTOCOL` still selects legacy gRPC when unset (`src/grpc.js:16`).
 
 Direction row: D7 — `src/grpc.js:150-292,510-543` unary/stream terminal handling and
@@ -14,11 +16,12 @@ Direction row: D7 — `src/grpc.js:150-292,510-543` unary/stream terminal handli
 |---|---|---|
 | `src/grpc.js` | the four findings | one shared `terminalFailure()`, strict Connect unary body decoder, HTTP-status fail-fast in both response handlers, spec framing for Connect unary |
 | `test/helpers/s2-b-grpc-harness.mjs` | A.3 asks for a `startUnary` sibling | additive `startUnary()` (captures headers, written body, resolve/reject) |
-| `test/s2-b-grpc.test.js` | the acceptance gate | 11 new arms (4 unary gap, 2 unary controls, 1 framing control, 1 trailer-error, 3 stream); `compare()` now supplies the status-0 trailer the frozen oracle also needs |
+| `test/s2-b-grpc.test.js` | the acceptance gate | 11 new arms — 5 gap arms (no status ×2, Connect 500 ×2, trailer-only) + 6 controls (status-0 ×2, Trailers-Only error, Connect error trailer, `application/proto` framing, bare response); `compare()` now supplies the status-0 trailer the frozen oracle also needs |
 | `test/helpers/fake-grpc-trailers.mjs` | new; the fixtures below need a real terminal status | `terminateRpcWithStatus()` + `isConnectContentType()` |
 | `test/client-panel-retry.test.js`, `test/native-read-wrapper.test.js`, `test/rate-risk.test.js`, `test/stream-backpressure-drain.test.js`, `test/cascade-abort-side-effects.test.js`, `test/cascade-detach-lazy-resume.test.js`, `test/detach-soak.test.js`, `test/helpers/fake-cascade-ls.mjs` | fake LS servers that never terminated an RPC and that recognised only the *streaming* Connect content-type | 2-line wrap at the single `server.on('stream')` site + one predicate call in each `responseBody`/`errorBody`/`requestPayload` |
 | `test/rate-gap2.test.js` | fake transport emitted `end` with no response at all | emits the response + status-0 trailer it was implicitly relying on |
 | `test/startserver-cascade-1m.test.js` | asserted the streaming content-type for a **unary** RPC, and echoed it back with an enveloped body | expects `application/proto`; answers unary with a bare message |
+| `docs/HANDOFF-2026-10-15.md` | `docs-consistency-guard` fails a branch that changes `src/` without moving §0 | §0 master SHA → `597cb903`, in the docs-only follow-up commit |
 
 ## G4 — a response that never says how it ended is not a success
 
@@ -29,6 +32,12 @@ over (probe G1: `RESOLVED 0 bytes`). Presence is now tracked separately (`sawGrp
 `grpcUnary` and `grpcStream` (`src/grpc.js:153-160,319,614`). Connect is exempt from this rule
 (its terminal truth is HTTP status + end-stream JSON), and an explicit `grpc-status: 0`
 Trailers-Only response still resolves an empty message, which is spec-legal.
+
+Error shape: plain `Error` instances with the existing message vocabulary
+(`upstream HTTP <status>`, `gRPC response ended without grpc-status`, the decoded
+`grpc-message`, `Connect unary response is not a valid frame stream`). No `code` was added on
+purpose: `hasUpstreamVerdict()` treats any `code` as "the upstream spoke", and
+`classifyUpstreamError` would report a novel code as an unclassified fault.
 
 ## G2 — Connect HTTP status was ignored, and HTML was parsed as frames
 
@@ -73,7 +82,7 @@ So a bare unary message is returned byte-for-byte, a corrupt envelope is a typed
   move.
 - Fixed source: **18/18 pass**.
 
-## Fixture migration (why 9 test files move)
+## Fixture migration (why ten fixture files move)
 
 Enforcing G4 exposed that the suite's fake language servers never send trailers: they `end()` a
 200 response with no `grpc-status`, i.e. they model exactly the truncated RPC the client must
