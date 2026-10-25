@@ -37,6 +37,47 @@ let _touchSeq = 0;
 // record" — safe after restart or hour rollover.
 let _curBucket = null;
 
+// Every caller-keyed map is stored on a null prototype so a model literally
+// named "__proto__" is an ordinary own key instead of Object.prototype. The
+// public getStats()/exportStats() views convert these back to plain objects so
+// JSON consumers keep the historical shape.
+const MAP_KEYS = ['modelCounts', 'accountCounts', 'creditsByHour', 'creditsByDay', 'creditsByModel', 'tokensByModel'];
+const UNSAFE_MODEL_KEYS = new Set(['__proto__', 'constructor', 'toString', 'prototype']);
+
+/** A dictionary with no inherited keys. */
+function emptyMap() {
+  return Object.create(null);
+}
+
+/**
+ * True for model names that would collide with a prototype/function property.
+ * `Object.hasOwn(Object.prototype, key)` catches the wider inherited surface
+ * (`valueOf`, `hasOwnProperty`, …) while the explicit set documents the three
+ * names this fix is contracted to reject.
+ */
+function isUnsafeModelKey(key) {
+  return typeof key !== 'string' || key === '' || UNSAFE_MODEL_KEYS.has(key)
+    || Object.hasOwn(Object.prototype, key);
+}
+
+/** Shallow plain-object copy of an internal null-prototype map. */
+function plainMap(source) {
+  return Object.fromEntries(Object.entries(source && typeof source === 'object' ? source : {}));
+}
+
+/** Ensure a state map is null-prototype; migrate a plain object in place. */
+function ensureNullProtoMap(name) {
+  const current = _state[name];
+  if (!current || typeof current !== 'object' || Array.isArray(current)
+    || Object.getPrototypeOf(current) !== null) {
+    if (name === 'modelCounts') _state[name] = adoptModelCounts(current);
+    else if (name === 'tokensByModel') _state[name] = adoptTokensByModel(current);
+    else if (name === 'creditsByModel') _state[name] = adoptCreditsByModel(current);
+    else _state[name] = adoptMap(current);
+  }
+  return _state[name];
+}
+
 /** Count of tracked model keys excluding the shared overflow bucket. */
 function realModelKeyCount(modelCounts = _state.modelCounts) {
   let n = 0;
@@ -48,7 +89,7 @@ function realModelKeyCount(modelCounts = _state.modelCounts) {
 
 /** Fold an evicted model's counts into the shared '(other)' bucket. */
 function foldIntoOther(src, modelCounts = _state.modelCounts) {
-  let dst = modelCounts[OTHER_MODEL_KEY];
+  let dst = Object.hasOwn(modelCounts, OTHER_MODEL_KEY) ? modelCounts[OTHER_MODEL_KEY] : null;
   if (!dst) {
     dst = { requests: 0, success: 0, errors: 0, totalMs: 0, recentMs: [], lastTs: 0 };
     modelCounts[OTHER_MODEL_KEY] = dst;
@@ -74,7 +115,12 @@ function foldIntoOther(src, modelCounts = _state.modelCounts) {
  */
 function boundedModelKey(model) {
   let key = typeof model === 'string' && model ? model : OTHER_MODEL_KEY;
-  if (!_state.modelCounts[key] && key !== OTHER_MODEL_KEY) {
+  // Reject prototype-shaped names before any map lookup: "__proto__" would
+  // otherwise resolve to Object.prototype, and "constructor"/"toString" to a
+  // shared function object. They cannot be real model ids, so account for the
+  // request in the shared overflow bucket instead.
+  if (key !== OTHER_MODEL_KEY && isUnsafeModelKey(key)) key = OTHER_MODEL_KEY;
+  if (key !== OTHER_MODEL_KEY && !Object.hasOwn(_state.modelCounts, key)) {
     enforceModelCap();
     if (MAX_MODELS > 0 && realModelKeyCount() >= MAX_MODELS) key = OTHER_MODEL_KEY;
   }
@@ -184,7 +230,9 @@ const STATS_DEFAULTS = {
 };
 
 function createStatsState() {
-  return { ...structuredClone(STATS_DEFAULTS), startedAt: Date.now() };
+  const state = structuredClone(STATS_DEFAULTS);
+  for (const key of MAP_KEYS) state[key] = emptyMap();
+  return { ...state, startedAt: Date.now() };
 }
 
 const _state = createStatsState();
@@ -214,7 +262,7 @@ function normalizeAccountRef(value) {
 
 /** Re-key a persisted account map by normalized ref, merging old duplicates. */
 function normalizeAccountCounts(map) {
-  const out = {};
+  const out = emptyMap();
   const source = map && typeof map === 'object' && !Array.isArray(map) ? map : {};
   for (const [key, counts] of Object.entries(source)) {
     const ref = normalizeAccountRef(key);
@@ -235,6 +283,80 @@ function normalizeRecentRequests(rows) {
     if (row && typeof row === 'object') row.account = normalizeAccountRef(row.account);
   }
   return rows;
+}
+
+/**
+ * Copy a persisted/generic map onto a null-prototype dictionary. Only own
+ * enumerable keys are read, and the three prototype-shaped names are dropped.
+ * Model-keyed maps use the adopt* helpers below, which fold unsafe names into
+ * the shared '(other)' bucket instead of silently losing their totals.
+ */
+function adoptMap(source) {
+  const out = emptyMap();
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return out;
+  for (const [key, value] of Object.entries(source)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+/** Adopt persisted model rows, folding prototype-shaped keys into '(other)'. */
+function adoptModelCounts(source) {
+  const out = emptyMap();
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return out;
+  for (const [key, value] of Object.entries(source)) {
+    if (!isUnsafeModelKey(key)) { out[key] = value; continue; }
+    if (!value || typeof value !== 'object') continue;
+    const dst = out[OTHER_MODEL_KEY] || (out[OTHER_MODEL_KEY] = {
+      requests: 0, success: 0, errors: 0, totalMs: 0, recentMs: [], lastTs: 0,
+    });
+    for (const field of ['requests', 'success', 'errors', 'totalMs']) {
+      dst[field] = (Number(dst[field]) || 0) + (Number(value[field]) || 0);
+    }
+    if (!Array.isArray(dst.recentMs)) dst.recentMs = [];
+    if (Array.isArray(value.recentMs)) {
+      for (const sample of value.recentMs) {
+        if (Number.isFinite(sample)) dst.recentMs.push(sample);
+      }
+      if (dst.recentMs.length > 200) dst.recentMs = dst.recentMs.slice(-200);
+    }
+    dst.lastTs = Math.max(Number(dst.lastTs) || 0, Number(value.lastTs) || 0);
+  }
+  return out;
+}
+
+const TOKEN_FIELDS = ['fresh_input', 'cache_read', 'cache_write', 'output', 'total', 'requests_with_usage'];
+
+/** Adopt persisted token rows, folding prototype-shaped keys into '(other)'. */
+function adoptTokensByModel(source) {
+  const out = emptyMap();
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return out;
+  for (const [key, value] of Object.entries(source)) {
+    if (!isUnsafeModelKey(key)) { out[key] = value; continue; }
+    if (!value || typeof value !== 'object') continue;
+    let dst = out[OTHER_MODEL_KEY];
+    if (!dst) {
+      dst = emptyMap();
+      out[OTHER_MODEL_KEY] = dst;
+    }
+    for (const field of TOKEN_FIELDS) {
+      dst[field] = (Number(dst[field]) || 0) + (Number(value[field]) || 0);
+    }
+  }
+  return out;
+}
+
+/** Adopt persisted per-model credits, folding prototype-shaped keys into '(other)'. */
+function adoptCreditsByModel(source) {
+  const out = emptyMap();
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return out;
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    const target = isUnsafeModelKey(key) ? OTHER_MODEL_KEY : key;
+    out[target] = (Object.hasOwn(out, target) ? out[target] : 0) + value;
+  }
+  return out;
 }
 
 // ─── Per-HTTP-request accounting scope ─────────────────────────────────
@@ -307,11 +429,21 @@ function applyUsageToRow(row, usage) {
   row.cacheWrite = counts.cacheWrite;
 }
 
-// Load persisted stats
+// Load persisted stats. The reviver drops prototype-shaped keys at every
+// depth (JSON.parse creates an own "__proto__" property, and Object.assign
+// would otherwise invoke its setter on _state). Each keyed map is then rebuilt
+// on a null prototype so a legacy stats.json written by the vulnerable version
+// cannot reintroduce a prototype key.
 try {
   if (existsSync(STATS_FILE)) {
-    const saved = JSON.parse(readFileSync(STATS_FILE, 'utf-8'));
+    const saved = JSON.parse(readFileSync(STATS_FILE, 'utf-8'), (key, value) =>
+      key === '__proto__' || key === 'constructor' || key === 'prototype' ? undefined : value);
     Object.assign(_state, saved);
+    _state.modelCounts = adoptModelCounts(_state.modelCounts);
+    _state.tokensByModel = adoptTokensByModel(_state.tokensByModel);
+    _state.creditsByModel = adoptCreditsByModel(_state.creditsByModel);
+    _state.creditsByHour = adoptMap(_state.creditsByHour);
+    _state.creditsByDay = adoptMap(_state.creditsByDay);
     // Older versions persisted the credential prefix (or a raw id) as the
     // account key/value. Normalize on load so stats.json and the dashboard stop
     // displaying it without waiting for the 500-row ring to rotate.
@@ -382,11 +514,14 @@ export function recordRequest(model, success, durationMs, accountId, extra = {})
   // Cap real-model cardinality: a brand-new key that would exceed the limit
   // gets folded into the shared '(other)' bucket instead (LRU eviction of the
   // coldest existing key). Known keys and '(other)' itself always update.
+  // The map is null-prototype and every read is an own-key check, so a model
+  // string can never resolve to an inherited object/function.
+  const modelCounts = ensureNullProtoMap('modelCounts');
   const key = boundedModelKey(model);
-  if (!_state.modelCounts[key]) {
-    _state.modelCounts[key] = { requests: 0, success: 0, errors: 0, totalMs: 0, recentMs: [], lastTs: 0 };
+  if (!Object.hasOwn(modelCounts, key)) {
+    modelCounts[key] = { requests: 0, success: 0, errors: 0, totalMs: 0, recentMs: [], lastTs: 0 };
   }
-  const mc = _state.modelCounts[key];
+  const mc = modelCounts[key];
   mc.requests++;
   if (success) mc.success++;
   else mc.errors++;
@@ -401,10 +536,11 @@ export function recordRequest(model, success, durationMs, accountId, extra = {})
   // Per-account stats, keyed by the same opaque ref the log row carries.
   const account = normalizeAccountRef(accountId);
   if (account) {
-    if (!_state.accountCounts[account]) {
-      _state.accountCounts[account] = { requests: 0, success: 0, errors: 0 };
+    const accountCounts = ensureNullProtoMap('accountCounts');
+    if (!Object.hasOwn(accountCounts, account)) {
+      accountCounts[account] = { requests: 0, success: 0, errors: 0 };
     }
-    const ac = _state.accountCounts[account];
+    const ac = accountCounts[account];
     ac.requests++;
     if (success) ac.success++;
     else ac.errors++;
@@ -443,17 +579,25 @@ export function recordRequest(model, success, durationMs, accountId, extra = {})
   // flag, so the row and the card share one number.
   let credit = 0;
   if (success) {
-    try { credit = requestCreditCost(model); } catch { credit = 0; }
+    // Never let a prototype-shaped model name reach the catalog lookup either;
+    // it cannot name a real price card.
+    const costModel = typeof model === 'string' && !isUnsafeModelKey(model) ? model : null;
+    try { credit = requestCreditCost(costModel); } catch { credit = 0; }
   }
   if (credit > 0) {
     const dayKey = hourKey.slice(0, 10);
+    const creditsByHour = ensureNullProtoMap('creditsByHour');
+    const creditsByDay = ensureNullProtoMap('creditsByDay');
+    const creditsByModel = ensureNullProtoMap('creditsByModel');
     _state.creditsTotal = (_state.creditsTotal || 0) + credit;
-    _state.creditsByHour[hourKey] = (_state.creditsByHour[hourKey] || 0) + credit;
-    _state.creditsByDay[dayKey] = (_state.creditsByDay[dayKey] || 0) + credit;
-    _state.creditsByModel[model] = (_state.creditsByModel[model] || 0) + credit;
+    creditsByHour[hourKey] = (Object.hasOwn(creditsByHour, hourKey) ? creditsByHour[hourKey] : 0) + credit;
+    creditsByDay[dayKey] = (Object.hasOwn(creditsByDay, dayKey) ? creditsByDay[dayKey] : 0) + credit;
+    // Key the credit row by the same bounded key as modelCounts so the
+    // dashboard join stays intact and a dangerous model name is normalized.
+    creditsByModel[key] = (Object.hasOwn(creditsByModel, key) ? creditsByModel[key] : 0) + credit;
     // Prune credit hour map to ~30 days (720 keys), day map to ~90 days.
-    pruneKeyed(_state.creditsByHour, 720);
-    pruneKeyed(_state.creditsByDay, 90);
+    pruneKeyed(creditsByHour, 720);
+    pruneKeyed(creditsByDay, 90);
   }
   if (!Array.isArray(_state.recentRequests)) _state.recentRequests = [];
   const scope = _requestScope.getStore();
@@ -518,10 +662,12 @@ function accountAttribution() {
 export function getStats() {
   const out = { ..._state };
   out.accountAttribution = accountAttribution();
-  out.modelCounts = {};
-  for (const [m, s] of Object.entries(_state.modelCounts)) {
+  // Rebuild every keyed map as a plain object: the public response keeps its
+  // historical Object.prototype shape, while Object.fromEntries creates own
+  // data properties (never the __proto__ setter) for every key.
+  out.modelCounts = Object.fromEntries(Object.entries(_state.modelCounts).map(([m, s]) => {
     const sorted = (s.recentMs || []).slice().sort((a, b) => a - b);
-    out.modelCounts[m] = {
+    return [m, {
       requests: s.requests,
       success: s.success,
       errors: s.errors,
@@ -529,18 +675,25 @@ export function getStats() {
       avgMs: s.requests > 0 ? Math.round(s.totalMs / s.requests) : 0,
       p50Ms: Math.round(percentile(sorted, 0.5)),
       p95Ms: Math.round(percentile(sorted, 0.95)),
-    };
-  }
+    }];
+  }));
+  out.accountCounts = plainMap(_state.accountCounts);
+  out.creditsByHour = plainMap(_state.creditsByHour);
+  out.creditsByDay = plainMap(_state.creditsByDay);
+  out.creditsByModel = plainMap(_state.creditsByModel);
+  out.tokensByModel = plainMap(_state.tokensByModel);
   return out;
 }
 
 // v2.0.148 — Export the full stats state as a JSON-serializable snapshot (for
 // backup / migration / offline analysis). Includes credits + recentRequests.
 export function exportStats() {
+  const out = { ..._state };
+  for (const key of MAP_KEYS) out[key] = plainMap(_state[key]);
   return {
     _exportedAt: new Date().toISOString(),
     _schema: 'windsurfapi-stats-v2',
-    ..._state,
+    ...out,
   };
 }
 
@@ -552,7 +705,10 @@ function normalizeStatsSnapshot(src) {
   };
   const counts = (value, keys) => {
     if (!object(value)) throw new Error('invalid counters');
-    return Object.fromEntries(keys.map(key => [key, number(value[key])]));
+    // Own-key reads only: a polluted Object.prototype must never supply a
+    // counter that the imported snapshot did not actually contain.
+    return Object.fromEntries(keys.map(key =>
+      [key, number(Object.hasOwn(value, key) ? value[key] : 0)]));
   };
   const out = createStatsState();
   if (!object(src) || !Object.keys(out).some(key => Object.hasOwn(src, key))) throw new Error('empty snapshot');
@@ -691,8 +847,8 @@ export function resetStats() {
   _state.totalRequests = 0;
   _state.successCount = 0;
   _state.errorCount = 0;
-  _state.modelCounts = {};
-  _state.accountCounts = {};
+  _state.modelCounts = emptyMap();
+  _state.accountCounts = emptyMap();
   _state.hourlyBuckets = [];
   _curBucket = null; // invalidate cached bucket ref (S8) — buckets array replaced
   _state.tokenTotals = {
@@ -700,10 +856,10 @@ export function resetStats() {
     output: 0, total: 0, requests_with_usage: 0,
   };
   _state.creditsTotal = 0;
-  _state.creditsByHour = {};
-  _state.creditsByDay = {};
-  _state.creditsByModel = {};
-  _state.tokensByModel = {};
+  _state.creditsByHour = emptyMap();
+  _state.creditsByDay = emptyMap();
+  _state.creditsByModel = emptyMap();
+  _state.tokensByModel = emptyMap();
   _state.recentRequests = [];
   _state.recentPolicyBlocks = [];
   _state.startedAt = Date.now();
@@ -740,16 +896,19 @@ export function recordTokenUsage(usage, model = null) {
   _state.tokenTotals.requests_with_usage += 1;
   // Per-model attribution. Only when the caller KNOWS the model: filing an
   // unknown request under '(other)' would invent a model row that no client
-  // ever named, and the global totals above already count it.
-  const key = typeof model === 'string' && model.trim() ? boundedModelKey(model) : null;
+  // ever named, and the global totals above already count it. Prototype-shaped
+  // names are unknown by the same rule — rejecting them here also prevents
+  // `tokensByModel['__proto__']` from resolving to Object.prototype.
+  const requested = typeof model === 'string' && model.trim() ? model : null;
+  const key = requested && !isUnsafeModelKey(requested) ? boundedModelKey(requested) : null;
   if (key) {
-    if (!_state.tokensByModel || typeof _state.tokensByModel !== 'object') _state.tokensByModel = {};
-    if (!_state.tokensByModel[key]) {
-      _state.tokensByModel[key] = {
+    const tokensByModel = ensureNullProtoMap('tokensByModel');
+    if (!Object.hasOwn(tokensByModel, key)) {
+      tokensByModel[key] = {
         fresh_input: 0, cache_read: 0, cache_write: 0, output: 0, total: 0, requests_with_usage: 0,
       };
     }
-    const tm = _state.tokensByModel[key];
+    const tm = tokensByModel[key];
     tm.fresh_input += fresh;
     tm.cache_read += cacheR;
     tm.cache_write += cacheW;
