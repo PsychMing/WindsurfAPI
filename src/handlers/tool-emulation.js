@@ -1141,13 +1141,101 @@ function sanitizeToolCallId(rawId) {
 // tool results — so gpt_native needs no marker escaping on this path.
 
 
+// Restore call-then-result order for the NATIVE wire. A result that appears
+// before its matching assistant call is not an orphan — the call exists in this
+// request — but the upstream state machine rejects the reversed pair outright.
+// Measured 2026-10-25 (#273) against a scratch DEVIN_CONNECT instance, real
+// account, claude-haiku-5-5-medium, nativeToolCall=true, one call id:
+//
+//   [user, assistant(call a), tool(a), user] -> 200 ("ALPHA-42")
+//   [user, tool(a), assistant(call a), user] -> 502 invalid_argument
+//   [user, assistant(call a), user]          -> 502 (result dropped: the
+//                                               unanswered call is rejected too)
+//   [user, tool(a), user]                    -> 200, but finish_reason=tool_calls:
+//                                               the model re-issued the call, so the
+//                                               client would execute it twice
+//
+// Dropping either half is therefore not a fix. Moving the result to directly
+// after its call both preserves the content and reproduces the measured
+// accepted shape. Only results are moved; assistant/user turns keep their
+// relative order. Results whose call never appears are left alone — that is
+// stripOrphanedToolResults' policy, and the upstream tolerates the shape.
+//
+// Native-path only: the text-emulation wire folds results into user turns, so it
+// has no role=4 frame to order and its bytes must stay unchanged.
+export function orderToolResultsAfterCalls(messages) {
+  if (!Array.isArray(messages)) return messages;
+  // First occurrence of each call id. A later duplicate call (some clients
+  // reuse ids) is not the parent this repair can prove ownership against.
+  const callAt = new Map();
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m?.role !== 'assistant' || !Array.isArray(m.tool_calls)) continue;
+    for (const tc of m.tool_calls) {
+      const id = tc?.id;
+      if (id != null && !callAt.has(String(id))) callAt.set(String(id), i);
+    }
+  }
+  if (!callAt.size) return messages;
+
+  const emittedCalls = new Set();
+  const deferred = new Map(); // call id -> results waiting for that call
+  let moved = 0;
+  const out = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m?.role === 'tool') {
+      const id = m.tool_call_id != null ? String(m.tool_call_id) : '';
+      const at = id ? callAt.get(id) : undefined;
+      if (id && at !== undefined && at > i && !emittedCalls.has(id)) {
+        const waiting = deferred.get(id);
+        if (waiting) waiting.push(m);
+        else deferred.set(id, [m]);
+        moved += 1;
+        continue;
+      }
+      out.push(m);
+      continue;
+    }
+    out.push(m);
+    if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      const flushed = [];
+      for (const tc of m.tool_calls) {
+        const id = tc?.id;
+        if (id == null) continue;
+        const key = String(id);
+        emittedCalls.add(key);
+        flushed.push(key);
+      }
+      for (const id of flushed) {
+        const waiting = deferred.get(id);
+        if (!waiting) continue;
+        deferred.delete(id);
+        for (const tm of waiting) out.push(tm);
+      }
+    }
+  }
+  if (!moved) return messages;
+  // Unreachable while every deferral points at a later assistant message, but
+  // content must never vanish if that invariant is ever broken.
+  for (const waiting of deferred.values()) out.push(...waiting);
+  log?.warn?.(`tool-pairing: moved ${moved} out-of-order tool_result(s) after their call (#273)`);
+  return out;
+}
+
+// Chronology is a SEPARATE concern from orphanhood (see
+// orderToolResultsAfterCalls above): this filter keeps a result whose call
+// appears later, and the native-path normalizer then restores call-then-result
+// order. The split matters because the upstream rejects the reversed order with
+// invalid_argument (measured 2026-10-25, #273) while a result with no call
+// anywhere is a different, tolerated shape.
+//
 // Orphanhood here means no matching assistant call anywhere in the supplied
 // history, not no matching call before the result. Using only a seen-so-far set
 // would silently discard a result whose matching call appears later.
-// This filter does not validate chronology, consume ids, reject duplicate
-// results, or distinguish separate calls that reuse an id. A retained result
-// therefore does not prove that the upstream state machine will accept it.
-// Calls without results remain intact because they may still await execution.
+// This filter does not consume ids, reject duplicate results, or distinguish
+// separate calls that reuse an id. Calls without results remain intact because
+// they may still await execution.
 // Keep the filter opt-in: a truncated continuation can omit a legitimate
 // parent call, so applying this policy on every entry path would lose context.
 export function stripOrphanedToolResults(messages) {
@@ -1322,6 +1410,12 @@ export function normalizeMessagesForCascade(messages, tools, options = {}) {
   // In text-emulation mode (nativeStructured: false, e.g. Kimi dialect),
   // dialect-specific batch formatters handle batch history.
   if (options.nativeStructured === true) {
+    // A reversed pair (result before its call) must be repaired BEFORE the
+    // interleave pass: interleave only looks forward from an assistant run, so
+    // it cannot see a result that sits above the call. After the repair the
+    // history is call-then-result, which is the shape the upstream accepts
+    // (measured 2026-10-25, #273) and the shape interleave can split.
+    messages = orderToolResultsAfterCalls(messages);
     messages = interleaveParallelToolMessages(messages);
   }
   // Orphan-stripping is OPT-IN (options.stripOrphans) — NOT the default. Doing it
