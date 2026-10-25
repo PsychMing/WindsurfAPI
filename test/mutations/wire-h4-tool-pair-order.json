@@ -2,7 +2,7 @@
   "tests": [
     "test/wire-h4-tool-pair-order.test.js"
   ],
-  "expectBaselinePass": 7,
+  "expectBaselinePass": 8,
   "mutations": [
     {
       "name": "H4-M1: native normalization stops repairing call/result order",
@@ -44,6 +44,13 @@
       "file": "src/handlers/tool-emulation.js",
       "anchor": "      for (const id of flushed) {\n        const waiting = deferred.get(id);\n        if (!waiting) continue;\n        deferred.delete(id);\n        for (const tm of waiting) out.push(tm);\n      }",
       "replacement": "      for (const id of flushed) {\n        const waiting = deferred.get(id);\n        if (!waiting) continue;\n      }",
+      "expectCaught": true
+    },
+    {
+      "name": "H4-M7: the native no-tools branch skips the repair again (P2-1)",
+      "file": "src/handlers/chat.js",
+      "anchor": "      : nativeFlag\n        ? interleaveParallelToolMessages(orderToolResultsAfterCalls(messages))\n        : interleaveParallelToolMessages(messages);",
+      "replacement": "      : interleaveParallelToolMessages(messages);",
       "expectCaught": true
     }
   ]

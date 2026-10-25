@@ -212,4 +212,32 @@ describe('#273.1 the connect handler forwards call-then-result order', () => {
     assert.equal(history[2].content, 'RESULT-BODY');
     assert.equal(history[1].tool_calls[0].id, 'c1');
   });
+
+  // P2-1 (Kimi wave review): the repair used to run only inside
+  // normalizeMessagesForCascade({nativeStructured:true}), and nativeStructured
+  // requires tools to be declared. With no tools the handler took the
+  // interleave-only branch while the wire builder still emitted native #6/#7
+  // (nativeToolCall defaults on), so the reversed pair reached the upstream as
+  // [1,4,2,1] — the exact shape #273.1 measured as a 502.
+  it('H4-T8: with NO tools declared, a reversed pair still reaches the wire call-first', async () => {
+    const res = await handleChatCompletions({
+      model: MODEL,
+      __callerKey: CALLER,
+      messages: [user('go'), result('c1', 'RESULT-BODY'), assistant('c1'), user('done')],
+    }, { callerKey: CALLER });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.ok(Array.isArray(captured), 'the connect upstream must have been called');
+    const history = captured.filter((m) => m.role !== 'system');
+    assert.deepEqual(history.map((m) => m.role), ['user', 'assistant', 'tool', 'user'],
+      'the no-tools native history must be repaired before the wire');
+    assert.equal(history[2].tool_call_id, 'c1');
+    assert.equal(history[2].content, 'RESULT-BODY');
+    assert.equal(history[1].tool_calls[0].id, 'c1');
+
+    const items = frames(history);
+    assert.deepEqual(roles(items), [1, 2, 4, 1],
+      'wire order must be user, assistant(#6 call), tool_result(#7), user — not [1,4,2,1]');
+    assert.deepEqual(callIds(items), ['c1']);
+    assert.deepEqual(resultIds(items), ['c1']);
+  });
 });

@@ -198,6 +198,32 @@ describe('classifyUpstreamError — 4xx-class validator rejection', () => {
     assert.equal(isRetryable({ code: 'REQUEST_REJECTED', status: 500 }), false,
       'identical bytes fail identically; a same-token replay only amplifies load');
   });
+
+  // P2-5 (Kimi wave review): the status-based UNAUTHORIZED arm used to run
+  // BEFORE the explicit-code arm, so a validator verdict delivered in the
+  // measured 401/403 shell was charged to the account and started a re-login
+  // for a token that was never dead. The code is the more specific evidence.
+  it('an explicit validator code wins over a 401/403 auth shell', () => {
+    for (const status of [401, 403]) {
+      assert.equal(classifyUpstreamError(UPSTREAM_MESSAGE, 'invalid_argument', status).code,
+        'REQUEST_REJECTED',
+        `invalid_argument in a ${status} shell is the request validator, not a dead token`);
+      assert.equal(classifyUpstreamError(
+        'There is an issue with this request, please try a different model.',
+        'failed_precondition', status,
+      ).code, 'REQUEST_REJECTED',
+      `failed_precondition in a ${status} shell is the request validator`);
+    }
+  });
+
+  it('real auth failures with no validator code stay UNAUTHORIZED', () => {
+    assert.equal(classifyUpstreamError('permission denied', null, 401).code, 'UNAUTHORIZED');
+    assert.equal(classifyUpstreamError('', null, 403).code, 'UNAUTHORIZED');
+    assert.equal(classifyUpstreamError('invalid token', null, 401).code, 'UNAUTHORIZED');
+    assert.equal(classifyUpstreamError('', 'permission_denied', 403).code, 'UNAUTHORIZED',
+      'an explicit auth code must not be reclassified');
+    assert.equal(classifyUpstreamError('', 'unauthenticated', 401).code, 'UNAUTHORIZED');
+  });
 });
 
 describe('connectErrorToHttp — 400 for a request rejection, 503 for transients', () => {
