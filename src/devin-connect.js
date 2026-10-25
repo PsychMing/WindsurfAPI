@@ -2667,20 +2667,6 @@ export function classifyUpstreamError(text, code = null, status = null) {
   if (/\/upgrade|upgrade to access|insufficient.*entitlement|requires? .*(paid|pro|team|enterprise)/i.test(lc)) {
     return { code: 'MODEL_BLOCKED', message: body || 'model requires a paid Devin entitlement' };
   }
-  // `code === 'unauthenticated'` is claimed here alongside 'permission_denied'. The
-  // body-text arm already caught the common shape, but a bare gRPC status with a
-  // body that does not repeat the word fell through to the verbatim passthrough at
-  // the end — where it reached the account-fault fallthrough in
-  // finalizeConnectAccount and evicted the account WITHOUT the re-login attempt
-  // that a retired session token needs. Same verdict, but now via the arm that
-  // knows what to do about it.
-  if (status === 401 || status === 403 || /permission_denied|unauthenticated|invalid.*token/i.test(lc)
-      || code === 'permission_denied' || code === 'unauthenticated') {
-    return { code: 'UNAUTHORIZED', message: body || 'DEVIN_CONNECT: authentication failed' };
-  }
-  if (status === 429 || /rate.?limit|too many requests|resource_exhausted/i.test(lc) || code === 'resource_exhausted') {
-    return { code: 'RATE_LIMITED', message: body || 'DEVIN_CONNECT: rate limited' };
-  }
   // ── REQUEST VALIDATOR REJECTION (4xx-class) ─────────────────────────────
   // `invalid_argument` / `failed_precondition` that matched no narrower verdict:
   // the upstream refused the REQUEST, not the account. Measured shapes are the
@@ -2690,6 +2676,15 @@ export function classifyUpstreamError(text, code = null, status = null) {
   // every retry — yet they used to surface as 503 (UPSTREAM_INTERNAL) or 502
   // (verbatim passthrough), telling clients to retry something that can never
   // succeed.
+  //
+  // PRECEDENCE (P2-5): this arm MUST run before the HTTP 401/403 auth shell
+  // below. The measured delivery mode for a validator verdict is a 401/403
+  // shell (the §7.1 trailer), so the status arm used to claim it first: the
+  // proxy charged account health and started a re-login for a token that was
+  // never dead. An explicit 4xx-class code is evidence about the BYTES and is
+  // strictly more specific than the HTTP status; a real auth failure carries
+  // no such code (or `permission_denied`/`unauthenticated`, which are not in
+  // this set) and still reaches the UNAUTHORIZED arm unchanged.
   //
   // 400 invalid_request_error with the upstream message PLUS the capability hint
   // the caller needs to act on: the §7.1 rows are exactly the models whose
@@ -2707,6 +2702,20 @@ export function classifyUpstreamError(text, code = null, status = null) {
         + 'supports_images — or the message/tool shape is unsupported. Check supports_images in '
         + 'GET /v1/models and retry with a capable model or request shape]',
     };
+  }
+  // `code === 'unauthenticated'` is claimed here alongside 'permission_denied'. The
+  // body-text arm already caught the common shape, but a bare gRPC status with a
+  // body that does not repeat the word fell through to the verbatim passthrough at
+  // the end — where it reached the account-fault fallthrough in
+  // finalizeConnectAccount and evicted the account WITHOUT the re-login attempt
+  // that a retired session token needs. Same verdict, but now via the arm that
+  // knows what to do about it.
+  if (status === 401 || status === 403 || /permission_denied|unauthenticated|invalid.*token/i.test(lc)
+      || code === 'permission_denied' || code === 'unauthenticated') {
+    return { code: 'UNAUTHORIZED', message: body || 'DEVIN_CONNECT: authentication failed' };
+  }
+  if (status === 429 || /rate.?limit|too many requests|resource_exhausted/i.test(lc) || code === 'resource_exhausted') {
+    return { code: 'RATE_LIMITED', message: body || 'DEVIN_CONNECT: rate limited' };
   }
   return { code: code || 'UPSTREAM_ERROR', message: body || `DEVIN_CONNECT upstream error${status ? ` (HTTP ${status})` : ''}` };
 }
