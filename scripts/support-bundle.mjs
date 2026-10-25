@@ -16,10 +16,16 @@
 // history scanner reads git objects rather than files. Calling the shared matcher is what
 // keeps this gate from becoming a third, drifting rule set. A hit means NOTHING is written.
 //
-// Text legs are also redacted before the scan: a `Bearer …` value under an Authorization /
-// apiKey / token / password field is replaced with `[redacted]`. That is defence in depth,
-// not the gate — the gate still refuses anything the redactor did not recognise. Binary legs
-// (raw protobuf frames) are preserved byte-for-byte, because they are the evidence.
+// REDACTION: text legs have credential field values, account emails and presigned-URL query
+// credentials replaced with `[redacted]` before the scan. Binary legs are NOT preserved
+// verbatim. `03-upstream-req.bin` is a GetChatMessageRequest whose ClientMetadata carries
+// the account session token (#3) and optionally a user JWT (#21) — credentials whose shape
+// the shared rules cannot recognise when they are opaque. The bundler rewrites exactly those
+// fields, copies every other byte, and then searches the whole staging tree for the removed
+// credential values; a hit refuses the bundle. A binary leg that is not a recognisable
+// GetChatMessageRequest is never shipped: the manifest records its path, byte count and
+// sha256 so a maintainer can match it against a file sent separately. That is defence in
+// depth, not the gate — the gate still refuses anything the redactor did not recognise.
 //
 // EXIT: 0 bundle written; 1 secret scan found a candidate (no zip, no manifest);
 //       2 usage / I/O / environment failure. A partial bundle is never reported as success.
@@ -35,6 +41,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { crc32 } from 'node:zlib';
 import { findRuleMatches, lineForOffset } from './secret-rules.mjs';
+import { decodeVarint, writeMessageField, writeStringField } from '../src/proto.js';
 import { getVersionInfo } from '../src/version.js';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -60,8 +67,12 @@ Options:
   -h, --help          show this help
 
 The bundle is refused (exit 1, nothing written) when the shared secret rules match any
-staged file. Trace legs contain prompt fragments but no API keys; text legs are redacted
-before the scan, and binary legs are preserved verbatim as evidence.`;
+staged file, or when a credential removed from the upstream request is still present
+elsewhere in the staging tree. Trace legs contain prompt fragments but no API keys: text
+legs are redacted before the scan (field values, account emails, presigned-URL query
+credentials), the upstream request protobuf has its ClientMetadata session token / user JWT
+replaced with [redacted], and any other binary leg is omitted — the manifest records its
+path, byte count and sha256 instead.`;
 
 // ── option parsing ────────────────────────────────────────────────────────────────────────
 
@@ -168,18 +179,74 @@ function collectFiles(rootAbs, maxFileBytes) {
 
 // ── redaction + switch snapshot ─────────────────────────────────────────────────────────
 
+// Every replacement value. A residual check below depends on this exact spelling: a value
+// that is not `[redacted]` is treated as an unredacted leak.
+const REDACTED = '[redacted]';
+
 // A field NAME followed by `:` or `=` and a scalar value. The value class excludes quotes,
 // braces, brackets, commas and newlines, so JSON structure survives; spaces are allowed
-// because an Authorization value is `Bearer <token>`.
-const SECRET_FIELD = /(\b(?:authorization|proxy-authorization|x-api-key|api[-_]?key|caller[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|session[-_]?token|token|secret|password|passwd|cookie)\b["']?\s*[:=]\s*["']?)([^"'{}[\],\r\n]+)/gi;
+// after the first character because an Authorization value is `Bearer <token>`. The first
+// character must be non-whitespace: otherwise the optional whitespace before the value can
+// backtrack and turn `"token": ""` into a match on the space alone, corrupting the JSON.
+const SECRET_FIELD = /(\b(?:authorization|proxy-authorization|x-api-key|api[-_]?key|caller[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|session[-_]?token|token|secret|password|passwd|cookie)\b["']?\s*[:=]\s*["']?)([^"'{}[\],\r\n\s][^"'{}[\],\r\n]*)/gi;
+
+// A URL query credential. Presigned object URLs (S3 and compatible stores) put the whole
+// grant in the query string; `X-Amz-*` covers SigV4's Credential/Signature/Security-Token
+// and any later parameter, and the named fallbacks cover the other spellings in the wild.
+// The value class stops at URL/JSON delimiters and at `[`/`]` so `[redacted]` is idempotent.
+const QUERY_CREDENTIAL = /([?&](?:x-amz-[a-z0-9-]+|signature|token|key|api[-_]?key|access[-_]?token|refresh[-_]?token|session[-_]?token|password|secret)=)([^&#"'\s\\[\]]+)/gi;
+
+// Account identity rather than a credential, but the routing leg stores `ccAcct.email` and
+// an issue attachment is public. Any address shape is removed, wherever it appears.
+const EMAIL_ADDRESS = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b/g;
+
+// Independent residual patterns: they look for a sensitive NAME and then assert the value
+// that follows is exactly `[redacted]`. Deliberately not the redaction regexes — a future
+// edit that changes a replacement must fail here instead of shipping the value.
+const RESIDUAL_FIELD = /\b(?:authorization|proxy-authorization|x-api-key|api[-_]?key|caller[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|session[-_]?token|token|secret|password|passwd|cookie)\b["']?\s*[:=]\s*["']?/gi;
+const RESIDUAL_QUERY = /[?&](?:x-amz-[a-z0-9-]+|signature|token|key|api[-_]?key|access[-_]?token|refresh[-_]?token|session[-_]?token|password|secret)=/gi;
+const RESIDUAL_EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 
 function redactText(text) {
   let count = 0;
-  const redacted = text.replace(SECRET_FIELD, (_match, prefix) => {
-    count += 1;
-    return `${prefix}[redacted]`;
-  });
+  const redacted = text
+    .replace(SECRET_FIELD, (_match, prefix) => {
+      count += 1;
+      return `${prefix}${REDACTED}`;
+    })
+    .replace(QUERY_CREDENTIAL, (_match, prefix) => {
+      count += 1;
+      return `${prefix}${REDACTED}`;
+    })
+    .replace(EMAIL_ADDRESS, () => {
+      count += 1;
+      return REDACTED;
+    });
   return { text: redacted, count };
+}
+
+// Findings for text that still looks sensitive after redaction. `matchAll` clones nothing:
+// each regex is global, so lastIndex is reset before use.
+//
+// An empty value is not a leak: `"token": ""` and `?token=&x=1` are harmless, and refusing
+// them would turn ordinary prompt text into an unusable bundle. The prefix regex consumes
+// an opening quote, so an empty quoted value leaves the closing quote at the front.
+const EMPTY_VALUE = /^(?:$|[&#'"\s}\],])/;
+
+function findResidualSensitive(text) {
+  const findings = [];
+  const afterName = (regex, rule) => {
+    regex.lastIndex = 0;
+    for (const match of text.matchAll(regex)) {
+      const rest = text.slice(match.index + match[0].length);
+      if (rest.startsWith(REDACTED) || EMPTY_VALUE.test(rest)) continue;
+      findings.push({ rule, index: match.index + match[0].length });
+    }
+  };
+  afterName(RESIDUAL_FIELD, 'secret-field');
+  afterName(RESIDUAL_QUERY, 'presigned-url-credential');
+  for (const match of text.matchAll(RESIDUAL_EMAIL)) findings.push({ rule: 'email-address', index: match.index });
+  return findings;
 }
 
 const SWITCH_NAME = /^(?:WINDSURFAPI|DEVIN|CASCADE)_/;
@@ -213,10 +280,130 @@ function snapshotSwitches(env) {
 // ── text/binary split ────────────────────────────────────────────────────────────────────
 
 // A trace leg is text if it has no NUL byte AND its UTF-8 decode round-trips to the same
-// bytes. Everything else is binary and is packaged untouched.
+// bytes. Everything else is a binary leg and goes through `redactConnectRequest` below.
 function isText(buffer) {
   if (buffer.includes(0)) return false;
   return Buffer.from(buffer.toString('utf8'), 'utf8').equals(buffer);
+}
+
+// ── binary legs: redact the request, omit what cannot be proved safe ────────────────────
+//
+// The only binary leg that ships is a GetChatMessageRequest the bundler can rewrite. Its
+// field #1 is ClientMetadata (src/devin-connect.js buildClientMetadata): #1.#3 is the
+// account session token and #1.#21 is the optional user JWT. Both are replaced with
+// `[redacted]`; every other byte — system prompt, messages, model, tools, config — is
+// copied verbatim. The removed values are returned so `main` can search the entire staging
+// tree for them; a hit means the credential survives somewhere else and the bundle is
+// refused. A buffer that is not recognisably this request is never shipped.
+//
+// The parser is schema-less and span-based on purpose: re-encoding untouched fields would
+// change bytes the issue is about, and the repository has no protobuf dependency.
+
+const CLIENT_NAME = 'chisel'; // src/devin-connect.js CLIENT_NAME, the #1.#1 marker
+const CLIENT_NAME_BYTES = Buffer.from(CLIENT_NAME, 'utf8');
+const METADATA_TOKEN_FIELD = 3;
+const METADATA_USER_JWT_FIELD = 21;
+
+// [{ field, wireType, start, valueStart, end }] with start/end covering the whole field
+// (tag + length + value) so callers can copy untouched fields byte-for-byte.
+function readFieldSpans(buffer) {
+  const fields = [];
+  let pos = 0;
+  while (pos < buffer.length) {
+    const start = pos;
+    const tag = decodeVarint(buffer, pos);
+    pos += tag.length;
+    const field = Number(tag.value) >>> 3;
+    const wireType = Number(tag.value) & 0x07;
+    if (field === 0) throw new Error('protobuf field number 0');
+    let valueStart;
+    if (wireType === 0) {
+      valueStart = pos;
+      pos += decodeVarint(buffer, pos).length;
+    } else if (wireType === 1) {
+      valueStart = pos;
+      pos += 8;
+    } else if (wireType === 2) {
+      const length = decodeVarint(buffer, pos);
+      pos += length.length;
+      valueStart = pos;
+      pos += Number(length.value);
+    } else if (wireType === 5) {
+      valueStart = pos;
+      pos += 4;
+    } else {
+      throw new Error(`unsupported protobuf wire type ${wireType}`);
+    }
+    if (pos > buffer.length) throw new Error('truncated protobuf field');
+    fields.push({ field, wireType, start, valueStart, end: pos });
+  }
+  return fields;
+}
+
+function copyWithReplacements(buffer, fields, replacements) {
+  const parts = [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const field = fields[i];
+    parts.push(replacements.has(i) ? replacements.get(i) : buffer.subarray(field.start, field.end));
+  }
+  return Buffer.concat(parts);
+}
+
+// Returns { ok, buffer?, credentials, reason? }. `credentials` is always populated when a
+// token field was found, including on the failure path, so the caller can still search for
+// those bytes in text legs.
+function redactConnectRequest(buffer) {
+  let top;
+  try {
+    top = readFieldSpans(buffer);
+  } catch {
+    return { ok: false, credentials: [], reason: 'not a redactable GetChatMessageRequest: unparsable protobuf' };
+  }
+  const metadataFields = top.filter((field) => field.field === 1 && field.wireType === 2);
+  if (metadataFields.length !== 1) {
+    return { ok: false, credentials: [], reason: 'not a redactable GetChatMessageRequest: no single ClientMetadata' };
+  }
+  const metadataField = metadataFields[0];
+  const metadata = buffer.subarray(metadataField.valueStart, metadataField.end);
+  let metadataSpans;
+  try {
+    metadataSpans = readFieldSpans(metadata);
+  } catch {
+    return { ok: false, credentials: [], reason: 'not a redactable GetChatMessageRequest: unparsable ClientMetadata' };
+  }
+  const clientName = metadataSpans.find((field) => field.field === 1 && field.wireType === 2);
+  if (!clientName || metadata.toString('utf8', clientName.valueStart, clientName.end) !== CLIENT_NAME) {
+    return { ok: false, credentials: [], reason: 'not a redactable GetChatMessageRequest: ClientMetadata #1 != chisel' };
+  }
+  const tokenSpans = metadataSpans.filter(
+    (field) => field.field === METADATA_TOKEN_FIELD || field.field === METADATA_USER_JWT_FIELD,
+  );
+  if (tokenSpans.some((field) => field.wireType !== 2)) {
+    return { ok: false, credentials: [], reason: 'not a redactable GetChatMessageRequest: unexpected token wire type' };
+  }
+  const credentials = [];
+  const metadataReplacements = new Map();
+  for (let i = 0; i < metadataSpans.length; i += 1) {
+    const field = metadataSpans[i];
+    if (field.field !== METADATA_TOKEN_FIELD && field.field !== METADATA_USER_JWT_FIELD) continue;
+    const value = metadata.subarray(field.valueStart, field.end);
+    if (value.length > 0) credentials.push(Buffer.from(value));
+    metadataReplacements.set(i, writeStringField(field.field, REDACTED));
+  }
+  if (credentials.length === 0) {
+    return { ok: false, credentials, reason: 'not a redactable GetChatMessageRequest: ClientMetadata carries no token' };
+  }
+  const redactedMetadata = copyWithReplacements(metadata, metadataSpans, metadataReplacements);
+  const topReplacements = new Map([
+    [top.indexOf(metadataField), writeMessageField(1, redactedMetadata)],
+  ]);
+  const redacted = copyWithReplacements(buffer, top, topReplacements);
+  // The proof: a removed credential must not survive anywhere in the rewritten leg. If the
+  // same value also rides in a message/system prompt, the leg is not safe to ship.
+  if (credentials.some((credential) => redacted.includes(credential))) {
+    return { ok: false, credentials, reason: 'credential bytes also appear outside ClientMetadata' };
+  }
+  return { ok: true, buffer: redacted, credentials };
 }
 
 // ── staging + secret scan ────────────────────────────────────────────────────────────────
@@ -249,19 +436,49 @@ function scanStaged(staging) {
   const findings = [];
   for (const rel of files) {
     const buffer = readFileSync(join(staging, ...rel.split('/')));
-    const text = isText(buffer) ? buffer.toString('utf8') : buffer.toString('latin1');
+    const textual = isText(buffer);
+    const text = textual ? buffer.toString('utf8') : buffer.toString('latin1');
     for (const match of findRuleMatches(text, [rel])) {
       findings.push({ path: rel, line: lineForOffset(text, match.index), rule: match.rule });
+    }
+    // Binary legs are already redacted or omitted; only text can still carry a field value,
+    // an email or a URL query credential after `redactText`.
+    if (textual) {
+      for (const residual of findResidualSensitive(text)) {
+        findings.push({ path: rel, line: lineForOffset(text, residual.index), rule: residual.rule });
+      }
     }
   }
   findings.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line || a.rule.localeCompare(b.rule));
   return { files: files.length, findings };
 }
 
+// Every credential value removed from a request leg, searched across everything staged.
+// This is what makes the opaque-token case provable: the shared rules cannot recognise the
+// shape, so the exact bytes taken out of ClientMetadata are the ground truth. A hit means
+// the redactor missed an occurrence elsewhere and the bundle must not be written.
+function findCredentialBytes(staging, credentials) {
+  const findings = [];
+  if (credentials.length === 0) return findings;
+  for (const rel of listStagedFiles(staging)) {
+    const buffer = readFileSync(join(staging, ...rel.split('/')));
+    for (const credential of credentials) {
+      if (credential.length === 0) continue;
+      const index = buffer.indexOf(credential);
+      if (index === -1) continue;
+      // latin1 keeps the byte offset 1:1 with the character offset `lineForOffset` counts.
+      findings.push({ path: rel, line: lineForOffset(buffer.toString('latin1'), index), rule: 'credential-value' });
+      break;
+    }
+  }
+  return findings;
+}
+
 // ── zip (STORE, no compression) ─────────────────────────────────────────────────────────
 //
-// A store-only writer keeps the archive dependency-free and makes the binary legs
-// byte-identical to the input. The repository has zero npm runtime dependencies by design;
+// A store-only writer keeps the archive dependency-free and makes every stored entry
+// byte-identical to what the manifest hashed (the redacted request included; omitted binary
+// legs are simply absent). The repository has zero npm runtime dependencies by design;
 // adding one for a debug bundle would be a poor trade. Node's built-in zlib supplies CRC-32.
 
 function dosDateTime(date) {
@@ -378,6 +595,9 @@ function main(argv) {
   try {
     const redactions = [];
     const skippedFiles = [];
+    const binaryRedactions = [];
+    const binaryOmitted = [];
+    const credentials = [];
     let traceFileCount = 0;
     for (const trace of selected) {
       const { files, skipped } = collectFiles(trace.abs, options.maxFileBytes);
@@ -386,12 +606,37 @@ function main(argv) {
       for (const file of files) {
         const raw = readFileSync(file.abs);
         const rel = `traces/${trace.id}/${file.rel}`;
-        if (isText(raw)) {
+        // Content first: a GetChatMessageRequest is redacted even if it would pass the
+        // text heuristic, so a future builder that emits only printable bytes cannot turn
+        // the request leg into a "text" leg that skips protobuf redaction. The `chisel`
+        // marker is a cheap precondition; only matching buffers pay for the parser.
+        const request = raw.includes(CLIENT_NAME_BYTES) ? redactConnectRequest(raw) : null;
+        if (request && (request.ok || request.credentials.length > 0)) {
+          for (const credential of request.credentials) credentials.push(credential);
+          if (request.ok) {
+            writeStaged(staging, rel, request.buffer);
+            binaryRedactions.push({
+              path: rel,
+              sourceBytes: raw.length,
+              sourceSha256: sha256(raw),
+              credentialsRedacted: request.credentials.length,
+            });
+          } else {
+            binaryOmitted.push({ path: rel, bytes: raw.length, sha256: sha256(raw), reason: request.reason });
+          }
+        } else if (isText(raw)) {
           const { text, count } = redactText(raw.toString('utf8'));
           if (count > 0) redactions.push({ path: rel, count });
           writeStaged(staging, rel, Buffer.from(text, 'utf8'));
         } else {
-          writeStaged(staging, rel, raw); // binary leg: byte-for-byte evidence
+          // Any other binary leg is omitted with a size+sha256 record: the bundler cannot
+          // prove an opaque credential is absent from bytes it does not understand.
+          binaryOmitted.push({
+            path: rel,
+            bytes: raw.length,
+            sha256: sha256(raw),
+            reason: request?.reason || 'binary leg: not a GetChatMessageRequest (no ClientMetadata marker)',
+          });
         }
       }
     }
@@ -426,27 +671,51 @@ function main(argv) {
         files: traceFileCount,
         skipped: skippedFiles,
         redactions,
+        binaryLegs: { redacted: binaryRedactions, omitted: binaryOmitted },
       },
     };
-    writeStaged(staging, 'environment.json', Buffer.from(`${JSON.stringify(environment, null, 2)}\n`, 'utf8'));
+    // environment.json is generated, but `health.commitMessage` is free text from git and
+    // can carry an address. Redact it with the same rules as a trace leg so the residual
+    // gate has nothing to refuse on our own metadata.
+    const environmentText = `${JSON.stringify(environment, null, 2)}\n`;
+    const environmentRedaction = redactText(environmentText);
+    let stagedEnvironment = environmentRedaction.text;
+    if (environmentRedaction.count > 0) {
+      const parsed = JSON.parse(stagedEnvironment);
+      parsed.environmentRedactions = environmentRedaction.count;
+      stagedEnvironment = `${JSON.stringify(parsed, null, 2)}\n`;
+    }
+    writeStaged(staging, 'environment.json', Buffer.from(stagedEnvironment, 'utf8'));
 
-    // THE GATE: scan everything that would enter the archive, including environment.json.
+    // THE GATE: scan everything that would enter the archive, including environment.json,
+    // then prove the exact bytes removed from any request leg are nowhere in the staging
+    // tree. The second check is the one that covers opaque tokens.
     const scan = scanStaged(staging);
-    if (scan.findings.length > 0) {
+    const findings = [...scan.findings, ...findCredentialBytes(staging, credentials)]
+      .sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line || a.rule.localeCompare(b.rule));
+    if (findings.length > 0) {
       if (options.json) {
-        console.log(JSON.stringify({ ok: false, error: 'secret-scan', findings: scan.findings }, null, 2));
+        console.log(JSON.stringify({ ok: false, error: 'secret-scan', findings }, null, 2));
       } else {
-        for (const finding of scan.findings) {
+        for (const finding of findings) {
           console.error(`${finding.path}:${finding.line} ${finding.rule}`);
         }
-        console.error(`support-bundle: refusing to package — ${scan.findings.length} credential candidate(s) found; nothing was written`);
+        console.error(`support-bundle: refusing to package — ${findings.length} credential candidate(s) found; nothing was written`);
       }
       return 1;
     }
 
+    const redactedByPath = new Map(binaryRedactions.map((item) => [item.path, item]));
     const manifestFiles = listStagedFiles(staging).map((rel) => {
       const data = readFileSync(join(staging, ...rel.split('/')));
-      return { path: rel, bytes: data.length, sha256: sha256(data) };
+      const entry = { path: rel, bytes: data.length, sha256: sha256(data) };
+      const redaction = redactedByPath.get(rel);
+      if (redaction) {
+        entry.sourceBytes = redaction.sourceBytes;
+        entry.sourceSha256 = redaction.sourceSha256;
+        entry.transforms = ['client-metadata-credentials'];
+      }
+      return entry;
     });
     const redactedValues = redactions.reduce((sum, item) => sum + item.count, 0);
     const manifest = {
@@ -455,9 +724,10 @@ function main(argv) {
       version: packageJson.version,
       commit: versionInfo.commit,
       scan: { engine: 'scripts/secret-rules.mjs', files: scan.files, findings: 0 },
-      redactions: { files: redactions.length, values: redactedValues },
+      redactions: { files: redactions.length, values: redactedValues, environment: environmentRedaction.count },
+      binaryLegs: { redacted: binaryRedactions, omitted: binaryOmitted },
       files: manifestFiles,
-      note: 'manifest.json is not listed: it is this file. sha256 is over the exact bytes stored in the zip.',
+      note: 'manifest.json is not listed: it is this file. sha256 is over the exact bytes stored in the zip. A redacted binary leg carries sourceBytes/sourceSha256 for the original; an omitted binary leg is not in the zip at all.',
     };
     const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
     writeStaged(staging, 'manifest.json', Buffer.from(manifestText, 'utf8'));
@@ -482,12 +752,16 @@ function main(argv) {
         files: entries.length,
         traces: selected.map((trace) => trace.id),
         redactions: redactedValues,
+        binaryLegs: { redacted: binaryRedactions.length, omitted: binaryOmitted.length },
         scan: { files: scan.files, findings: 0 },
       }, null, 2));
     } else {
       console.log(`support-bundle: wrote ${zipPath} (${entries.length} files, ${zip.length} bytes, ${selected.length} trace dir(s))`);
       console.log(`support-bundle: manifest ${manifestPath}`);
-      console.log(`support-bundle: secret scan clean (${scan.files} files, 0 findings); ${redactedValues} value(s) redacted`);
+      console.log(`support-bundle: secret scan clean (${scan.files} files, 0 findings); ${redactedValues} text value(s) redacted; ${binaryRedactions.length} request leg(s) redacted; ${binaryOmitted.length} binary leg(s) omitted`);
+      if (binaryOmitted.length) {
+        console.error(`support-bundle: ${binaryOmitted.length} binary leg(s) omitted (cannot prove credential-free); size + sha256 are in manifest.json`);
+      }
       if (skippedFiles.length) {
         console.error(`support-bundle: ${skippedFiles.length} trace file(s) skipped (symlink/oversize); listed in environment.json`);
       }
