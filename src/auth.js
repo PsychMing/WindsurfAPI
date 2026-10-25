@@ -4140,13 +4140,17 @@ export function reportSuccess(apiKey) {
 /**
  * Full billable cost of a request, independent of whatever shape total_tokens is in.
  *
- * Cost accounting must NOT read total_tokens directly: with WINDSURFAPI_STRICT_USAGE_TOTAL=1
- * that field deliberately excludes generation-side cache-write to satisfy OpenAI's
- * arithmetic identity, so metering off it would make an operator's own spend tally
- * under-report the moment they opted into spec compliance — they would pay for cache-writes
- * that never appear in their own chart. The cache-write figure is on the wire either way as
- * `cache_creation_input_tokens` (unconditional on the Cascade path, present on the connect
- * path whenever the upstream reported it), so the full cost stays recoverable.
+ * Cost accounting must NOT read total_tokens directly. On the CASCADE path,
+ * WINDSURFAPI_STRICT_USAGE_TOTAL=1 deliberately excludes cache-write from total_tokens to
+ * satisfy OpenAI's arithmetic identity, so metering off it would make an operator's own
+ * spend tally under-report the moment they opted into spec compliance — they would pay
+ * for cache-writes that never appear in their own chart. The cache-write figure is on the
+ * wire either way as `cache_creation_input_tokens`, so the full cost stays recoverable.
+ *
+ * On the CONNECT path (O2) the split is the other way round: cache-write is already
+ * INSIDE prompt_tokens, so adding cache_write again would bill the prefix twice.
+ * `fresh_input_tokens` is emitted there precisely so this function does not have to
+ * infer which convention produced the object.
  *
  * Lives here, beside its only caller, rather than in a handler: this used to be defined in
  * handlers/chat.js with recordAccountSpend re-implementing the same arithmetic inline. Two
@@ -4165,8 +4169,18 @@ export function fullBillableTokens(usage) {
   const completion = Math.max(0, Number(usage.completion_tokens) || 0);
   const cacheWrite = Math.max(0, Number(usage.cache_creation_input_tokens) || 0);
   const total = Math.max(0, Number(usage.total_tokens) || 0);
-  // The grand total already includes cache-write unless the strict flag stripped it. Taking
-  // the max covers both shapes without having to know which produced this object.
+  const freshRaw = Number(usage.fresh_input_tokens);
+  if (Number.isFinite(freshRaw) && usage.fresh_input_tokens != null) {
+    // The connect shape: rebuild the full cost from explicit buckets instead of
+    // assuming cache-write sits outside prompt_tokens.
+    const fresh = Math.max(0, freshRaw);
+    const cacheRead = Math.max(0, Number(
+      usage.prompt_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens,
+    ) || 0);
+    return Math.max(total, fresh + cacheRead + cacheWrite + completion);
+  }
+  // The Cascade shape: the grand total already includes cache-write unless the strict
+  // flag stripped it. Taking the max covers both without knowing which produced it.
   return Math.max(total, prompt + completion + cacheWrite);
 }
 

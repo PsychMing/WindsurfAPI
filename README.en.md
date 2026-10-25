@@ -532,6 +532,8 @@ swe-1.5 / 1.5-fast / 1.6 / 1.6-fast / 1.7 / 1.7-lightning · arena-fast · arena
 
 </details>
 
+> **DEVIN_CONNECT model spellings:** the dotted `claude-sonnet-4.6` is a deliberate alias that resolves to the upstream `claude-sonnet-4-6-thinking` selector (thinking variant, credit 6). For the non-thinking base, ask for the catalog selector `claude-sonnet-4-6` explicitly (credit 4). Both spellings are `mapped:true` — the alias is a curated default, not a downgrade.
+>
 > **Free-account entitlements** typically include `gemini-2.5-flash`, `glm-4.7` / `glm-5` / `5.1`, `kimi-k2` / `k2.5` / `k2-6`, `qwen-3` and similar open-source models; Claude family, GPT family, and Opus / thinking variants require Pro. Each account's exact list shows up in the dashboard.
 >
 > **Tool-calling reliability (measured v2.0.82+):** Claude family is the most reliable (their training covered prompt-level tool protocols); GLM-4.7 / Kimi-K2.5 work for most cases via NLU fallback + optional retry-with-correction; GLM-5.1 is unreliable on the cascade backend (it often returns empty responses, no narration to recover from); GPT family is also limited because the cascade upstream doesn't carry `tools[]` schema. For Claude Code / Cline / Codex doing local tool calls, prefer `claude-haiku-4.5` or `claude-sonnet-4.6`.
@@ -546,7 +548,7 @@ The service automatically detects Chinese, Japanese, or Korean characters in you
 - **Account Pool + LS Pool** Each independent proxy gets its own LS instance, no mixing.
 - **NO_TOOL Mode** `planner_mode=3` disables Cascade's built-in tool loop to prevent `/tmp/windsurf-workspace/` path leakage.
 - **Three-layer sanitization** LS built-in tool result filtering · `<tool_call>` text parsing · Output path cleaning.
-- **Real token counting** Fetches real `inputTokens` / `outputTokens` / `cacheRead` / `cacheWrite` from `CortexStepMetadata.model_usage`. `prompt_tokens` includes cacheWrite.
+- **Real token counting** Fetches real `inputTokens` / `outputTokens` / `cacheRead` / `cacheWrite` from `CortexStepMetadata.model_usage`. On DEVIN_CONNECT, `prompt_tokens` is the full input (fresh + cache_read + cache_write), with the split on `prompt_tokens_details.cached_tokens` and `cache_creation_input_tokens`; on Cascade, `prompt_tokens` carries fresh + cache_read while cache_write lands in `total_tokens` and `cache_creation_input_tokens`.
 
 ## PM2 Deployment
 

@@ -5,6 +5,7 @@ import {
   streamChatCompletion,
   __setStreamChatForTest,
 } from '../src/devin-connect-openai.js';
+import { normalizeConnectUsage } from '../src/devin-connect.js';
 
 afterEach(() => __setStreamChatForTest(null));
 
@@ -48,6 +49,20 @@ describe('toChatCompletion (non-stream)', () => {
     assert.equal(msg.reasoning_content, 'let me think about it.');
     assert.equal(body.choices[0].finish_reason, 'stop');
     assert.deepEqual(body.usage, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
+  });
+
+  it('passes the normalized cache-write usage through untouched (O2)', async () => {
+    // omp reads exactly this field. The measured cache-write shape used to arrive
+    // as prompt_tokens=3 for an ~11.5k prompt; the adapter must not re-map it.
+    const usage = normalizeConnectUsage({ prompt: 3, completion: 170, cache_write_tokens: 11329 });
+    __setStreamChatForTest(fakeStream([
+      { type: 'content', text: 'ok' },
+      { type: 'finish', reason: 'stop', usage },
+    ]));
+    const { body } = await toChatCompletion({ model: 'swe-1-6-slow', messages: [] });
+    assert.deepEqual(body.usage, usage);
+    assert.equal(body.usage.prompt_tokens, 11332);
+    assert.deepEqual(body.usage.prompt_tokens_details, { cached_tokens: 0 });
   });
 
   it('echoes displayModel over the request model when given', async () => {

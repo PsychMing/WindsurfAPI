@@ -629,6 +629,8 @@ swe-1.5 / 1.5-fast / 1.6 / 1.6-fast / 1.7 / 1.7-lightning · arena-fast · arena
 
 > `swe-1.6` / `swe-1.6-fast` / `adaptive` / `arena-*` 属于 special-agent 路径。direct Cascade 会报 unknown model UID / route 不通；默认不会假装可用。需要测试时显式开启 `WINDSURFAPI_SPECIAL_AGENT_BACKEND=devin-cli`，并安装/挂载 Devin CLI。当前 PoC 是 `devin -p` print 模式，默认拒绝 caller-local tools/media；ACP 工具桥接另做。
 
+> **DEVIN_CONNECT 模型拼写**：dotted `claude-sonnet-4.6` 是刻意保留的 alias，解析到上游 `claude-sonnet-4-6-thinking`（思考变体，credit 6）。要非 thinking 基座，显式写 catalog selector `claude-sonnet-4-6`（credit 4）—— 两种拼写都 `mapped:true`，别名是默认选择而不是降级。
+
 > **免费账号 entitled 模型**主要是 `gemini-2.5-flash`、`glm-4.7`、`glm-5` / `5.1`、`kimi-k2` / `k2.5` / `k2-6`、`qwen-3` 等开源系列；Claude / GPT 全系 + Opus 系列要 Pro。具体每个账号的 entitled 清单看 dashboard。
 >
 > **工具调用稳定性**（v2.0.82+ 实测）：Claude family 走 `<tool_use>` 协议最稳；GLM-4.7 / Kimi-K2.5 走 NLU 兜底 + 可选 retry 大部分 case 能调；GLM-5.1 在 cascade 后端不稳（经常空回复 textLen=0），proxy 救不动；GPT 在 cascade 协议层不传 tools[] schema 也救不全。Claude Code 调本地工具优先 `claude-haiku-4.5` / `claude-sonnet-4.6`。
@@ -639,7 +641,7 @@ swe-1.5 / 1.5-fast / 1.6 / 1.6-fast / 1.7 / 1.7-lightning · arena-fast · arena
 - **账号池 + LS 池** 每个独立 proxy 一个 LS 实例 不混用
 - **NO_TOOL 模式** `planner_mode=3` 关掉 Cascade 内置工具循环，避免 `/tmp/windsurf-workspace/` 路径泄漏
 - **三层 sanitize** LS 内建工具结果过滤 · `<tool_call>` 文本解析 · 输出路径清洗
-- **真实 token 计量** 从 `CortexStepMetadata.model_usage` 抓 Cascade 真实 `inputTokens` / `outputTokens` / `cacheRead` / `cacheWrite`，`prompt_tokens` 含 cacheWrite
+- **真实 token 计量** 从 `CortexStepMetadata.model_usage` 抓 Cascade 真实 `inputTokens` / `outputTokens` / `cacheRead` / `cacheWrite`。DEVIN_CONNECT 路径的 `prompt_tokens` 是完整输入（fresh + cache_read + cache_write），cache 明细在 `prompt_tokens_details.cached_tokens` 与 `cache_creation_input_tokens`；Cascade 路径的 `prompt_tokens` 只含 fresh + cache_read，cache_write 计入 `total_tokens` 与 `cache_creation_input_tokens`
 
 ## PM2 部署
 

@@ -93,7 +93,8 @@ describe('the finish event calls normalizeConnectUsage (call-site guard)', () =>
     const cached = finish.usage.prompt_tokens_details.cached_tokens;
     assert.ok(cached <= finish.usage.prompt_tokens,
       `cached_tokens (${cached}) must be a SUBSET of prompt_tokens (${finish.usage.prompt_tokens})`);
-    assert.equal(finish.usage.prompt_tokens, 1768, 'prompt_tokens must include cache_read');
+    assert.equal(finish.usage.prompt_tokens, 3 + 1765 + 40,
+      'prompt_tokens must include cache_read AND cache_write (O2: the full input count)');
   });
 
   it('yields null usage when the upstream sent no metadata', async () => {
