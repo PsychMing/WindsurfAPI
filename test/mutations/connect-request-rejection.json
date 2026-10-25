@@ -3,7 +3,7 @@
     "test/connect-request-rejection.test.js",
     "test/connect-error-blame.test.js"
   ],
-  "expectBaselinePass": 34,
+  "expectBaselinePass": 36,
   "mutations": [
     {
       "name": "RR-M1: the 'internal error occurred' TEXT arm reclaims an explicit invalid_argument (the reported 503)",
@@ -66,6 +66,20 @@
       "file": "src/devin-connect-metrics.js",
       "anchor": "  request_rejected: 0,\n",
       "replacement": "",
+      "expectCaught": true
+    },
+    {
+      "name": "RR-M10: the 401/403 shell outranks the explicit validator code again (P2-5)",
+      "file": "src/devin-connect.js",
+      "anchor": "  if (isRequestRejectionCode(code)) {",
+      "replacement": "  if (isRequestRejectionCode(code) && status !== 401 && status !== 403) {",
+      "expectCaught": true
+    },
+    {
+      "name": "RR-M11: a bare 401/403 stops being UNAUTHORIZED (P2-5 control)",
+      "file": "src/devin-connect.js",
+      "anchor": "  if (status === 401 || status === 403 || /permission_denied|unauthenticated|invalid.*token/i.test(lc)",
+      "replacement": "  if (/permission_denied|unauthenticated|invalid.*token/i.test(lc)",
       "expectCaught": true
     }
   ]

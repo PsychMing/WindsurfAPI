@@ -1,8 +1,9 @@
 {
   "tests": [
-    "test/connect-image-capability-gate.test.js"
+    "test/connect-image-capability-gate.test.js",
+    "test/connect-image-capability-account.test.js"
   ],
-  "expectBaselinePass": 8,
+  "expectBaselinePass": 13,
   "mutations": [
     {
       "name": "W4-M1: ignore the explicit supports_images=false bit",
@@ -21,14 +22,14 @@
     {
       "name": "W4-M3: strip the images silently without counting them",
       "file": "src/handlers/chat.js",
-      "anchor": "        bumpConnect('images_dropped_capability', stripped.dropped);\n",
+      "anchor": "          bumpConnect('images_dropped_capability', dropped);\n",
       "replacement": "",
       "expectCaught": true
     },
     {
       "name": "W4-M4: strip the images without the operator warn",
       "file": "src/handlers/chat.js",
-      "anchor": "        log.warn(`Chat[${reqId}]: DEVIN_CONNECT selector ${safeLogValue(selector)} declares supports_images=false in the live catalog — dropped ${stripped.dropped} image block(s) before the wire; text preserved (counted in images_dropped_capability)`);\n",
+      "anchor": "          log.warn(`Chat[${reqId}]: DEVIN_CONNECT selector ${safeLogValue(selector)} declares supports_images=false for account ${ccAcct ? safeAccountRef(ccAcct) : 'env-token'} in the live catalog — dropped ${dropped} image block(s) before the wire; text preserved (counted in images_dropped_capability)`);\n",
       "replacement": "",
       "expectCaught": true
     },
@@ -58,6 +59,27 @@
       "file": "src/devin-connect-models.js",
       "anchor": "    return typeof row.supportsImages === 'boolean' ? row.supportsImages : null;",
       "replacement": "    return null;",
+      "expectCaught": true
+    },
+    {
+      "name": "W4-M9: serve the emptied image-only turn instead of refusing it (P2-3)",
+      "file": "src/handlers/chat.js",
+      "anchor": "          if (lastUser && !hasAnswerableUserContent(lastUser)) {",
+      "replacement": "          if (false) {",
+      "expectCaught": true
+    },
+    {
+      "name": "W4-M10: gate on the pool union instead of the serving account (P2-2)",
+      "file": "src/handlers/chat.js",
+      "anchor": "        ? getConnectSelectorImageCapabilityForAccount(ccAcct.id, selector)\n        : getConnectSelectorImageCapability(selector);",
+      "replacement": "        ? getConnectSelectorImageCapability(selector)\n        : getConnectSelectorImageCapability(selector);",
+      "expectCaught": true
+    },
+    {
+      "name": "W4-M11: per-account lookup falls back to the union row (P2-2)",
+      "file": "src/auth.js",
+      "anchor": "  const rows = _connectCatalogRowsByAccount.get(accountId);\n  if (!Array.isArray(rows) || rows.length === 0) return null;",
+      "replacement": "  const rows = _connectCatalogRowsByAccount.get(accountId) || unionConnectCatalogRows();\n  if (!Array.isArray(rows) || rows.length === 0) return null;",
       "expectCaught": true
     }
   ]
