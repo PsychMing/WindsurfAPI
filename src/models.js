@@ -850,6 +850,19 @@ export function getModelKeysByEnum(enumValue) {
 
 // ─── Tier access ───────────────────────────────────────────
 
+// Cold-start floor for free accounts — deliberately ONE model.
+//
+// v2.0.0 (4b72ecd) cut this from `['gpt-4o-mini', 'gemini-2.5-flash']` because
+// the extra enum-only entries were no longer routed upstream. #149's closure
+// reason ("free tier = gemini-2.5-flash + glm-4.7 + kimi-k2") is a per-account
+// PROBE RESULT, not this table: glm-4.7 (enum 417) and kimi-k2 (enum 323) are
+// enum-keyed, so GetUserStatus's authoritative allowlist supplies them for
+// accounts the upstream actually entitles; UID-only models arrive through
+// registerDiscoveredFreeModel() after a successful call. Adding guesses here
+// advertises models the upstream did not entitle, and those requests fail
+// upstream (permission_denied → 529) instead of with a clean 403.
+// Pinned by test/free-tier-cold-start.test.js; decision memo in
+// evidence/Wave4-Models.md §2.
 const FREE_TIER_BASE = ['gemini-2.5-flash'];
 const _discoveredFreeModels = new Set();
 
