@@ -25,6 +25,7 @@ import http2 from 'node:http2';
 import { endOfStreamEnvelope, unwrapRequest, wrapEnvelope } from '../src/connect.js';
 import { getAllFields, parseFields, writeMessageField, writeStringField, writeVarintField } from '../src/proto.js';
 import { buildNativeToolHistory } from '../src/cascade-native-bridge.js';
+import { isConnectContentType, terminateRpcWithStatus } from './helpers/fake-grpc-trailers.mjs';
 
 const MODEL_UID = 'claude-sonnet-4-6';
 
@@ -60,7 +61,7 @@ function extractGrpcFrames(buf) {
 
 function responseBody(payload, headers) {
   const contentType = String(headers['content-type'] || '');
-  if (contentType.includes('application/connect+proto')) {
+  if (isConnectContentType(contentType)) {
     return Buffer.concat([wrapEnvelope(payload, { compress: false }), endOfStreamEnvelope()]);
   }
   return grpcFrame(payload);
@@ -68,7 +69,7 @@ function responseBody(payload, headers) {
 
 function errorBody(message, headers) {
   const contentType = String(headers['content-type'] || '');
-  if (contentType.includes('application/connect+proto')) {
+  if (isConnectContentType(contentType)) {
     const body = Buffer.from(JSON.stringify({ error: { message } }));
     const frame = Buffer.alloc(5 + body.length);
     frame[0] = 0x02;
@@ -81,7 +82,7 @@ function errorBody(message, headers) {
 
 function requestPayload(body, headers) {
   const contentType = String(headers['content-type'] || '');
-  if (contentType.includes('application/connect+proto')) return unwrapRequest(body, headers);
+  if (isConnectContentType(contentType)) return unwrapRequest(body, headers);
   const frames = extractGrpcFrames(body);
   return frames.length ? Buffer.concat(frames) : stripGrpcFrame(body);
 }
@@ -117,7 +118,7 @@ async function withFakeLanguageServer(handler, fn) {
     sessions.add(session);
     session.on('close', () => sessions.delete(session));
   });
-  server.on('stream', handler);
+  server.on('stream', (stream, headers) => { terminateRpcWithStatus(stream); handler(stream, headers); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   try {
