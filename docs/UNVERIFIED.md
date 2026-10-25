@@ -13,18 +13,19 @@
 
 | 项 | 值 |
 |---|---|
-| 扫描 | `docs/releases/*.md` 共 215 个文件 |
-| 命中 | 25 个文件 / 25 个小节 |
-| bullet | 81 条 |
+| 扫描 | `docs/releases/*.md` 共 216 个文件 |
+| 命中 | 26 个文件 / 26 个小节 |
+| bullet | 88 条 |
 | 已复核 | 2 |
-| 仍缺 | 79 |
+| 仍缺 | 86 |
 | 已修 | 0 |
-| 无 marker | 16 |
+| 无 marker | 23 |
 
 ## 按 release
 
 | release | 小节 | bullet | 已复核 | 仍缺 | 已修 | 无 marker |
 |---|---:|---:|---:|---:|---:|---:|
+| [3.141.592656](releases/RELEASE_NOTES_3.141.592656.md) | 1 | 7 | 0 | 7 | 0 | 7 |
 | [3.141.592655](releases/RELEASE_NOTES_3.141.592655.md) | 1 | 9 | 0 | 9 | 0 | 9 |
 | [3.141.592654](releases/RELEASE_NOTES_3.141.592654.md) | 1 | 7 | 0 | 7 | 0 | 7 |
 | [3.10.0](releases/RELEASE_NOTES_3.10.0.md) | 1 | 3 | 0 | 3 | 0 | 0 |
@@ -50,6 +51,22 @@
 | [3.9.41](releases/RELEASE_NOTES_3.9.41.md) | 1 | 6 | 0 | 6 | 0 | 0 |
 | [3.9.40](releases/RELEASE_NOTES_3.9.40.md) | 1 | 3 | 0 | 3 | 0 | 0 |
 | [3.9.39](releases/RELEASE_NOTES_3.9.39.md) | 1 | 3 | 0 | 3 | 0 | 0 |
+
+## 3.141.592656 — `docs/releases/RELEASE_NOTES_3.141.592656.md`
+
+1 个小节 · 7 条：已复核 0 · 仍缺 7 · 已修 0（无 marker 7）
+
+小节 `## 6. 已知 / 尚未验证`（`:101`）
+
+| # | 位置 | bullet | marker | 状态 |
+|---:|---|---|---|---|
+| 1 | `RELEASE_NOTES_3.141.592656.md:105` | **真实上游未重跑**：V/D 波与 F2/F3 的证据来自单元测试、真实 handler 与 fake LS/受控 socket； 没有用真实 LS gRPC、真实付费账号或真实 Claude/Codex/Devin 客户端复验这些路径。Cascade live 矩阵（含 F2/F3 的 live 控制）仍 `[UNVERIFIED]`。 | — | 仍缺 |
+| 2 | `RELEASE_NOTES_3.141.592656.md:108` | **真实 Docker / 部署 / 回滚**：D6 是 fake Docker/git 注入；没有 registry pull、daemon recreate、 真实重启或生产部署。生产 `:18999` 未作为测试目标；B07 的备份/部署/回滚演练仍未执行。 | — | 仍缺 |
+| 3 | `RELEASE_NOTES_3.141.592656.md:110` | **D9 是设计，不是实现**：源码 OTA 无 tag 签名校验、docker 镜像未签名、`banner.yml` 执行运行时 拉取的代码；本版按当前发布策略接受该风险，不声称「verified OTA/supply chain」。 | — | 仍缺 |
+| 4 | `RELEASE_NOTES_3.141.592656.md:112` | **P3 清理未做**：`DIRECTION.md` 明确延后；README 的模型计数/双 API 表述、63 个死 i18n key、 32 个前缀外 env switch 等仍是已知文档债，不是本版回归。 | — | 仍缺 |
+| 5 | `RELEASE_NOTES_3.141.592656.md:114` | **Node 下限未实测**：只跑了 22.23.4 与 24.21.0；`>=22.13.0` 的 floor 本身 `[UNVERIFIED]`。 | — | 仍缺 |
+| 6 | `RELEASE_NOTES_3.141.592656.md:115` | **Windows 本机 inert 声明**：6 条平台/live 文件按 `GATE_INERT_SKIP_PATHS` 声明，不当作绿； 具体名单与计数见验收附录。 | — | 仍缺 |
+| 7 | `RELEASE_NOTES_3.141.592656.md:117` | **托管 CI / 发布产物**：tag、release workflow、cosign 资产核验与 HMC 部署都必须在 tag 后另行 执行与核对（B06/B07）；本文件不代表它们已经发生。 | — | 仍缺 |
 
 ## 3.141.592655 — `docs/releases/RELEASE_NOTES_3.141.592655.md`
 
