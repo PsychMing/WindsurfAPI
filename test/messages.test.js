@@ -1117,7 +1117,14 @@ describe('Anthropic messages request translation', () => {
       'user content must not carry the JSON-only instruction into the next turn');
   });
 
-  it('projects final JSON onto requested keys using tool results when the model drifts', () => {
+  it('does not invent values when the model drifts off the requested key set', () => {
+    // V-10/KH-013: this used to return
+    //   {"readVersion":"2.0.11","bashVersion":"2.0.11","versionsMatch":true}
+    // — readVersion/bashVersion lifted out of the tool results by key-name
+    // matching and versionsMatch computed by the proxy. None of it was in the
+    // model's answer, so a caller reading `versionsMatch:true` could not tell a
+    // fabricated fact from a measured one. The projection now only carries
+    // values the model itself emitted; a gap stays a gap.
     const messages = [
       { role: 'user', content: 'After both tool results, answer only compact JSON with exact keys readVersion, bashVersion, versionsMatch and no other keys.' },
       { role: 'assistant', content: null, tool_calls: [
@@ -1125,15 +1132,15 @@ describe('Anthropic messages request translation', () => {
       ] },
       { role: 'tool', tool_call_id: 'call_read', content: '{"name":"windsurf-api","version":"2.0.11"}' },
       { role: 'assistant', content: null, tool_calls: [
-        { id: 'call_bash', type: 'function', function: { name: 'Bash', arguments: '{"command":"node -p \\"require(\\\'./package.json\\\').version\\""}' } },
+        { id: 'call_bash', type: 'function', function: { name: 'Bash', arguments: '{"command":"node -p version"}' } },
       ] },
       { role: 'tool', tool_call_id: 'call_bash', content: '2.0.11' },
     ];
 
-    assert.equal(
-      stabilizeJsonPayload('{"name":"windsurf-api","version":"2.0.11"}', messages),
-      '{"readVersion":"2.0.11","bashVersion":"2.0.11","versionsMatch":true}',
-    );
+    const projected = stabilizeJsonPayload('{"name":"windsurf-api","version":"2.0.11"}', messages);
+    assert.equal(projected, '{"name":"windsurf-api","version":"2.0.11"}',
+      'with nothing projectable the model payload is the honest answer');
+    assert.doesNotMatch(projected, /versionsMatch|readVersion|bashVersion/);
   });
 
   // Batch 2 — multimodal / document input (GATE A2, A3, B2)

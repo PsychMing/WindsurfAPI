@@ -952,7 +952,7 @@ export class WindsurfClient {
   async cascadeChat(messages, modelEnum, modelUid, opts = {}) {
     let onChunk, onEnd, onError, signal, reuseEntry, toolPreamble, displayModel, nativeEnvironment;
     let nativeMode, nativeAllowlist, additionalSteps, requestMaxWaitMs;
-    let resumeTurn, leaseHeld, detach, accountId, modelKey, lsGeneration;
+    let resumeTurn, leaseHeld, detach, accountId, modelKey, lsGeneration, completion;
     // Lease seam. The handler owns the lease for a resumed request (it
     // acquired it before claim), so the producer must release exactly that
     // hold and never take a second one. Production defaults are the module
@@ -982,6 +982,10 @@ export class WindsurfClient {
       // Billing/pin identity. The producer only forwards these; the handler
       // owns the account and the registry policy.
       accountId, modelKey, lsGeneration,
+      // V-14: the caller's completion controls. The Cascade wire exposes one —
+      // max_output_tokens (planner config field 6) — so `maxTokens` is the only
+      // key this producer forwards; the handler has already rejected the rest.
+      completion,
     } = opts);
     // `leaseHeld` is set by the resume path: the handler already acquired the
     // LS lease for this request, so the producer must not take a second hold.
@@ -1192,6 +1196,7 @@ export class WindsurfClient {
           nativeAllowlist: nativeAllowlist || null,
           nativeEnvironment: nativeEnvironment || '',
           additionalSteps: additionalSteps || null,
+          maxOutputTokens: completion?.maxTokens,
         }, userJwt);
         await grpcUnary(
           this.port, this.csrfToken, `${LS_SERVICE}/SendUserCascadeMessage`, grpcFrame(sendProto)

@@ -345,7 +345,7 @@ export function buildStartCascadeRequest(apiKey, sessionId) {
  *          tool X with result Y" into the trajectory before the planner
  *          sees the next user turn. See src/cascade-native-bridge.js.
  */
-export function buildSendCascadeMessageRequest(apiKey, cascadeId, text, modelEnum, modelUid, sessionId, { toolPreamble, images, additionalSteps, nativeMode, nativeAllowlist, nativeEnvironment } = {}, userJwt = null) {
+export function buildSendCascadeMessageRequest(apiKey, cascadeId, text, modelEnum, modelUid, sessionId, { toolPreamble, images, additionalSteps, nativeMode, nativeAllowlist, nativeEnvironment, maxOutputTokens } = {}, userJwt = null) {
   const parts = [];
 
   // Field 1: cascade_id
@@ -376,6 +376,8 @@ export function buildSendCascadeMessageRequest(apiKey, cascadeId, text, modelEnu
     nativeMode: !!nativeMode,
     nativeAllowlist: nativeAllowlist || null,
     nativeEnvironment: nativeEnvironment || '',
+    // V-14: the caller's output cap (field 6). Undefined keeps 32768.
+    maxOutputTokens,
   });
   parts.push(writeMessageField(5, cascadeConfig));
 
@@ -410,7 +412,25 @@ function conflictsWithKimiPreamble(toolPreamble, reinforcement) {
     && /<\s*tool_call\s*>/i.test(reinforcement || '');
 }
 
-function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault, nativeMode, nativeAllowlist, nativeEnvironment } = {}) {
+/**
+ * The largest max_output_tokens the real IDE is observed to send. Asking for more
+ * than the IDE does is unverified, so a larger caller request is clamped rather
+ * than risked.
+ */
+export const CASCADE_MAX_OUTPUT_TOKENS_CEILING = 32768;
+
+/**
+ * V-14: resolve a caller's output cap into the value field 6 carries.
+ * Anything not a positive finite number keeps the historical 32768 default, so a
+ * request that never set `max_tokens` is byte-identical to before.
+ */
+export function normalizeCascadeMaxOutputTokens(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return CASCADE_MAX_OUTPUT_TOKENS_CEILING;
+  return Math.max(1, Math.min(Math.floor(n), CASCADE_MAX_OUTPUT_TOKENS_CEILING));
+}
+
+function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault, nativeMode, nativeAllowlist, nativeEnvironment, maxOutputTokens } = {}) {
   // CascadeConversationalPlannerConfig.planner_mode (field 4) uses
   // codeium_common.ConversationalPlannerMode:
   //   0 UNSPECIFIED  1 DEFAULT  2 READ_ONLY  3 NO_TOOL
@@ -620,7 +640,12 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault, n
 
   // max_output_tokens (field 6) — real IDE sends 16384/32768.
   // Missing this causes truncated long responses.
-  plannerParts.push(writeVarintField(6, 32768));
+  //
+  // V-14: this used to be a hardcoded 32768, so a caller's `max_tokens` never
+  // reached the wire at all. The field IS the wire's only completion control, so
+  // the caller's cap now lands here (clamped to the IDE ceiling, which is the
+  // largest value the upstream is known to accept).
+  plannerParts.push(writeVarintField(6, normalizeCascadeMaxOutputTokens(maxOutputTokens)));
 
   // CascadePlannerConfig.tool_config = field 13 → CascadeToolConfig.
   // Only populated in native bridge mode. The allowlist (field 32) tells
