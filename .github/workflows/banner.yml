@@ -6,9 +6,16 @@ name: banner
 #
 # The schedule stays off until a manual run has been watched go green: a failing
 # schedule means one email per repository, and a broken generator fails loudly.
+#
+# `branches: [master]` is load-bearing. GitHub ignores path filters for tag
+# pushes, so without it every release tag ran this workflow on a detached HEAD
+# and died at `git push`; it also keeps repo-kit.toml edits on side branches from
+# pushing bot commits. Only master pushes that touch repo-kit.toml and manual
+# dispatches render the banner.
 on:
   workflow_dispatch:
   push:
+    branches: [master]
     paths:
       - "repo-kit.toml"
 
@@ -51,11 +58,15 @@ jobs:
             --toml repo-kit.toml --out . --flat --inject
 
       - name: commit
+        if: github.ref_type == 'branch'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add README.md docs/assets
-          git diff --cached --quiet && echo "no changes" && exit 0
+          if git diff --cached --quiet; then
+            echo "no changes"
+            exit 0
+          fi
           git commit -m "chore: refresh banner"
           git pull --rebase origin "$GITHUB_REF_NAME"
           git push
