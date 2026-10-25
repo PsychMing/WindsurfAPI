@@ -3,7 +3,7 @@
     "test/connect-image-capability-gate.test.js",
     "test/connect-image-capability-account.test.js"
   ],
-  "expectBaselinePass": 13,
+  "expectBaselinePass": 14,
   "mutations": [
     {
       "name": "W4-M1: ignore the explicit supports_images=false bit",
@@ -64,8 +64,15 @@
     {
       "name": "W4-M9: serve the emptied image-only turn instead of refusing it (P2-3)",
       "file": "src/handlers/chat.js",
-      "anchor": "          if (lastUser && !hasAnswerableUserContent(lastUser)) {",
+      "anchor": "          if (last?.role === 'user' && !hasAnswerableUserContent(last)) {",
       "replacement": "          if (false) {",
+      "expectCaught": true
+    },
+    {
+      "name": "W4-M12: refuse on ANY emptied user turn, breaking tool-result continuations (P2-3)",
+      "file": "src/handlers/chat.js",
+      "anchor": "          const convo = wireMessages.filter(m => m?.role !== 'system');\n          const last = convo[convo.length - 1];\n          if (last?.role === 'user' && !hasAnswerableUserContent(last)) {",
+      "replacement": "          const lastUser = wireMessages.filter(m => m?.role === 'user').pop();\n          if (lastUser && !hasAnswerableUserContent(lastUser)) {",
       "expectCaught": true
     },
     {

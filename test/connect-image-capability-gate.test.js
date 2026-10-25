@@ -245,6 +245,25 @@ describe('connect image capability gate — supports_images:false', () => {
     assert.ok(lines.some((l) => /image-only|no answerable/i.test(l)),
       `a warn must name the refusal; got:\n${lines.join('\n')}`);
   });
+
+  // Control for the refusal: a conversation that ends on a TOOL RESULT is still
+  // answerable even if an earlier user turn was image-only and got emptied by
+  // the strip. The 400 is about the terminal turn, not about any empty turn.
+  it('keeps a tool-result continuation answerable when an earlier user image is stripped', async () => {
+    const messages = [
+      { role: 'user', content: [{ type: 'image_url', image_url: { url: DATA_URL } }] },
+      { role: 'assistant', content: null, tool_calls: [
+        { id: 'call_1', type: 'function', function: { name: 'f', arguments: '{}' } },
+      ] },
+      { role: 'tool', tool_call_id: 'call_1', content: 'tool output' },
+    ];
+    const { value } = await captureLogs(() => ask({ model: TEXT_ONLY, stream: false, messages }));
+    assert.equal(value.status, 200, JSON.stringify(value.body));
+    assert.equal(upstream.hits, 1, 'a tool-result-terminated request is answerable');
+    assert.equal(wireImages(upstream.lastParams.messages).length, 0);
+    const toolTurn = upstream.lastParams.messages.find((m) => m.role === 'tool');
+    assert.equal(toolTurn?.content, 'tool output', 'the tool result must survive');
+  });
 });
 
 describe('connect image capability gate — true and unknown are untouched', () => {

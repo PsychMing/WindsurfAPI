@@ -4081,13 +4081,17 @@ async function _handleChatCompletionsInner(body, context = {}) {
           bumpConnect('images_dropped_capability', dropped);
           log.warn(`Chat[${reqId}]: DEVIN_CONNECT selector ${safeLogValue(selector)} declares supports_images=false for account ${ccAcct ? safeAccountRef(ccAcct) : 'env-token'} in the live catalog — dropped ${dropped} image block(s) before the wire; text preserved (counted in images_dropped_capability)`);
           // P2-3: the answerability guard ran BEFORE this strip and counted the
-          // image as content. If the last user turn was ONLY that image there is
-          // nothing left to answer: sending it would encode an empty user frame
-          // (and consecutive user turns can merge it away entirely, leaving the
-          // model to answer a stale earlier prompt). Refuse with the reason.
+          // image as content. If the conversation ENDS on a user turn that is
+          // now empty there is nothing left to answer: sending it would encode
+          // an empty user frame (and consecutive user turns can merge it away
+          // entirely, leaving the model to answer a stale earlier prompt).
+          // Refuse with the reason. A conversation that ends on a tool result is
+          // still answerable — an earlier stripped user turn is not the terminal
+          // turn, so it must not turn a valid continuation into a 400.
           const wireMessages = Array.isArray(connectMessages) ? connectMessages : messages;
-          const lastUser = wireMessages.filter(m => m?.role === 'user').pop();
-          if (lastUser && !hasAnswerableUserContent(lastUser)) {
+          const convo = wireMessages.filter(m => m?.role !== 'system');
+          const last = convo[convo.length - 1];
+          if (last?.role === 'user' && !hasAnswerableUserContent(last)) {
             log.warn(`Chat[${reqId}]: DEVIN_CONNECT selector ${safeLogValue(selector)} declares supports_images=false and the last user turn contained only image block(s) — refusing with 400 (no answerable content remains after the strip)`);
             if (ccAcct) {
               try { refundReservation(ccAcct.apiKey, ccAcct.reservationTimestamp); } catch {}
