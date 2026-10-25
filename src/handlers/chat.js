@@ -76,6 +76,8 @@ import {
 } from './cascade-metadata-egress.js';
 import { systemFingerprint } from '../system-fingerprint.js';
 import { registerSseController } from '../sse-registry.js';
+import { createBoundedWriter, resolveMaxDrainWaitMs } from '../stream-writer.js';
+import { validateJsonSchema } from '../json-schema.js';
 import { createStreamReasoningDedup, isReasoningDedupEnabled } from '../reasoning-dedup.js';
 import { ThinkTextClassifier } from '../response-classifier.js';
 import {
@@ -90,13 +92,12 @@ import {
 } from '../native-bridge-stats.js';
 
 const HEARTBEAT_MS = 15_000;
-// C2: a slow reader gets a bounded wait, not an unbounded one. A half-open
-// client (stops reading, keeps TCP open) never emits 'drain', so without a
-// ceiling the Cascade poll loop and the account checkout would be pinned for
-// the life of the connection. Two minutes is eight heartbeat periods: long
-// enough for a genuinely slow but live reader, short enough that a dead one
-// cannot hold a lease indefinitely. Override with WINDSURFAPI_MAX_DRAIN_MS.
-const MAX_DRAIN_WAIT_DEFAULT_MS = 120_000;
+// C2/V-08: the drain ceiling and the writer contract live in
+// ../stream-writer.js — one implementation for every SSE exit. A slow reader
+// gets a bounded wait, not an unbounded one: a half-open client (stops reading,
+// keeps TCP open) never emits 'drain', so without a ceiling the poll loop and
+// the account checkout would be pinned for the life of the connection. Two
+// minutes is eight heartbeat periods. Override with WINDSURFAPI_MAX_DRAIN_MS.
 const QUEUE_RETRY_MS = 1_000;
 const QUEUE_MAX_WAIT_MS = 30_000;
 const IP_RATE_LIMIT_BURST_FLOOR_MS = 30_000;
@@ -1224,59 +1225,6 @@ function safeJsonParse(text) {
   try { return JSON.parse(text); } catch { return undefined; }
 }
 
-function collectToolFacts(messages) {
-  const namesById = new Map();
-  const facts = { byTool: {}, all: [] };
-  for (const m of Array.isArray(messages) ? messages : []) {
-    if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
-      for (const tc of m.tool_calls) namesById.set(tc.id, tc.function?.name || '');
-    }
-    if (m?.role !== 'tool') continue;
-    const toolName = namesById.get(m.tool_call_id) || 'tool';
-    const key = toolName.toLowerCase();
-    const content = typeof m.content === 'string' ? m.content.trim() : JSON.stringify(m.content ?? '');
-    const parsed = safeJsonParse(extractJsonPayload(content));
-    const fact = { toolName, content, parsed };
-    facts.all.push(fact);
-    if (!facts.byTool[key]) facts.byTool[key] = [];
-    facts.byTool[key].push(fact);
-  }
-  return facts;
-}
-
-function valueFromToolFacts(key, facts) {
-  const lower = key.toLowerCase();
-  if (lower === 'versionsmatch' || lower === 'versionmatch') return undefined;
-  const wantsRead = lower.startsWith('read') || lower.includes('read');
-  const wantsBash = lower.startsWith('bash') || lower.includes('bash');
-  const wantsVersion = lower.includes('version');
-  const wantsName = lower.includes('name') || lower.includes('package');
-  const candidates = wantsRead ? (facts.byTool.read || [])
-    : wantsBash ? (facts.byTool.bash || [])
-      : facts.all;
-
-  if (wantsVersion) {
-    for (const f of candidates) {
-      if (plainObject(f.parsed)) {
-        const v = findDeepValue(f.parsed, 'version');
-        if (v !== undefined) return v;
-      }
-      const m = f.content.match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/);
-      if (m) return m[0];
-    }
-  }
-  if (wantsName) {
-    for (const f of candidates) {
-      if (plainObject(f.parsed)) {
-        const v = findDeepValue(f.parsed, 'name');
-        if (v !== undefined) return v;
-      }
-    }
-  }
-  if (lower === 'ok') return true;
-  return undefined;
-}
-
 export function stabilizeJsonPayload(text, messages) {
   const keys = extractRequestedJsonKeys(messages);
   if (!keys.length) return text;
@@ -1288,22 +1236,59 @@ export function stabilizeJsonPayload(text, messages) {
     return cleaned;
   }
 
-  const facts = collectToolFacts(messages);
   const out = {};
   for (const key of keys) {
-    let v = findDeepValue(parsed, key);
-    if (v === undefined) v = valueFromToolFacts(key, facts);
-    out[key] = v === undefined ? null : v;
+    const v = findDeepValue(parsed, key);
+    if (v !== undefined) out[key] = v;
   }
   for (const key of keys) {
     const lower = key.toLowerCase();
-    if ((lower === 'versionsmatch' || lower === 'versionmatch') && out[key] == null) {
+    if ((lower === 'versionsmatch' || lower === 'versionmatch') && !(key in out)) {
       const read = out.readVersion ?? out.read_version;
       const bash = out.bashVersion ?? out.bash_version;
       if (read != null && bash != null) out[key] = String(read).trim() === String(bash).trim();
     }
   }
+  // Nothing projected: the model's own payload is the honest answer. Returning
+  // `{}` would erase an answer that simply used different key names, and it is
+  // not the projection's job to punish a drift it cannot fix.
+  if (!Object.keys(out).length) return cleaned;
   return JSON.stringify(out);
+}
+
+/**
+ * Does the final payload satisfy the caller's JSON Schema?
+ *
+ * Returns null when there is nothing to check or the payload conforms, otherwise
+ * the first violation. The proxy cannot make the upstream obey a schema (Cascade
+ * and the Connect wire have no such control), so the only honest options are to
+ * check the answer and say so, or to stay silent — and silence is what let a
+ * `strict` request return a body the caller's own validator rejects.
+ */
+export function structuredOutputViolation(text, schema) {
+  if (!schema || typeof schema !== 'object') return null;
+  if (typeof text !== 'string' || !text.trim()) return { path: '$', message: 'the response is empty' };
+  const parsed = safeJsonParse(extractJsonPayload(text));
+  if (parsed === undefined) return { path: '$', message: 'the response is not valid JSON' };
+  const verdict = validateJsonSchema(parsed, schema);
+  return verdict.ok ? null : { path: verdict.path, message: verdict.message };
+}
+
+/** The typed failure returned when a schema-constrained turn does not conform. */
+function structuredOutputError(violation) {
+  return {
+    // 5xx: the request was valid, the upstream answer was not. A 4xx would blame
+    // the caller for a schema this proxy accepted.
+    status: 502,
+    body: {
+      error: {
+        message: `The model's answer does not conform to the requested JSON Schema (${violation.path}: ${violation.message}).`
+          + ' This proxy cannot enforce structured output at the upstream, so it reports the mismatch instead of returning a payload that violates the schema.',
+        type: 'server_error',
+        code: 'STRUCTURED_OUTPUT_NOT_CONFORMING',
+      },
+    },
+  };
 }
 
 export function applyJsonResponseHint(messages, responseFormat) {
@@ -2108,6 +2093,10 @@ function scanUserMessageForBareCwd(messages) {
 // Rough token estimate (~4 chars/token). Used only to populate the
 // OpenAI-compatible `usage.prompt_tokens_details.cached_tokens` field so
 // upstream billing/dashboards (new-api) can recognise our local cache hits.
+// V-14: the same chars/4 heuristic estimateTokens/buildUsageBody already bill
+// with, reused for the local output cap so "max_tokens" means one thing here.
+const OUTPUT_CHARS_PER_TOKEN = 4;
+
 function estimateTokens(messages) {
   if (!Array.isArray(messages)) return 0;
   let chars = 0;
@@ -3624,6 +3613,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
 
   const explicitJson = isExplicitJsonRequested(messages);
   const wantJson = response_format?.type === 'json_object' || response_format?.type === 'json_schema' || explicitJson;
+  // V-10: the caller's schema (when one was supplied) is the contract this
+  // route must check its answer against. `json_object` carries no schema, so it
+  // keeps the old "must parse as JSON" behaviour only.
+  const jsonSchema = response_format?.type === 'json_schema' && response_format.json_schema?.schema
+    ? response_format.json_schema.schema
+    : null;
   const strongSystemStructuredOutput = hasStrongSystemOrDeveloperStructuredOutputContract(messages);
   const latestUserStructuredShape = isExplicitStructuredShapeRequestText(latestRealUserText(messages));
   const preserveCascadeStructuredPayload = explicitJson
@@ -4435,6 +4430,32 @@ async function _handleChatCompletionsInner(body, context = {}) {
           // messages/gemini/responses 路由写入各自 translator 的 captureRes,
           // 须保留内部词供其 remap。
           const isOpenAIClient = (body.__route || 'chat') === 'chat';
+          // V-08: the Connect stream used to discard every write verdict, so a
+          // slow reader bought unbounded upstream production. The adapter now
+          // awaits `send`, so this writer's drain wait holds the producer: one
+          // outstanding wait, no resend of the accepted frame, bounded by
+          // WINDSURFAPI_MAX_DRAIN_MS, and a half-open client tears the turn down
+          // instead of pinning an account.
+          const maxDrainWaitMs = resolveMaxDrainWaitMs();
+          const writer = createBoundedWriter({
+            res,
+            signal: abortController.signal,
+            maxWaitMs: maxDrainWaitMs,
+            onTimeout: () => {
+              log.warn(`Chat[${reqId}]: no drain for ${maxDrainWaitMs}ms — client stopped reading, aborting the stream`);
+              writeRaw(formatFrame(chatStreamError(
+                'client stopped reading; the stream was aborted after the drain timeout',
+                'server_error',
+                'DRAIN_TIMEOUT',
+              )));
+              abortController.abort(new Error('drain timeout'));
+            },
+          });
+          const writeRaw = (text) => writer.write(text);
+          const formatFrame = (data) => `data: ${JSON.stringify(data)}\n\n`;
+          // Returns the sequential-emission promise so the adapter can hold its
+          // producer behind a pressured socket. The frame is written once, after
+          // any outstanding drain.
           const send = (data) => {
             // O9/O12: connect 流 chunk 由 adapter 预置 fp；此处幂等补
             // system_fingerprint 与 service_tier。error 帧不动。
@@ -4445,8 +4466,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
             if (!res.writableEnded) {
               if (Array.isArray(data?.choices) && data.choices.some((c) => c?.delta?.content || c?.delta?.tool_calls || c?.finish_reason)) contentEmitted = true;
               emitted = true;
-              res.write(`data: ${JSON.stringify(data)}\n\n`);
+              return writer.writeFrame(formatFrame(data));
             }
+            return undefined;
           };
           // Point the upstream connect HTTP call at the handler-local controller
           // (not the raw context.signal set at request setup) so a client
@@ -4458,9 +4480,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
           // finally below guarantees a matching unregister.
           unregisterSse = registerSseController({
             abort(reason) {
-              send(chatStreamError(reason || 'server shutting down', 'server_error', 'server_shutdown'));
+              // Best effort only, and deliberately SYNCHRONOUS: a shutdown
+              // notice must not block behind a stalled writer, and the abort
+              // below is what wakes that writer.
+              writeRaw(formatFrame(chatStreamError(reason || 'server shutting down', 'server_error', 'server_shutdown')));
               if (!res.writableEnded) {
-                res.write('data: [DONE]\n\n');
+                writeRaw('data: [DONE]\n\n');
                 res.end();
               }
               abortController.abort(reason);
@@ -4472,8 +4497,10 @@ async function _handleChatCompletionsInner(body, context = {}) {
           // intermediaries see bytes flowing, idle timers reset. Same
           // HEARTBEAT_MS cadence as the Cascade path; the messages/gemini
           // translators forward the raw comment (see createCaptureRes).
+          // V-08: a tick is skipped while a drain is outstanding — the heartbeat
+          // may never add bytes or a waiter behind a pressured writer.
           const heartbeat = setInterval(() => {
-            if (!res.writableEnded) res.write(': ping\n\n');
+            if (!res.writableEnded && !writer.pending) writeRaw(': ping\n\n');
           }, HEARTBEAT_MS);
           const stopHeartbeat = () => clearInterval(heartbeat);
           res.on('close', stopHeartbeat);
@@ -4492,27 +4519,31 @@ async function _handleChatCompletionsInner(body, context = {}) {
               recordRequest(_display, true, 0, null);
               const _use = __sHit.usage || cachedUsage(messages, _txt);
               try { recordTokenUsage(_use, _display); } catch {}
-              send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
+              await send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
                 choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
               if (__sHit.thinking) {
-                send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
+                await send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
                   choices: [{ index: 0, delta: { reasoning_content: __sHit.thinking }, finish_reason: null }] });
               }
               if (_txt) {
-                send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
+                await send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
                   choices: [{ index: 0, delta: { content: _txt }, finish_reason: null }] });
               }
               const _finishChoice = { index: 0, delta: {}, finish_reason: _finishReason };
               if (context?.__messagesStopCarrier === true && _cachedStop && _finishReason === 'stop') {
                 _finishChoice._windsurf_stop_sequence = _cachedStop;
               }
-              send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
+              await send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
                 choices: [_finishChoice] });
               if (connectMeta.includeUsage) {
-                send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
+                await send({ id: ccId, object: 'chat.completion.chunk', created: ccCreated, model: _display,
                   choices: [], usage: _use });
               }
-              if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+              if (!res.writableEnded) {
+                await writer.settle();
+                writeRaw('data: [DONE]\n\n');
+                res.end();
+              }
             } catch (e) { log.info('[STREAM-CACHE-ERR] replay ' + (e && e.message)); }
             unregisterSse();
             stopHeartbeat();
@@ -4645,7 +4676,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 const stop = budgetExceededError(`request budget exhausted before DEVIN_CONNECT stream failover hop ${hops + 1} (${context.budget.describe()})`);
                 log.warn(`Chat[${reqId}]: ${stop.message}`);
                 if (acct) releaseAccountById(acct.id);
-                send(chatStreamError(stop.message, 'upstream_deadline_exceeded', 'DEADLINE_EXCEEDED'));
+                await send(chatStreamError(stop.message, 'upstream_deadline_exceeded', 'DEADLINE_EXCEEDED'));
                 break;
               }
               if (acct) triedKeys.push(acct.apiKey);
@@ -4746,7 +4777,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 const retryAfterMs = r.err.code === 'RATE_LIMITED'
                   ? (Number.isFinite(r.err.resetMs) && r.err.resetMs > 0 ? r.err.resetMs : getBreakerTunable('rlBurstMs'))
                   : null;
-                send(chatStreamError(r.err.message, streamErrType, r.err.code || null,
+                await send(chatStreamError(r.err.message, streamErrType, r.err.code || null,
                   retryAfterMs ? { retry_after_ms: retryAfterMs } : null));
                 break;
               }
@@ -4759,9 +4790,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
               // probe decides; fire-and-forget (de-duped inside auth.js) so
               // failover never waits on it.
               if (acct) requestReauthCheck(acct.id, { source: 'request' }).catch(() => {});
-              if (hops >= maxHops || emitted) { bumpConnect('failover_exhausted'); send(chatStreamError('all DEVIN_CONNECT accounts exhausted (dead session tokens)', 'upstream_error', 'UNAUTHORIZED')); break; }
+              if (hops >= maxHops || emitted) { bumpConnect('failover_exhausted'); await send(chatStreamError('all DEVIN_CONNECT accounts exhausted (dead session tokens)', 'upstream_error', 'UNAUTHORIZED')); break; }
               const next = await acquireConnectFailover(triedKeys, abortController.signal, callerKey, selector, context.budget || null);
-              if (!next) { bumpConnect('failover_exhausted'); send(chatStreamError('all DEVIN_CONNECT accounts exhausted (dead session tokens)', 'upstream_error', 'UNAUTHORIZED')); break; }
+              if (!next) { bumpConnect('failover_exhausted'); await send(chatStreamError('all DEVIN_CONNECT accounts exhausted (dead session tokens)', 'upstream_error', 'UNAUTHORIZED')); break; }
               log.info(`Chat[${reqId}]: DEVIN_CONNECT failover hop ${hops + 1} → next pooled account`);
               bumpConnect('failover_hops');
               acct = next;
@@ -4788,8 +4819,13 @@ async function _handleChatCompletionsInner(body, context = {}) {
             // socket — that can leave the handler stuck on a closed connection.
             // A pre-content error (`!terminalOk && !contentEmitted`) ends without
             // [DONE], so a client cannot mistake it for a completed turn.
+            // V-08: the sentinel is part of the same sequential emission — it
+            // must not overtake a frame the socket has not taken yet.
             if (!abortController.signal.aborted && !res.writableEnded) {
-              if (terminalOk || contentEmitted) res.write('data: [DONE]\n\n');
+              if (terminalOk || contentEmitted) {
+                await writer.settle();
+                writeRaw('data: [DONE]\n\n');
+              }
               res.end();
             }
           } finally {
@@ -4903,6 +4939,15 @@ async function _handleChatCompletionsInner(body, context = {}) {
       if (acct) triedKeys.push(acct.apiKey);
       const r = await attempt(acct);
       if (r.kind === 'ok') {
+        // V-10: a schema-constrained turn that does not conform is a failure, and
+        // it must be reported BEFORE the cache write / session commit / affinity
+        // pin — otherwise the next chained turn inherits a payload the caller
+        // never accepted.
+        const connectViolation = structuredOutputViolation(r.out?.body?.choices?.[0]?.message?.content, jsonSchema);
+        if (connectViolation) {
+          log.warn(`Chat[${reqId}]: structured output does not conform (${connectViolation.path}: ${connectViolation.message}) — returning a typed failure`);
+          return structuredOutputError(connectViolation);
+        }
         // Same cache-affinity pin as the streaming path above.
         bindConnectSticky(callerKey, acct, selector);
         // Feed the dashboard token-usage breakdown from the DEVIN_CONNECT path
@@ -5048,6 +5093,41 @@ async function _handleChatCompletionsInner(body, context = {}) {
   // Models with only an old enum and no UID may fail with "neither PlanModel
   // nor RequestedModel" — those models were removed from Windsurf upstream.
   const useCascade = usesCascadeFlow(backendSel);
+
+  // ── V-14: Cascade completion controls ────────────────────────────────
+  // The Cascade wire has exactly ONE caller-tunable completion control:
+  // `max_output_tokens` (CascadePlannerConfig field 6). temperature / top_p /
+  // top_k have no verified field on that message, so this route used to accept
+  // them and drop them — the client believed its sampling took effect and the
+  // model ran at the built-in defaults. Reject instead, exactly as the T1 gate
+  // above does for seed/penalties/logit_bias: a 400 the caller can act on beats
+  // a success that quietly ignored the request. The Devin Connect backend DOES
+  // honour all three (buildCompletionConfig), so the message says so.
+  const cascadeCompletion = useCascade && Number.isFinite(max_tokens)
+    ? { maxTokens: max_tokens }
+    : null;
+  if (useCascade) {
+    const unhonorable = [];
+    if (Number.isFinite(body.temperature)) unhonorable.push('temperature');
+    if (Number.isFinite(body.top_p)) unhonorable.push('top_p');
+    if (Number.isFinite(body.top_k)) unhonorable.push('top_k');
+    if (unhonorable.length) {
+      log.warn(`Chat[${reqId}]: rejecting Cascade request — unhonorable completion control(s): ${unhonorable.join(', ')}`);
+      return {
+        status: 400,
+        body: {
+          error: {
+            message: `Unsupported completion parameter(s) on the Cascade backend: ${unhonorable.join(', ')}.`
+              + ' The Cascade wire exposes no sampling control, so this proxy rejects them rather than silently'
+              + ' dropping them (which would look like they took effect). Remove them, or use the Devin Connect'
+              + ' backend (DEVIN_CONNECT=1), which honours temperature, top_p and top_k.',
+            type: 'invalid_request_error',
+            param: unhonorable[0],
+          },
+        },
+      };
+    }
+  }
 
   // Tool-call emulation: if the client passed OpenAI-style tools[], we rewrite
   // tool-result turns into synthetic user text and inject the tool protocol
@@ -5467,6 +5547,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
       waitForAccount: waitForAccountFn,
       cachePolicy,
       wantThinking,
+      // V-10: the JSON Schema the caller constrained this turn to, if any. The
+      // stream buffers JSON content anyway, so a non-conforming payload can still
+      // be reported honestly instead of closed as a clean stop.
+      jsonSchema,
+      // V-14: the caller's completion controls, for the local output cap.
+      completion: cascadeCompletion,
       // O1: OpenAI only emits the trailing usage-only chunk when the caller opts
       // in via stream_options.include_usage:true; otherwise a streamed response
       // carries no usage frame. Passing this through lets streamResponse honor it
@@ -5800,6 +5886,10 @@ async function _handleChatCompletionsInner(body, context = {}) {
       // Ledger identity: the immutable account id (the credential may rotate
       // while this turn is in flight; see recordAccountSpend).
       acct.id,
+      // V-10: the caller's JSON Schema, checked against the final payload below.
+      jsonSchema,
+      // V-14: the caller's completion controls (max_tokens), for the local cap.
+      cascadeCompletion,
     );
     // Classify the entry's health BEFORE the abort branch can return: a 504 /
     // deadline verdict (or an explicit not_found) marks the cascade half-broken,
@@ -5972,9 +6062,23 @@ async function _handleChatCompletionsInner(body, context = {}) {
   return lastErr || { status: 503, body: { error: { message: 'No active accounts available', type: 'pool_exhausted' } } };
 }
 
-async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, provider, emulateTools, toolPreamble, wantJson = false, cachePolicy = null, wantThinking = false, tools = [], route = 'chat', nativeOpts = null, reqId = 'non-stream', aliasCkey = null, clineCompatActive = false, allowCascadeMetadataUnwrap = true, stopSequences = [], stopCarrier = false, signal = null, budget = null, accountId = '') {
+async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, provider, emulateTools, toolPreamble, wantJson = false, cachePolicy = null, wantThinking = false, tools = [], route = 'chat', nativeOpts = null, reqId = 'non-stream', aliasCkey = null, clineCompatActive = false, allowCascadeMetadataUnwrap = true, stopSequences = [], stopCarrier = false, signal = null, budget = null, accountId = '', jsonSchema = null, completion = null) {
   const startTime = Date.now();
   const nativeBridgeOn = !!nativeOpts?.enabled;
+  // V-14: local enforcement of the caller's output cap. The wire field is a
+  // REQUEST; an upstream that ignores it (or a deployment whose builder never
+  // sent it) answered far past a small max_tokens and still reported
+  // finish_reason:'stop'. chars/4 is this repo's own token estimator, so the cap
+  // is enforced in the same units it already bills in.
+  const outputCapChars = Number.isFinite(completion?.maxTokens) && completion.maxTokens > 0
+    ? Math.floor(completion.maxTokens * OUTPUT_CHARS_PER_TOKEN)
+    : null;
+  let outputCapReached = false;
+  const applyOutputCap = (text) => {
+    if (outputCapChars == null || typeof text !== 'string' || text.length <= outputCapChars) return text;
+    outputCapReached = true;
+    return text.slice(0, outputCapChars);
+  };
   try {
     let allText = '';
     let allThinking = '';
@@ -6010,6 +6114,9 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
       }
       const chunks = await client.cascadeChat(cascadeMessages, modelEnum, modelUid, {
         reuseEntry: poolCtx?.reuseEntry || null,
+        // V-14: same cap the stream path sends (`completion` is this function's
+        // parameter; the outer handler's resolved object is cascadeCompletion).
+        completion,
         // Clamp the internal poll window to what the request has left.
         ...(budget ? { maxWaitMs: budget.remainingMs() } : {}),
         toolPreamble: nativeBridgeOn ? '' : toolPreamble,
@@ -6443,7 +6550,19 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
       });
     }
     if (wantJson && allText && !usedNativeReadUrlFallback) {
+      // A capped JSON answer is still cut at the cap: the caller asked for at
+      // most N tokens, and the terminal says `length` so the cut is visible.
+      allText = applyOutputCap(allText);
       allText = stabilizeJsonPayload(allText, messages);
+      // V-10: the projection above no longer invents values, so a payload that
+      // misses a schema-required key now stays missing. Say so instead of
+      // answering 200 with a body the caller's own validator rejects.
+      const violation = structuredOutputViolation(allText, jsonSchema);
+      if (violation) {
+        log.warn(`Chat[${reqId}]: structured output does not conform (${violation.path}: ${violation.message}) — returning a typed failure`);
+        try { recordRequest(model, false, Date.now() - startTime, accountId); } catch {}
+        return structuredOutputError(violation);
+      }
     }
     allThinking = sanitizeText(allThinking);
     if (toolCalls.length) {
@@ -6475,6 +6594,11 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     // usage accounting (a stop truncates what the client SEES; the upstream still
     // generated and billed the tokens).
     const usageText = allText;
+    // V-14: enforce the cap on the bytes the client will actually receive.
+    // `usageText` keeps the PRE-cap text for billing — the upstream generated
+    // those tokens even though the caller asked for fewer (same rule as a local
+    // stop sequence). A tool-call turn is never cut: the calls are the payload.
+    if (!toolCalls.length && !wantJson) allText = applyOutputCap(allText);
     let localStop = null;
     if (!toolCalls.length) {
       const stopped = applyStop(allText, stopSequences);
@@ -6622,7 +6746,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     // owns the row; apiKey is only the credential the attempt presented and may
     // have rotated while this turn was in flight (review #3).
     try { recordAccountSpend({ accountId, apiKey }, usage); } catch {}
-    const finishReason = toolCalls.length ? 'tool_calls' : 'stop';
+    const finishReason = outputCapReached ? 'length' : (toolCalls.length ? 'tool_calls' : 'stop');
     const choice = { index: 0, message, finish_reason: finishReason };
     // SEED-C3a carrier on the internal Messages route only (same contract as the
     // Connect adapter): the exact sequence that truncated the visible prose. A
@@ -6937,59 +7061,30 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       // messages/gemini/responses 路由须保留内部词供下游 translator remap。
       const isOpenAIClient = (fpOpts?.route || 'chat') === 'chat';
 
-      // ── C2: writer backpressure ─────────────────────────────────────────
-      // `res.write` returning false is an ordinary slow-reader signal: Node has
-      // ACCEPTED the frame, the socket buffer is full, and the producer must not
-      // hand it more until 'drain'. This path ignored the verdict, so a stalled
-      // client bought unbounded Cascade polling (and frames) with no pressure at
-      // all. Contract, deliberately small:
-      //   * at most ONE outstanding drain wait per stream — no payload queue;
-      //   * the false-returning frame was already accepted: never resent;
-      //   * the wait is raced against response close/error and the request abort
-      //     signal, settles exactly once, and detaches its own listeners;
-      //   * closed/aborted is re-checked before every write and after every wait,
-      //     so a client that vanished while we waited receives no further bytes.
+      // ── Writer backpressure (C2 / V-08) ─────────────────────────────────
+      // The contract lives in ../stream-writer.js so every SSE exit (Cascade,
+      // Connect, Messages/Responses translators) shares one implementation
+      // instead of each route re-deriving it. See that module for the rules:
+      // one outstanding drain wait, never resend the false frame, race the wait
+      // against close/error/abort, re-check gone before every write.
       //
       // Armed only for the Cascade producer: it is the only consumer that can
       // await (src/client.js awaits onChunk). The legacy rawGetChatMessage
       // channel consumes onChunk synchronously from a gRPC data callback and
       // cannot hold its producer, so arming it there would let onEnd overtake an
-      // unfinished emission. Legacy backpressure stays exactly as it is — C2
-      // closes the direct Cascade SSE path only.
+      // unfinished emission. Legacy backpressure stays exactly as it is.
       const backpressureArmed = useCascade;
-      let pendingDrain = null;
       // Set once a drain has timed out: the stream is over, so no later write
-      // may start a fresh wait (and a fresh timer) behind it.
+      // may start a fresh wait (and a fresh timer) behind it. The writer owns
+      // that latch; this mirror exists for the detach cause below.
       let drainTimedOut = false;
-      const parsedMaxDrain = parseInt(process.env.WINDSURFAPI_MAX_DRAIN_MS || '', 10);
-      const maxDrainWaitMs = Number.isFinite(parsedMaxDrain) && parsedMaxDrain > 0
-        ? parsedMaxDrain
-        : MAX_DRAIN_WAIT_DEFAULT_MS;
-      const writerGone = () => res.writableEnded || abortController.signal.aborted;
-      const beginDrain = () => {
-        if (pendingDrain) return pendingDrain;
-        if (drainTimedOut || writerGone()) return null;
-        let settle = () => {};
-        const operation = new Promise((resolve) => { settle = resolve; });
-        let settled = false;
-        let timer = null;
-        const finishDrain = () => {
-          if (settled) return;
-          settled = true;
-          if (timer) { clearTimeout(timer); timer = null; }
-          if (pendingDrain === operation) pendingDrain = null;
-          // Some embedders hand this handler a minimal writable; only real
-          // streams carry the EventEmitter alias.
-          res.removeListener?.('drain', finishDrain);
-          res.removeListener?.('close', finishDrain);
-          res.removeListener?.('error', finishDrain);
-          abortController.signal.removeEventListener('abort', finishDrain);
-          settle();
-        };
-        // Half-open client: no 'drain' ever arrives. Bound the wait, release
-        // the producer, and let the normal teardown return the account.
-        const onDrainTimeout = () => {
-          if (settled) return;
+      const maxDrainWaitMs = resolveMaxDrainWaitMs();
+      const writer = createBoundedWriter({
+        res,
+        signal: abortController.signal,
+        enabled: backpressureArmed,
+        maxWaitMs: maxDrainWaitMs,
+        onTimeout: () => {
           drainTimedOut = true;
           log.warn(`Chat[${reqId}]: no drain for ${maxDrainWaitMs}ms — client stopped reading, aborting the stream`);
           // Best effort: the client is not reading, but a relay may be.
@@ -6998,61 +7093,21 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             'server_error',
             'DRAIN_TIMEOUT',
           )));
-          finishDrain();
           detachCause = 'drain_timeout';
           abortController.abort(new Error('drain timeout'));
-        };
-        pendingDrain = operation;
-        timer = setTimeout(onDrainTimeout, maxDrainWaitMs);
-        // Never keep the process alive for a wait that belongs to one request.
-        timer.unref?.();
-        res.on('drain', finishDrain);
-        res.on('close', finishDrain);
-        res.on('error', finishDrain);
-        abortController.signal.addEventListener('abort', finishDrain, { once: true });
-        // The client may already be gone by the time we start waiting.
-        if (writerGone()) finishDrain();
-        return operation;
-      };
-      const drainAbortedError = () => {
-        const err = new Error('stream aborted while waiting for the client to drain');
-        err.name = 'AbortError';
-        err.code = 'CLIENT_ABORTED';
-        err.isClientAbort = true;
-        return err;
-      };
-      // Awaits the outstanding drain, if any. Throws once the writer is gone so
-      // the awaiting producer stops instead of feeding a closed socket.
-      const awaitWriter = async () => {
-        while (pendingDrain) await pendingDrain;
-        if (abortController.signal.aborted) throw drainAbortedError();
-      };
-      // Teardown variant: same wait, but never throws — a failure stage must
-      // reach its remaining cleanup even when the client already vanished.
-      const settleWriter = async () => {
-        while (pendingDrain) await pendingDrain;
-      };
+        },
+      });
+      const writerGone = () => writer.gone();
+      const awaitWriter = () => writer.awaitDrain();
+      const settleWriter = () => writer.settle();
       // A throwing write is left to propagate: the existing failure stages own
       // its diagnosis, and re-classifying it here would change how a broken
       // socket is reported. Closed/aborted is a separate, pre-checked state.
-      const writeRaw = (text) => {
-        if (writerGone()) return true;
-        const ok = res.write(text) !== false;
-        // Only the armed path owns a drain waiter; the legacy channel keeps its
-        // exact previous behaviour (no listener, no heartbeat suppression).
-        if (ok === false && backpressureArmed) beginDrain();
-        return ok;
-      };
+      const writeRaw = (text) => writer.write(text);
       // Writes one SSE frame. Sequential callers await it; the write happens
       // only after any outstanding drain, and only once. Returns undefined on
       // the unarmed (legacy) path so that consumer stays fully synchronous.
-      const writeFrame = (text) => {
-        if (!backpressureArmed) {
-          writeRaw(text);
-          return undefined;
-        }
-        return awaitWriter().then(() => { writeRaw(text); });
-      };
+      const writeFrame = (text) => writer.writeFrame(text);
 
       const formatFrame = (data) => {
         // O9/O12: 给每个 chat.completion.chunk 注入合成 system_fingerprint 与
@@ -7102,11 +7157,11 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       const startHeartbeat = () => {
         if (heartbeat || res.writableEnded) return;
         heartbeat = setInterval(() => {
-          if (res.writableEnded || pendingDrain) return;
+          if (res.writableEnded || writer.pending) return;
           // A heartbeat that reports backpressure is the same signal as any other
-          // frame: arm the single drain wait so the producer cannot keep feeding
-          // a socket the client has stopped reading.
-          if (res.write(': ping\n\n') === false && backpressureArmed) beginDrain();
+          // frame: the writer arms the single drain wait so the producer cannot
+          // keep feeding a socket the client has stopped reading.
+          writeRaw(': ping\n\n');
         }, HEARTBEAT_MS);
         heartbeat.unref?.();
         res.on('close', stopHeartbeat);
@@ -7205,10 +7260,25 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       // plus the gate's released tail). Used as the cached text only when a stop
       // truncated the answer, so a replay reproduces the fenced view.
       let visibleText = '';
+      // V-14: local output cap. The wire field is a request, not a guarantee —
+      // this path used to stream the full turn and close with 'stop' even when
+      // the caller asked for a handful of tokens. Enforced on the DELIVERED
+      // bytes, in the same chars/4 units the usage estimator bills in.
+      const outputCapChars = Number.isFinite(deps.completion?.maxTokens) && deps.completion.maxTokens > 0
+        ? Math.floor(deps.completion.maxTokens * OUTPUT_CHARS_PER_TOKEN)
+        : null;
+      let outputCapReached = false;
       // C2: every content sink awaits the frame it hands to the writer, so a
       // pressured socket holds the caller instead of accumulating frames.
       const emitVisibleContent = async (out) => {
         if (!out) return;
+        if (!wantJson && outputCapChars != null) {
+          // A JSON payload is capped once, before shaping (see the wantJson
+          // flush) — slicing it here would deliver invalid JSON.
+          const room = outputCapChars - visibleText.length;
+          if (room <= 0) { outputCapReached = true; return; }
+          if (out.length > room) { out = out.slice(0, room); outputCapReached = true; }
+        }
         visibleText += out;
         emittedClientPayload = true;
         await send({ id, object: 'chat.completion.chunk', created, model,
@@ -7910,6 +7980,10 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             if (useCascade) {
               cascadeResult = await client.cascadeChat(cascadeMessages, modelEnum, modelUid, {
                 onChunk, signal: abortController.signal, reuseEntry,
+                // V-14: the caller's output cap, threaded to the wire's
+                // max_output_tokens and enforced locally below. `deps` is this
+                // function's own carrier — the outer handler resolved it.
+                completion: deps.completion || null,
                 // Clamp the internal poll window to what the request has left.
                 ...(resumeAttempt
                   ? {
@@ -8382,7 +8456,37 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // A verbatim duplicate of the reasoning is suppressed here too
             // (degenerate echo, not JSON).
             if (wantJson && accText && !usedNativeReadUrlFallback && !(accThinking && accText === accThinking)) {
+              // V-14: cap the model's JSON once, before shaping. The terminal
+              // below then reports `length`, so a cut payload is visible.
+              if (outputCapChars != null && accText.length > outputCapChars) {
+                accText = accText.slice(0, outputCapChars);
+                outputCapReached = true;
+              }
               const cleaned = stabilizeJsonPayload(accText, messages);
+              // V-10: JSON content is BUFFERED on this path (emitChunk returns
+              // early for wantJson), so nothing invalid has reached the client yet.
+              // A non-conforming payload therefore closes with the same typed error
+              // frame the rest of the route uses for a failed turn — never with
+              // finish_reason:'stop', which would tell the caller its schema held.
+              const violation = structuredOutputViolation(cleaned, deps.jsonSchema);
+              if (violation) {
+                log.warn(`Chat[${reqId}]: structured output does not conform (${violation.path}: ${violation.message}) — closing with a typed error`);
+                try {
+                  await settleWriter();
+                  if (!writerGone()) {
+                    await send(chatStreamError(
+                      `The model's answer does not conform to the requested JSON Schema (${violation.path}: ${violation.message}).`,
+                      'server_error',
+                      'STRUCTURED_OUTPUT_NOT_CONFORMING',
+                    ));
+                  }
+                  // The upstream turn really ran; bill it even though the answer
+                  // is unusable. No cache write and no [DONE]: this is a failure.
+                  settleUsage();
+                } catch { /* best effort — the client may already be gone */ }
+                if (!res.writableEnded) res.end();
+                return;
+              }
               if (cleaned) {
                 await emitGatedContent(cleaned);
                 accText = cleaned;
@@ -8421,7 +8525,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 durationMs: Date.now() - startTime,
               });
             }
-            const finalReason = collectedToolCalls.length ? 'tool_calls' : 'stop';
+            const finalReason = outputCapReached ? 'length' : (collectedToolCalls.length ? 'tool_calls' : 'stop');
             // Release the last withheld prose tail now that every fallback and
             // promotion has run; it must precede the terminal frames so no
             // content can arrive after them. No-op when a stop already fired.
@@ -8506,7 +8610,10 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               // text stays exactly what it was (accText = full generated text).
               // C2: a stream whose client vanished is not a successful turn and
               // must not seed the response cache.
-              cacheSet(ckey, { text: stopMatched ? visibleText : accText, thinking: accThinking, stop: stopMatched });
+              // A capped turn caches what was DELIVERED, exactly like a stopped
+              // one: replaying bytes the client never received would change the
+              // answer between the first and second identical request.
+              cacheSet(ckey, { text: (stopMatched || outputCapReached) ? visibleText : accText, thinking: accThinking, stop: stopMatched });
             }
             return;
           } catch (err) {

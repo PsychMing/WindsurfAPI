@@ -13,6 +13,7 @@ import { getResponse, putResponse, deleteResponse, isResponseStoreEnabled, wants
 import { safeLogValue } from '../log-safety.js';
 import { log } from '../config.js';
 import { SseFramer } from '../sse-framer.js';
+import { createBoundedWriter, resolveMaxDrainWaitMs } from '../stream-writer.js';
 import { buildToolNameMap, restoreToolName } from '../tool-names.js';
 import { createToolIdAllocator, normalizeToolIdsInMessages, sanitizeToolId, toolHygieneEnabled } from '../tool-ids.js';
 import { normalizeHistoryTail } from '../history-normalize.js';
@@ -918,13 +919,47 @@ class ResponsesStreamTranslator {
     // separate from streamFinishReason because `null` there is ambiguous: it is also
     // what a stream that is still running looks like.
     this.sawTerminalChunk = false;
+    // V-08: one abort-aware bounded writer for this egress. `res` here is the
+    // real response (the Chat handler writes into `createCaptureRes`, which
+    // reports THIS writer's pressure back to it), so a slow Responses client now
+    // holds the upstream producer instead of letting frames pile up in the
+    // socket. Half-open clients are bounded and tear the turn down.
+    this.clientGone = false;
+    const maxWaitMs = resolveMaxDrainWaitMs();
+    this.writer = createBoundedWriter({
+      res,
+      maxWaitMs,
+      onTimeout: () => {
+        this.clientGone = true;
+        log.warn(`Responses: no drain for ${maxWaitMs}ms — client stopped reading, ending the stream`);
+        try { if (!res.writableEnded) res.end(); } catch { /* best effort */ }
+      },
+    });
+  }
+
+  /** True while the client's socket has not accepted the bytes we handed it. */
+  get egressOk() {
+    return !this.writer.pending;
+  }
+
+  /** Write one raw SSE frame through the shared writer (returns the real verdict). */
+  writeRaw(text) {
+    return this.writer.write(text);
+  }
+
+  /** Wait out an outstanding drain before a terminal frame. Never throws. */
+  settleEgress() {
+    return this.writer.settle();
   }
 
   _write(event, data) {
     if (!this.res.writableEnded) {
       const payload = { type: event, sequence_number: this.sequenceNumber++, ...data };
-      this.res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+      // V-08: the verdict is the caller's backpressure signal. It is returned
+      // (via send/feed → createCaptureRes.write) rather than discarded.
+      return this.writer.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
     }
+    return true;
   }
 
   send(event, data) {
@@ -935,9 +970,9 @@ class ResponsesStreamTranslator {
       // before oi=2). Arrival order is the only order that keeps output_index and
       // emission order in agreement.
       this.deferred.entries.push({ event, data });
-      return;
+      return true;
     }
-    this._write(event, data);
+    return this._write(event, data);
   }
 
   /**
@@ -1403,9 +1438,25 @@ class ResponsesStreamTranslator {
   }
 
   /**
+   * V-12: the exact ordered output items this turn published, ready to persist.
+   *
+   * This is what the response store keeps so GET can replay the SAME items
+   * (ids, types, call_ids, custom inputs, namespaces) instead of regenerating
+   * them from a lossy chat-shaped summary, and so the next chained turn can be
+   * rebuilt in the order the client actually received.
+   */
+  get committedItems() {
+    return this.outputItems.filter(Boolean).map(item => ({ ...item }));
+  }
+
+  /**
    * Completed tool calls in OpenAI chat shape, for the response store: the next
    * turn must see the same assistant tool_calls the client did, or the chained
    * conversation loses the call/result pairing.
+   *
+   * V-12: kept for the LEGACY flat fallback only. New commits use
+   * `historyFromResponseItems(committedItems)`, which also carries custom calls,
+   * their order, and the wire name.
    */
   get committedToolCalls() {
     return this.outputItems.filter(Boolean)
@@ -1509,6 +1560,10 @@ class ResponsesStreamTranslator {
 
   feed(rawChunk) {
     this.sseFramer.push(rawChunk);
+    // V-08: the verdict the Chat producer reads. `push` dispatches every frame
+    // synchronously, so `egressOk` is the state AFTER this chunk was emitted —
+    // false means the socket reported backpressure and has not drained yet.
+    return this.egressOk;
   }
 
   handleSseFrame({ data }) {
@@ -1526,12 +1581,86 @@ class ResponsesStreamTranslator {
   }
 }
 
+/**
+ * V-12 (KH-009/KH-020/KH-045): rebuild the internal Chat history from the
+ * response's OWN ordered items.
+ *
+ * The old commit flattened a streamed turn into ONE assistant message whose
+ * `content` was every text segment concatenated and whose `tool_calls` came
+ * last. A turn that produced text → call → text therefore reached the next
+ * chained request as "BEFORE AFTER" followed by the call, i.e. in an order the
+ * client never saw. Custom calls were dropped entirely (the getter only kept
+ * `function_call`), and namespaced calls were stored under the CLIENT name while
+ * `tools[]` declared the WIRE name — so the upstream saw a call to a tool it had
+ * never been offered.
+ *
+ * This walks the items in output order and emits one assistant message per run:
+ * text runs keep their position, each call keeps its own call_id and its WIRE
+ * name. Consecutive text-only assistant messages are merged by the Connect
+ * encoder (and concatenated by Cascade), so the wire shape for the ordinary
+ * single-text turn is unchanged.
+ */
+export function historyFromResponseItems(items, toolNameMap = null) {
+  const out = [];
+  let textRun = '';
+  let pendingCalls = [];
+  const flushText = () => {
+    if (!textRun) return;
+    out.push({ role: 'assistant', content: textRun });
+    textRun = '';
+  };
+  const flushCalls = () => {
+    if (!pendingCalls.length) return;
+    // Consecutive calls are ONE assistant turn with several tool_calls — the
+    // OpenAI shape for parallel calls, and the shape the flat commit always
+    // produced. Splitting them into one message per call would build a longer
+    // same-source run than the upstream validator tolerates.
+    out.push({ role: 'assistant', content: null, tool_calls: pendingCalls });
+    pendingCalls = [];
+  };
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item || typeof item !== 'object') continue;
+    if (item.type === 'message') {
+      flushCalls();
+      textRun += responseItemText(item);
+      continue;
+    }
+    if (item.type !== 'function_call' && item.type !== 'custom_tool_call') continue;
+    flushText();
+    const args = item.type === 'custom_tool_call'
+      ? JSON.stringify({ input: item.input ?? '' })
+      : (item.arguments || '');
+    pendingCalls.push({
+      id: item.call_id || item.id || `call_${out.length}`,
+      type: 'function',
+      function: { name: responseItemToolName(item, toolNameMap), arguments: args },
+    });
+  }
+  flushText();
+  flushCalls();
+  return out;
+}
+
+/** Concatenated visible text of one message item (Responses `content` parts). */
+function responseItemText(item) {
+  if (typeof item?.text === 'string') return item.text;
+  if (!Array.isArray(item?.content)) return '';
+  return item.content.map(part => (typeof part === 'string' ? part : (part?.text || ''))).join('');
+}
+
 function createCaptureRes(translator, realRes) {
   const listeners = new Map();
   const fire = (event) => {
     const cbs = listeners.get(event) || [];
     for (const cb of cbs) { try { cb(); } catch {} }
   };
+  // V-08: the producer (chat.js) waits for 'drain' on THIS fake response. Without
+  // the forward, its bounded writer would park on a signal that can never arrive
+  // — the real socket's drain is the only one that exists.
+  if (realRes?.on) {
+    realRes.on('drain', () => fire('drain'));
+    realRes.on('error', () => fire('error'));
+  }
   return {
     writableEnded: false,
     headersSent: false,
@@ -1542,7 +1671,9 @@ function createCaptureRes(translator, realRes) {
         try { realRes.write(str); } catch {}
       }
       translator.feed(chunk);
-      return true;
+      // Return the REAL socket's verdict. A constant `true` (the old shape) kept
+      // chat.js's bounded writer permanently disarmed on every translated route.
+      return translator.egressOk;
     },
     end(chunk) {
       if (this.writableEnded) return;
@@ -1681,6 +1812,27 @@ function assistantAnsweringLastUserTurn(messages) {
 
 function storedResponseBody(responseId, entry) {
   const assistant = assistantAnsweringLastUserTurn(entry.messages) || null;
+  // V-12 (KH-045): when the creating turn persisted its exact ordered items,
+  // replay THOSE. Rebuilding from the flat chat message re-typed custom calls as
+  // `function_call`, dropped namespaces, and minted fresh item ids on every read
+  // — a GET that did not match the POST it was retrieving.
+  const persistedItems = Array.isArray(assistant?.__responses_items) && assistant.__responses_items.length
+    ? assistant.__responses_items
+    : null;
+  if (persistedItems) {
+    const output = persistedItems.map(item => ({ ...item }));
+    return {
+      object: 'response',
+      id: responseId,
+      created_at: Math.floor((entry.createdAt || Date.now()) / 1000),
+      status: entry.status || 'completed',
+      ...(entry.incompleteReason ? { incomplete_details: { reason: entry.incompleteReason } } : {}),
+      model: entry.model || null,
+      ...(entry.metadata ? { metadata: entry.metadata } : {}),
+      output,
+      output_text: output.filter(i => i.type === 'message').map(responseItemText).join(''),
+    };
+  }
   // The store holds Chat-shaped messages, whose content may be a PARTS ARRAY (the
   // Responses `input` items are normalized that way). Passing an array straight into
   // output_text produced a structurally invalid body — `text` held an array instead
@@ -1950,12 +2102,21 @@ export async function handleResponses(body, deps = {}) {
 
   // The conversation to persist for the NEXT turn: everything the upstream saw.
   const priorMessages = chatBody.messages || [];
+  // V-12: the item sidecar is THIS module's bookkeeping (exact ordered output
+  // items for GET replay and ordered chaining). It must never reach the upstream
+  // request body, so every dispatch below uses this stripped copy while the
+  // store keeps the annotated one.
+  const dispatchMessages = priorMessages.map((m) => {
+    if (!m || typeof m !== 'object' || !('__responses_items' in m)) return m;
+    const { __responses_items, ...rest } = m;
+    return rest;
+  });
   // `terminal` carries the status this request REPORTED to the client, so a later
   // GET /v1/responses/{id} answers with the same thing instead of assuming
   // 'completed'. Defaults to a clean completion when the caller passes nothing.
   // `servedModel` is what the POST reported as response.model (the served name,
   // not the raw request string) so a later retrieval cannot contradict it.
-  const commit = (assistantMessage, terminal = {}, servedModel = requestedModel) => {
+  const commit = (assistantMessage, terminal = {}, servedModel = requestedModel, items = null) => {
     if (!isResponseStoreEnabled() || !chainable) return;
     // A06/KH-018: an upstream-truncated turn is not a completed assistant
     // reply. Committing it would poison the next request's context with a
@@ -1970,6 +2131,17 @@ export async function handleResponses(body, deps = {}) {
           const base = instructionsMsg
             ? priorMessages.filter(m => m !== instructionsMsg)
             : priorMessages;
+          // V-12: prefer the turn's ORDERED items. The flat assistant message is
+          // only the fallback (no items available, or a turn that produced
+          // nothing the item list could express). The sidecar on the last
+          // assistant message is what GET replays and what keeps the exact item
+          // identity across turns; it is stripped before anything is dispatched
+          // upstream.
+          const ordered = items?.length ? historyFromResponseItems(items, toolNameMap) : [];
+          if (ordered.length) {
+            ordered[ordered.length - 1] = { ...ordered[ordered.length - 1], __responses_items: items };
+            return [...base, ...ordered];
+          }
           return assistantMessage ? [...base, assistantMessage] : base;
         })(),
         callerKey,
@@ -2000,7 +2172,7 @@ export async function handleResponses(body, deps = {}) {
   };
 
   if (!body.stream) {
-    const result = await chatHandler({ ...chatBody, stream: false, __route: 'responses' }, context);
+    const result = await chatHandler({ ...chatBody, messages: dispatchMessages, stream: false, __route: 'responses' }, context);
     if (result.status !== 200) return result;
     const msg = result.body?.choices?.[0]?.message;
     const responseBody = chatToResponse(result.body, requestedModel, responseId, genMessageId(), requestedTools, toolNameMap, responseMetadata);
@@ -2012,7 +2184,7 @@ export async function handleResponses(body, deps = {}) {
     } : null, {
       status: responseBody.status,
       incompleteReason: responseBody.incomplete_details?.reason || null,
-    }, responseBody.model);
+    }, responseBody.model, responseBody.output);
     return { status: 200, body: responseBody };
   }
 
@@ -2022,7 +2194,7 @@ export async function handleResponses(body, deps = {}) {
   // Responses client sent — the Responses API reports usage on its own terminal
   // event, not via an OpenAI-style stream_options toggle.
   const streamResult = await chatHandler(
-    { ...chatBody, stream: true, __route: 'responses', stream_options: { ...(chatBody.stream_options || {}), include_usage: true } },
+    { ...chatBody, messages: dispatchMessages, stream: true, __route: 'responses', stream_options: { ...(chatBody.stream_options || {}), include_usage: true } },
     context,
   );
   if (!streamResult.stream) return streamResult;
@@ -2064,7 +2236,10 @@ export async function handleResponses(body, deps = {}) {
         // `aborted` is the case `failed` cannot see: a stream that ended with no
         // (real) terminal chunk at all raises no error, so it reached here looking
         // clean and its half answer was stored as the next turn's context.
-        if (translator.finished && !translator.failed && !translator.aborted) {
+        // `clientGone` (V-08): a drain timeout means the client stopped reading,
+        // so the half turn it never received must not become the next turn's
+        // context either.
+        if (translator.finished && !translator.failed && !translator.aborted && !translator.clientGone) {
           // Same as the non-streaming path: persist the status the client was told,
           // so a later retrieval does not report a truncated turn as completed.
           const reason = translator.streamFinishReason;
@@ -2077,7 +2252,7 @@ export async function handleResponses(body, deps = {}) {
               status: 'incomplete',
               incompleteReason: reason === 'length' ? 'max_output_tokens' : 'content_filter',
             }
-            : { status: 'completed' }, translator.model);
+            : { status: 'completed' }, translator.model, translator.committedItems);
         }
       } catch (e) {
         log.error(`Responses stream error: ${e.message}`);
@@ -2108,7 +2283,12 @@ export async function handleResponses(body, deps = {}) {
       // A06/KH-024: `aborted` is an upstream truncation, not a clean end. A
       // relay that sees [DONE] treats the stream as whole, which would erase
       // the only failure signal the Responses client got.
-      if (translator.finished && !translator.failed && !translator.aborted && !realRes.writableEnded) realRes.write('data: [DONE]\n\n');
+      // V-08: the sentinel is part of the same sequential emission — wait out any
+      // outstanding drain so it cannot overtake a frame the socket has not taken.
+      if (translator.finished && !translator.failed && !translator.aborted && !realRes.writableEnded) {
+        await translator.settleEgress();
+        translator.writeRaw('data: [DONE]\n\n');
+      }
       if (!realRes.writableEnded) realRes.end();
     },
   };

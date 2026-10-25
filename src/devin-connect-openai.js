@@ -870,12 +870,17 @@ export async function streamChatCompletion(params, send, opts = {}) {
   //    (role → finish → optional usage). Operators who relied on the eager role
   //    chunk can restore it with DEVIN_CONNECT_EAGER_PRIME=1.
   let primed = false;
-  const prime = () => {
+  // V-08: `send` is the handler's bounded writer and returns a promise once the
+  // socket reports backpressure. Awaiting it here (and in every emitter below)
+  // is what lets a slow reader hold this producer instead of buying unbounded
+  // upstream work. A synchronous consumer returns undefined, so `await` is a
+  // no-op on the direct-Chat wiring that still passes a plain function.
+  const prime = async () => {
     if (primed) return;
     primed = true;
-    send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
+    await send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
   };
-  if (String(process.env.DEVIN_CONNECT_EAGER_PRIME || '') === '1') prime();
+  if (String(process.env.DEVIN_CONNECT_EAGER_PRIME || '') === '1') await prime();
 
   let content = '';
   let reasoning = '';
@@ -899,16 +904,16 @@ export async function streamChatCompletion(params, send, opts = {}) {
   let stopHit = false;
   let matchedStop = null;
   // Emit content through the stop gate. Returns true when the stream should end.
-  const sendContent = (text) => {
+  const sendContent = async (text) => {
     if (!text) return false;
     if (!stopGate.active) {
-      send({ ...base, choices: [{ index: 0, delta: { content: text }, finish_reason: null }] });
+      await send({ ...base, choices: [{ index: 0, delta: { content: text }, finish_reason: null }] });
       delivered += text;
       return false;
     }
     const { emit, hit } = stopGate.push(text);
     if (emit) {
-      send({ ...base, choices: [{ index: 0, delta: { content: emit }, finish_reason: null }] });
+      await send({ ...base, choices: [{ index: 0, delta: { content: emit }, finish_reason: null }] });
       delivered += emit;
     }
     if (hit) { finishReason = 'stop'; stopHit = true; matchedStop = stopGate.matched; }
@@ -924,14 +929,14 @@ export async function streamChatCompletion(params, send, opts = {}) {
     ? new ToolCallStreamParser({ modelKey: params.model, provider: null, route: 'devin_connect' })
     : null;
   const collectedToolCalls = [];
-  const emitToolCalls = (calls, filter = true) => {
+  const emitToolCalls = async (calls, filter = true) => {
     // ToolGuard: same allowlist filter the chat main path applies — the
     // connect stream path used to emit any EMULATED call without checking it
     // against the client's declared tools[] (audit blind spot). Native calls
     // (structured ev.toolCalls from upstream) are trusted and pass through.
     if (filter) calls = filterToolCallsByAllowlist(calls || [], params.tools || []);
     for (const tc of calls || []) {
-      prime(); // a tool_call is a real delta — open the message before it
+      await prime(); // a tool_call is a real delta — open the message before it
       const idx = collectedToolCalls.length;
       // Normalize once, before the call is recorded: the emitted delta AND the
       // returned toolCalls (session-continuity commit, cache) must agree with
@@ -941,7 +946,7 @@ export async function streamChatCompletion(params, send, opts = {}) {
         id: toClientToolCallId(tc.id, `call_${idx}_${Date.now().toString(36)}`),
       };
       collectedToolCalls.push(emitted);
-      send({ ...base, choices: [{ index: 0, delta: {
+      await send({ ...base, choices: [{ index: 0, delta: {
         tool_calls: [{
           index: idx,
           id: emitted.id,
@@ -976,18 +981,18 @@ export async function streamChatCompletion(params, send, opts = {}) {
           continue;
         }
         if (ev.type === 'reasoning') {
-          prime(); // first real delta: emit the deferred role chunk first
+          await prime(); // first real delta: emit the deferred role chunk first
           reasoning += ev.text;
-          send({ ...base, choices: [{ index: 0, delta: { reasoning_content: ev.text }, finish_reason: null }] });
+          await send({ ...base, choices: [{ index: 0, delta: { reasoning_content: ev.text }, finish_reason: null }] });
         } else if (ev.type === 'content') {
-          prime(); // first real delta: emit the deferred role chunk first
+          await prime(); // first real delta: emit the deferred role chunk first
           content += ev.text;
           if (toolParser) {
             const { text, toolCalls } = toolParser.feed(ev.text);
-            emitToolCalls(toolCalls);
-            if (sendContent(text)) break;
+            await emitToolCalls(toolCalls);
+            if (await sendContent(text)) break;
           } else {
-            if (sendContent(ev.text)) break;
+            if (await sendContent(ev.text)) break;
           }
         } else if (ev.type === 'finish') {
           if (ev.reason) finishReason = ev.reason;
@@ -1028,8 +1033,8 @@ export async function streamChatCompletion(params, send, opts = {}) {
   // the stop must not leak out.
   if (toolParser && !stopHit) {
     const { text, toolCalls } = toolParser.flush();
-    emitToolCalls(toolCalls);
-    sendContent(text);
+    await emitToolCalls(toolCalls);
+    await sendContent(text);
     if (collectedToolCalls.length) finishReason = 'tool_calls';
   }
 
@@ -1039,7 +1044,7 @@ export async function streamChatCompletion(params, send, opts = {}) {
   // twice. Native arrives whole on the finish event, so it's emitted here rather
   // than inline — same wire shape as the emulated deltas above.
   if (nativeToolCalls.length && !collectedToolCalls.length) {
-    emitToolCalls(nativeToolCalls.map((tc) => ({
+    await emitToolCalls(nativeToolCalls.map((tc) => ({
       id: tc.id, name: tc.name, argumentsJson: tc.arguments,
     })), false);   // native calls are trusted (structured upstream data), no allowlist filter
     finishReason = 'tool_calls';
@@ -1077,14 +1082,14 @@ export async function streamChatCompletion(params, send, opts = {}) {
       ? parseToolCallsFromText(reasoning, { modelKey: params.model, provider: null, route: 'devin_connect' })
       : { toolCalls: [], text: reasoning };
     if (promotedParse.toolCalls.length) {
-      if (promotedParse.text) sendContent(promotedParse.text);
-      emitToolCalls(promotedParse.toolCalls.map((tc) => ({
+      if (promotedParse.text) await sendContent(promotedParse.text);
+      await emitToolCalls(promotedParse.toolCalls.map((tc) => ({
         id: tc.id, name: tc.name, argumentsJson: tc.argumentsJson ?? tc.arguments,
       })));
       content = promotedParse.text;
       finishReason = 'tool_calls';
     } else {
-      sendContent(reasoning);
+      await sendContent(reasoning);
       content = reasoning;
     }
   }
@@ -1094,7 +1099,7 @@ export async function streamChatCompletion(params, send, opts = {}) {
   if (!stopHit && stopGate.active) {
     const tail = stopGate.flush();
     if (tail) {
-      send({ ...base, choices: [{ index: 0, delta: { content: tail }, finish_reason: null }] });
+      await send({ ...base, choices: [{ index: 0, delta: { content: tail }, finish_reason: null }] });
       delivered += tail;
     }
   }
@@ -1125,20 +1130,20 @@ export async function streamChatCompletion(params, send, opts = {}) {
   //    caller's `emitted` — still false, leaving first-connect recovery armed.
   //    An empty / immediate-finish response yielded no delta to prime from, so
   //    prime here to keep the stream well-formed: role → finish → optional usage.
-  prime();
+  await prime();
   const finishChoice = { index: 0, delta: {}, finish_reason: finishReason };
   // SEED-C3a carrier — see the non-stream twin above. This frame is what the
   // internal Messages translator sees (chat.js serialises it onto the `data:`
   // line, messages.js parses it back), so the field must survive JSON round-trip
   // and is emitted only on the route opt-in and only for a genuine local stop.
   if (stopCarrier && matchedStop && finishReason === 'stop') finishChoice._windsurf_stop_sequence = matchedStop;
-  send({ ...base, choices: [finishChoice] });
+  await send({ ...base, choices: [finishChoice] });
 
   // 5. Usage-only chunk (OpenAI streams usage in a trailing choices:[] frame).
   //    O1: only when the caller opted in via stream_options.include_usage;
   //    OpenAI omits this frame by default.
   if (usage && includeUsage) {
-    send({ ...base, choices: [], usage });
+    await send({ ...base, choices: [], usage });
   }
 
   return { content, delivered, reasoning, finish_reason: finishReason, usage, billing: streamBilling, toolCalls: collectedToolCalls, stop: matchedStop };
