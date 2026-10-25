@@ -15,6 +15,7 @@ Commits (author `dwgx`, no AI attribution):
 | `21b527d` | P2-3 — refuse an image-only last turn after the capability strip |
 | `efaa471` | P2-2 — gate images on the serving account's `supports_images` |
 | `ff355d8` | mutation specs re-pinned + new mutants |
+| `b2b396a` | P2-3 refinement — refuse only a terminal emptied user turn |
 
 ---
 
@@ -98,12 +99,18 @@ non-text part as content. `supports_images:false` then stripped an image-only la
 user turn to `content: []`, and the handler returned 200; the builder encoded an empty
 user frame (consecutive user turns can merge it away, leaving a stale earlier prompt).
 
-**Fix.** `src/handlers/chat.js:4083-4108`: after stripping, the last user turn of the
-wire history is re-tested with `hasAnswerableUserContent` (`chat.js:1425-1441`). If
-nothing answerable remains, the handler refunds/releases any acquired account and
-returns a clear `400 invalid_request_error` with `code:'image_only_turn_unsupported'`
-naming `supports_images`. The dropped blocks are still counted in
+**Fix.** `src/handlers/chat.js:4083-4110`: after stripping, the terminal
+non-system message of the wire history is re-tested with `hasAnswerableUserContent`
+(`chat.js:1425-1441`). If the conversation ends on a user turn that is now empty, the
+handler refunds/releases any acquired account and returns a clear
+`400 invalid_request_error` with `code:'image_only_turn_unsupported'` naming
+`supports_images`. The dropped blocks are still counted in
 `images_dropped_capability` and a warn names the refusal.
+
+The check is deliberately terminal-only (`b2b396a`): an earlier image-only user turn
+emptied by the strip must NOT turn a tool-result continuation
+(`user(image) -> assistant(tool_call) -> tool(result)`) into a 400. That control case
+is pinned in the same suite.
 
 **Red-first.** New case in `test/connect-image-capability-gate.test.js:230`:
 
@@ -114,8 +121,9 @@ node --import ./test/setup-env.mjs --test test/connect-image-capability-gate.tes
   200 !== 400
 ```
 
-**Green.** `tests 9, pass 9, fail 0`; the test also asserts zero upstream hits, the
-error type/param, and the counter delta.
+**Green.** `tests 10, pass 10, fail 0`; the test also asserts zero upstream hits, the
+error type/param, and the counter delta. The tool-result control case asserts 200, one
+upstream call, and that the tool result survives.
 
 ---
 
@@ -158,8 +166,8 @@ node --import ./test/setup-env.mjs --test \
   test/connect-request-rejection.test.js \
   test/connect-catalog-delatch.test.js \
   test/connect-sticky-affinity.test.js
-ℹ tests 65
-ℹ pass 65
+ℹ tests 66
+ℹ pass 66
 ℹ fail 0
 ℹ skipped 0
 ```
@@ -169,9 +177,9 @@ node --import ./test/setup-env.mjs --test \
 ```
 npm test
 TEST_DISCOVERY <all top-level test files>
-ℹ tests 6840
+ℹ tests 6841
 ℹ suites 1289
-ℹ pass 6743
+ℹ pass 6744
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 97
@@ -194,7 +202,7 @@ mutant was applied in place and measured to fail its suite, then restored with
 node scripts/spec-baseline-check.mjs \
   connect-image-capability-gate.json wire-h4-tool-pair-order.json \
   connect-request-rejection.json
-ok connect-image-capability-gate.json: 13 pass + 0 approved skips = 13 [MEASURED_NO_SKIPS]
+ok connect-image-capability-gate.json: 14 pass + 0 approved skips = 14 [MEASURED_NO_SKIPS]
 ok connect-request-rejection.json: 36 pass + 0 approved skips = 36 [MEASURED_NO_SKIPS]
 ok wire-h4-tool-pair-order.json: 8 pass + 0 approved skips = 8 [MEASURED_NO_SKIPS]
 3 spec(s) measured, 0 drift, 0 untrustworthy
@@ -207,6 +215,7 @@ New/changed mutants (all anchors verified unique; all caught):
 | W4-M3 | strip silently, no counter | `connect-image-capability-gate` (counter assertions) |
 | W4-M4 | strip without the operator warn | same (warn assertion) |
 | W4-M9 | serve the emptied image-only turn | P2-3 400 test (`200 !== 400`) |
+| W4-M12 | refuse on ANY emptied user turn (breaks tool-result continuations) | P2-3 tool-result control test (`400 !== 200`) |
 | W4-M10 | gate on the pool union | P2-2 both orders + unknown test |
 | W4-M11 | per-account lookup falls back to the union | P2-2 unknown/no-rows test |
 | H4-M7 | no-tools native branch skips the repair | H4-T8 (`[user,tool,assistant,user]`) |
