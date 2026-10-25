@@ -378,6 +378,24 @@ describe('docs: version claims match the repository', () => {
 
   const git = (args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
 
+  // Ancestry alone let §0 name a commit ten commits and six src/ files behind HEAD while this
+  // guard stayed green (GapSweep2 C4-18 — the second recurrence; seven files once the wave-5
+  // #273 merge landed). A docs-only commit does not change what the handoff describes, so it
+  // may lag; a src/ change does, so the named master must already contain every src/ change
+  // reachable from HEAD.
+  const srcChangesSince = (sha) =>
+    git(['diff', '--name-only', `${sha}..HEAD`, '--', 'src/']).split(/\r?\n/).filter(Boolean);
+
+  const masterSrcLag = (sha) => {
+    const changed = srcChangesSince(sha);
+    return {
+      changed,
+      problem: changed.length
+        ? `§0 master SHA ${sha} predates ${changed.length} src/ change(s); update §0 to HEAD`
+        : null,
+    };
+  };
+
   // The release runbook pushes master BEFORE it creates the tag (docs/releases/README.md §7).
   // During that window the live handoff's tag line may legitimately name the previous release,
   // while its package.json line already names the version being prepared. So the tag claim is
@@ -666,6 +684,31 @@ describe('docs: version claims match the repository', () => {
       assert.deepEqual(versionClaims(currentStateBlock(body)).map((c) => c.version), ['9.9.9']);
     });
 
+    it('a §0 master SHA that predates src/ changes is rejected, with the count', () => {
+      // The recurrence this guard exists for: §0 named `07cefdb` while master had moved ten
+      // commits past it, six of them touching src/ at the time (seven after the wave-5 #273
+      // merge), and the ancestry-only assertion stayed green. Drive the same helper the real
+      // assertion uses; HEAD must pass, or the detector would be vacuous.
+      const stale = masterSrcLag('07cefdb');
+      assert.ok(
+        stale.changed.length >= 6,
+        `probe check: 07cefdb..HEAD should carry the wave-2..5 src/ changes, found ${stale.changed.length}`,
+      );
+      assert.ok(
+        stale.changed.every((p) => p.startsWith('src/')),
+        `the lag must be measured under src/ only, saw ${stale.changed.join(', ')}`,
+      );
+      assert.match(
+        stale.problem,
+        /^§0 master SHA 07cefdb predates \d+ src\/ change\(s\); update §0 to HEAD$/,
+      );
+      assert.equal(
+        masterSrcLag(git(['rev-parse', 'HEAD'])).problem,
+        null,
+        'HEAD cannot predate itself — the detector must not be vacuous',
+      );
+    });
+
     it('a version link to the wrong notes file is detected', () => {
       const from = join(ROOT, 'CHANGELOG.md');
       assert.equal(versionLinkProblem('3.9.17', 'docs/releases/RELEASE_NOTES_3.9.17.md', from), null);
@@ -708,6 +751,15 @@ describe('docs: version claims match the repository', () => {
     } catch {
       assert.fail(`§0 master SHA ${master[1]} is not an ancestor of HEAD`);
     }
+    // Ancestry is necessary but not sufficient: §0 sat ten commits and six src/ files behind
+    // HEAD (seven after the wave-5 merge) while the check above passed. Docs-only lag is
+    // allowed; a src/ change is not.
+    const srcLag = masterSrcLag(masterSha);
+    assert.equal(
+      srcLag.problem,
+      null,
+      srcLag.problem && `${srcLag.problem}\n  ${srcLag.changed.join('\n  ')}`,
+    );
 
     const claims = [
       ...versionClaims(block).map((c) => ({ ...c, where: `${rel(join(DOCS, liveHead))} §0` })),
