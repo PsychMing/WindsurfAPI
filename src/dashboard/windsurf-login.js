@@ -769,6 +769,9 @@ async function windsurfLoginViaAuth1(email, password, fingerprint, proxy) {
     apiKey: sessionToken,
     name: email,
     email,
+    // V-24: the address upstream just authenticated. A bound re-auth compares
+    // this with the account row before the token may replace anything.
+    identityEmail: normalizeLoginIdentity(email),
     apiServerUrl: '',
     sessionToken,
     auth1Token,
@@ -861,6 +864,7 @@ async function windsurfLoginViaDevinHost(email, password, fingerprint, proxy) {
     apiKey: sessionToken,
     name: email,
     email,
+    identityEmail: normalizeLoginIdentity(email),
     apiServerUrl: '',
     sessionToken,
     auth1Token,
@@ -912,6 +916,7 @@ async function windsurfLoginViaFirebase(email, password, fingerprint, proxy) {
     apiKey: reg.api_key,
     name: reg.name || email,
     email,
+    identityEmail: normalizeLoginIdentity(email),
     idToken,
     refreshToken: fbRes.data.refreshToken || '',
     apiServerUrl: reg.api_server_url || '',
@@ -1256,6 +1261,58 @@ function emailLockedError(lockMs) {
   );
 }
 
+// ─── Login identity (V-24 / audit A23) ────────────────────────────────────
+//
+// A login result proves ONE thing about identity: the address that upstream
+// authenticated. A bound re-auth (`accountId`) replaces the token on an
+// existing row, so a result for a different address would install person B's
+// session on person A's row and clear A's error/ban state on the way. The
+// identity is therefore part of the login result and is compared before any
+// token/status mutation; case and surrounding whitespace are not identity.
+//
+// Upstream reports `accountId` too, but the pool rows do not carry it, so it
+// is not a comparable key here — the authenticated address is.
+
+/** Case/whitespace-insensitive identity key. '' means "no identity proof". */
+function normalizeLoginIdentity(email) {
+  return String(email ?? '').trim().toLowerCase();
+}
+
+/** The identity a login result proves, or '' when it proves none. */
+function loginResultIdentity(result) {
+  return normalizeLoginIdentity(result?.identityEmail || result?.email);
+}
+
+/** Operator-facing masked address; never echoes the full identity. */
+function maskIdentityEmail(email) {
+  const s = String(email ?? '').trim();
+  const at = s.indexOf('@');
+  if (at <= 0) return s ? `${s[0]}***` : '';
+  return `${s[0]}***${s.slice(at)}`;
+}
+
+/**
+ * Throw unless `result` proves it belongs to `expectedEmail`.
+ *
+ * Called with the bound account's address BEFORE markAccountReauthenticated()
+ * (api.js) and, for the email-code flow, before the single-use code is spent.
+ * A result that carries no identity at all is refused on a bound path: the
+ * token would replace a live credential on nothing but hope.
+ */
+export function assertLoginIdentity(result, expectedEmail) {
+  const expected = normalizeLoginIdentity(expectedEmail);
+  if (!expected) return;
+  const actual = loginResultIdentity(result);
+  if (actual && actual === expected) return;
+  const err = new Error('ERR_LOGIN_IDENTITY_MISMATCH');
+  err.code = 'ERR_LOGIN_IDENTITY_MISMATCH';
+  err.statusCode = 409;
+  err.detail = actual
+    ? `This login belongs to ${maskIdentityEmail(actual)}, not to the selected account (${maskIdentityEmail(expected)}).`
+    : `The login did not report which account it belongs to, so it cannot be bound to ${maskIdentityEmail(expected)}.`;
+  throw err;
+}
+
 function pruneEmailFlows(now) {
   for (const [id, flow] of _emailFlows) {
     if (now > flow.expiresAt) _emailFlows.delete(id);
@@ -1419,6 +1476,9 @@ export async function emailLoginStart(email, proxy = null, opts = {}) {
   const flowId = randomBytes(16).toString('hex');
   _emailFlows.set(flowId, {
     email: normalizedEmail,
+    // V-24: the identity the code was sent to, bound at start so the exchange
+    // can be refused before the single-use code is spent.
+    identityEmail: normalizeLoginIdentity(normalizedEmail),
     token,
     host,
     createdAt: now,
@@ -1449,8 +1509,12 @@ export async function emailLoginStart(email, proxy = null, opts = {}) {
  * @param {string} flowId - opaque id returned by emailLoginStart
  * @param {string} code - the 6-digit code from the inbox
  * @param {object} [proxy]
+ * @param {object} [opts]
+ * @param {string} [opts.expectedIdentityEmail] - address of the account the
+ *   caller is about to install this session on. A mismatch is refused HERE,
+ *   before the upstream exchange, because the code cannot be replayed.
  */
-export async function emailLoginComplete(flowId, code, proxy = null) {
+export async function emailLoginComplete(flowId, code, proxy = null, opts = {}) {
   const id = String(flowId || '');
   const flow = _emailFlows.get(id);
   if (!flow) {
@@ -1466,6 +1530,18 @@ export async function emailLoginComplete(flowId, code, proxy = null) {
   }
   if (flow.inFlight) {
     throw emailFlowError('ERR_EMAIL_FLOW_IN_USE', 'This verification code is already being checked.', 409);
+  }
+  // V-24: the flow's identity was bound at start. A caller binding the
+  // exchange to a different account is refused before the code is spent —
+  // after the exchange the code is gone, so a late check would cost the
+  // operator another email for nothing.
+  const expectedIdentity = normalizeLoginIdentity(opts?.expectedIdentityEmail);
+  if (expectedIdentity && expectedIdentity !== (flow.identityEmail || normalizeLoginIdentity(flow.email))) {
+    throw emailFlowError(
+      'ERR_LOGIN_IDENTITY_MISMATCH',
+      `This verification code was sent to ${maskIdentityEmail(flow.email)}, not to the selected account (${maskIdentityEmail(expectedIdentity)}). Request a code for the account you are re-authenticating.`,
+      409,
+    );
   }
   const normalizedCode = String(code ?? '').replace(/\s+/g, '');
   // 6 digits upstream; the bounds are wide on purpose so an upstream policy
@@ -1617,6 +1693,9 @@ export async function emailLoginComplete(flowId, code, proxy = null) {
       apiKey: br.data.sessionToken,
       name: flow.email,
       email: flow.email,
+      // V-24: the identity bound to this flow at start — the address the code
+      // was mailed to, not whatever the caller claims at completion.
+      identityEmail: flow.identityEmail || normalizeLoginIdentity(flow.email),
       apiServerUrl: '',
       sessionToken: br.data.sessionToken,
       auth1Token,

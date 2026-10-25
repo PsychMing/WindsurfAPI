@@ -8479,7 +8479,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
                     : (() => {
                         const errKey = r.error ? `error.${r.error}` : null;
                         const translated = (errKey && I18n.t(errKey) !== errKey) ? I18n.t(errKey) : (r.error || I18n.t('error.unknown'));
-                        const detail = r.raw ? ` <span class="text-dim">· ${this.esc(r.raw)}</span>` : '';
+                        const detail = r.detail ? ` <span class="text-dim">· ${this.esc(r.detail)}</span>` : '';
                         return `<span style="color:${r.skipped ? 'var(--warn)' : 'var(--error)'}">${this.esc(translated)}</span>${detail}`;
                       })()}</td>
                 </tr>
