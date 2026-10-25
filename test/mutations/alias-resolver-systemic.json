@@ -3,7 +3,7 @@
     "test/devin-connect-models.test.js",
     "test/tool-emulation-gpt-native.test.js"
   ],
-  "expectBaselinePass": 57,
+  "expectBaselinePass": 58,
   "mutations": [
     {
       "name": "S3 reverted — the prefix strip cannot match a hyphenated provider, so every x-ai/ / z-ai/ spelling fails model_not_found again",
