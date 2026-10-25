@@ -58,6 +58,15 @@ jobs:
       - name: Secret scan
         run: npm run secret-scan
 
+      - name: Mutation baselines match, measured from executed evidence (full scope)
+        # FULL scope on purpose: a tag checkout has no diff to scope by, and a
+        # change-scoped run would measure nothing (or exit 2 on the missing
+        # origin/master). Every spec is executed against its own pin here, which is
+        # the only mode that catches a pin moved by a change no spec's test list
+        # names. The incremental `npm run gate` stays fast with change-scoped
+        # selection; this is the gate that cannot be scoped.
+        run: node scripts/spec-baseline-check.mjs --all
+
       - name: Run tests
         run: npm run test:release
 

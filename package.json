@@ -28,6 +28,7 @@
     "smoke:lsp-matrix": "node scripts/lsp-capacity-matrix.mjs",
     "probe:web-search": "node scripts/web-search-direct-probe.mjs",
     "gate": "node scripts/local-gate.mjs",
+    "gate:release": "node scripts/local-gate.mjs --release",
     "sync:contributors": "node scripts/sync-docs-contributors.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
     "verify:release-assets": "node scripts/verify-release-assets.mjs",
