@@ -1124,3 +1124,16 @@ describe('docs: in-repo anchor links resolve to a real heading', () => {
     assert.deepEqual(problems, [], `dead in-repo anchors:\n  ${problems.join('\n  ')}`);
   });
 });
+
+// GapSweep2 §3.1. The bug form is the only place a reporter is told what evidence to
+// attach, and "please attach a trace" is only actionable when it names the one command
+// that packs the trace. Issue #236/#245/#250 all stalled on that step, so the instruction
+// is pinned rather than left to prose review.
+describe('docs: the bug form points at the support bundle', () => {
+  it('bug.yml names scripts/support-bundle.mjs and the trace switch', () => {
+    const body = read(join(ROOT, '.github', 'ISSUE_TEMPLATE', 'bug.yml'));
+    assert.match(body, /node scripts\/support-bundle\.mjs/);
+    assert.match(body, /WINDSURFAPI_TRACE=1/);
+    assert.match(body, /support-bundle-<utc>\.zip/);
+  });
+});

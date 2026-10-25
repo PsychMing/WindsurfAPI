@@ -111,6 +111,14 @@ body:
         工具/上下文问题优先贴 `Probe[...]`、`ToolRoute[...]`、`BridgeResult[...]` 和附近 stream/error 行。
         Backend logs from dashboard log panel or `pm2 logs windsurf-api`. Redact tokens/API keys.
         For tool/context issues, include `Probe[...]`, `ToolRoute[...]`, `BridgeResult[...]`, and nearby stream/error lines.
+
+        **链路类问题请附 support bundle**：用 `WINDSURFAPI_TRACE=1` 复现一次，然后运行
+        `node scripts/support-bundle.mjs`，把生成的 `support-bundle-<utc>.zip` 拖进来。
+        trace 含 prompt 片段但不含 key；打包前会跑仓库的 secret scan，命中即拒绝打包。
+        For request-chain issues, reproduce once with `WINDSURFAPI_TRACE=1`, run
+        `node scripts/support-bundle.mjs`, and attach `support-bundle-<utc>.zip`.
+        Trace legs contain prompt fragments but no keys; the bundler runs the repo's secret
+        scanner and refuses to package on any hit.
       render: shell
 
   - type: input
