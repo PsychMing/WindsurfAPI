@@ -8,8 +8,10 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { addAccountByKey, removeAccount, markRateLimited } from '../src/auth.js';
-import { cacheClear, cacheKey, cacheSet, cacheStats } from '../src/cache.js';
+import { cacheClear, cacheGet, cacheKey, cacheSet, cacheStats } from '../src/cache.js';
 import { handleChatCompletions, __setConnectDeps, __resetConnectDeps } from '../src/handlers/chat.js';
+import { streamChatCompletion as realStreamChatCompletion, __setStreamChatForTest } from '../src/devin-connect-openai.js';
+import { getSessionReasoningTrail, _resetForTests as resetSessionContinuity } from '../src/session-continuity.js';
 
 const CALLER = 'api:test:user:connect-cache';
 const MODEL = 'swe-1-6-slow';
@@ -73,10 +75,15 @@ beforeEach(() => {
 
 afterEach(() => {
   __resetConnectDeps();
+  __setStreamChatForTest(null);
+  resetSessionContinuity();
   cacheClear();
   while (created.length) removeAccount(created.pop());
   if (saved.DEVIN_CONNECT === undefined) delete process.env.DEVIN_CONNECT;
   else process.env.DEVIN_CONNECT = saved.DEVIN_CONNECT;
+  delete process.env.DEVIN_CONNECT_SESSION_REUSE;
+  delete process.env.DEVIN_CONNECT_SESSION_REASONING_INJECT;
+  delete process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS;
 });
 
 describe('DEVIN_CONNECT exact cache', () => {
@@ -217,5 +224,98 @@ describe('DEVIN_CONNECT exact cache', () => {
     assert.equal(calls, 1);
     const finish = parseFrames(res.body).find(frame => frame.choices?.[0]?.finish_reason);
     assert.equal(finish.choices[0]._windsurf_stop_sequence, 'END');
+  });
+
+  // P-04: a rescue REPLACES an attempt. The wire, the returned value (which the
+  // handler stores as the cache's `thinking` and commits to session continuity),
+  // the cache replay and the next turn's continuity trail must all name the SAME
+  // attempt. Before the fix the generator emitted ABANDONED reasoning deltas from
+  // attempt 1 while `result.reasoning` — and therefore every stored surface — held
+  // only attempt 2's FINAL reasoning.
+  it('P-04: commits one rescued attempt to the wire, the cache and session continuity', async () => {
+    process.env.DEVIN_CONNECT_SESSION_REUSE = '1';
+    process.env.DEVIN_CONNECT_SESSION_REASONING_INJECT = '1';
+    process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS = '0';
+    resetSessionContinuity();
+    cacheClear();
+
+    let attempts = 0;
+    __setStreamChatForTest(async function* () {
+      attempts++;
+      if (attempts === 1) {
+        yield { type: 'reasoning', text: 'ABANDONED-1 ' };
+        yield { type: 'reasoning', text: 'ABANDONED-2 ' };
+        yield { type: 'finish', reason: 'stop', usage: { prompt_tokens: 4, completion_tokens: 5, total_tokens: 9 } };
+        return;
+      }
+      yield { type: 'reasoning', text: 'FINAL-1 ' };
+      yield { type: 'reasoning', text: 'FINAL-2' };
+      yield { type: 'content', text: 'the answer' };
+      yield { type: 'finish', reason: 'stop', usage: { prompt_tokens: 6, completion_tokens: 9, total_tokens: 15 } };
+    });
+
+    let captured = null;
+    __setConnectDeps({
+      // The real adapter over the scripted upstream: the cache/continuity paths
+      // below are driven by the actual streamChatCompletion return value, not a
+      // hand-written stub that could hide the divergence.
+      streamChatCompletion: async (...args) => {
+        captured = await realStreamChatCompletion(...args);
+        return captured;
+      },
+    });
+
+    const request = () => ({
+      model: MODEL,
+      stream: true,
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [{ type: 'function', function: { name: 'read_file', parameters: {} } }],
+      __callerKey: CALLER,
+    });
+
+    const first = await handleChatCompletions(request(), { callerKey: CALLER });
+    assert.equal(first.status, 200);
+    const res1 = fakeRes();
+    await first.handler(res1);
+    assert.equal(attempts, 2, 'precondition: the rescue must have fired');
+
+    const reasoningOf = (res) => parseFrames(res.body)
+      .map((frame) => frame.choices?.[0]?.delta?.reasoning_content)
+      .filter(Boolean)
+      .join('');
+    assert.equal(reasoningOf(res1), 'FINAL-1 FINAL-2',
+      'the live stream must carry only the committed attempt');
+    assert.ok(!res1.body.includes('ABANDONED'), 'no abandoned reasoning delta may reach the wire');
+    assert.equal(captured.reasoning, 'FINAL-1 FINAL-2',
+      'the returned value used for the cache and continuity must match the wire');
+
+    // The stored value itself, not just its replay: `thinking` is the cache's
+    // reasoning slot and `text` is what `delivered` accumulated.
+    const cached = cacheGet(cacheKey(request(), CALLER));
+    assert.ok(cached, 'the first stream must populate the response cache');
+    assert.equal(cached.thinking, 'FINAL-1 FINAL-2',
+      'the cached reasoning must be the committed attempt, never ABANDONED + FINAL');
+    assert.equal(cached.text, 'the answer', 'the cached visible text must be the committed answer');
+
+    // Cache replay: the same request must be served from the stored value and
+    // must not resurrect the abandoned attempt.
+    const second = await handleChatCompletions(request(), { callerKey: CALLER });
+    assert.equal(second.status, 200);
+    const res2 = fakeRes();
+    await second.handler(res2);
+    assert.equal(attempts, 2, 'the second request must be served from the cache');
+    assert.equal(reasoningOf(res2), 'FINAL-1 FINAL-2',
+      'cached replay must serve the same reasoning the client saw live');
+    assert.ok(!res2.body.includes('ABANDONED'), 'cache replay must not resurrect the abandoned attempt');
+
+    // Next-turn continuity: the trail is read from the committed pair.
+    const trail = getSessionReasoningTrail(CALLER, [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'the answer' },
+      { role: 'user', content: 'next' },
+    ], { DEVIN_CONNECT_SESSION_REUSE: '1', DEVIN_CONNECT_SESSION_REASONING_INJECT: '1' });
+    assert.ok(trail, 'a continuity trail must exist after the committed turn');
+    assert.ok(trail.includes('FINAL-1 FINAL-2'), 'continuity must quote the committed reasoning');
+    assert.ok(!trail.includes('ABANDONED'), 'continuity must not quote the abandoned attempt');
   });
 });

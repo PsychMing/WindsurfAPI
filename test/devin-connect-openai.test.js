@@ -1182,6 +1182,59 @@ describe('thinking-only rescue & promotion', () => {
     });
   }
 
+  // P-04: the emitted reasoning must come from the SAME attempt as the
+  // returned/cached/continuity value. The attempt-reset above only fixed the
+  // `content` accumulator; `reasoning_content` deltas had already gone out on the
+  // wire from the abandoned attempt, so the client saw ABANDONED + FINAL while
+  // result.reasoning (and therefore the cache and session continuity) held only
+  // FINAL. A stream cannot retract a delta, so the generator must not emit
+  // provisional reasoning until the attempt is committed.
+  it("emits only the committed attempt's reasoning — exact frame sequence", async () => {
+    let attempts = 0;
+    __setStreamChatForTest(async function* () {
+      attempts++;
+      if (attempts === 1) {
+        yield { type: 'reasoning', text: 'ABANDONED-1 ' };
+        yield { type: 'reasoning', text: 'ABANDONED-2 ' };
+        yield { type: 'finish', reason: 'stop', usage: { prompt_tokens: 4, completion_tokens: 5, total_tokens: 9 } };
+        return;
+      }
+      yield { type: 'reasoning', text: 'FINAL-1 ' };
+      yield { type: 'reasoning', text: 'FINAL-2' };
+      yield { type: 'content', text: 'the answer' };
+      yield { type: 'finish', reason: 'stop', usage: { prompt_tokens: 6, completion_tokens: 9, total_tokens: 15 } };
+    });
+
+    const frames = [];
+    const result = await streamChatCompletion(
+      { model: 'swe-1-7', messages: [{ role: 'user', content: 'go' }], tools: SAMPLE_TOOLS },
+      (f) => frames.push(f),
+      { emulateTools: true, includeUsage: true },
+    );
+
+    assert.equal(attempts, 2, 'precondition: the rescue must have fired');
+    assert.deepEqual(
+      frames.map((f) => {
+        const c = f.choices?.[0];
+        if (!c) return { usage: f.usage };
+        return { delta: c.delta, finish: c.finish_reason };
+      }),
+      [
+        { delta: { role: 'assistant', content: '' }, finish: null },
+        { delta: { reasoning_content: 'FINAL-1 ' }, finish: null },
+        { delta: { reasoning_content: 'FINAL-2' }, finish: null },
+        { delta: { content: 'the answer' }, finish: null },
+        { delta: {}, finish: 'stop' },
+        { usage: { prompt_tokens: 6, completion_tokens: 9, total_tokens: 15 } },
+      ],
+      'the wire must carry exactly one attempt: the committed FINAL reasoning, its answer, '
+      + 'and its usage — never the abandoned ABANDONED deltas',
+    );
+    assert.equal(result.reasoning, 'FINAL-1 FINAL-2',
+      'the returned value used by the cache and session continuity must match what the client saw');
+    assert.equal(result.content, 'the answer');
+  });
+
   // Promotion must run the promoted text through the SAME tool-call extraction the
   // content path uses.
   //

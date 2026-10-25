@@ -359,6 +359,16 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
     let sawReasoning = false;
     let sawReasoningText = '';
     let finishEv = null;
+    // P-04: reasoning is provisional until this attempt is committed. A rescue
+    // REPLACES the attempt and a delta already sent cannot be retracted, so a
+    // reasoning-only attempt that is later abandoned used to leave its whole
+    // trace on the wire while the returned/cached/continuity value kept only
+    // the final attempt. Hold reasoning while a rescue is still possible and
+    // release it only when the attempt can no longer be replaced: the first
+    // text delta (sawText closes the rescue gate) or the terminal finish. The
+    // rescue branch below drops the buffer together with the attempt.
+    const rescuePossible = hasTools && rescueAttempt < rescueMax;
+    let pendingReasoning = [];
     // Item 1 (loop break): leading think-tagged CONTENT is reclassified into the
     // reasoning channel HERE, at the stream-event level, BEFORE the rescue
     // decision below. A whole turn of ` thinking…` therefore stays a
@@ -417,9 +427,15 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
           sawContent = true;
           sawReasoning = true;
           sawReasoningText += routed.thinking;
-          yield { type: 'reasoning', text: routed.thinking };
+          if (rescuePossible && !sawText) pendingReasoning.push(routed.thinking);
+          else yield { type: 'reasoning', text: routed.thinking };
         }
         if (routed.text) {
+          // First text delta: the rescue gate (`!sawText`) is now closed, so
+          // this attempt is committed — release its provisional reasoning
+          // before the text it preceded.
+          for (const text of pendingReasoning) yield { type: 'reasoning', text };
+          pendingReasoning = [];
           sawContent = true;
           sawText = true;
           yield { type: 'content', text: routed.text };
@@ -427,10 +443,18 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
       } else if (ev.type === 'content' || ev.type === 'reasoning') {
         if (ev.text) {
           sawContent = true;
-          if (ev.type === 'content') sawText = true;
-          if (ev.type === 'reasoning') {
+          if (ev.type === 'content') {
+            // First text delta commits the attempt — see the classifier branch.
+            for (const text of pendingReasoning) yield { type: 'reasoning', text };
+            pendingReasoning = [];
+            sawText = true;
+          } else {
             sawReasoning = true;
             sawReasoningText += ev.text;
+            if (rescuePossible && !sawText) {
+              pendingReasoning.push(ev.text);
+              continue;
+            }
           }
         }
         yield ev;
@@ -446,6 +470,10 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
     if (thinkClassifier) {
       const rest = thinkClassifier.flush();
       if (rest) {
+        // The flushed tail is text, so the attempt is committed for the same
+        // reason as a normal content delta.
+        for (const text of pendingReasoning) yield { type: 'reasoning', text };
+        pendingReasoning = [];
         sawContent = true;
         sawText = true;
         yield { type: 'content', text: rest };
@@ -490,6 +518,12 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
         { role: 'user', content: nudgeText },
       ];
       attemptParams = { ...attemptParams, messages: rescued };
+      // The abandoned attempt's provisional reasoning dies with this loop
+      // iteration (`pendingReasoning` is declared inside it): it was never sent
+      // (the buffer is only released at commit), so the client, the returned
+      // result, the cache and session continuity all stay on the replacement
+      // attempt. The attempt_reset below still tells the consumer to clear the
+      // other accumulators (content/tool calls/billing) for the same reason.
       // Tell the consumer to discard what it accumulated: the next attempt REPLACES
       // this one, it does not continue it. Without this every rescue attempt's
       // reasoning was concatenated into a single answer — measured
@@ -516,6 +550,10 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
     if (weak && finishEv && isEmptyCompletion(finishEv, sawContent)) {
       log.warn(`DEVIN_CONNECT: weak model ${params.model} empty completion (finish=${finishEv.reason ?? 'null'}) — NOT retrying (deterministic, retry would amplify rate limit)`);
     }
+    // No rescue: this is the committed attempt. Release any reasoning still held
+    // while a rescue was possible, before its terminal finish event.
+    for (const text of pendingReasoning) yield { type: 'reasoning', text };
+    pendingReasoning = [];
     if (finishEv) yield finishEv;
     return;
   }
@@ -803,7 +841,9 @@ export async function toChatCompletion(params, opts = {}) {
  *   1. role-priming chunk (delta {role, content:''}) — DEFERRED until the first
  *      real delta (or the finish tail) so a pre-open transient/dead-token error
  *      leaves the caller's first-connect recovery armed (see `prime` below)
- *   2. reasoning_content deltas as they arrive
+ *   2. reasoning_content deltas — provisional while a rescue could still replace
+ *      the attempt; released only when the attempt is committed (first text
+ *      delta or terminal finish), so an abandoned attempt never reaches the wire
  *   3. content deltas as they arrive
  *   4. finish chunk (delta {}, finish_reason)
  *   5. usage-only chunk (choices [], usage) when usage is known
@@ -920,10 +960,13 @@ export async function streamChatCompletion(params, send, opts = {}) {
   for (let attempt = 0; ; attempt++) {
     try {
       for await (const ev of streamChatWithEmptyRetry(params, undefined, opts)) {
-        // A rescue attempt REPLACES the previous one. The deltas already sent cannot be
-        // retracted (documented at the promotion site below), but the accumulators must
-        // not keep the abandoned attempt — otherwise `content` ends up holding every
-        // attempt concatenated, and the promotion re-sends that pile as the answer.
+        // A rescue attempt REPLACES the previous one. The generator holds
+        // reasoning while an attempt can still be rescued, so no abandoned
+        // reasoning delta ever reaches this consumer; the accumulators are
+        // reset anyway so `content`, `delivered`, tool calls and billing can
+        // never carry a discarded attempt into the returned result, the cache
+        // or session continuity. (`reasoning` is reset for the same contract,
+        // even though the generator already guarantees it is committed-only.)
         if (ev.type === 'attempt_reset') {
           reasoning = '';
           content = '';
