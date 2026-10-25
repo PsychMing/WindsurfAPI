@@ -405,12 +405,14 @@ function reportCascadeImageHistoryDrops(stats, meta) {
  * disagree about which images ride the wire (the GPT-08 lesson: two copies of
  * "which turns fit" drifted and one of them stopped updating coverage).
  *
- * `allowHistoryImages` is the vision gate: Cascade only renders field 6 in
- * DEFAULT planner mode, which `buildSendCascadeMessageRequest` selects when
- * `nativeMode` is on or when images are attached and no emulated tool preamble
- * exists. Attaching historical images in NO_TOOL mode would add bytes the model
- * never sees and would flip planner mode behind the caller's back, so they are
- * counted as `no_vision` drops instead.
+ * `allowHistoryImages` is the vision gate. `buildSendCascadeMessageRequest`
+ * forces DEFAULT planner mode (the mode whose builder comment says vision is
+ * enabled) only when `nativeMode` is on, or when images are attached AND no
+ * emulated tool preamble exists. With a `toolPreamble` present `forceDefault`
+ * is false no matter what `images` holds, so the planner stays NO_TOOL and an
+ * image attached there is not known to be rendered. Shipping bytes the model
+ * may never see is not worth it, so history images are not attached in that
+ * mode; they are counted as `no_vision` drops.
  */
 async function buildCascadeMultiTurnPrompt(convo, { budgetBytes, openingText = '', allowHistoryImages = true } = {}) {
   const caps = cascadeHistoryImageCaps();

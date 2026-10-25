@@ -183,6 +183,47 @@ describe('Cascade replayed-history images (field 6)', () => {
     assert.equal(metrics.cascade_image_history_attached, 1);
   });
 
+  it('drops on the byte cap with bytes=1 when even a single image exceeds the budget', async () => {
+    const { last, warnings, metrics } = await runCascade({
+      env: { CASCADE_MAX_HISTORY_IMAGE_BYTES: '1' },
+      messages: [
+        imageTurn('TURN_0_IMAGE', PNG_B64),
+        { role: 'assistant', content: 'TURN_1_TEXT' },
+        { role: 'user', content: 'TURN_2_TEXT' },
+      ],
+    });
+
+    assert.equal(last.images.length, 0, 'a one-byte budget cannot hold any image');
+    assert.ok(last.text.includes(PLACEHOLDER), 'the text says the image is missing');
+    assert.match(warnings.join('\n'),
+      /cascade_image_history_dropped count=1 \(cap=0 bytes=1 truncated=0 no_vision=0\)/,
+      'the drop is attributed to the BYTE cap, not to the count cap');
+    assert.equal(metrics.cascade_image_history_dropped, 1);
+  });
+
+  it('attaches only the per-request cap from a single turn holding more images', async () => {
+    const a = encodePngRGBA(Buffer.alloc(2 * 2 * 4, 0x11), 2, 2).toString('base64');
+    const b = encodePngRGBA(Buffer.alloc(2 * 2 * 4, 0x22), 2, 2).toString('base64');
+    const c = encodePngRGBA(Buffer.alloc(2 * 2 * 4, 0x33), 2, 2).toString('base64');
+    const { last, warnings, metrics } = await runCascade({
+      env: { CASCADE_MAX_HISTORY_IMAGES: '2' },
+      messages: [
+        imageTurn('TURN_0_IMAGE', a, b, c),
+        { role: 'assistant', content: 'TURN_1_TEXT' },
+        { role: 'user', content: 'TURN_2_TEXT' },
+      ],
+    });
+
+    assert.equal(last.images.length, 2, 'exactly the cap, not the whole turn');
+    assert.deepEqual(last.images.map((i) => i.base64_data), [a, b], 'the first two in block order');
+    assert.equal(last.text.split(IMAGE_MARKER).length - 1, 2, 'exactly two markers');
+    assert.ok(last.text.includes(`${IMAGE_MARKER}1 attached`) && last.text.includes(`${IMAGE_MARKER}2 attached`));
+    assert.ok(last.text.includes(PLACEHOLDER), 'the third image keeps the placeholder');
+    assert.match(warnings.join('\n'), /cascade_image_history_dropped count=1/,
+      'exactly one image is dropped from the turn');
+    assert.equal(metrics.cascade_image_history_dropped, 1);
+  });
+
   it('honours CASCADE_MAX_HISTORY_IMAGES=0 as the explicit opt-out, still counted', async () => {
     const { last, warnings, metrics } = await runCascade({
       env: { CASCADE_MAX_HISTORY_IMAGES: '0' },
@@ -216,7 +257,7 @@ describe('Cascade replayed-history images (field 6)', () => {
   });
 
   it('carries the same history image when a resumed cascade is rebuilt from scratch', async () => {
-    const { sends } = await runCascade({
+    const { sends, metrics } = await runCascade({
       failFirstSend: true,
       reuseEntry: { cascadeId: 'synthetic-existing', sessionId: 'fixture-session', stepOffset: 5, generatorOffset: 5 },
       messages: [
@@ -231,6 +272,11 @@ describe('Cascade replayed-history images (field 6)', () => {
     assert.equal(sends[1].images[0].base64_data, PNG_B64);
     assert.ok(sends[1].text.includes(`${IMAGE_MARKER}1 attached to this request`),
       'rebuild uses the same numbering as a fresh request');
+    // The resume attempt never calls the history builder (it reuses the live
+    // trajectory and only extracts the current turn), so exactly ONE build is
+    // counted for this request — not both wire attempts.
+    assert.equal(metrics.cascade_image_history_attached, 1,
+      'only the rebuilt build is counted');
   });
 
   it('does not attach history images when the planner runs without vision, and counts them', async () => {

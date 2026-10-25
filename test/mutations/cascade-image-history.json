@@ -2,7 +2,7 @@
   "tests": [
     "test/cascade-image-history.test.js"
   ],
-  "expectBaselinePass": 7,
+  "expectBaselinePass": 9,
   "mutations": [
     {
       "name": "history images are extracted and counted but never reach field 6",
@@ -23,6 +23,20 @@
       "file": "src/client.js",
       "anchor": "    if (caps.maxImages === 0 || keptCount >= caps.maxImages || keptBytes >= caps.maxBytes) {",
       "replacement": "    if (false) {",
+      "expectCaught": true
+    },
+    {
+      "name": "the per-turn count cap is ignored, so one turn overruns the image budget",
+      "file": "src/client.js",
+      "anchor": "      if (kept.length >= caps.maxImages - keptCount || keptBytes + bytes > caps.maxBytes) {",
+      "replacement": "      if (keptBytes + bytes > caps.maxBytes) {",
+      "expectCaught": true
+    },
+    {
+      "name": "the byte cap inside a turn is ignored, so an oversized history image rides the wire",
+      "file": "src/client.js",
+      "anchor": "      if (kept.length >= caps.maxImages - keptCount || keptBytes + bytes > caps.maxBytes) {",
+      "replacement": "      if (kept.length >= caps.maxImages - keptCount) {",
       "expectCaught": true
     },
     {

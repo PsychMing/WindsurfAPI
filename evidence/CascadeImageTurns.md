@@ -49,9 +49,9 @@ model sees.
 | `src/cascade-image-metrics.js` (new) | `cascade_image_history_attached` / `cascade_image_history_dropped`, process-lifetime |
 | `src/dashboard/api.js:2166` | `/connect-metrics` → `cascadeImages` (and reset on DELETE) |
 | `docs/ENV-SWITCHES.md:249-250` | both switches documented (the docs guard reads this file) |
-| `test/cascade-image-history.test.js` (new) | 7 tests against a fake LS that decodes the real proto |
+| `test/cascade-image-history.test.js` (new) | 9 tests against a fake LS that decodes the real proto |
 | `test/mutations/client-history-coverage.json` | 4 anchors re-pinned to the new builder |
-| `test/mutations/cascade-image-history.json` (new) | 6 mutations over the new path |
+| `test/mutations/cascade-image-history.json` (new) | 8 mutations over the new path |
 
 Guards are unchanged: history images go through `extractImages` → `pushImage` →
 `maybeShrinkImage` and `fetchImageUrl`, i.e. the same SSRF / 5 MB / MIME / decode / re-encode
@@ -86,11 +86,15 @@ $ node --import ./test/setup-env.mjs --test test/cascade-image-history.test.js
 $ git stash pop
 ```
 
+The two tests added later for the inner checks are **not** red-first: both pass on `451250a`.
+They close the verifier's mutant-survivor finding — removing either inner condition left the
+original seven green. Their value is mutation coverage (§4.6), not a pre-fix failure.
+
 ### 4.2 Green after the fix
 
 ```
 $ node --import ./test/setup-env.mjs --test test/cascade-image-history.test.js
-ℹ tests 7   ℹ pass 7   ℹ fail 0
+ℹ tests 9   ℹ pass 9   ℹ fail 0
 ```
 
 ### 4.3 Acceptance matrix (brief's command)
@@ -119,9 +123,11 @@ $ node scripts/run-tests.mjs
 
 ### 4.6 Mutation checks
 
-`scripts/mutate-verify.mjs` refuses to run here (`mutation harness requires git at a trusted
-absolute path` — WSL only on this box), so the same spec files were driven by a throwaway
-runner that applies each anchor, runs the spec's `tests[]`, and restores from git.
+`scripts/mutate-verify.mjs` requires POSIX git at `/usr/bin/git` and cannot run on the Windows
+host; WSL has git but no Node, so these specs were driven by a throwaway independent runner.
+The cascade run below applies each anchor in a disposable copy of the worktree, runs the
+spec's `tests[]` there, and restores the pristine copy; the Owner checkout is never a mutation
+target.
 
 ```
 client-history-coverage.json   baseline pass=14 fail=0 (spec expects 14)
@@ -131,13 +137,15 @@ client-history-coverage.json   baseline pass=14 fail=0 (spec expects 14)
   OK fail=2 :: GPT-08: the rebuilt history is sent newest-first
 ALL MUTATIONS BEHAVED
 
-cascade-image-history.json     baseline pass=7 fail=0 (spec expects 7)
-  OK fail=4 :: history images are extracted and counted but never reach field 6
-  OK fail=4 :: the drop counter stops counting (log only, metric stays zero)
+cascade-image-history.json     baseline pass=9 fail=0 (spec expects 9)
+  OK fail=5 :: history images are extracted and counted but never reach field 6
+  OK fail=6 :: the drop counter stops counting (log only, metric stays zero)
   OK fail=1 :: the image-count cap is ignored
+  OK fail=1 :: the per-turn count cap is ignored, so one turn overruns the image budget
+  OK fail=1 :: the byte cap inside a turn is ignored, so an oversized history image rides the wire
   OK fail=1 :: the vision gate is ignored …
   OK fail=1 :: images whose turn got truncated are no longer counted as dropped
-  OK fail=1 :: marker numbering ignores the current turn …
+  OK fail=2 :: marker numbering ignores the current turn …
 ALL MUTATIONS BEHAVED
 ```
 
@@ -158,17 +166,21 @@ $ node --import ./test/setup-env.mjs --test test/smoke-matrix.test.js
    channel; it names the ordinal, and field 6 order matches it. A model that ignores the
    markers still sees all the images, in order.
 2. **NO_TOOL planner mode** (a `toolPreamble` is present and the native bridge is off) does not
-   render field 6 (`src/windsurf.js:361-367`: DEFAULT is forced for vision). Attaching history
-   images there would add bytes the model never sees and would flip planner mode behind the
-   caller's back, so they are **not** attached and are counted as `no_vision`. Current-turn
-   images keep the pre-existing behaviour in that mode (they were already attached there).
+   render field 6 (`src/windsurf.js:367`: `forceDefault` is true for vision only when no
+   preamble is present). With a `toolPreamble` set, `forceDefault` stays false regardless of
+   `images`, so attaching history images there would add bytes the model never sees — it would
+   NOT flip planner mode behind the caller's back. They are **not** attached and are counted
+   as `no_vision`. Current-turn images keep the pre-existing behaviour in that mode (they were
+   already attached there).
 3. **PDFs in history** stay text-channel only. A turn that produced no field-6 image keeps its
    plain `contentToString` body, i.e. the placeholder, and the attachment is counted.
 4. **Marker bytes are wrapper text**, outside the history budget — the same class as the
    conversation intro, the `<human>` section and the truncation note (bounded by 4 × ~70 B).
-5. **Rebuild double-count.** A request whose cascade expired rebuilds and re-sends; the builder
-   runs again, so attached/dropped counters count both wire attempts. That is the honest
-   reading (two payloads were built), and the rebuild path is rare.
+5. **One counted build per request.** The fresh path and the rebuild path are mutually
+   exclusive: a resume attempt reuses the live trajectory and never calls the history builder,
+   and the rebuild runs the builder at most once (`historyRebuilt`). The attached/dropped
+   counters therefore count the rebuilt payload once — not both wire attempts. Pinned by the
+   rebuild test (`cascade_image_history_attached === 1`).
 6. **Remote URL images in history** are fetched again on each request that replays them (same
    as the current turn always did). Extraction stops as soon as the caps are exhausted, so an
    old URL image is never fetched only to be dropped.
