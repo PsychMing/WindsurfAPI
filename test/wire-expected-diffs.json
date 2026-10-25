@@ -1,0 +1,192 @@
+{
+  "_comment": [
+    "Expected request-byte differences for test/wire-byte-identity.test.js.",
+    "Each entry allows exactly one comparison (fixture x route x native x env) to differ from the released base, and only in the shape named by `expected`: every byte outside top-level field #3 identical, the same message payloads modulo the per-message #1 uuid, and the declared role order before/after.",
+    "Any other byte difference fails the gate. An entry that no longer matches a differing comparison is reported as stale and fails too — the allowlist must be used exactly. Delete an entry once the release it compares against contains the change.",
+    "The reason prefix #273 names the issue that made call-before-result order deliberate; the repair is orderToolResultsAfterCalls() in src/handlers/tool-emulation.js, pinned by test/wire-h4-tool-pair-order.test.js.",
+    "Measured 2026-10-25 against v3.141.592654 (d5e7ace) and v3.10.1 (b00b3b9): 258/270 comparisons byte-identical, these 12 differ, all fixture 5 ([tool, assistant, user]) on the two routes that run the native normalizer."
+  ],
+  "schema": 1,
+  "entries": [
+    {
+      "id": "273-f5-normalize-emulated-default",
+      "fixture": 5,
+      "route": "normalize",
+      "native": false,
+      "env": {},
+      "reason": "#273 reorder: the folded tool_result user turn moves after its assistant call; payloads and non-message bytes unchanged",
+      "expected": {
+        "kind": "message-order",
+        "messageField": 3,
+        "bytes": 1055,
+        "beforeRoles": [1, 2, 1],
+        "afterRoles": [2, 1, 1]
+      }
+    },
+    {
+      "id": "273-f5-normalize-emulated-replay-off",
+      "fixture": 5,
+      "route": "normalize",
+      "native": false,
+      "env": { "DEVIN_CONNECT_REPLAY_REASONING": "0" },
+      "reason": "#273 reorder: the folded tool_result user turn moves after its assistant call; payloads and non-message bytes unchanged",
+      "expected": {
+        "kind": "message-order",
+        "messageField": 3,
+        "bytes": 1055,
+        "beforeRoles": [1, 2, 1],
+        "afterRoles": [2, 1, 1]
+      }
+    },
+    {
+      "id": "273-f5-normalize-emulated-image-tag-off",
+      "fixture": 5,
+      "route": "normalize",
+      "native": false,
+      "env": { "DEVIN_CONNECT_REPLAY_REASONING": "0", "DEVIN_CONNECT_IMAGE_TAG": "0" },
+      "reason": "#273 reorder: the folded tool_result user turn moves after its assistant call; payloads and non-message bytes unchanged",
+      "expected": {
+        "kind": "message-order",
+        "messageField": 3,
+        "bytes": 1055,
+        "beforeRoles": [1, 2, 1],
+        "afterRoles": [2, 1, 1]
+      }
+    },
+    {
+      "id": "273-f5-normalize-native-default",
+      "fixture": 5,
+      "route": "normalize",
+      "native": true,
+      "env": {},
+      "reason": "#273 reorder: the tool_result (role 4) moves after its assistant call (role 2); payloads and non-message bytes unchanged",
+      "expected": {
+        "kind": "message-order",
+        "messageField": 3,
+        "bytes": 1047,
+        "beforeRoles": [4, 2, 1],
+        "afterRoles": [2, 4, 1]
+      }
+    },
+    {
+      "id": "273-f5-normalize-native-replay-off",
+      "fixture": 5,
+      "route": "normalize",
+      "native": true,
+      "env": { "DEVIN_CONNECT_REPLAY_REASONING": "0" },
+      "reason": "#273 reorder: the tool_result (role 4) moves after its assistant call (role 2); payloads and non-message bytes unchanged",
+      "expected": {
+        "kind": "message-order",
+        "messageField": 3,
+        "bytes": 1047,
+        "beforeRoles": [4, 2, 1],
+        "afterRoles": [2, 4, 1]
+      }
+    },
+    {
+      "id": "273-f5-normalize-native-image-tag-off",
+      "fixture": 5,
+      "route": "normalize",
+      "native": true,
+      "env": { "DEVIN_CONNECT_REPLAY_REASONING": "0", "DEVIN_CONNECT_IMAGE_TAG": "0" },
+      "reason": "#273 reorder: the tool_result (role 4) moves after its assistant call (role 2); payloads and non-message bytes unchanged",
+      "expected": {
+        "kind": "message-order",
+        "messageField": 3,
+        "bytes": 1047,
+        "beforeRoles": [4, 2, 1],
+        "afterRoles": [2, 4, 1]
+      }
+    },
+    {
+      "id": "273-f5-strip-emulated-default",
+      "fixture": 5,
+      "route": "strip",
+      "native": false,
+      "env": {},
+      "reason": "#273 reorder: the folded tool_result user turn moves after its assistant call; payloads and non-message bytes unchanged",
+      "expected": {
+        "kind": "message-order",
+        "messageField": 3,
+        "bytes": 1055,
+        "beforeRoles": [1, 2, 1],
+        "afterRoles": [2, 1, 1]
+      }
+    },
+    {
+      "id": "273-f5-strip-emulated-replay-off",
+      "fixture": 5,
+      "route": "strip",
+      "native": false,
+      "env": { "DEVIN_CONNECT_REPLAY_REASONING": "0" },
+      "reason": "#273 reorder: the folded tool_result user turn moves after its assistant call; payloads and non-message bytes unchanged",
+      "expected": {
+        "kind": "message-order",
+        "messageField": 3,
+        "bytes": 1055,
+        "beforeRoles": [1, 2, 1],
+        "afterRoles": [2, 1, 1]
+      }
+    },
+    {
+      "id": "273-f5-strip-emulated-image-tag-off",
+      "fixture": 5,
+      "route": "strip",
+      "native": false,
+      "env": { "DEVIN_CONNECT_REPLAY_REASONING": "0", "DEVIN_CONNECT_IMAGE_TAG": "0" },
+      "reason": "#273 reorder: the folded tool_result user turn moves after its assistant call; payloads and non-message bytes unchanged",
+      "expected": {
+        "kind": "message-order",
+        "messageField": 3,
+        "bytes": 1055,
+        "beforeRoles": [1, 2, 1],
+        "afterRoles": [2, 1, 1]
+      }
+    },
+    {
+      "id": "273-f5-strip-native-default",
+      "fixture": 5,
+      "route": "strip",
+      "native": true,
+      "env": {},
+      "reason": "#273 reorder: the tool_result (role 4) moves after its assistant call (role 2); payloads and non-message bytes unchanged",
+      "expected": {
+        "kind": "message-order",
+        "messageField": 3,
+        "bytes": 1047,
+        "beforeRoles": [4, 2, 1],
+        "afterRoles": [2, 4, 1]
+      }
+    },
+    {
+      "id": "273-f5-strip-native-replay-off",
+      "fixture": 5,
+      "route": "strip",
+      "native": true,
+      "env": { "DEVIN_CONNECT_REPLAY_REASONING": "0" },
+      "reason": "#273 reorder: the tool_result (role 4) moves after its assistant call (role 2); payloads and non-message bytes unchanged",
+      "expected": {
+        "kind": "message-order",
+        "messageField": 3,
+        "bytes": 1047,
+        "beforeRoles": [4, 2, 1],
+        "afterRoles": [2, 4, 1]
+      }
+    },
+    {
+      "id": "273-f5-strip-native-image-tag-off",
+      "fixture": 5,
+      "route": "strip",
+      "native": true,
+      "env": { "DEVIN_CONNECT_REPLAY_REASONING": "0", "DEVIN_CONNECT_IMAGE_TAG": "0" },
+      "reason": "#273 reorder: the tool_result (role 4) moves after its assistant call (role 2); payloads and non-message bytes unchanged",
+      "expected": {
+        "kind": "message-order",
+        "messageField": 3,
+        "bytes": 1047,
+        "beforeRoles": [4, 2, 1],
+        "afterRoles": [2, 4, 1]
+      }
+    }
+  ]
+}
