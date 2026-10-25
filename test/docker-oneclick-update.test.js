@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { after, describe, it as nodeIt } from 'node:test';
 import assert from 'node:assert/strict';
+import { buildDockerDeployerScript } from '../src/dashboard/docker-self-update.js';
 
 const ROOT = resolve(process.cwd());
 const SCRIPT = join(ROOT, 'deploy', 'update.sh');
@@ -431,5 +432,141 @@ describe('deploy/update.sh pull → health → rollback', () => {
     assert.ok(lines.some(line => line === `tag ${ROLLBACK_ID} ghcr.io/dwgx/windsurf-api:3.9.52`));
     assert.ok(lines.some(line => / up -d --no-deps --no-build --force-recreate windsurf-api$/.test(line)));
     assertNoDestructiveDockerCalls(fixture);
+  });
+});
+
+// D6 (audit2/Update.md P2-3): the dashboard docker path used to return
+// {ok:true} right after starting a deployer that ran a bare `compose up -d`.
+// No rollback point was recorded, the deployer was auto-removed (so a failure
+// left no evidence), and a crash-looping container was indistinguishable from
+// a successful update. The deployer script now health-gates the recreate and
+// restores the previous image on failure, and its exit code is durable.
+//
+// These arms execute the real generated script against a fake docker CLI.
+// Exit codes: 0 healthy · 1 rolled back healthy · 2 rollback failed · 3 recreate failed.
+const DEPLOYER_OLD_ID = `sha256:${'1'.repeat(64)}`;
+const DEPLOYER_ROLLBACK_REF = 'ghcr.io/dwgx/windsurf-api:rollback';
+
+const FAKE_DEPLOYER_DOCKER = `#!/usr/bin/env bash
+printf '%s|IMAGE=%s\\n' "$*" "\${WINDSURFAPI_IMAGE:-}" >> "\${FAKE_DOCKER_LOG:?}"
+cmd="\${1:-}"
+if [ "$cmd" = "tag" ]; then exit 0; fi
+if [ "$cmd" = "compose" ]; then
+  joined="$*"
+  case "$joined" in
+    *" exec "*)
+      counter="\${FAKE_HEALTH_COUNTER:?}"
+      n=$(cat "$counter" 2>/dev/null || echo 0)
+      n=$((n + 1))
+      printf '%s\\n' "$n" > "$counter"
+      code=$(printf '%s' "\${FAKE_HEALTH_SEQ:-200}" | cut -d, -f"$n")
+      if [ -z "$code" ]; then
+        code=$(printf '%s' "\${FAKE_HEALTH_SEQ:-200}" | awk -F, '{print $NF}')
+      fi
+      if [ "$code" = "200" ]; then printf '{"status":"ok"}\\n'; exit 0; fi
+      exit 1
+      ;;
+    *" up "*)
+      if [ "\${FAKE_UP_FAIL_FIRST:-0}" = "1" ] && [ ! -f "\${FAKE_UP_MARKER:?}" ]; then
+        : > "\$FAKE_UP_MARKER"
+        exit 1
+      fi
+      if [ "\${FAKE_UP_FAIL:-0}" = "1" ]; then exit 1; fi
+      exit 0
+      ;;
+  esac
+  exit 0
+fi
+exit 0
+`;
+
+function makeDeployerFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'wa-docker-deployer-'));
+  const bin = join(root, 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeExecutable(join(bin, 'docker'), FAKE_DEPLOYER_DOCKER);
+  const fixture = {
+    root,
+    bin,
+    log: join(root, 'docker.log'),
+    counter: join(root, 'health.counter'),
+    upMarker: join(root, 'up.marker'),
+    composeFile: join(root, 'docker-compose.yml'),
+  };
+  writeFileSync(fixture.composeFile, 'services:\n  windsurf-api:\n    image: test\n', 'utf8');
+  FIXTURES.push(root);
+  return fixture;
+}
+
+function runDeployerScript(fixture, overrides = {}) {
+  const script = buildDockerDeployerScript({
+    project: 'windsurf',
+    workingDir: fixture.root,
+    configFiles: [fixture.composeFile],
+    service: 'windsurf-api',
+    oldImageId: DEPLOYER_OLD_ID,
+    rollbackRef: DEPLOYER_ROLLBACK_REF,
+    delaySeconds: 0,
+    // Two probes per gate: the sequences below are deterministic.
+    healthTimeoutSeconds: 0.1,
+    healthIntervalSeconds: 0.05,
+  });
+  return spawnSync(BASH, ['-c', script], {
+    cwd: fixture.root,
+    encoding: 'utf8',
+    timeout: 30_000,
+    env: {
+      ...process.env,
+      PATH: [fixture.bin, dirname(process.execPath), '/usr/local/bin', '/usr/bin', '/bin'].join(delimiter),
+      FAKE_DOCKER_LOG: fixture.log,
+      FAKE_HEALTH_COUNTER: fixture.counter,
+      FAKE_HEALTH_SEQ: '200',
+      FAKE_UP_MARKER: fixture.upMarker,
+      ...overrides,
+    },
+  });
+}
+
+describe('docker self-update deployer: health gate and rollback (D6)', () => {
+  nodeIt('exits 0 without rolling back when the recreated container is healthy', { skip: false }, () => {
+    const fixture = makeDeployerFixture();
+    const result = runDeployerScript(fixture);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const lines = logLines(fixture);
+    assert.ok(lines.some(line => /\bcompose\b.*\bup -d\b/.test(line)), 'must recreate the stack');
+    assert.equal(lines.some(line => line.startsWith('tag ')), false,
+      'a healthy update must not tag a rollback image');
+    assert.equal(lines.some(line => line.includes('--force-recreate')), false,
+      'a healthy update must not recreate the previous image');
+  });
+
+  nodeIt('restores the previous image when the first health gate fails', { skip: false }, () => {
+    const fixture = makeDeployerFixture();
+    const result = runDeployerScript(fixture, { FAKE_HEALTH_SEQ: '500,500,200' });
+    assert.equal(result.status, 1,
+      `a healthy rollback must exit 1 (not success): ${result.stdout}\n${result.stderr}`);
+    const lines = logLines(fixture);
+    assert.ok(
+      lines.some(line => line.startsWith(`tag ${DEPLOYER_OLD_ID} ${DEPLOYER_ROLLBACK_REF}`)),
+      `must tag the previous image for rollback: ${lines.join('\n')}`,
+    );
+    const rollbackUp = lines.find(line => line.includes('up -d --no-deps --no-build --force-recreate'));
+    assert.ok(rollbackUp, 'must recreate the app service from the previous image');
+    assert.match(rollbackUp, new RegExp(`IMAGE=${DEPLOYER_ROLLBACK_REF.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+      'the rollback recreate must select the previous image');
+  });
+
+  nodeIt('exits 2 when the rollback container is also unhealthy', { skip: false }, () => {
+    const fixture = makeDeployerFixture();
+    const result = runDeployerScript(fixture, { FAKE_HEALTH_SEQ: '500,500,500,500' });
+    assert.equal(result.status, 2, `${result.stdout}\n${result.stderr}`);
+  });
+
+  nodeIt('exits 3 when the recreate itself fails', { skip: false }, () => {
+    const fixture = makeDeployerFixture();
+    const result = runDeployerScript(fixture, { FAKE_UP_FAIL_FIRST: '1' });
+    assert.equal(result.status, 3, `${result.stdout}\n${result.stderr}`);
+    assert.equal(logLines(fixture).some(line => line.startsWith('tag ')), false,
+      'a recreate that never started needs no image rollback');
   });
 });

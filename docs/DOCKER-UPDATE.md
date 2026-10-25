@@ -211,11 +211,50 @@ The script performs the same check automatically on the next run.
 The dashboard's "check for update" button can also update a Compose deployment,
 but only when `/var/run/docker.sock` is mounted into the container. That mount
 is effectively root on the host, which is why it is commented out by default in
-`docker-compose.yml`. The host-side script needs no socket mount and adds the
-health gate + automatic rollback.
+`docker-compose.yml`.
+
+The dashboard path is now health-gated like this script:
+
+1. Before any pull or recreate it records the running image ID, the rollback tag
+   and the Compose project/service in `<DATA_DIR>/self-update-docker.json`. If
+   that record cannot be written, the update is refused.
+2. The deployer sidecar recreates the stack, polls `/health` inside the app
+   container, and on failure restores the previous image as
+   `<repo>:rollback` and recreates the app service from it.
+3. The deployer container is **not** auto-removed: its exit code is the durable
+   outcome (0 healthy · 1 rolled back healthy · 2 rollback failed · 3 recreate
+   failed) until the next `/self-update/check` records it in the journal and
+   removes the container.
+
+`POST /dashboard/api/self-update` therefore returns
+`{ ok: true, state: "pending-recreate", verified: false, rollbackPoint: … }`:
+`ok` means the deployer was started, not that the new container is healthy.
+Success is only reported after the restart by
+`GET /dashboard/api/self-update/check` →
+`dockerSelfUpdate.state === "confirmed"` (or `rolled-back`, `rollback-failed`,
+`recreate-failed`, `unverified`). A deployer failure is no longer
+indistinguishable from a verified rollback.
 
 Do not trigger both at the same time: the script's lock only serializes script
 runs, not the dashboard's deployer sidecar.
+
+## Dashboard self-update states (git and docker)
+
+Both update paths write a durable journal before mutating and keep their
+rollback point until the restarted process proves it serves the expected
+commit/image.
+
+| Path | Journal | Confirmed by | Retry evidence |
+|---|---|---|---|
+| git (`POST /self-update`, `/self-update/rollback`) | `data/self-update-journal.json` | `/self-update/check` → `selfUpdate.state === "confirmed"` when the running commit matches | `data/self-update-before.json` is retained until confirmed |
+| docker (`POST /self-update` when git is unavailable) | `<DATA_DIR>/self-update-docker.json` | `/self-update/check` → `dockerSelfUpdate.state === "confirmed"` from the deployer exit code | previous image ID + `<repo>:rollback` tag |
+
+A rollback whose restart cannot be scheduled returns
+`{ ok: false, error: "ERR_RESTART_NOT_SCHEDULED", state: "restart-not-scheduled",
+rollbackPointRetained: true }` — the reset is on disk, but nothing will relaunch
+the gateway, so it is not a successful rollback. Retry after fixing the
+supervisor, or restart the process manually.
+
 
 ## Smoke tests
 

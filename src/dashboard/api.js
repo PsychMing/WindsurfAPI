@@ -92,12 +92,18 @@ import { assertPublicUrlHost } from '../image.js';
 import { validateHostFormat, resolveProxyConnectHost, trustedClientIp } from '../net-safety.js';
 import { discoverWindsurfCredentials, isLoopbackAddress } from './local-windsurf.js';
 import { parseAccountText, classifyToken } from './account-text-parser.js';
-import { detectDockerSelfUpdate, runDockerSelfUpdate } from './docker-self-update.js';
+import {
+  DOCKER_DEPLOYER_WINDOW_MS,
+  detectDockerSelfUpdate,
+  reconcileDockerSelfUpdateState,
+  runDockerSelfUpdate,
+} from './docker-self-update.js';
 import { BatchImportParseError, parseBatchImportInput } from './import-parser.js';
 import { detectSupervisor, gracefulRestart } from '../restart.js';
 import { getActiveServer } from '../server-registry.js';
 import { abortActiveSse } from '../sse-registry.js';
 import { renameSyncWithRetry, writeJsonAtomic } from '../fs-atomic.js';
+import { getVersionInfo } from '../version.js';
 
 // Statuses an operator may write through PATCH /accounts/:id. Deliberately NOT
 // ACCOUNT_STATE_VALUES (the read-side vocabulary): that list also carries the
@@ -409,7 +415,16 @@ function explicitlyAllowedCorsOrigin(origin) {
 // just mutations): DNS rebinding can otherwise read cleartext account keys
 // through GET /accounts/import-local with Host: attacker.example. Returns
 // { host, trustProxy } or null after writing 403.
-function validateDashboardRequestHost(req, res) {
+//
+// A trusted proxy's X-Forwarded-Host is honoured only when the operator opted
+// into TRUST_PROXY_X_FORWARDED_FOR AND supplied X-Forwarded-For, but the
+// forwarded name must still pass the SAME allowlist as the raw Host. It used
+// to short-circuit DASHBOARD_ALLOWED_HOSTS for every non-loopback value, which
+// let any client that could reach the app directly set the header itself and
+// walk past the list. X-Forwarded-Host may be a comma list; the right-most
+// entry is the one appended by the nearest trusted proxy (same right-counting
+// rule as XFF).
+export function validateDashboardRequestHost(req, res) {
   const hostHeader = dashboardHeader(req, 'host');
   const forwardedHostRaw = dashboardHeader(req, 'x-forwarded-host');
   const forwardedFor = dashboardHeader(req, 'x-forwarded-for');
@@ -418,8 +433,6 @@ function validateDashboardRequestHost(req, res) {
   // on a simple cross-site request.
   const trustProxy = process.env.TRUST_PROXY_X_FORWARDED_FOR === '1' && !!forwardedFor;
   const trustForwardedHost = trustProxy && !!forwardedHostRaw;
-  // X-Forwarded-Host may be a comma list; the right-most entry is the one
-  // appended by the nearest trusted proxy (same right-counting rule as XFF).
   const forwardedHost = trustForwardedHost
     ? forwardedHostRaw.split(',').map(s => s.trim()).filter(Boolean).pop() || ''
     : '';
@@ -427,8 +440,7 @@ function validateDashboardRequestHost(req, res) {
   let host = null;
   if (effectiveHostValue) {
     host = splitHostHeader(effectiveHostValue);
-    const forwardedHostAllowed = trustForwardedHost && host && !isLoopbackHostname(host.hostname);
-    if (!host || (!dashboardHostAllowed(host.hostname) && !forwardedHostAllowed)) {
+    if (!host || !dashboardHostAllowed(host.hostname)) {
       json(res, 403, {
         error: 'ERR_DASHBOARD_HOST_REJECTED',
         message: 'Request Host is not allowed for the dashboard',
@@ -1352,17 +1364,36 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
 
   // ─── Self-update: pull latest code + request supervisor restart ──────
   if (subpath === '/self-update/check' && method === 'GET') {
+    // D6: a pending journal is confirmed only when the RUNNING process reports
+    // the expected commit — the same identity /health publishes. Confirmation
+    // is what clears the rollback point; anything else keeps the retry
+    // evidence and reports the pending/failed state.
+    const selfUpdate = reconcileSelfUpdateJournal();
+    // Docker updates record the previous image before the deployer starts and
+    // reconcile the deployer's exit code after the restart. No journal means
+    // no Docker call at all.
+    let dockerSelfUpdate = null;
+    try {
+      dockerSelfUpdate = await reconcileDockerSelfUpdateState();
+    } catch (err) {
+      log.warn(`self-update: docker state reconcile failed: ${err.message}`);
+    }
+    const withJournal = (payload) => ({
+      ...payload,
+      ...(selfUpdate ? { selfUpdate } : {}),
+      ...(dockerSelfUpdate ? { dockerSelfUpdate } : {}),
+    });
     try {
       const info = await gitStatus();
       if (info.updateError) {
-        return json(res, 200, {
+        return json(res, 200, withJournal({
           ok: false,
           mode: 'git',
           ...info,
           error: info.updateError,
-        });
+        }));
       }
-      return json(res, 200, { ok: true, mode: 'git', ...info });
+      return json(res, 200, withJournal({ ok: true, mode: 'git', ...info }));
     } catch (err) {
       if (isSelfUpdateUnavailableError(err)) {
         // Git path is unavailable (most often docker). Fall back to
@@ -1371,24 +1402,24 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         // "manual command" hint we did before.
         const docker = await detectDockerSelfUpdateForRequest();
         if (docker.available) {
-          return json(res, 200, {
+          return json(res, 200, withJournal({
             ok: true,
             mode: 'docker',
             image: docker.image,
             project: docker.project,
             workingDir: docker.workingDir,
-          });
+          }));
         }
-        return json(res, 200, {
+        return json(res, 200, withJournal({
           ok: false,
           available: false,
           reason: err.reason,
           error: err.code,
           dockerReason: docker.reason,
           dockerDetail: docker.detail,
-        });
+        }));
       }
-      return json(res, 200, { ok: false, error: err.message });
+      return json(res, 200, withJournal({ ok: false, error: err.message }));
     }
   }
   if (subpath === '/self-update/rollback' && method === 'POST') {
@@ -1410,8 +1441,12 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     // 与 forceReset 同级保护（AUTH-1）：本地领先或脏树时同样拒绝。
     try {
       try {
+        // A previous rollback that is already confirmed by the running commit
+        // has had its point cleared; reconcile first so this attempt reports
+        // "no rollback point" instead of resetting to the same commit again.
+        reconcileSelfUpdateJournal();
         const isCommitSha = value => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value);
-        const { readFile, rm } = await import('node:fs/promises');
+        const { readFile } = await import('node:fs/promises');
         const paths = rollbackPointPaths();
         const readPoint = async (path) => {
           try { return JSON.parse(await readFile(path, 'utf8')); } catch { return {}; }
@@ -1477,6 +1512,36 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         // ordinary update checks, this destructive path must see untracked files
         // and require the same explicit force+stash protection.
         const dirty = (await runGit(['status', '--porcelain', '--untracked-files=all'])).trim();
+        // D6: record the rollback intent durably BEFORE any mutation (stash or
+        // reset). If the process dies between here and the restart, the journal
+        // plus the untouched rollback point still describe what was attempted
+        // and the rollback remains retryable. A journal write failure aborts
+        // while the worktree is still unmodified.
+        try {
+          writeSelfUpdateJournal({
+            version: 1,
+            operation: 'rollback',
+            state: 'pending-restart',
+            phase: 'pre-reset',
+            expectedCommit: beforeCommit,
+            afterCommit,
+            rollbackPointRetained: true,
+            requestedAt: Date.now(),
+          });
+        } catch (journalErr) {
+          return json(res, 200, {
+            ok: false,
+            error: 'ERR_UPDATE_JOURNAL_WRITE',
+            message: `Could not durably record the rollback intent; nothing was changed: ${journalErr.message}`,
+          });
+        }
+        const markJournalFailed = (reason, extra = {}) => {
+          try {
+            updateSelfUpdateJournal({ state: 'failed', reason, ...extra });
+          } catch (journalErr) {
+            log.warn(`self-update rollback: could not record ${reason}: ${journalErr.message}`);
+          }
+        };
         let protectiveStashOid = '';
         if (dirty) {
           const allowForce = !!(body && body.forceReset);
@@ -1486,6 +1551,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
           try {
             protectiveStashOid = await createProtectiveStash('rollback-forceReset');
           } catch (err) {
+            markJournalFailed('stash-failed', { error: err.message });
             return json(res, 200, {
               ok: false,
               error: 'ERR_STASH_FAILED',
@@ -1505,6 +1571,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
           rolledBackHead = (await runGit(['rev-parse', 'HEAD'])).trim();
           trackedAfter = (await runGit(['status', '--porcelain', '--untracked-files=no', '--ignore-submodules=none'])).trim();
         } catch (inspectErr) {
+          markJournalFailed('state-unknown', { error: inspectErr.message });
           return json(res, 200, {
             ok: false,
             error: 'ERR_ROLLBACK_STATE_UNKNOWN',
@@ -1523,6 +1590,10 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
               log.warn(`self-update rollback: reset failed and exact protective stash ${protectiveStashOid.slice(0, 12)} could not be applied: ${restoreErr.message}`);
             }
           }
+          markJournalFailed('reset-not-verified', {
+            actual: rolledBackHead,
+            trackedDirty: !!trackedAfter,
+          });
           return json(res, 200, {
             ok: false,
             error: trackedAfter
@@ -1543,21 +1614,75 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         if (resetError) {
           log.warn(`self-update rollback: Git returned an error after reaching the verified rollback state: ${resetError.message}`);
         }
-        // 清掉回滚点，避免重复回滚到同一个旧版本
-        await Promise.all([
-          rm(paths.final, { force: true }).catch(() => {}),
-          rm(paths.pending, { force: true }).catch(() => {}),
-        ]);
-        const restartScheduled = scheduleSelfUpdateRestart(() => gracefulRestart({
+        // D6: the rollback point is NOT deleted here. It is retry evidence
+        // until the restarted process proves it serves beforeCommit; the
+        // journal reconcile step clears it then. Deleting it before the
+        // restart made a scheduler failure indistinguishable from a verified
+        // healthy rollback.
+        try {
+          updateSelfUpdateJournal({ phase: 'reset-verified' });
+        } catch (err) {
+          log.warn(`self-update rollback: could not record the verified reset: ${err.message}`);
+        }
+        const restartScheduled = scheduleSelfUpdateRestart(() => {
+          return Promise.resolve(gracefulRestart({
             reason: 'self-update-rollback',
             drainMs: 10000,
             server: getActiveServer(),
             abortSse: abortActiveSse,
             stopLs: () => stopLanguageServerAndWait({ perProcessTimeoutMs: 1500 }),
             exitCode: selfUpdateRestartExitCode(),
-          }), releaseMutation);
+          })).catch((err) => {
+            // The process may survive a failed restart; leave durable evidence
+            // instead of an unhandled rejection, and keep the rollback point.
+            try {
+              updateSelfUpdateJournal({
+                state: 'restart-failed',
+                restartScheduled: true,
+                error: String(err?.message || err),
+              });
+            } catch (journalErr) {
+              log.warn(`self-update rollback: could not record the restart failure: ${journalErr.message}`);
+            }
+            throw err;
+          });
+        }, releaseMutation);
         mutationLockHandedOff = restartScheduled === true;
-        return json(res, 200, { ok: true, rolledBackTo: beforeCommit.slice(0, 7) });
+        if (mutationLockHandedOff) {
+          try {
+            updateSelfUpdateJournal({ state: 'pending-restart', phase: 'restart-scheduled', restartScheduled: true });
+          } catch (err) {
+            log.warn(`self-update rollback: could not record the scheduled restart: ${err.message}`);
+          }
+          return json(res, 200, {
+            ok: true,
+            state: 'pending-restart',
+            verified: false,
+            restartScheduled: true,
+            rollbackPointRetained: true,
+            expectedCommit: beforeCommit,
+            rolledBackTo: beforeCommit.slice(0, 7),
+          });
+        }
+        // The scheduler declined: the reset is on disk but nothing will
+        // relaunch the gateway. That is NOT a successful rollback — say so,
+        // and leave the point plus journal so it can be retried.
+        try {
+          updateSelfUpdateJournal({ state: 'restart-not-scheduled', restartScheduled: false });
+        } catch (err) {
+          log.warn(`self-update rollback: could not record the unscheduled restart: ${err.message}`);
+        }
+        return json(res, 200, {
+          ok: false,
+          error: 'ERR_RESTART_NOT_SCHEDULED',
+          message: 'The rollback reset was applied, but no restart could be scheduled; the running process still serves the previous code. The rollback point was kept so this rollback can be retried.',
+          state: 'restart-not-scheduled',
+          verified: false,
+          restartScheduled: false,
+          rollbackPointRetained: true,
+          expectedCommit: beforeCommit,
+          rolledBackTo: beforeCommit.slice(0, 7),
+        });
       } catch (err) {
         if (isSelfUpdateUnavailableError(err)) return json(res, 200, { ok: false, error: err.code || 'ERR_GIT_UNAVAILABLE' });
         return json(res, 200, { ok: false, error: err.code || err.message, message: err.code ? err.message : undefined });
@@ -1828,6 +1953,23 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       // backstop, but stopping cleanly here means the next process won't
       // even need cleanup most of the time.
       if (changed) {
+        // D6: same durable journal as rollback. `{ok:true}` below now carries
+        // state:'pending-restart' + verified:false until the restarted process
+        // reports this commit on /health; a declined scheduler is reported as
+        // restart-not-scheduled instead of a silent success.
+        try {
+          writeSelfUpdateJournal({
+            version: 1,
+            operation: 'update',
+            state: 'pending-restart',
+            phase: 'pre-restart',
+            expectedCommit: actualHead,
+            beforeCommit: before.commitFull,
+            requestedAt: Date.now(),
+          });
+        } catch (err) {
+          log.warn(`self-update: could not durably record the update journal: ${err.message}`);
+        }
         const restartScheduled = scheduleSelfUpdateRestart(() => {
           // v3.4.x: drain in-flight requests before the LS stop + exit, via the
           // shared gracefulRestart path. The HTTP server handle is now reachable
@@ -1839,20 +1981,45 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
           // handle is somehow unregistered, gracefulRestart simply skips the
           // drain step and still stops the LS and exits.
           log.info('self-update: exiting with restart-requested status for service supervisor');
-          return gracefulRestart({
+          return Promise.resolve(gracefulRestart({
             reason: 'self-update',
             drainMs: 10000,
             server: getActiveServer(),
             abortSse: abortActiveSse,
             stopLs: () => stopLanguageServerAndWait({ perProcessTimeoutMs: 1500 }),
             exitCode: selfUpdateRestartExitCode(),
+          })).catch((err) => {
+            try {
+              updateSelfUpdateJournal({
+                state: 'restart-failed',
+                restartScheduled: true,
+                error: String(err?.message || err),
+              });
+            } catch (journalErr) {
+              log.warn(`self-update: could not record the restart failure: ${journalErr.message}`);
+            }
+            throw err;
           });
         }, releaseMutation);
         mutationLockHandedOff = restartScheduled === true;
+        try {
+          updateSelfUpdateJournal({
+            state: mutationLockHandedOff ? 'pending-restart' : 'restart-not-scheduled',
+            phase: mutationLockHandedOff ? 'restart-scheduled' : 'pre-restart',
+            restartScheduled: mutationLockHandedOff,
+          });
+        } catch (err) {
+          log.warn(`self-update: could not record the restart scheduling result: ${err.message}`);
+        }
       }
       return json(res, 200, {
         ok: true,
         changed,
+        state: changed
+          ? (mutationLockHandedOff ? 'pending-restart' : 'restart-not-scheduled')
+          : 'unchanged',
+        verified: !changed,
+        restartScheduled: changed ? mutationLockHandedOff : false,
         before: before.commit,
         after: actualHead.slice(0, 7),
         pullOutput: pull.trim(),
@@ -3920,7 +4087,10 @@ let selfUpdateSupervisorDetectorForTest = null;
 let selfUpdateRestartSchedulerForTest = null;
 let dockerSelfUpdateOverridesForTest = null;
 let selfUpdateMutationInFlight = false;
-const DOCKER_SELF_UPDATE_MUTATION_HOLD_MS = 60_000;
+// Hold the mutation lock for the whole out-of-band deployer window (flush
+// delay + recreate + health gate + possible rollback + second gate), so a
+// retry cannot start while the deployer is still mutating the stack.
+const DOCKER_SELF_UPDATE_MUTATION_HOLD_MS = DOCKER_DEPLOYER_WINDOW_MS;
 
 // EX_TEMPFAIL: non-zero is intentional. systemd Restart=on-failure and PM2
 // autorestart both relaunch after this self-update-only exit, while normal
@@ -3962,6 +4132,12 @@ function scheduleSelfUpdateRestart(callback, releaseMutation) {
   setTimeout(() => {
     Promise.resolve()
       .then(callback)
+      .catch((err) => {
+        // A rejecting restart must not become an unhandled rejection that
+        // crashes the process after the HTTP response already went out. The
+        // durable journal (written by the caller) is the retry evidence.
+        log.warn(`self-update: restart callback failed: ${err?.message || err}`);
+      })
       .finally(() => {
         process.off('exit', releaseOnExit);
         releaseMutation();
@@ -4159,6 +4335,107 @@ function rollbackPointPaths({ ensureDir = false } = {}) {
     final: join(dataDir, ROLLBACK_POINT_FILENAME),
     pending: join(dataDir, ROLLBACK_POINT_PENDING_FILENAME),
   };
+}
+
+// ─── Durable self-update journal (D6) ─────────────────────
+//
+// `{ok:true}` used to mean only "git reset applied / deployer sidecar
+// started". The restart (source) or recreate (docker) happens afterwards, and
+// a scheduler/deployer failure was indistinguishable from a verified healthy
+// rollback. This journal is written BEFORE the mutating restart is requested,
+// survives a crash, and is confirmed only when the running process reports the
+// commit `/health` would publish. The rollback point is retained until then,
+// so a failed or never-scheduled restart stays retryable.
+const SELF_UPDATE_JOURNAL_FILENAME = 'self-update-journal.json';
+const SELF_UPDATE_PENDING_STATES = new Set([
+  'pending-restart',
+  'restart-not-scheduled',
+  'restart-failed',
+]);
+
+function selfUpdateJournalPath() {
+  return join(process.cwd(), 'data', SELF_UPDATE_JOURNAL_FILENAME);
+}
+
+function readSelfUpdateJournal() {
+  try {
+    const value = JSON.parse(readFileSync(selfUpdateJournalPath(), 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSelfUpdateJournal(record) {
+  const path = selfUpdateJournalPath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeJsonAtomic(path, record);
+}
+
+function updateSelfUpdateJournal(patch) {
+  const next = { ...(readSelfUpdateJournal() || {}), ...patch, updatedAt: Date.now() };
+  writeSelfUpdateJournal(next);
+  return next;
+}
+
+let selfUpdateRunningCommitForTest = null;
+export function setSelfUpdateRunningCommitForTest(fn) {
+  selfUpdateRunningCommitForTest = typeof fn === 'function' ? fn : null;
+}
+
+// The commit the restarted process would serve on /health. Defaults to the
+// build identity of the RUNNING process, which is exactly what /health
+// publishes (server.js VERSION_INFO.commit).
+function selfUpdateRunningCommit() {
+  if (selfUpdateRunningCommitForTest) {
+    try { return String(selfUpdateRunningCommitForTest() || ''); } catch { return ''; }
+  }
+  try { return String(getVersionInfo().commit || ''); } catch { return ''; }
+}
+
+function commitsCorrespond(left, right) {
+  const a = String(left || '').trim().toLowerCase();
+  const b = String(right || '').trim().toLowerCase();
+  if (!a || !b) return false;
+  const shortest = Math.min(a.length, b.length);
+  if (shortest < 7) return false;
+  return (a.startsWith(b) || b.startsWith(a));
+}
+
+/**
+ * Confirm a pending self-update journal against the running commit.
+ *
+ * Called on /self-update/check (and before a rollback attempt), i.e. after a
+ * restart. A rollback is only "confirmed" when the process that answers now is
+ * the commit the rollback reset to; that confirmation is what deletes the
+ * rollback point. Anything else keeps both the journal and the point intact so
+ * the operation remains retryable and its failure stays visible.
+ */
+export function reconcileSelfUpdateJournal() {
+  const journal = readSelfUpdateJournal();
+  if (!journal || !SELF_UPDATE_PENDING_STATES.has(journal.state)) return journal;
+  const expected = journal.expectedCommit || journal.beforeCommit;
+  const running = selfUpdateRunningCommit();
+  if (!commitsCorrespond(running, expected)) return journal;
+  const confirmed = {
+    ...journal,
+    state: 'confirmed',
+    confirmedCommit: running,
+    confirmedAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  try {
+    writeSelfUpdateJournal(confirmed);
+  } catch (err) {
+    log.warn(`self-update: could not record journal confirmation: ${err.message}`);
+    return journal;
+  }
+  if (journal.operation === 'rollback') {
+    const paths = rollbackPointPaths();
+    try { unlinkSync(paths.final); } catch {}
+    try { unlinkSync(paths.pending); } catch {}
+  }
+  return confirmed;
 }
 
 function nulSeparatedGitPaths(output) {
