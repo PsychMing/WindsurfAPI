@@ -14,6 +14,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { handleChatCompletions, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
+import { createBoundedWriter, resolveMaxDrainWaitMs } from '../stream-writer.js';
 import { SseFramer } from '../sse-framer.js';
 import { buildToolNameMap, restoreToolName } from '../tool-names.js';
 import { createToolIdAllocator, normalizeToolIdsInMessages, toolHygieneEnabled } from '../tool-ids.js';
@@ -1397,12 +1398,34 @@ class AnthropicStreamTranslator {
     // always carries `signature: ""` (as Anthropic does), so strict clients that
     // require the key (e.g. Grok Build's messages backend) still parse it.
     this.pendingThinkingSignature = '';
+    // V-08/D8: one abort-aware bounded writer for this egress. `res` is the REAL
+    // response; the Chat producer writes into `createCaptureRes`, which reports
+    // THIS writer's pressure back to it. Without the wait the translator consumed
+    // `res.write()`'s false verdict itself, so the Cascade/Connect producer was
+    // never held and a slow reader bought unbounded upstream production.
+    const maxWaitMs = resolveMaxDrainWaitMs();
+    this.writer = createBoundedWriter({
+      res,
+      maxWaitMs,
+      onTimeout: () => {
+        // Teardown belongs to chat.js's own bounded writer (it writes the typed
+        // DRAIN_TIMEOUT frame and aborts the upstream turn). Log only: ending the
+        // response here would race that stage and strip the error frame.
+        log.warn(`Messages: no drain for ${maxWaitMs}ms — the client stopped reading`);
+      },
+    });
+  }
+
+  /** True while the client's socket has not accepted the bytes we handed it. */
+  get egressOk() {
+    return !this.writer.pending;
   }
 
   send(event, data) {
     if (!this.res.writableEnded) {
-      this.res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      return this.writer.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     }
+    return true;
   }
 
   // F6: official Anthropic streams emit typed `event: ping` frames (with a
@@ -1969,6 +1992,10 @@ class AnthropicStreamTranslator {
   // route and the other two dialects cannot drift apart.
   feed(rawChunk) {
     this.sseFramer.push(rawChunk);
+    // V-08/D8: the verdict the Chat producer reads. `push` dispatches every frame
+    // synchronously, so `egressOk` is the state AFTER this chunk was emitted —
+    // false means the socket reported backpressure and has not drained yet.
+    return this.egressOk;
   }
 
   handleSseFrame({ data }) {
@@ -1998,6 +2025,14 @@ function createCaptureRes(translator, realRes) {
     const cbs = listeners.get(event) || [];
     for (const cb of cbs) { try { cb(); } catch {} }
   };
+  // V-08/D8: the producer (chat.js) waits for 'drain' on THIS fake response. The
+  // translator's bounded writer owns the wait on the real socket, and the real
+  // socket's drain is the only one that exists — without this forward the chat
+  // writer would park on a signal that can never arrive (the 120s half-fix).
+  if (realRes?.on) {
+    realRes.on('drain', () => fire('drain'));
+    realRes.on('error', () => fire('error'));
+  }
   return {
     writableEnded: false,
     _disconnected: false, // set by _clientDisconnected(); gates write() feed work
@@ -2030,7 +2065,10 @@ function createCaptureRes(translator, realRes) {
         try { translator.sendPing(); } catch {}
       }
       translator.feed(chunk);
-      return true;
+      // V-08/D8: return the REAL socket's verdict (via the translator's bounded
+      // writer). A constant `true` kept chat.js's bounded writer permanently
+      // disarmed on this route, so the Cascade producer never paused.
+      return translator.egressOk;
     },
     end(chunk) {
       if (this.writableEnded) return;
@@ -2043,7 +2081,14 @@ function createCaptureRes(translator, realRes) {
     // close handler sees an un-ended stream and triggers its abort path.
     // Set an INDEPENDENT _disconnected flag (not writableEnded — that would
     // suppress the abort path) so write() can skip post-disconnect feed work.
-    _clientDisconnected() { this._disconnected = true; fire('close'); },
+    _clientDisconnected() {
+      this._disconnected = true;
+      // V-08/D8: settle the translator's outstanding drain wait and refuse any
+      // further byte — a terminal frame must not be written into a socket that is
+      // already gone. (The chat writer's own wait settles through fire('close').)
+      translator.writer.dispose();
+      fire('close');
+    },
     on(event, cb) {
       if (!listeners.has(event)) listeners.set(event, []);
       listeners.get(event).push(cb);

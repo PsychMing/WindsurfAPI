@@ -25,6 +25,7 @@
 
 import { handleChatCompletions, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
+import { createBoundedWriter, resolveMaxDrainWaitMs } from '../stream-writer.js';
 import { SseFramer } from '../sse-framer.js';
 import { buildToolNameMap, restoreToolName, sanitizeToolName } from '../tool-names.js';
 import { createToolIdAllocator, normalizeToolIdsInMessages, sanitizeToolId, toolHygieneEnabled } from '../tool-ids.js';
@@ -478,21 +479,42 @@ class GeminiStreamTranslator {
     // True when the ONLY finish frame seen was one chat.js fabricated to close a
     // stream that died mid-answer. It suppresses the `[DONE]` shortcut above, since
     // chat.js emits `[DONE]` on that path too — so both signals must be discounted
-    // together or the guard stays defeated.
+    // together or BUG1's guard stays defeated.
     this.sawSyntheticFinish = false;
+    // V-08/D8: one abort-aware bounded writer for this egress. `res` is the REAL
+    // response; the Chat producer writes into `createCaptureRes`, which reports
+    // THIS writer's pressure back to it. Without the wait the translator consumed
+    // `res.write()`'s false verdict itself, so the Cascade/Connect producer was
+    // never held and a slow reader bought unbounded upstream production.
+    const maxWaitMs = resolveMaxDrainWaitMs();
+    this.writer = createBoundedWriter({
+      res,
+      maxWaitMs,
+      onTimeout: () => {
+        // Teardown belongs to chat.js's own bounded writer (it writes the typed
+        // DRAIN_TIMEOUT frame and aborts the upstream turn). Log only: ending the
+        // response here would race that stage and strip the error frame.
+        log.warn(`Gemini: no drain for ${maxWaitMs}ms — the client stopped reading`);
+      },
+    });
+  }
+
+  /** True while the client's socket has not accepted the bytes we handed it. */
+  get egressOk() {
+    return !this.writer.pending;
   }
 
   // Write one Gemini frame (a GenerateContentResponse) in the active mode.
   writeFrame(obj) {
-    if (this.res.writableEnded) return;
+    if (this.res.writableEnded) return true;
     const json = JSON.stringify(obj);
-    if (this.mode === 'sse') {
-      this.res.write(`data: ${json}\r\n\r\n`);
-    } else {
+    const text = this.mode === 'sse'
+      ? `data: ${json}\r\n\r\n`
       // JSON array: open bracket on first frame, comma-separate the rest.
-      this.res.write(this.frameCount === 0 ? `[${json}` : `,${json}`);
-    }
+      : (this.frameCount === 0 ? `[${json}` : `,${json}`);
     this.frameCount++;
+    // V-08/D8: the real verdict, so a pressured socket holds the producer.
+    return this.writer.write(text);
   }
 
   // Emit a candidate frame carrying a single part (text or functionCall).
@@ -663,7 +685,7 @@ class GeminiStreamTranslator {
     }
     if (this.mode === 'array') {
       // Close the JSON array. If no frame ever wrote, still emit `[]`.
-      if (!this.res.writableEnded) this.res.write(this.frameCount === 0 ? '[]' : ']');
+      if (!this.res.writableEnded) this.writer.write(this.frameCount === 0 ? '[]' : ']');
     }
   }
 
@@ -687,9 +709,9 @@ class GeminiStreamTranslator {
         : mapped.body;
       const json = JSON.stringify(body);
       if (this.mode === 'sse') {
-        this.res.write(`data: ${json}\r\n\r\n`);
+        this.writer.write(`data: ${json}\r\n\r\n`);
       } else {
-        this.res.write(this.frameCount === 0 ? `[${json}]` : `,${json}]`);
+        this.writer.write(this.frameCount === 0 ? `[${json}]` : `,${json}]`);
       }
       this.frameCount++;
     }
@@ -700,6 +722,10 @@ class GeminiStreamTranslator {
   // SseFramer owns CRLF, split UTF-8, multi-line data and EOF flush.
   feed(rawChunk) {
     this.sseFramer.push(rawChunk);
+    // V-08/D8: the verdict the Chat producer reads. `push` dispatches every frame
+    // synchronously, so `egressOk` is the state AFTER this chunk was emitted —
+    // false means the socket reported backpressure and has not drained yet.
+    return this.egressOk;
   }
 
   handleSseFrame({ data }) {
@@ -732,6 +758,14 @@ function createCaptureRes(translator, realRes) {
     const cbs = listeners.get(event) || [];
     for (const cb of cbs) { try { cb(); } catch {} }
   };
+  // V-08/D8: the producer (chat.js) waits for 'drain' on THIS fake response. The
+  // translator's bounded writer owns the wait on the real socket, and the real
+  // socket's drain is the only one that exists — without this forward the chat
+  // writer would park on a signal that can never arrive (the 120s half-fix).
+  if (realRes?.on) {
+    realRes.on('drain', () => fire('drain'));
+    realRes.on('error', () => fire('error'));
+  }
   return {
     writableEnded: false,
     headersSent: false,
@@ -743,7 +777,10 @@ function createCaptureRes(translator, realRes) {
       // translator only consumes `data:` lines). First-token latency is
       // unaffected because real content frames pass straight through.
       translator.feed(chunk);
-      return true;
+      // V-08/D8: return the REAL socket's verdict (via the translator's bounded
+      // writer). A constant `true` kept chat.js's bounded writer permanently
+      // disarmed on this route, so the Cascade producer never paused.
+      return translator.egressOk;
     },
     end(chunk) {
       if (this.writableEnded) return;
@@ -752,7 +789,13 @@ function createCaptureRes(translator, realRes) {
       this.writableEnded = true;
       fire('close');
     },
-    _clientDisconnected() { fire('close'); },
+    _clientDisconnected() {
+      // V-08/D8: settle the translator's outstanding drain wait and refuse any
+      // further byte — a terminal frame must not be written into a socket that is
+      // already gone. (The chat writer's own wait settles through fire('close').)
+      translator.writer.dispose();
+      fire('close');
+    },
     on(event, cb) {
       if (!listeners.has(event)) listeners.set(event, []);
       listeners.get(event).push(cb);
