@@ -44,7 +44,7 @@ flowchart LR
 
 ### [v3.141.592654](docs/releases/RELEASE_NOTES_3.141.592654.md) · 2026-10-25
 
-wave-3 七条修复:Cascade 重放历史图片不再静默丢弃、Codex `parallel_tool_calls:false` 从 400 改为服务并计数、chat 面对 server-executed 工具类型显式 400、Claude Code 2.1.306 的 `context_management`/`defer_loading`、usage 把 cache-write 计入输入、别名与方言整类修复、Responses/Gemini 参数保真与 `metadata` 回声。mutation 基线门默认改为按变更域测量。wire 与全量 mutation 尚未跑完(`[UNVERIFIED]`)。
+wave-3 七条修复:Cascade 重放历史图片不再静默丢弃、Codex `parallel_tool_calls:false` 从 400 改为服务并计数、chat 面对 server-executed 工具类型显式 400、Claude Code 2.1.306 的 `context_management`/`defer_loading`、usage 把 cache-write 计入输入、别名与方言整类修复、Responses/Gemini 参数保真与 `metadata` 回声。mutation 基线门默认改为按变更域测量。wire 对 v3.10.1 **270/270**、全量 mutation **92/92 spec**(822 条 = 808 捕获 + 14 条声明,0 drift)。
 
 ### [v3.10.1](docs/releases/RELEASE_NOTES_3.10.1.md) · 2026-10-24
 
