@@ -104,6 +104,13 @@ import { renameSyncWithRetry, writeJsonAtomic } from '../fs-atomic.js';
 // derived/evidence-gated states, and only these three are operator intent.
 const PATCHABLE_ACCOUNT_STATUSES = Object.freeze(['active', 'disabled', 'error']);
 
+// Test-only seam for exercising the route-level LS integrity gate without a
+// real installer. Never set from production code.
+let _langserverInstallScriptOverride = null;
+export function __setLangserverInstallScriptForTests(path) {
+  _langserverInstallScriptOverride = path ? String(path) : null;
+}
+
 function shouldPrewarmLsOnAccountAdd() {
   return process.env.LS_PREWARM_ON_ACCOUNT_ADD === '1' || process.env.LS_PREWARM_PROXIES === '1';
 }
@@ -219,6 +226,289 @@ function resolveCorsOrigin(req) {
   if (!allow.length) return '';
   if (allow.includes('*')) return '*';
   return allow.includes(origin) ? origin : '';
+}
+
+// ─── A04: mutation request gate ─────────────────────────
+//
+// Open-local dashboards (DASHBOARD_ALLOW_NO_AUTH=1 on a loopback bind) have no
+// secret for a CSRF attacker to steal, so the only thing that stood between the
+// operator's browser and any other web page was the CORS *response* policy —
+// which does not stop a cross-site "simple" POST (`Content-Type: text/plain`)
+// from reaching the handler. The handler used to accept that body as JSON and
+// run the mutation. Every state-changing dashboard request now has to prove it
+// is an operator mutation before any side effect:
+//
+//   1. JSON content type — a cross-origin request with this type needs a CORS
+//      preflight, which the dashboard never grants to an unlisted origin.
+//   2. Same-origin Origin/Host agreement — catches simple form/fetch posts
+//      that bypass preflight.
+//   3. Fetch Metadata (`Sec-Fetch-Site`/`Mode`/`Dest`) — rejects cross-site and
+//      navigation/form requests even when Origin is missing.
+//   4. Strict Host validation — on a loopback bind only loopback Host names
+//      are accepted (DNS-rebinding defence); non-loopback names require
+//      DASHBOARD_ALLOWED_HOSTS (a trusted X-Forwarded-Host is honoured only
+//      when TRUST_PROXY_X_FORWARDED_FOR=1, but still has to pass that list).
+//
+// Non-browser clients (curl, scripts, the CLI) send no Origin/Sec-Fetch and
+// remain usable after auth, but they must still declare a JSON content type
+// when they carry a body. `/auth` is a credential probe, not a mutation, and
+// stays outside the gate.
+
+const SAFE_DASHBOARD_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const JSON_CONTENT_TYPE_RE = /^application\/(?:[a-z0-9!#$&^_.+-]+\+)?json(?:\s*;|$)/i;
+
+function dashboardHeader(req, name) {
+  const value = req?.headers?.[name];
+  if (Array.isArray(value)) return String(value[0] ?? '');
+  return typeof value === 'string' ? value : '';
+}
+
+function isJsonContentType(value) {
+  return JSON_CONTENT_TYPE_RE.test(String(value ?? '').trim());
+}
+
+function stripHostBrackets(hostname) {
+  return String(hostname ?? '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+}
+
+// Parse a Host header (name[:port], [v6]:port) without accepting URL syntax.
+function splitHostHeader(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw || /[\s/\\@?#]/.test(raw)) return null;
+  let hostname = '';
+  let port = '';
+  if (raw.startsWith('[')) {
+    const end = raw.indexOf(']');
+    if (end < 0) return null;
+    hostname = raw.slice(1, end);
+    const rest = raw.slice(end + 1);
+    if (rest) {
+      if (!rest.startsWith(':') || !/^\d{1,5}$/.test(rest.slice(1))) return null;
+      port = rest.slice(1);
+    }
+  } else {
+    const firstColon = raw.indexOf(':');
+    const lastColon = raw.lastIndexOf(':');
+    if (firstColon !== -1 && firstColon !== lastColon) return null; // bare IPv6 is not a valid Host
+    if (lastColon !== -1) {
+      hostname = raw.slice(0, lastColon);
+      port = raw.slice(lastColon + 1);
+      if (!/^\d{1,5}$/.test(port)) return null;
+    } else {
+      hostname = raw;
+    }
+  }
+  hostname = stripHostBrackets(hostname);
+  if (!hostname || hostname.length > 253) return null;
+  if (!/^[a-z0-9._:-]+$/i.test(hostname)) return null;
+  return { hostname, port };
+}
+
+function parseOriginHeader(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw || raw === 'null') return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (!url.hostname) return null;
+    return {
+      protocol: url.protocol,
+      hostname: stripHostBrackets(url.hostname),
+      port: url.port,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function originMatchesHost(origin, host) {
+  if (!origin || !host) return false;
+  if (origin.hostname !== host.hostname) return false;
+  const defaultPort = origin.protocol === 'https:' ? '443' : '80';
+  return (origin.port || defaultPort) === (host.port || defaultPort);
+}
+
+function isLoopbackHostname(hostname) {
+  const host = stripHostBrackets(hostname);
+  if (host === 'localhost' || host === '::1' || host === '::ffff:7f00:1') return true;
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  return false;
+}
+
+function explicitDashboardHosts() {
+  const hosts = new Set();
+  const configured = stripHostBrackets(config.host);
+  if (configured && configured !== '0.0.0.0' && configured !== '::') hosts.add(configured);
+  for (const entry of String(process.env.DASHBOARD_ALLOWED_HOSTS || '').split(',')) {
+    const host = stripHostBrackets(entry);
+    if (host) hosts.add(host);
+  }
+  return hosts;
+}
+
+function dashboardHostAllowed(hostname) {
+  const host = stripHostBrackets(hostname);
+  if (!host) return false;
+  if (isLoopbackHostname(host)) return true;
+  if (explicitDashboardHosts().has(host)) return true;
+  // Loopback bind + a non-loopback Host is the DNS-rebinding case: the
+  // browser resolved attacker.example to 127.0.0.1 and now sends
+  // `Host: attacker.example` / `Origin: http://attacker.example`. Reject it
+  // unless an operator explicitly allowlisted the name (checked above) or a
+  // trusted proxy supplied X-Forwarded-Host (checked by the caller).
+  if (isLocalBindHost()) return false;
+  // Public bind: IP literals are unambiguous. A DNS name must either match
+  // HOST/DASHBOARD_ALLOWED_HOSTS or, for backwards compatibility, is accepted
+  // only when no explicit host allowlist was configured.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':')) return true;
+  return explicitDashboardHosts().size === 0;
+}
+
+function explicitlyAllowedCorsOrigin(origin) {
+  const allow = String(process.env.DASHBOARD_CORS_ORIGINS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(s => s && s !== '*');
+  return allow.includes(origin);
+}
+
+// Validate the Host / X-Forwarded-Host of EVERY dashboard API request (not
+// just mutations): DNS rebinding can otherwise read cleartext account keys
+// through GET /accounts/import-local with Host: attacker.example. Returns
+// { host, trustProxy } or null after writing 403.
+function validateDashboardRequestHost(req, res) {
+  const hostHeader = dashboardHeader(req, 'host');
+  const forwardedHostRaw = dashboardHeader(req, 'x-forwarded-host');
+  const forwardedFor = dashboardHeader(req, 'x-forwarded-for');
+  // A trusted proxy is only trusted when the operator opted in AND actually
+  // supplied the header the proxy appends. A browser cannot set either header
+  // on a simple cross-site request.
+  const trustProxy = process.env.TRUST_PROXY_X_FORWARDED_FOR === '1' && !!forwardedFor;
+  const trustForwardedHost = trustProxy && !!forwardedHostRaw;
+  // X-Forwarded-Host may be a comma list; the right-most entry is the one
+  // appended by the nearest trusted proxy (same right-counting rule as XFF).
+  const forwardedHost = trustForwardedHost
+    ? forwardedHostRaw.split(',').map(s => s.trim()).filter(Boolean).pop() || ''
+    : '';
+  const effectiveHostValue = forwardedHost || hostHeader;
+  let host = null;
+  if (effectiveHostValue) {
+    host = splitHostHeader(effectiveHostValue);
+    const forwardedHostAllowed = trustForwardedHost && host && !isLoopbackHostname(host.hostname);
+    if (!host || (!dashboardHostAllowed(host.hostname) && !forwardedHostAllowed)) {
+      json(res, 403, {
+        error: 'ERR_DASHBOARD_HOST_REJECTED',
+        message: 'Request Host is not allowed for the dashboard',
+      });
+      return null;
+    }
+  }
+  return { host, trustProxy };
+}
+
+// Returns true when the request may proceed; otherwise writes the 403/415
+// response itself and returns false. Host validation runs for every method;
+// the remaining origin/content-type/fetch-metadata checks are mutation-only.
+function enforceDashboardMutationGate(method, subpath, req, res) {
+  const hostState = validateDashboardRequestHost(req, res);
+  if (!hostState) return false;
+
+  const verb = String(method || '').toUpperCase();
+  if (SAFE_DASHBOARD_METHODS.has(verb)) return true;
+  if (subpath === '/auth') return true; // credential probe, no state change
+
+  const headers = req?.headers || {};
+  const contentType = dashboardHeader(req, 'content-type');
+  // A real IncomingMessage always carries method/httpVersion/Host. Bare
+  // handler-level unit fixtures (no HTTP shape) predate the gate and stay
+  // callable; the moment they declare a content type or HTTP fields, the
+  // gate applies exactly as it does in production.
+  const looksLikeHttp = !!(req && (req.method || req.httpVersion || headers.host));
+  const bodyMethod = verb === 'POST' || verb === 'PUT' || verb === 'PATCH';
+  const contentLength = Number(dashboardHeader(req, 'content-length') || 0);
+  const hasDeclaredBody = (Number.isFinite(contentLength) && contentLength > 0)
+    || !!dashboardHeader(req, 'transfer-encoding');
+  // Audit wording is "for bodies": an empty-body POST (e.g. the dashboard's
+  // /self-update button before it had a payload) has nothing to parse, and
+  // Node/HTTP still gives it a Content-Length of 0. Cross-site empty POSTs
+  // are already stopped by Origin/Sec-Fetch-Site below; a declared or
+  // present content type must always be JSON.
+  const needsJsonContentType = !!contentType || (bodyMethod && looksLikeHttp && hasDeclaredBody);
+  if (needsJsonContentType && !isJsonContentType(contentType)) {
+    json(res, 415, {
+      error: 'ERR_UNSUPPORTED_MEDIA_TYPE',
+      message: 'Dashboard mutations require Content-Type: application/json',
+    });
+    return false;
+  }
+
+  let host = hostState.host;
+  const originRaw = dashboardHeader(req, 'origin');
+  const trustedCorsOrigin = !!originRaw && explicitlyAllowedCorsOrigin(originRaw);
+  let origin = null;
+  if (originRaw) {
+    origin = parseOriginHeader(originRaw);
+    if (!origin) {
+      json(res, 403, {
+        error: 'ERR_DASHBOARD_ORIGIN_REJECTED',
+        message: 'Request Origin is invalid for a dashboard mutation',
+      });
+      return false;
+    }
+    if (!trustedCorsOrigin) {
+      // A missing Host on a real HTTP/1.1 request is rejected by Node before
+      // we get here. For handler-level fixtures, let a loopback Origin stand
+      // in for the Host so same-origin tests do not need to fake transport
+      // metadata.
+      if (!host && isLoopbackHostname(origin.hostname)) {
+        host = { hostname: origin.hostname, port: origin.port };
+      }
+      if (!originMatchesHost(origin, host)) {
+        // A trusted reverse proxy may rewrite Host to the loopback upstream
+        // while preserving the browser's public Origin. Only allow that when
+        // the proxy actually supplied X-Forwarded-For (browser simple
+        // requests cannot set it) and the Host is the loopback upstream.
+        const proxyRewroteHost = hostState.trustProxy && host && isLoopbackHostname(host.hostname);
+        if (!proxyRewroteHost) {
+          json(res, 403, {
+            error: 'ERR_DASHBOARD_ORIGIN_REJECTED',
+            message: 'Cross-origin dashboard mutations are not allowed',
+          });
+          return false;
+        }
+      }
+    }
+  }
+
+  const fetchSite = dashboardHeader(req, 'sec-fetch-site').toLowerCase();
+  // An operator-allowlisted cross-origin dashboard is trusted for mutations;
+  // its browser still sends Sec-Fetch-Site: cross-site by definition.
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none' && !trustedCorsOrigin) {
+    json(res, 403, {
+      error: 'ERR_DASHBOARD_FETCH_METADATA_REJECTED',
+      message: 'Cross-site dashboard mutations are not allowed',
+    });
+    return false;
+  }
+  const fetchMode = dashboardHeader(req, 'sec-fetch-mode').toLowerCase();
+  if (fetchMode === 'no-cors' || fetchMode === 'navigate') {
+    json(res, 403, {
+      error: 'ERR_DASHBOARD_FETCH_METADATA_REJECTED',
+      message: 'Simple-form dashboard mutations are not allowed',
+    });
+    return false;
+  }
+  const fetchDest = dashboardHeader(req, 'sec-fetch-dest').toLowerCase();
+  if (fetchDest && fetchDest !== 'empty') {
+    json(res, 403, {
+      error: 'ERR_DASHBOARD_FETCH_METADATA_REJECTED',
+      message: 'Navigation dashboard mutations are not allowed',
+    });
+    return false;
+  }
+
+  return true;
 }
 
 function json(res, status, body, extraHeaders = null) {
@@ -736,6 +1026,11 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   // same decision instead of a blanket `*`.
   if (res) res._dashboardCorsOrigin = resolveCorsOrigin(req);
   if (method === 'OPTIONS') return json(res, 204, '');
+
+  // A04: reject cross-site/simple-form mutations before auth counters, body
+  // handling, or any route side effect. This is deliberately before the
+  // lockout so a hostile page cannot spend a victim's auth attempts.
+  if (!enforceDashboardMutationGate(method, subpath, req, res)) return;
 
   // v2.0.56: brute-force lockout — apply BEFORE the auth check so the
   // password comparison itself can't be used as an oracle once the IP is
@@ -2562,7 +2857,8 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     // dependence on cwd, so the endpoint works whether started from /app
     // (Docker), the repo root, or a deeper subdir.
     const here = dirname(fileURLToPath(import.meta.url));
-    const scriptPath = pjoin(here, '..', '..', 'install-ls.sh');
+    const scriptPath = _langserverInstallScriptOverride
+      || pjoin(here, '..', '..', 'install-ls.sh');
     if (!existsSync(scriptPath)) {
       return json(res, 500, {
         ok: false,
@@ -2570,11 +2866,20 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       });
     }
     const url = body && typeof body.url === 'string' ? body.url.trim() : '';
-    // Defence-in-depth: only allow http(s) URLs from a small allowlist of
+    const expectedSha256 = body && typeof body.sha256 === 'string'
+      ? body.sha256.trim().toLowerCase()
+      : '';
+    // Defence-in-depth: only allow https URLs from a small allowlist of
     // hosts. Without this, an attacker who got past dashboard auth could
     // pipe an arbitrary URL into the install script and have curl write
     // bytes to LS_BINARY_PATH which is then chmod +x and exec'd as the
     // node user. Still gated by checkAuth above; this is a second layer.
+    const allowedHosts = [
+      'github.com',
+      'objects.githubusercontent.com',
+      'release-assets.githubusercontent.com',
+      'api.github.com',
+    ];
     if (url) {
       let parsed;
       try { parsed = new URL(url); } catch {
@@ -2583,24 +2888,52 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       if (parsed.protocol !== 'https:') {
         return json(res, 400, { ok: false, error: 'url must be https' });
       }
-      const allowedHosts = new Set([
-        'github.com',
-        'objects.githubusercontent.com',
-        'release-assets.githubusercontent.com',
-        'api.github.com',
-      ]);
-      if (!allowedHosts.has(parsed.hostname)) {
+      if (!allowedHosts.includes(parsed.hostname)) {
         return json(res, 400, {
           ok: false,
-          error: `url host not allowed; permitted: ${[...allowedHosts].join(', ')}`,
+          error: `url host not allowed; permitted: ${allowedHosts.join(', ')}`,
         });
       }
+      // A05: a custom URL is an unpinned download. Without an operator-
+      // supplied hash there is no trust anchor at all (the old route simply
+      // omitted --sha256 and install-ls.sh warned then installed whatever
+      // arrived). Require the 64-hex digest before spawning anything.
+      if (!/^[0-9a-f]{64}$/.test(expectedSha256)) {
+        return json(res, 400, {
+          ok: false,
+          error: 'ERR_LS_SHA256_REQUIRED',
+          message: 'Custom URL updates require the expected SHA-256 (64 hex characters) in body.sha256',
+        });
+      }
+    } else if (expectedSha256) {
+      return json(res, 400, {
+        ok: false,
+        error: 'ERR_LS_SHA256_WITHOUT_URL',
+        message: 'body.sha256 is only valid together with body.url',
+      });
     }
-    const args = url ? ['--url', url] : [];
+    // --allowed-host is repeated so install-ls.sh revalidates EVERY redirect
+    // hop against the same allowlist, not just the first URL.
+    const args = url
+      ? ['--url', url, '--sha256', expectedSha256, ...allowedHosts.flatMap(host => ['--allowed-host', host])]
+      : [];
+    // A05: a custom URL installs into a sibling staging path first. The route
+    // re-hashes those bytes and only then renames them onto config.lsBinaryPath
+    // and restarts LS. A buggy/swapped installer that exits 0 with wrong bytes
+    // therefore cannot publish or execute them.
+    const staged = !!url;
+    const installTarget = staged
+      ? `${config.lsBinaryPath}.staged.${process.pid}.${randomUUID()}`
+      : config.lsBinaryPath;
+    const cleanupStaged = () => {
+      if (!staged) return;
+      try { unlinkSync(installTarget); } catch { /* already gone */ }
+    };
     const env = {
       ...process.env,
       LS_INSTALL_PATH: config.lsBinaryPath,
     };
+    if (staged) env.LS_INSTALL_STAGE_PATH = installTarget;
     // Snapshot sha256 BEFORE the install. install-ls.sh will atomic-
     // rename the binary into place even if the download is byte-
     // identical to what's already there (no upstream change), so
@@ -2631,6 +2964,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       child.on('error', () => resolve(-1));
     });
     if (exitCode !== 0) {
+      cleanupStaged();
       return json(res, 200, {
         ok: false,
         exitCode,
@@ -2644,12 +2978,42 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       const { createHash } = await import('node:crypto');
       afterSha = await new Promise((resolve) => {
         const h = createHash('sha256');
-        createReadStream(config.lsBinaryPath)
+        createReadStream(installTarget)
           .on('data', c => h.update(c))
           .on('end', () => resolve(h.digest('hex')))
           .on('error', () => resolve(null));
       });
     } catch { /* keep null */ }
+    // A05: never publish/restart on an unverified binary. install-ls.sh already
+    // checks the digest before its atomic rename, so this is a second,
+    // independent gate at the process boundary: a bug or a swapped script
+    // must not turn into an LS restart that executes attacker bytes.
+    if (staged && afterSha !== expectedSha256) {
+      cleanupStaged();
+      return json(res, 409, {
+        ok: false,
+        error: 'ERR_LS_INTEGRITY_FAILED',
+        message: 'Installed binary does not match the expected SHA-256; refusing to restart the language server',
+        expectedSha256,
+        actualSha256: afterSha,
+        beforeSha: beforeSha ? beforeSha.slice(0, 16) : null,
+      });
+    }
+    if (staged) {
+      try {
+        renameSyncWithRetry(installTarget, config.lsBinaryPath);
+      } catch (err) {
+        cleanupStaged();
+        return json(res, 500, {
+          ok: false,
+          error: 'ERR_LS_INSTALL_COMMIT_FAILED',
+          message: `Could not publish the verified language server: ${err.message}`,
+        });
+      }
+      // A custom binary has no manifest metadata; drop the previous install's
+      // sidecar so it cannot describe the new binary with stale hashes.
+      try { unlinkSync(`${config.lsBinaryPath}.version.json`); } catch { /* none */ }
+    }
     const binaryChanged = !!(beforeSha && afterSha && beforeSha !== afterSha);
     // Restart every LS pool entry. The pool is keyed by proxy; iterating
     // through the live list catches per-account proxies as well as the

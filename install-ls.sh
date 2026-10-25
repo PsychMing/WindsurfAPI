@@ -22,7 +22,7 @@
 #   ./install-ls.sh --version 3.5.17 --allow-mirror
 #   ./install-ls.sh --file /path/to/bin      # install a local binary
 #   ./install-ls.sh /path/to/bin             # same
-#   ./install-ls.sh --url <https-url> [--sha256 <hex>]
+#   ./install-ls.sh --url <https-url> --sha256 <hex> [--allowed-host <host>]...
 #
 # Environment overrides:
 #   WINDSURFAPI_LS_VERSION=3.10.67           # same as --version
@@ -33,6 +33,7 @@
 #   WINDSURFAPI_LS_ALLOW_UNPINNED=1          # permit versions absent from pins
 #   WINDSURFAPI_LS_PLATFORM=linux-x64|linux-arm64|darwin-arm64|darwin-x64
 #   LS_INSTALL_PATH=/path/to/binary          # install target
+#   LS_INSTALL_STAGE_PATH=/path/to/staging   # internal: stage before publish
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
@@ -44,12 +45,19 @@ ALLOW_MIRROR="${WINDSURFAPI_LS_ALLOW_MIRROR:-0}"
 ALLOW_UNPINNED="${WINDSURFAPI_LS_ALLOW_UNPINNED:-0}"
 PLATFORM_OVERRIDE="${WINDSURFAPI_LS_PLATFORM:-}"
 MIRROR_BASE="https://github.com/dwgx/windsurf-ls-release/releases/download"
+# Test/ops hook: a fake curl can be pointed at this path without changing
+# PATH (Git Bash prepends its own mingw64/bin, so PATH prepending is not
+# reliable on Windows). Defaults to the system curl.
+CURL_BIN="${WINDSURFAPI_LS_CURL:-curl}"
 
 DRY_RUN=0
 ROLLBACK=0
 INPUT_FILE=""
 INPUT_URL=""
 INPUT_SHA=""
+# Space-separated host allowlist for download/redirect hops. Empty means
+# "stay on the host of the initial URL" (strict same-host redirect policy).
+ALLOWED_HOSTS=""
 
 log() { echo -e "\033[1;34m==>\033[0m $*"; }
 err() { echo -e "\033[1;31m!!\033[0m  $*" >&2; }
@@ -80,10 +88,13 @@ posix_path() {
 }
 
 sha256_file() {
+  # GNU coreutils prefixes the digest with a literal backslash when the file
+  # name contains a backslash (Windows paths: C:\...). Strip it so callers
+  # always compare 64 hex characters.
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
+    sha256sum "$1" | awk '{print $1}' | sed 's/^\\//'
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{print $1}'
+    shasum -a 256 "$1" | awk '{print $1}' | sed 's/^\\//'
   elif command -v node >/dev/null 2>&1; then
     node -e 'const c=require("crypto"),f=require("fs");const h=c.createHash("sha256");f.createReadStream(process.argv[1]).on("data",d=>h.update(d)).on("end",()=>process.stdout.write(h.digest("hex")+"\n")).on("error",e=>{console.error(e.message);process.exit(1)})' "$(native_path "$1")"
   else
@@ -91,9 +102,71 @@ sha256_file() {
   fi
 }
 
+# Authority (host[:port]) of an absolute URL, without userinfo/path/query.
+url_authority() {
+  local rest="${1#*://}"
+  rest="${rest%%/*}"
+  rest="${rest%%\?*}"
+  rest="${rest%%#*}"
+  printf '%s' "${rest##*@}"
+}
+
+# Lowercase hostname of an absolute URL, without port/brackets.
+url_host() {
+  local authority
+  authority="$(url_authority "$1")"
+  if [[ "$authority" == \[*\]* ]]; then
+    authority="${authority#\[}"
+    authority="${authority%%\]*}"
+  else
+    authority="${authority%%:*}"
+  fi
+  printf '%s' "$authority" | tr '[:upper:]' '[:lower:]'
+}
+
+host_in_list() {
+  local host="$1"
+  local list="$2"
+  local candidate
+  for candidate in $list; do
+    [[ "$host" == "$candidate" ]] && return 0
+  done
+  return 1
+}
+
+# Resolve a Location header against the URL that produced it (absolute,
+# protocol-relative, root-relative, query-only and path-relative forms).
+resolve_redirect() {
+  local base="$1"
+  local location="$2"
+  case "$location" in
+    https://*) printf '%s' "$location" ;;
+    //*) printf '%s:%s' "${base%%:*}" "$location" ;;
+    /*) printf '%s://%s%s' "${base%%://*}" "$(url_authority "$base")" "$location" ;;
+    \?*) printf '%s%s' "${base%%\?*}" "$location" ;;
+    *)
+      local origin="${base%%://*}://$(url_authority "$base")"
+      local rest="${base#*://}"
+      rest="/${rest#*/}"
+      rest="${rest%%\?*}"
+      local dir="${rest%/*}"
+      [[ "$dir" == "/" ]] && dir=""
+      printf '%s%s/%s' "$origin" "$dir" "$location"
+      ;;
+  esac
+}
+
+# Download to $dest. When allowed_hosts is non-empty every hop (initial URL
+# and each redirect Location) must use one of those exact hosts. When empty,
+# redirects may not leave the initial URL's host. curl is invoked with
+# --max-redirs 0 and each 3xx is followed here, so a redirect is validated
+# BEFORE any bytes from the next host are fetched. This closes the old
+# `curl -L` behaviour where an allowlisted github.com URL could bounce to an
+# arbitrary host and still be installed.
 download() {
   local url="$1"
   local dest="$2"
+  local allowed_hosts="${3:-$ALLOWED_HOSTS}"
   case "$url" in
     file://*)
       local p="${url#file://}"
@@ -108,9 +181,61 @@ download() {
       cp -f "$p" "$dest"
       ;;
     https://*)
-      curl -fL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 \
-        --max-time 900 --max-filesize 600000000 --progress-bar \
-        -o "$dest" "$url"
+      local current="$url"
+      local initial_host
+      initial_host="$(url_host "$url")"
+      local hops=0
+      local max_hops=5
+      local header_file="$WORK_DIR/download-headers.$$"
+      while :; do
+        local host
+        host="$(url_host "$current")"
+        if [[ -z "$host" ]]; then
+          err "Invalid download URL: $current"
+          return 1
+        fi
+        if [[ -n "$allowed_hosts" ]]; then
+          if ! host_in_list "$host" "$allowed_hosts"; then
+            err "Download host not allowed: $host (permitted: $allowed_hosts)"
+            return 1
+          fi
+        elif [[ "$host" != "$initial_host" ]]; then
+          err "Refusing redirect to a different host: $host (initial: $initial_host)"
+          return 1
+        fi
+        : > "$header_file"
+        local code
+        if ! code="$("$CURL_BIN" -S --progress-bar --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 \
+          --max-time 900 --max-filesize 600000000 --max-redirs 0 \
+          -D "$header_file" -o "$dest" -w '%{http_code}' "$current")"; then
+          err "Download failed: $current"
+          return 1
+        fi
+        case "$code" in
+          2??)
+            rm -f "$header_file"
+            return 0
+            ;;
+          301|302|303|307|308)
+            local location
+            location="$(awk 'BEGIN{IGNORECASE=1} /^[Ll]ocation:/{sub(/^[^:]*:[[:space:]]*/,""); sub(/\r$/,""); print; exit}' "$header_file")"
+            if [[ -z "$location" ]]; then
+              err "Redirect without a Location header: $current"
+              return 1
+            fi
+            hops=$((hops + 1))
+            if [[ "$hops" -gt "$max_hops" ]]; then
+              err "Too many redirects (limit $max_hops): $url"
+              return 1
+            fi
+            current="$(resolve_redirect "$current" "$location")"
+            ;;
+          *)
+            err "Download failed with HTTP $code: $current"
+            return 1
+            ;;
+        esac
+      done
       ;;
     *)
       err "Refusing non-https download URL: $url"
@@ -146,6 +271,9 @@ while [[ $# -gt 0 ]]; do
     --sha256)
       [[ -n "${2:-}" ]] || { err "--sha256 needs a value"; exit 2; }
       INPUT_SHA="$2"; shift 2 ;;
+    --allowed-host)
+      [[ -n "${2:-}" ]] || { err "--allowed-host needs a value"; exit 2; }
+      ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS }$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --rollback) ROLLBACK=1; ALLOW_MIRROR=1; shift ;;
     --allow-mirror) ALLOW_MIRROR=1; shift ;;
@@ -243,7 +371,10 @@ case "$TARGET_ID" in
     ;;
 esac
 
-TARGET="${LS_INSTALL_PATH:-$DEFAULT_PATH}"
+# LS_INSTALL_STAGE_PATH lets the dashboard download/verify a custom binary in
+# a sibling staging file; the route publishes it with rename after its own
+# digest check. Normal installs have no stage path and write TARGET directly.
+TARGET="${LS_INSTALL_STAGE_PATH:-${LS_INSTALL_PATH:-$DEFAULT_PATH}}"
 log "Platform: $TARGET_ID → asset=$ASSET"
 log "Target:   $TARGET"
 
@@ -300,10 +431,33 @@ elif [[ "$MODE" == "url" ]]; then
   if [[ "$INPUT_URL" != https://* ]]; then
     err "Only https URLs are supported: $INPUT_URL"; exit 1
   fi
+  # A05: a custom URL has no pin/manifest trust anchor, so the operator must
+  # supply the expected digest. Refuse before any network I/O or filesystem
+  # write. The old flow printed a warning and installed unverified bytes.
+  if [[ -z "$INPUT_SHA" ]]; then
+    err "--url requires --sha256 <64 hex characters>; refusing an unverified download"
+    exit 2
+  fi
+  # Standalone GitHub release URLs legitimately redirect to GitHub's asset
+  # CDNs. Keep that convenience without weakening the per-hop check: only
+  # these fixed GitHub hosts are auto-allowed, and every other URL keeps the
+  # strict same-host redirect policy.
+  if [[ -z "$ALLOWED_HOSTS" ]]; then
+    case "$(url_host "$INPUT_URL")" in
+      github.com) ALLOWED_HOSTS="github.com objects.githubusercontent.com release-assets.githubusercontent.com api.github.com" ;;
+    esac
+  fi
+  if [[ -n "$ALLOWED_HOSTS" ]]; then
+    input_host="$(url_host "$INPUT_URL")"
+    if ! host_in_list "$input_host" "$ALLOWED_HOSTS"; then
+      err "Download host not allowed: $input_host (permitted: $ALLOWED_HOSTS)"
+      exit 2
+    fi
+  fi
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "source=url"
     echo "url=$INPUT_URL"
-    echo "sha256=${INPUT_SHA:-unpinned}"
+    echo "sha256=$INPUT_SHA"
     echo "install_path=$TARGET"
     exit 0
   fi
@@ -311,17 +465,13 @@ elif [[ "$MODE" == "url" ]]; then
   log "Downloading from: $INPUT_URL"
   download "$INPUT_URL" "$TMP_TARGET"
   actual="$(sha256_file "$TMP_TARGET")" || { err "No sha256 tool available (sha256sum, shasum, or node is required)"; exit 1; }
-  if [[ -n "$INPUT_SHA" ]]; then
-    if [[ "$actual" != "$INPUT_SHA" ]]; then
-      err "Checksum mismatch for $INPUT_URL"
-      err "Expected: $INPUT_SHA"
-      err "Actual:   $actual"
-      exit 1
-    fi
-    log "Binary sha256 verified: $actual"
-  else
-    log "WARNING: --url without --sha256; the download is not integrity-checked"
+  if [[ "$actual" != "$INPUT_SHA" ]]; then
+    err "Checksum mismatch for $INPUT_URL"
+    err "Expected: $INPUT_SHA"
+    err "Actual:   $actual"
+    exit 1
   fi
+  log "Binary sha256 verified: $actual"
   INSTALLED_SHA="$actual"
 else
   # ─── Manifest mode ───────────────────────────────────
@@ -602,6 +752,14 @@ NODE
     exit 0
   fi
 
+  # Manifest mode is already hash-pinned, but redirect hops still get the
+  # same host validation as custom URLs. GitHub release downloads legitimately
+  # bounce to its asset CDNs; everything else must stay on the initial host.
+  manifest_hosts="$(url_host "$URL")"
+  case "$manifest_hosts" in
+    github.com) manifest_hosts="$manifest_hosts objects.githubusercontent.com release-assets.githubusercontent.com" ;;
+  esac
+  ALLOWED_HOSTS="$manifest_hosts"
   mkdir -p "$(dirname "$TARGET")"
   log "Installing Windsurf LS $VERSION ($TARGET_ID, $SOURCE)"
   log "Downloading: $URL"
