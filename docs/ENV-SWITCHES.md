@@ -1,8 +1,13 @@
 # 环境变量参考（补 .env.example 未收录的部分）
 
 README 的表格列常用变量，[.env.example](../.env.example) 是完整清单 —— 两者合计覆盖
-81 个。本文补齐**剩下 83 个只存在于源码里**的开关：注释很全，但运营翻不到。
-（2026-10-16 按 `d3f0490` 重测：全量 **157**。旧值 158 / 74 / 84 是 `ab4e66f` 树的口径：
+**91** 个。本文补齐**剩下 90 个只存在于源码里**的开关：注释很全，但运营翻不到。
+（2026-10-26 按 master `2598299e` 用下面的全形式脚本重测：三前缀开关 **181**。
+`.env.example` + README 覆盖 91，本文覆盖 90 —— 其中 5 个此前只写了缩写
+（`..._PROVIDERS` / `..._ROUTES` / `..._CALLERS` / `..._ACCOUNTS` /
+`..._WEBFETCH_AUTO_APPROVE_ORIGINS`），现已补成完整名字。旧口径是 5 种读取形式，
+本树只数到 172，漏掉的 9 个见下。
+2026-10-16 按 `d3f0490` 重测：全量 **157**。旧值 158 / 74 / 84 是 `ab4e66f` 树的口径：
 `9031b9b` 把 `CASCADE_MAX_WAIT_MS` 写进 README（覆盖 +1），`054806a` 删掉一个开关的读取点
 （全量 −1）。重测命令就是下面那段脚本。
 2026-10-18 @`706fc11` 重测：**160**；新增 `WINDSURFAPI_STREAM_COMMIT_MS`、
@@ -17,6 +22,13 @@ README 的表格列常用变量，[.env.example](../.env.example) 是完整清�
 `DEVIN_CONNECT_PROSE_INTENT_DETECT`（`src/devin-connect-openai.js`，默认开，仅记日志）、
 `WINDSURFAPI_HISTORY_BUDGET_TURNS` 与 `WINDSURFAPI_HISTORY_BUDGET_BYTES`
 （`src/history-budget.js`，`const X = 'FOO'` 形式），后两者同时收录进 `.env.example`。
+2026-10-26 在 master `2598299e` 重测：**181**。旧的 5 形式脚本只数到 **172**；差额 9 个是
+`csvListEnv`/`csvSetEnv`（7 个 `WINDSURFAPI_NATIVE_TOOL_BRIDGE_*`：`TOOLS`、`MODELS`、
+`PROVIDERS`、`ROUTES`、`CALLERS`、`ACCOUNTS`、`WEBFETCH_AUTO_APPROVE_ORIGINS`，
+`src/cascade-native-bridge.js:127-134`）和 `env?.NAME`（`WINDSURFAPI_REQUEST_BUDGET_MS`、
+`WINDSURFAPI_REQUEST_BUDGET_STREAM_MS`，`src/request-budget.js:46,48`）。下面的脚本已补上
+这两种形式；守卫仍只扫 5 种形式（`test/docs-consistency-guard.test.js:513-524`），所以它对
+这 9 个是盲的 —— 本文把这 9 个全名都写出来，可用 `grep -F` 直接核对。
 
 数开关**别用裸 `grep 'env\.'`**，有两个坑：一是 `WINDSURFAPI_TRACE` 这类名字是
 `WINDSURFAPI_TRACE_DIR` 的前缀，正则不加边界会重复计数；二是**相当一部分读取点
@@ -29,9 +41,9 @@ python3 - <<'PY'
 import re,pathlib,subprocess
 files=[f for f in subprocess.run(['git','ls-files','src'],capture_output=True,
        text=True).stdout.split() if f.endswith('.js')]
-PAT=re.compile(r"""(?:(?:process\.)?env\.([A-Z][A-Z0-9_]{2,})
+PAT=re.compile(r"""(?:(?:process\.)?env\??\.([A-Z][A-Z0-9_]{2,})
                  |(?:process\.)?env\[\s*['"]([A-Z][A-Z0-9_]{2,})['"]
-                 |positiveIntEnv\(\s*['"]([A-Z][A-Z0-9_]{2,})['"]
+                 |(?:[A-Za-z_$][\w$]*Env|envGateAllows|positiveNumber|nonNegativeNumber)\(\s*['"]([A-Z][A-Z0-9_]{2,})['"]
                  |\benv:\s*['"]([A-Z][A-Z0-9_]{2,})['"]
                  |\bconst\s+[A-Za-z_$][\w$]*\s*=\s*['"]([A-Z][A-Z0-9_]{2,})['"])""",re.X)
 def strip(s):                                       # 注释里的名字不算读取点
@@ -57,12 +69,13 @@ for f in files:
     for m in PAT.finditer(strip(pathlib.Path(f).read_text(errors='replace'))):
         n=next(g for g in m.groups() if g)
         if n.startswith(('DEVIN_CONNECT_','WINDSURFAPI_','CASCADE_')): names.add(n)
-print(len(names))   # 160（2026-10-21 按 e3e39d9 重测）
+print(len(names))   # 181（2026-10-26 按 2598299e 重测）
 PY
 ```
 
-第五种形式（`const X = 'FOO'` 然后 `env[X]`）是 PR #249 带进来的,当时前四种
-全部漏掉了它 —— 守卫绿着,统计却少算一个。所以这份清单的数字**不要手抄**,
+后两种形式（`{env: 'FOO'}` 表驱动、`const X = 'FOO'` 后 `env[X]`）都是真读取点；
+`csvListEnv` / `csvSetEnv` 这类 helper 和 `env?.NAME` 可选链同样会绕过锚在 `env.`
+上的正则（2026-10-26 实测：只扫前五种形式会漏 9 个）。所以这份清单的数字**不要手抄**，
 跑上面的脚本。
 
 每个默认值都是**逐个打开源码站点读出来的**，不是按名字推断。文档写错默认值比没文档更坏，
@@ -108,7 +121,7 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `CASCADE_REUSE_ALLOW_SHARED_API_KEY` | 关 | 允许**多个调用方共享同一个上游账号**时复用 Cascade 会话（`handlers/chat.js`，`=== '1'`）。上游会保留会话状态，所以开启后不同调用方有可能看到彼此的上下文。默认关是刻意的隔离边界，**多租户场景不要开**。 |
-| `DEVIN_CONNECT_ALLOW_REMOTE_CRED_STORE` | 关 | 允许**非本机**请求写凭证库（`dashboard/api.js`，`=== '1'`）。还要求对端是 loopback —— 校验的是 peer 地址而不只是监听地址，因为反向代理后面监听地址永远是本机。 |
+| `DEVIN_CONNECT_ALLOW_REMOTE_CRED_STORE` | 关 | 允许**非本机**请求写凭证库（`dashboard/api.js:889-895`，`=== '1'`）。默认路径要求本机 bind **且** 对端是 loopback；设成 `1` 后**任何已认证对端**都能写，loopback/监听地址检查被整个绕过 —— 这正是 `ALLOW_REMOTE` 的含义，不是"允许远程但仍要求 loopback"。 |
 
 ## think-leak 防线与身份中和（#250）
 
@@ -119,7 +132,7 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 |---|---|---|
 | `WINDSURFAPI_CASCADE_THINK_REROUTE` | **开** | Cascade 路径把带 think 标记的开头内容改道到 reasoning 通道（`handlers/chat.js`，`\|\| '1') !== '0'`）。设 `0` 关闭。 |
 | `DEVIN_ACP_CONFIG_OPTIONS` | 关 | ACP `session/new` 后按 `configOptions` 调用 `session/set_config_option` 设置模型（`devin-acp.js`，`=== '1'`）。默认关：live 的 option id/value 尚未校准。 |
-| `WINDSURFAPI_TOOL_HYGIENE` | **开** | 三方言请求/历史/egress 的工具名与 ID 卫生（`handlers/{messages,responses,gemini}.js`）。设 `0` 关闭，回到原始透传。 |
+| `WINDSURFAPI_TOOL_HYGIENE` | **开** | 三方言请求/历史/egress 的工具名与 ID 卫生（读取点 `src/tool-ids.js:301` 的 `toolHygieneEnabled()`，三个 handler 导入它）。设 `0` 关闭，回到原始透传。 |
 | `WINDSURFAPI_STREAM_COMMIT_MS` | `5000` | OpenAI chat 流的提交门等待窗口（`server.js`，0 = 关闭门，最大钳到 14000）。窗口内只缓冲 comment/role-only 帧；首个真实内容或错误帧立即决定提交。设 `0` 回到旧的「先写 200」行为。 |
 | `WINDSURFAPI_REASONING_DEDUP` | **开** | 抑制 reasoning 与 content 逐字重复的那一份。 |
 | `WINDSURFAPI_NEUTRALIZE_CC_AGGRESSIVE` | 关 | 强制走 Claude Code 的激进中和分支（`handlers/identity-neutralize.js`，`\|\| '') === '1'`）。检测到 CC 客户端时该分支本来就会走，这个变量只是手动强制。**目前该分支是保留状态** —— 源码注释写明「no CC-only rewrites are confirmed yet」，所以开它当前不改变输出。 |
@@ -133,11 +146,13 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | `WINDSURFAPI_FORCE_GPT_NATIVE_DIALECT` | 关 | 对**所有**模型强制用 GPT 原生 tool call 方言，不再按模型族判断（`handlers/tool-emulation.js`，`=== '1'`）。排查方言选择时用。 |
 | `WINDSURFAPI_NATIVE_BRIDGE_NO_EMUL` | 关 | 走 native bridge 时不再叠加 prompt 层的工具模拟（`=== '1'`）。用来区分「原生解码坏了」和「模拟层坏了」。 |
 | `WINDSURFAPI_NATIVE_TOOL_BRIDGE_POLL_AFTER_TOOL` | 关 | 交出 tool result 后主动再轮询一次上游（`client.js`，`=== '1'`）。只在 native 模式下有意义。 |
-| `WINDSURFAPI_NATIVE_TOOL_BRIDGE_WEBFETCH_AUTO_APPROVE` | 关 | 自动批准 read_url 抓取，不等确认（`client.js` 的 `isReadUrlAutoApproveAllowed`）。**光开这个不够** —— 还必须用 `..._WEBFETCH_AUTO_APPROVE_ORIGINS` 列出允许的 origin，名单为空时一律返回 false。双重门是刻意的：让模型自行发外部请求必须显式指定去哪。 |
-| `WINDSURFAPI_NATIVE_TOOL_BRIDGE_CONFIG_RAW` | 空 | 直接塞一段原始 bridge 配置（`windsurf.js`，`|| ''` 后 trim）。留空则用正常构造流程。 |
+| `WINDSURFAPI_NATIVE_TOOL_BRIDGE_WEBFETCH_AUTO_APPROVE` | 关 | 自动批准 read_url 抓取，不等确认（`client.js` 的 `isReadUrlAutoApproveAllowed`）。**光开这个不够** —— 还必须用 `WINDSURFAPI_NATIVE_TOOL_BRIDGE_WEBFETCH_AUTO_APPROVE_ORIGINS` 列出允许的 origin，名单为空时一律返回 false。双重门是刻意的：让模型自行发外部请求必须显式指定去哪。 |
+| `WINDSURFAPI_NATIVE_TOOL_BRIDGE_CONFIG_RAW` | 空 | 直接塞一段原始 bridge 配置（`windsurf.js`，`\|\| ''` 后 trim）。留空则用正常构造流程。 |
 | `WINDSURFAPI_NATIVE_TOOL_BRIDGE_ALLOWLIST_NAMES` | 空 | 覆盖工具白名单的名字，逗号分隔（`cascade-native-bridge.js` 的 `csvListEnv`）。留空用内置名单。 |
-| `WINDSURFAPI_NATIVE_BRIDGE_STATS_KEY_LIMIT` | `200` | 统计里最多保留多少个 key（`native-bridge-stats.js`，非有限值或 ≤0 时回落 200）。 |
-| `WINDSURFAPI_NATIVE_BRIDGE_DECISION_RING_SIZE` | `25` | 决策环形缓冲保留多少条（同上，回落 25）。调大能看更长的决策历史。 |
+| `WINDSURFAPI_NATIVE_TOOL_BRIDGE_TOOLS` / `WINDSURFAPI_NATIVE_TOOL_BRIDGE_MODELS` / `WINDSURFAPI_NATIVE_TOOL_BRIDGE_PROVIDERS` / `WINDSURFAPI_NATIVE_TOOL_BRIDGE_ROUTES` / `WINDSURFAPI_NATIVE_TOOL_BRIDGE_CALLERS` | 空（= 全放行） | native bridge 的灰名单门（`cascade-native-bridge.js:176-186` 的 `envGateAllows`，逗号分隔，支持 `*` 前缀和 `all`）。名单非空时只有匹配的 tool / model / provider / route / caller 才走 native bridge，否则报 `native_bridge_*_not_allowed`。`_TOOLS` 为空时退回内置白名单（`isNativeBridgeToolAllowed`，`:156-163`）。 |
+| `WINDSURFAPI_NATIVE_TOOL_BRIDGE_API_KEYS` / `WINDSURFAPI_NATIVE_TOOL_BRIDGE_ACCOUNTS` | 空（= 不设门） | 两个额外门：`_API_KEYS` 非空时 caller key 必须带 `:api_key_allowed` 标记；`_ACCOUNTS` 非空时只允许列出的 accountId / id / email（`cascade-native-bridge.js:188-200`）。 |
+| `WINDSURFAPI_NATIVE_BRIDGE_STATS_KEY_LIMIT` | `200` | 统计里最多保留多少个 key（`native-bridge-stats.js:32-36`，非有限值或 ≤0 时回落 200，**上限硬钳到 2000**）。 |
+| `WINDSURFAPI_NATIVE_BRIDGE_DECISION_RING_SIZE` | `25` | 决策环形缓冲保留多少条（`native-bridge-stats.js:58-62`，回落 25，**上限硬钳到 200**）。调大能看更长的决策历史，但超过 200 无效。 |
 
 ## Cascade 可恢复 turn（默认关）
 
@@ -151,7 +166,7 @@ Docker/PM2/stdout 日志；这些由各自的调试开关或部署层保留策�
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `WINDSURFAPI_CASCADE_TURN` | 关 | 启用生产者级 `CascadeTurn`（`src/cascade-turn.js`，`=== '1'`）。P1 阶段只做状态抽取与懒恢复快照；默认关，开它只改变内部轮询状态的所有者，不改变输出。 |
-| `WINDSURFAPI_CASCADE_DETACH` | 关 | 客户端断线后把 turn 冻结进 `src/detached-registry.js`，同一 body + 同一可信 scope 的重试认领并继续原轮询（`=== '1'`，且要求 `WINDSURFAPI_CASCADE_TURN=1`）。**默认关**：只有 per-user / `session:` scope 会生效，`api:<hash>` 等不可信 scope 不准入。快照 v2 携带 `generatorOffset`（元数据 RPC 从该 offset 起，避免把整条 cascade 历史重复计费）、`consumedThrough`（未消费完的批次拒绝 detach）、`sawActive`、`usageByStep`。条目 TTL 120s、全局 8 条 / 每 caller 2 条 / 单条 4 MiB，**不持有 `beginLsUse` 租约**（只在本请求内持有）；没有后台泵、没有 completed-entry 回放。 |
+| `WINDSURFAPI_CASCADE_DETACH` | 关 | 客户端断线后把 turn 冻结进 `src/detached-registry.js`，同一 body + 同一可信 scope 的重试认领并继续原轮询（`=== '1'`，且要求 `WINDSURFAPI_CASCADE_TURN=1`）。**默认关**：只有 per-user / `session:` scope 会生效，`api:<hash>` 等不可信 scope 不准入。快照 v2 携带 `generatorOffset`（元数据 RPC 从该 offset 起，避免把整条 cascade 历史重复计费）、`consumedThrough`（未消费完的批次拒绝 detach）、`sawActive`、`usageByStep`。条目 TTL 120s、全局 8 条 / 每 caller 2 条 / 单条 4 MiB / **全局合计 32 MiB**（`src/detached-registry.js:51-54`），**不持有 `beginLsUse` 租约**（只在本请求内持有）；没有后台泵、没有 completed-entry 回放。 |
 
 **Detach P1 的计费规则（两条都必须成立）：** ① 恢复轮的
 `GetCascadeTrajectoryGeneratorMetadata` 从快照的 `generatorOffset` 发起 —— 从 0
@@ -166,13 +181,15 @@ checkout 账号（`acct === null`），成功尾必须把 usage 记到条目 own
 
 ## 默认开的功能开关
 
-这五个默认**开**，所以只能往「关」的方向调。它们都是「设 `0` 才关闭」的写法 ——
+这五个默认**开**，其中四个只能往「关」的方向调。它们都是「设 `0` 才关闭」的写法 ——
 写成别的值（`false` / `off`）不生效，除 `RESPONSE_CACHE` 外都只认精确的 `'0'`。
+`LS_PER_PROXY_USER` 是例外：未设置时按 sticky 用户名自动判定；`=1` 强制每个不同
+username 分池，`=0` 关闭。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `WINDSURFAPI_ENV_LIFT` | **开** | 把调用方的环境上下文提升进 prompt（`handlers/chat.js`，`?? '1'` 后 `=== '0'` 关闭）。注意这个用 `?? '1'` 而不是 `\|\| '1'`，且会 trim + 转小写。 |
-| `WINDSURFAPI_LS_PER_PROXY_USER` | **开** | 每个 proxy 用户独立一个 LS 实例（`langserver.js`，`=== '0'` 关闭）。关掉会让不同用户共享 LS，省内存但失去隔离。 |
+| `WINDSURFAPI_LS_PER_PROXY_USER` | **按 sticky 用户名自动开** | 默认不是无条件按用户分池：只有 proxy username 命中 `STICKY_USER_RE` 才独立一个 LS 实例（`langserver.js:222` 的 `_sid` / `-session-` / `-sticky` / `+ws_` / `^user-` / `-cc-xx` / `-country-` / `-zone-` 等标记；判定在 `:248-255`）。普通静态用户名（如 `alice`）默认共享 LS；`=1` 强制每个不同 username 一个实例；`=0` 完全关闭分池。 |
 | `WINDSURFAPI_NLU_RECOVERY` | **开** | 意图抽取失败时走恢复路径（`handlers/intent-extractor.js`，`=== '0'` 时直接返回空数组）。 |
 | `WINDSURFAPI_VARIANT_FALLBACK_ON_RATE_LIMIT` | **开** | 撞限流时自动回落到同族其它变体（`handlers/chat.js`，`=== '0'` 关闭）。关掉后限流直接报错给客户端。 |
 | `WINDSURFAPI_RESPONSE_CACHE` | **开** | 响应缓存（`cache.js`）。链式兜底：`RESPONSE_CACHE_ENABLED ?? WINDSURFAPI_RESPONSE_CACHE ?? '1'`，所以前者优先。这个认多种关闭写法（`0`/`false`/`off`/`no`）。 |
@@ -186,11 +203,11 @@ checkout 账号（`acct === null`），成功尾必须把 usage 记到条目 own
 | `WINDSURFAPI_TRACE` | 关 | 是否写 trace（`trace.js`，`\|\| ''` 后 `=== '1'`）。注意它**不门控** `WINDSURFAPI_TRACE_DIR` —— `traceRoot()` 无条件读目录变量，只是没开 trace 时不往里写。排查完用 `node scripts/support-bundle.mjs` 把最近几个 trace 目录打包成 `support-bundle-<utc>.zip`（先脱敏文本/请求凭证，再跑 secret scan，命中即拒绝），见 README「出问题了先看这里」。 |
 | `WINDSURFAPI_TRACE_DIR` | `<cwd>/.trace` | trace 落盘根目录（`trace.js` 的 `traceRoot()`，`devin-connect.js` 写上游 wire 字节时也读同一个变量）。每个请求一个子目录，按固定 leg 名分片：`01-client-req` / `02-routing` / `03-upstream-req` / `04-upstream-res` / `05-client-res`。**上一行说过它不受 `WINDSURFAPI_TRACE` 门控**；此前只作为那条说明的一部分出现，没有自己的条目。 |
 | `WINDSURFAPI_PROTO_TRACE_DIR` | `/data/proto-trace` | proto trace 落盘目录（`\|\| '/data/proto-trace'`）。注意这是**绝对路径**默认值，和 `WINDSURFAPI_TRACE_DIR`（默认 `<cwd>/.trace`）不是一套。 |
-| `WINDSURFAPI_PROTO_TRACE_STRINGS` | 关 | 把 proto 字段的**字符串内容**写进 trace（`proto-trace.js:814`，`=== '1'`）。关闭时只落 sha256，不落原文。开启后走 `redactPreview()` 脱敏：命名密钥（`devin-session-token`/`api_key`/`idToken`/`refreshToken` 等）、邮箱、任何 32+ 字符的高熵串都替换成 `<redacted>`，再截断到 240 字符。**即便如此，开启后 trace 里会有真实 prompt 片段**，排查完就关。 |
+| `WINDSURFAPI_PROTO_TRACE_STRINGS` | 关 | 把 proto 字段的**字符串内容**写进 trace（`proto-trace.js:816`，`=== '1'`）。关闭时只落 sha256，不落原文。开启后走 `redactPreview()` 脱敏（`proto-trace.js:50-54`）：命名密钥、邮箱、32+ 字符的高熵串分别替换成 `<redacted-secret>` / `<redacted-email>` / `<redacted-token>`，再截断到 240 字符。**即便如此，开启后 trace 里会有真实 prompt 片段**，排查完就关。 |
 | `WINDSURFAPI_PROTO_TRACE_ERROR_STRINGS` | 关 | 出错时额外输出字符串内容（`=== '1'`）。和 `PROTO_TRACE_STRINGS` 一样走脱敏。 |
 | `WINDSURFAPI_DUMP_SYSTEM_PROMPT` | 关 | 把最终发给上游的 system prompt 打出来（`windsurf.js`，`=== '1'`）。**会输出完整 prompt 内容**，排查完记得关。 |
 | `WINDSURFAPI_PROBE_CANARY` | 关 | 发探针金丝雀请求（`=== '1'`）。校准脚本用。 |
-| `WINDSURFAPI_STABLE_DEVICE` | 空（= 每次随机） | 固定设备指纹种子（`\|\| ''`）。设成固定值可让请求可复现 —— 对比抓包时有用，**生产别设**，指纹固定会更容易被识别。 |
+| `WINDSURFAPI_STABLE_DEVICE` | 关（只认 `1`） | 稳定设备指纹模式，**不是种子**：`String(env.WINDSURFAPI_STABLE_DEVICE \|\| '') === '1'`（`auth.js:1199`）。种子由服务端每账号生成并持久化（`ensureDeviceSeed`，`auth.js:1208`，存 `accounts.json` 的 `deviceSeed`），环境变量无法指定。设成 `my-capture-seed` 之类的值等于没开，指纹仍每次随机；只有 `1` 才让同一账号跨请求呈现同一设备。 |
 | `WINDSURFAPI_SKIP_LS_CLEANUP` | 关（= 会清理） | **名字是反的**：`!== '1'` 时执行清理，所以设 `1` 才是「跳过」（`index.js`）。自更新后残留的 LS 会占着池端口累积，默认清理。同一台机器跑多个 WindsurfAPI 时才需要设 `1`。 |
 | `WINDSURFAPI_RESTART_SUPERVISED` | 关（= 自动探测） | **强制**声明自己跑在守护进程下（`restart.js`，命中时返回 `kind: 'override'`）。平时不需要设 —— systemd 自己会导出 `INVOCATION_ID`，代码据此自动识别。只在自动探测判错时用它兜底。 |
 
@@ -221,7 +238,7 @@ checkout 账号（`acct === null`），成功尾必须把 usage 记到条目 own
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DEVIN_CONNECT_PROMPT_CACHE` | gpt-6 家族开，其余关 | 往请求里写 prompt 缓存字段（`devin-connect.js`）。tag `#13` 猜自声明顺序。`1` = 所有家族开；`0`/其他非空值 = 全关；**未设置**时只对 gpt-6 家族（`gpt-6-{luna,sol,astra}`、`gpt-6-1-sol`）默认开 —— 2026-10-23 实测五次相同 `gpt-6-luna-max` 请求每轮都报 cache-write 3984、cache-read 0，而 Claude 每轮读 6884，所以先让这个家族带上唯一的缓存控制字段去验证「是否必须」；读仍为 0 且写继续计数时，下一个怀疑对象是 tag 映射而不是本开关。 |
+| `DEVIN_CONNECT_PROMPT_CACHE` | gpt-6 家族开，其余关 | 往请求里写 prompt 缓存字段（`devin-connect.js`）。tag `#13` 猜自声明顺序。`1` = 所有家族开；`0`/其他非空值 = 全关；**未设置**时只对 gpt-6 家族默认开 —— 正则 `^(?:gpt-6\|gpt6)(?:[.-]1)?-(?:luna\|sol\|astra)(?:-\|$)`（`devin-connect.js:1482`），即 `gpt-6-*` / `gpt6-*` 的 luna/sol/astra，含 `gpt-6-1-*`、`gpt6.1-*` 变体。2026-10-23 实测五次相同 `gpt-6-luna-max` 请求每轮都报 cache-write 3984、cache-read 0，而 Claude 每轮读 6884，所以先让这个家族带上唯一的缓存控制字段去验证「是否必须」；读仍为 0 且写继续计数时，下一个怀疑对象是 tag 映射而不是本开关。 |
 | `DEVIN_CONNECT_TOOL_CHOICE` | 关 | 发送 `tool_choice`（`=== '1'`）。tag `#12`/`#11` 同样猜自声明顺序。**关着的时候 `parallel_tool_calls:false` 照常放行，但提示不会被兑现**：请求被正常服务，上游可能在一个 turn 里返回多个 tool call；代理每个进程打一次 warn（`event=parallel_tool_calls_hint_ignored`，点名这个开关），并在 `/connect-metrics` 的 `parallel_tool_calls_hint_ignored` 计数里累加每一次（`handlers/chat.js`，只作用于 DEVIN_CONNECT 流；`true`/不传不计数也不告警；`/v1/messages` 的 `tool_choice.disable_parallel_tool_use` 映射成同一字段）。**绝不返回 400**：这是调用方的偏好而非正确性要求，而且 Codex CLI 0.164 每个请求都发这个字段（29/29），v3.10.x 的 400 让它在第一轮就 `turn.failed` 退出（`evidence/ClientSandboxes.md` §3.3 C1）。想让提示真正生效：开这个开关（或先抓包校准 tag），然后看计数是否归零。 |
 | `DEVIN_CONNECT_TOOL_CHOICE_TAGS` | 空（= 用内置默认 tag） | 覆盖上面两个 tag，格式 `choice=N,parallel=M`（`getToolChoiceTags`）。**只认 `choice`/`parallel` 两个键**，其他键、非正整数、以及**撞上已占用 tag 的值**都会被跳过并打 warn，然后保留默认 —— 不是报错。撞 tag 的后果很隐蔽：`choice=1` 会和 814 字节的 `ClientMetadata` 同占 `#1`，protobuf 解码器取最后一个，等于**用 tool_choice 覆盖上游认证元数据**，表现为**认证失败**而不是"配置写错了"。这个防护是修过的真实缺陷，别绕过它。 |
 | `DEVIN_CONNECT_SIGNATURE_TAG` | 空（= 整个解码关闭） | thinking `delta_signature` 的 tag。**这个是这组的总开关**：没设或不是 `(0, 2^29)` 内的整数时 `parseSignatureTagMap()` 返回 `null`，下面两个一起失效。 |
@@ -243,17 +260,17 @@ checkout 账号（`acct === null`），成功尾必须把 usage 记到条目 own
 | `DEVIN_CONNECT_MAX_QUEUE_FRAMES` | `4096` | DEVIN_CONNECT 流解码后事件队列的帧数上限（`devin-connect.js` 的 `streamChat`，`positiveIntEnv`，非正整数回落 4096）。队列到一半时 `res.pause()` 把背压交给 TCP；单个 chunk 仍把队列推过上限时以 `QUEUE_OVERFLOW` 失败并丢弃已缓冲事件（pause 拦不住同一个同步循环）。低于高水位时事件序列与暂停行为都不变。 |
 | `DEVIN_CONNECT_MAX_QUEUE_BYTES` | `8388608`（8 MiB） | 同一队列的字节上限（`devin-connect.js`，`positiveIntEnv`）。按事件估算：文本长度 ×2 + reasoning 签名长度 ×2 + hex dump 长度 + 每事件 96 字节；与上一行任一先到即触发同样的 `QUEUE_OVERFLOW`。 |
 | `DEVIN_CONNECT_RELOGIN_QUEUE_TIMEOUT_MS` | `60000`（60 秒） | 全局重登并发门（`auth.js` 的 `acquireReloginSlot`，`positiveIntEnv`）里排队等槽位的最长时间。超时后 waiter 从 FIFO 移除、该次 `reLoginAccount` 返回 `false`，不再无限挂起；持有槽位的登录本身不受此限制。调用方传 `AbortSignal` 可提前取消排队。 |
-| `WINDSURFAPI_TOOL_DESC_MAX` | `500` | 工具描述的字符上限（`toolDescMax()`，要求 `>= 0` 的有限数否则回落 500）。**`0` = 不限长**，不是"全砍掉"。注释说明当前只用于长度阈值判断。 |
+| `WINDSURFAPI_TOOL_DESC_MAX` | `500` | 工具描述的字符上限（`toolDescMax()`，要求 `>= 0` 的有限数否则回落 500）。**`0` = 不限长**，不是"全砍掉"。**当前不生效**：`capToolDescription` 已不再被 `encodeToolDef` 调用，变量只是保留的逃生口（`devin-connect.js:948-961`）。 |
 | `CASCADE_1M_HISTORY_BYTES` | `900000` | 1M 上下文模型的历史字节预算（`client.js`，`positiveIntEnv`）。非 1M 模型走 `CASCADE_MAX_HISTORY_BYTES`（默认 `600000`）。 |
 | `CASCADE_MAX_HISTORY_BYTES` | `600000` | 非 1M 模型的历史字节预算（`client.js`，`positiveIntEnv`）。源码注释记着这个默认值的来历：早先是 400KB，**200KB 曾导致 30+ 轮工具调用的会话静默丢上下文**，所以调到 600KB 留出余量。调小之前先想清楚这一点。此前只作为上一行的说明文字出现，没有自己的条目。 |
 | `CASCADE_MAX_HISTORY_IMAGES` | `4` | 重放历史里最多附带几张历史图片（`client.js`，非负整数；`0` = 一张都不附带，非法值回落 4）。`SendUserCascadeMessage` 的历史是一个文本块（field 2），图片只能是消息级扁平 `repeated ImageData`（field 6），所以旧轮次的图片只能整体挂在同一条消息上、靠文本里的编号标记对应。按轮次从新到旧取，超出的会打一条 `cascade_image_history_dropped` WARN 并计数（dashboard `/connect-metrics` 的 `cascadeImages`），不再静默变成 `[Image omitted from text history]`。NO_TOOL 模式（有 `toolPreamble` 且未开 native bridge）不渲染 field 6，此时历史图按 `no_vision` 丢弃并计数。 |
 | `CASCADE_MAX_HISTORY_IMAGE_BYTES` | `1600000` | 历史图片的 base64 字节上限（`client.js`，非负整数；`0` = 等同于不允许历史图，非法值回落 1600000）。与上一行的数量上限任一先到即停止附带，同样从新到旧取舍；`image.js` 的 400 KB 重编码目标决定了 4 张 ≈ 1.6 MB，所以两个默认值是一套。 |
 | `WINDSURFAPI_HISTORY_BUDGET_TURNS` | `100` | **出站**历史预算的轮数上限（`history-budget.js`，非负整数；`0` = 关闭该维度，非法值回落 100）。在共享 chat 层、任何上游调用之前检查：超过即打一条带实测数字的 `WARN`，并返回 `413 payload_too_large`（`code: history_budget_exceeded`）。默认值取在实测死亡线之下 —— #136/#191 的 113 轮 / 128 KB 会话会在流中途被上游 `context deadline exceeded` 掐断，客户端已经收到半截字节且无法干净重试。注意它与 `CASCADE_MAX_HISTORY_BYTES` 是两层：后者只裁剪 Cascade 历史后缀（并且永远保留最新一轮），DEVIN_CONNECT 路径没有对应物，两者都不是准入检查。 |
 | `WINDSURFAPI_HISTORY_BUDGET_BYTES` | `8000000`（8 MB） | 同一预算的字节上限（`history-budget.js`，非负整数；`0` = 关闭，非法值回落 8 MB）。统计的是编码器会写出的载荷字段（content 文本/非文本部件、tool_calls 的 id/name/arguments、reasoning_content、name、tool_call_id）的 UTF-8 字节，不含传输框架 —— 是线上体积的**下界**，不是估计值。默认值压在入口 10 MB 上限之下、又高于 1M 模型的 900 KB 历史预算，所以它拦的是病态载荷（例如单条 10 MB 粘贴），不会拦正常会被裁剪的大转录。任一维度超限即拒绝。 |
-| `CASCADE_MAX_WAIT_MS` | `600000` | Cascade 单次等待上限（`client.js`）。曾只出现在 2.0.74 的 release notes 里；`9031b9b` 起 README 两语的 FAQ 也点名了它（`README.md:642` / `README.en.md:542`，cold stall 的封顶值）—— 本文不再是它唯一的落点。 |
+| `CASCADE_MAX_WAIT_MS` | `600000` | Cascade 单次等待上限（`client.js`）。曾只出现在 2.0.74 的 release notes 里；`9031b9b` 起 README 两语的 FAQ 也点名了它（`README.md:745` / `README.en.md:630`，cold stall 的封顶值）—— 本文不再是它唯一的落点。 |
 | `CASCADE_IDLE_GRACE_MS` | `8000` | 空闲宽限（`client.js`）。 |
 | `CASCADE_COLD_STALL_BASE_MS` | `30000` | 冷启动停顿基数（`client.js`）。 |
-| `WINDSURFAPI_MAX_DRAIN_MS` | `120000`（2 分钟） | SSE 写端背压的最长等待（`handlers/chat.js`）。`res.write` 返回 `false` 后生产者被挂起等 `drain`；半开客户端（不再读、TCP 还开着）永远不发 `drain`，超过这个值就尽力写一帧 `DRAIN_TIMEOUT` 错误、中止该流并归还账号租约。要求正整数，否则回落 120000。 |
+| `WINDSURFAPI_MAX_DRAIN_MS` | `120000`（2 分钟） | SSE 写端背压的最长等待（解析点 `src/stream-writer.js:32` 的 `resolveMaxDrainWaitMs`，chat/connect 的 bounded writer 共用）。`res.write` 返回 `false` 后生产者被挂起等 `drain`；半开客户端（不再读、TCP 还开着）永远不发 `drain`，超过这个值就尽力写一帧 `DRAIN_TIMEOUT` 错误、中止该流并归还账号租约。要求正整数，否则回落 120000。 |
 | `WINDSURFAPI_REQUEST_BUDGET_MS` | `600000`（10 分钟） | 单请求绝对截止时间（`request-budget.js`，由 `server.js` 的路由在进入 handler 前创建为 `context.budget`）。账号队列等待、Cascade 轮询窗口（`maxWaitMs`）、connect 流 `deadlineMs` 与各层退避都只能缩短到剩余时间；到期后不再发起新的上游轮次，返回 504。每请求上游轮次硬上限 6（`DEFAULT_UPSTREAM_TURN_CAP`，暂不开放环境变量）。要求正数，否则回落 600000。 |
 | `WINDSURFAPI_REQUEST_BUDGET_STREAM_MS` | `300000`（5 分钟） | 流式请求在上一行基础上额外允许的时间，两者相加即流式预算（默认 15 分钟）。要求非负数；`0` = 与基础预算相同，非法值回落 300000。 |
 
@@ -339,10 +356,11 @@ checkout 账号（`acct === null`），成功尾必须把 usage 记到条目 own
 | `WINDSURFAPI_QUOTA_COOLDOWN` | **开**（`true`） | `bool` | 配额冷却。 |
 | `WINDSURFAPI_ON_DEMAND_RESERVE_USD` | `0` | 0–100000 | 按需消费的预留额度（`float`，美元）。**涉及真实花钱，改前想清楚。** |
 
-至此三前缀开关 **164** 个全部有据可查（2026-10-22 按 `e2c8547` 重测；该基线上为 161，
-本分支新增 `DEVIN_CONNECT_MAX_QUEUE_FRAMES`、`DEVIN_CONNECT_MAX_QUEUE_BYTES` 与
-`DEVIN_CONNECT_RELOGIN_QUEUE_TIMEOUT_MS` 三个读取点）：`.env.example` + README 覆盖 81 个（含 PR #249
-的 `WINDSURFAPI_LEAK_TRACE`），本文覆盖其余 83 个。这个不变式由
+至此三前缀开关 **181** 个全部有据可查（2026-10-26 按 master `2598299e` 用上面的全形式脚本
+重测；旧的 5 形式脚本在同树只数到 172，漏掉的 9 个见文首）：`.env.example` + README 覆盖
+91 个（含 PR #249 的 `WINDSURFAPI_LEAK_TRACE`），本文覆盖其余 90 个。这个不变式由
 [`test/docs-consistency-guard.test.js`](../test/docs-consistency-guard.test.js) 的
 「every switch read in src/ is findable in some reader-facing doc」守着 ——
-**加新开关不写文档会直接让测试变红**，不再依赖人记得。
+**加新开关不写文档会直接让测试变红**。注意守卫只认 5 种读取形式
+（`test/docs-consistency-guard.test.js:513-524`），对 `csvListEnv`/`csvSetEnv`、`envGateAllows`
+和 `env?.NAME` 是盲的；这 9 个名字本文已写全，但不能把守卫的绿色当成它们的证明。
