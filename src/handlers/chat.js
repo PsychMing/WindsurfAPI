@@ -6851,7 +6851,10 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     const isAuthFail = /unauthenticated|invalid api key|invalid_grant|permission_denied.*account/i.test(err.message);
     const isRateLimit = /rate limit|rate_limit|too many requests|quota/i.test(err.message);
     const isInternal = /internal error occurred.*(error|trace)\s*id/i.test(err.message);
-    const isDeadline = isUpstreamDeadlineExceeded(err);
+    // F3: the producer throws the route-budget stop from inside the turn
+    // (warmup/StartCascade/Send/retry). Same 504 class as a provider deadline —
+    // never a 502 "upstream error", and never an account rotation.
+    const isDeadline = isUpstreamDeadlineExceeded(err) || isBudgetExceededError(err);
     const isTransport = isCascadeTransportError(err);
     const isTransient = !isDeadline && isUpstreamTransientError(err, isInternal);
     // v2.0.61 (#113): Anthropic / OpenAI content-policy / verification
@@ -6956,7 +6959,10 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
         reuseEntryInvalid: !!err.reuseEntryInvalid,
         body: {
           error: {
-            message: upstreamDeadlineExceededMessage(model),
+            // A route-budget stop has its own specific message; replacing it
+            // with the ~240 s provider-deadline text would misreport why the
+            // request ended (same rule the stream path already applies).
+            message: isBudgetExceededError(err) ? sanitizeText(err.message) : upstreamDeadlineExceededMessage(model),
             type: 'upstream_deadline_exceeded',
             code: 'windsurf_provider_deadline',
             upstream_message: sanitizeText(err.message).slice(0, 240),
@@ -8753,7 +8759,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // result with no earlier user prompts ("I can see the
             // content from a previous tool call ... but I don't have
             // the earlier conversation context").
-            const isDeadline = isUpstreamDeadlineExceeded(err);
+            const isDeadline = isUpstreamDeadlineExceeded(err) || isBudgetExceededError(err);
             if (isDeadline) {
               reuseEntryDead = true;
             }

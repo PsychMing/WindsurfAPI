@@ -18,6 +18,7 @@ import { closeSessionForPort, grpcFrame, grpcUnary, grpcStream } from './grpc.js
 import { beginLsUse, endLsUse, getLsEntryByPort } from './langserver.js';
 import { CC_CONTENT_MARKERS } from './handlers/cc-compat.js';
 import { CascadeTurn, CASCADE_STEP_OVERLAP, cascadeTurnEnabled } from './cascade-turn.js';
+import { budgetExceededError, isBudgetExceededError } from './request-budget.js';
 import {
   buildRawGetChatMessageRequest, parseRawResponse,
   buildInitializePanelStateRequest,
@@ -549,9 +550,10 @@ export function shouldColdStall({ elapsed, coldStallMs, sawActive, sawText, tota
 //
 // This classifier is the single source of truth for "did this poll loop
 // actually finish the turn?". `idle_done` and `native_tool_call` are the only
-// successful exits. A poll-window/stall exit with any output is a truncation
-// (Chat can report `length`); an exit with no output at all is an upstream
-// error, never a successful empty completion.
+// successful exits. A non-success exit that still delivered output (a
+// poll-window/stall stop, or an `idle_empty` whose final sweep carried the
+// answer) is a truncation (Chat can report `length`); an exit with no output
+// at all is an upstream error, never a successful empty completion.
 export function classifyCascadeEnd(endReason, { totalYielded = 0, totalThinking = 0, toolCallCount = 0 } = {}) {
   if (endReason == null) return { ok: true, kind: 'legacy', truncated: false };
   if (endReason === 'idle_done' || endReason === 'native_tool_call') {
@@ -559,6 +561,22 @@ export function classifyCascadeEnd(endReason, { totalYielded = 0, totalThinking 
   }
   const hasOutput = (totalYielded || 0) > 0 || (totalThinking || 0) > 0 || (toolCallCount || 0) > 0;
   if (endReason === 'idle_empty') {
+    // F2: `idle_empty` means "the loop never observed text", not "nothing was
+    // delivered". The final IDLE sweep can emit the whole answer after the
+    // last poll, and a producer that reports this reason while carrying bytes
+    // must not turn a delivered answer into a 502. Honour `hasOutput` exactly
+    // like the `max_wait` arm: keep the bytes, type the turn as truncated.
+    if (hasOutput) {
+      return {
+        ok: false,
+        kind: 'truncated',
+        truncated: true,
+        status: 200,
+        type: 'upstream_truncated',
+        code: 'CASCADE_TRUNCATED',
+        message: 'Cascade ended without a confirmed text terminal; the answer is truncated',
+      };
+    }
     return {
       ok: false,
       kind: 'empty',
@@ -1002,12 +1020,63 @@ export class WindsurfClient {
 
     log.debug(`CascadeChat: uid=${modelUid} enum=${modelEnum} msgs=${messages.length} reuse=${!!reuseEntry}${resumeTurn ? ' resume=1' : ''}`);
 
+    // F3: ONE absolute turn deadline, captured before any work. Warmup,
+    // StartCascade, every Send (and its re-warm), the poll loop and detach
+    // admission all spend from this clock. Spending the route's remaining
+    // time on the send phase and then giving the poll loop a fresh remainder
+    // made a 100 ms budget take 310 ms behind a 250 ms Send (audit2 F3).
+    const turnStart = Date.now();
+    const turnBudgetMs = Number.isFinite(requestMaxWaitMs) && requestMaxWaitMs >= 0
+      ? Math.min(CASCADE_TIMEOUTS.maxWaitMs, requestMaxWaitMs)
+      : CASCADE_TIMEOUTS.maxWaitMs;
+    const remainingBudgetMs = () => Math.max(0, turnBudgetMs - (Date.now() - turnStart));
+    // A spent deadline is the route's own failure, not an upstream/transport
+    // one: this type maps to 504 on every egress and refuses retry.
+    const turnDeadlineError = (detail, cause) => budgetExceededError(
+      detail || `request budget exhausted (${turnBudgetMs}ms) before the Cascade turn finished`,
+      cause ? { cause } : {},
+    );
+    // Per-RPC bound: the RPC's own ceiling or what the turn has left, never 0.
+    const budgetTimeout = (ceilingMs) => Math.max(1, Math.min(ceilingMs, remainingBudgetMs()));
+    const assertBudget = (label) => {
+      if (remainingBudgetMs() <= 0) {
+        throw turnDeadlineError(`request budget exhausted before ${label} (${turnBudgetMs}ms)`);
+      }
+    };
+    // Once the clock is spent, a phase failure is the route deadline, not an
+    // upstream/panel fault: throw the budget stop instead of retrying.
+    const throwIfSpent = (err, phase) => {
+      if (remainingBudgetMs() > 0) return;
+      throw isBudgetExceededError(err) ? err : turnDeadlineError(
+        `request budget exhausted during ${phase} (${turnBudgetMs}ms)`, err,
+      );
+    };
+    // Awaits a shared promise (the per-LS workspace init is shared and cannot
+    // be cancelled) under the turn deadline; the work keeps running for its
+    // owner, this turn stops spending time on it.
+    const awaitWithinBudget = (promise, label) => {
+      const left = remainingBudgetMs();
+      if (left <= 0) return Promise.reject(turnDeadlineError(`request budget exhausted before ${label} (${turnBudgetMs}ms)`));
+      return new Promise((resolve, reject) => {
+        // Deliberately NOT unref'd: while this await is the only pending work,
+        // the timer is what makes the deadline real.
+        const timer = setTimeout(
+          () => reject(turnDeadlineError(`${label} exceeded the ${turnBudgetMs}ms request budget`)),
+          left,
+        );
+        Promise.resolve(promise).then(
+          (value) => { clearTimeout(timer); resolve(value); },
+          (err) => { clearTimeout(timer); reject(err); },
+        );
+      });
+    };
+
     // One-shot per-LS workspace init (idempotent; typically pre-warmed at
     // LS startup). Falls back to a local session id if the LS entry is gone.
     // A resume never re-runs the handshake: the cascade and its panel already
     // exist upstream, and a warmup failure must not lose the turn.
     const lsEntry = getLsEntryByPort(this.port);
-    if (!resumeTurn) await this.warmupCascade();
+    if (!resumeTurn) await awaitWithinBudget(this.warmupCascade(), 'Cascade workspace warmup');
     let sessionId = resumeTurn?.sessionId || reuseEntry?.sessionId || lsEntry?.sessionId || randomUUID();
 
     // "panel state not found" means the LS forgot the panel for our sessionId
@@ -1062,9 +1131,11 @@ export class WindsurfClient {
           resumedTrajectory = true;
           return reuseEntry.cascadeId;
         }
+        assertBudget('Cascade StartCascade');
         const startProto = buildStartCascadeRequest(this.apiKey, sessionId);
         const startResp = await grpcUnary(
-          this.port, this.csrfToken, `${LS_SERVICE}/StartCascade`, grpcFrame(startProto)
+          this.port, this.csrfToken, `${LS_SERVICE}/StartCascade`, grpcFrame(startProto),
+          budgetTimeout(30_000)
         );
         const id = parseStartCascadeResponse(startResp);
         if (!id) throw new Error('StartCascade returned empty cascade_id');
@@ -1074,9 +1145,11 @@ export class WindsurfClient {
       try {
         cascadeId = await openCascade();
       } catch (e) {
+        // F3: no time left means no recovery attempt either.
+        throwIfSpent(e, 'Cascade StartCascade');
         if (!isPanelMissing(e)) throw e;
         log.warn(`Panel state missing, re-warming LS port=${this.port}`);
-        await this.warmupCascade(true);
+        await awaitWithinBudget(this.warmupCascade(true), 'Cascade re-warm');
         sessionId = getLsEntryByPort(this.port)?.sessionId || randomUUID();
         reuseEntry = null; // cascade expired — treat as fresh
         cascadeId = await openCascade();
@@ -1107,7 +1180,8 @@ export class WindsurfClient {
             const resumeStepsResp = await grpcUnary(
               this.port, this.csrfToken,
               `${LS_SERVICE}/GetCascadeTrajectorySteps`,
-              grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, 0))
+              grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, 0)),
+              budgetTimeout(30_000)
             );
             stepOffset = parseTrajectorySteps(resumeStepsResp).length;
           }
@@ -1116,7 +1190,7 @@ export class WindsurfClient {
               this.port, this.csrfToken,
               `${LS_SERVICE}/GetCascadeTrajectoryGeneratorMetadata`,
               grpcFrame(buildGetGeneratorMetadataRequest(cascadeId, 0)),
-              5000
+              budgetTimeout(5_000)
             );
             // Only a real record count may seed the window. `?.entryCount || 0`
             // turned "the RPC said nothing" into "start at record 0".
@@ -1244,7 +1318,8 @@ export class WindsurfClient {
           maxOutputTokens: completion?.maxTokens,
         }, userJwt);
         await grpcUnary(
-          this.port, this.csrfToken, `${LS_SERVICE}/SendUserCascadeMessage`, grpcFrame(sendProto)
+          this.port, this.csrfToken, `${LS_SERVICE}/SendUserCascadeMessage`, grpcFrame(sendProto),
+          budgetTimeout(30_000)
         );
       };
       const MAX_PANEL_RETRIES = 3;
@@ -1276,10 +1351,16 @@ export class WindsurfClient {
       let historyRebuilt = false;
       let cascadeExpiredOnce = false;
       while (true) {
+        // F3: no Send attempt starts on a spent budget — including a recovery
+        // retry that would re-open a cascade the route cannot wait for.
+        assertBudget('Cascade SendUserCascadeMessage');
         try {
           await sendMessage();
           break;
         } catch (e) {
+          // The Send was bounded by what the turn had left: once that is gone
+          // the failure is the route deadline, not a panel/transport fault.
+          throwIfSpent(e, 'Cascade SendUserCascadeMessage');
           const expired = isExpiredCascade(e);
           const untrusted = isUntrustedWorkspace(e);
           if (!isPanelMissing(e) && !expired && !untrusted) throw e;
@@ -1310,18 +1391,29 @@ export class WindsurfClient {
             historyRebuilt = true;
           }
           try {
-            await this.warmupCascade(true);
+            await awaitWithinBudget(this.warmupCascade(true), 'Cascade re-warm');
           } catch (err) {
             if (isCascadeTransportError(err)) throw err;
             log.warn(`warmupCascade failed: ${err.message}`);
           }
-          // Small backoff — LS panel state sometimes needs a moment after Init
-          if (panelRetry > 1) await new Promise(r => setTimeout(r, 250 * panelRetry));
+          // Small backoff — LS panel state sometimes needs a moment after Init.
+          // Never sleep past the deadline: the retry would be refused anyway.
+          if (panelRetry > 1) {
+            await new Promise(r => setTimeout(r, Math.max(0, Math.min(250 * panelRetry, remainingBudgetMs()))));
+          }
+          assertBudget('Cascade recovery StartCascade');
           sessionId = getLsEntryByPort(this.port)?.sessionId || randomUUID();
           const startProto = buildStartCascadeRequest(this.apiKey, sessionId);
-          const startResp = await grpcUnary(
-            this.port, this.csrfToken, `${LS_SERVICE}/StartCascade`, grpcFrame(startProto)
-          );
+          let startResp;
+          try {
+            startResp = await grpcUnary(
+              this.port, this.csrfToken, `${LS_SERVICE}/StartCascade`, grpcFrame(startProto),
+              budgetTimeout(30_000)
+            );
+          } catch (e) {
+            throwIfSpent(e, 'Cascade recovery StartCascade');
+            throw e;
+          }
           cascadeId = parseStartCascadeResponse(startResp);
           if (!cascadeId) throw new Error('StartCascade returned empty cascade_id after re-warm');
           // This is now a fresh cascade carrying full rebuilt history, not a
@@ -1373,13 +1465,15 @@ export class WindsurfClient {
       // alone) for stall detection fixes the false-positive warm stalls where
       // Cascade is legitimately mid-thinking but `responseText` hasn't moved.
       let lastGrowthAt = Date.now();
-      const { maxWaitMs: configuredMaxWait, pollIntervalMs: pollInterval, idleGraceMs: IDLE_GRACE_MS, warmStallMs: NO_GROWTH_STALL_MS, stallRetryMinText: STALL_RETRY_MIN_TEXT } = CASCADE_TIMEOUTS;
-      // Request-budget clamp: a route that has 8 s left must not start a
-      // 600 s poll window. Only shortens, never extends, the configured bound.
-      const maxWait = Number.isFinite(requestMaxWaitMs) && requestMaxWaitMs >= 0
-        ? Math.min(configuredMaxWait, requestMaxWaitMs)
-        : configuredMaxWait;
+      const { pollIntervalMs: pollInterval, idleGraceMs: IDLE_GRACE_MS, warmStallMs: NO_GROWTH_STALL_MS, stallRetryMinText: STALL_RETRY_MIN_TEXT } = CASCADE_TIMEOUTS;
+      // F3: the poll window is what is LEFT of the one turn deadline — not a
+      // fresh copy of the route budget. Warmup + StartCascade + Send already
+      // spent part of it, so a 100 ms route that took 90 ms to send polls for
+      // 10 ms, not another 100 ms. `startTime` stays the poll-phase start
+      // because the idle grace and the cold-stall clock are measured from the
+      // moment polling began.
       const startTime = Date.now();
+      const maxWait = Math.max(0, turnStart + turnBudgetMs - startTime);
       let endReason = 'unknown';
       const nativeBridgePollAfterTool = nativeMode && process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_POLL_AFTER_TOOL === '1';
       let nativeBridgePollAfterToolLogged = false;
@@ -1454,8 +1548,11 @@ export class WindsurfClient {
             accountId: accountId ?? null,
             modelKey: modelKey ?? null,
             generatorOffset: snapshot.generatorOffset,
-            deadline: startTime + maxWait,
-            startedAt: startTime,
+            // F3: the claim owns this turn until the ONE absolute deadline.
+            // Pinning it to the poll-window start shifted the claim later by
+            // the whole send phase.
+            deadline: turnStart + turnBudgetMs,
+            startedAt: turnStart,
           });
         } catch (e) {
           log.warn(`Cascade detach admission failed: ${e.message}`);
@@ -1469,17 +1566,31 @@ export class WindsurfClient {
       // as a later step carrying the result.
       const pendingToolCalls = new Map();
 
-      // A trajectory read is part of the request's budget. `maxWait` already
-      // carries what the route has left (a resume clamps it to the claim's own
-      // deadline), so every RPC below is bounded by the remaining time: a read
-      // that cannot finish before the deadline must not complete the turn
-      // after it. With no route budget, keep grpcUnary's own 30s default
-      // rather than turning the poll window into a timeout.
-      const readTimeoutMs = () => (Number.isFinite(requestMaxWaitMs)
-        ? Math.max(1, Math.min(30_000, maxWait - (Date.now() - startTime)))
-        : undefined);
+      // A trajectory read is part of the request's budget: bound every RPC by
+      // what the ONE turn deadline has left. A read that cannot finish before
+      // the deadline must not complete the turn after it. Without a route
+      // budget the turn deadline is CASCADE_MAX_WAIT_MS, so this still caps at
+      // grpcUnary's own 30 s default instead of turning the poll window into a
+      // per-read timeout.
+      const readTimeoutMs = () => budgetTimeout(30_000);
+      // A read that fails because the turn's OWN deadline elapsed is the poll
+      // window ending, not an upstream transport fault. Without this a
+      // deadline-bounded read reports "gRPC unary timeout" and the handler
+      // rotates accounts over a timeout this turn caused itself.
+      // The tolerance covers wall-clock vs monotonic timer ticks: a read whose
+      // timeout WAS the remaining budget can report its failure with a
+      // millisecond or two of budget still reading as "left". Once that little
+      // is left no retry is possible, so the window verdict is the honest one.
+      const WINDOW_END_TOLERANCE_MS = 25;
+      const readFailedAtDeadline = (e) => {
+        if (remainingBudgetMs() > WINDOW_END_TOLERANCE_MS) return false;
+        if (e?.detachedClaimLost) return false;
+        if (e?.name === 'AbortError' || e?.code === 'ABORT_ERR') return false;
+        endReason = 'max_wait';
+        return true;
+      };
 
-      while (Date.now() - startTime < maxWait) {
+      pollLoop: while (Date.now() - startTime < maxWait) {
         if (aborted()) { endReason = 'aborted'; break; }
         // The inter-poll sleep is a wait too: never sleep past the budget only
         // to start a read that has no time left.
@@ -1498,14 +1609,20 @@ export class WindsurfClient {
         let windowStart;
         let steps;
         if (turn) {
-          const read = await turn.readWindow(async (start) => {
-            const stepsResp = await grpcUnary(
-              this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`,
-              grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, start)),
-              readTimeoutMs()
-            );
-            return parseTrajectorySteps(stepsResp);
-          });
+          let read;
+          try {
+            read = await turn.readWindow(async (start) => {
+              const stepsResp = await grpcUnary(
+                this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`,
+                grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, start)),
+                readTimeoutMs()
+              );
+              return parseTrajectorySteps(stepsResp);
+            });
+          } catch (e) {
+            if (!readFailedAtDeadline(e)) throw e;
+            break pollLoop;
+          }
           // Ownership is a LIVE predicate: the registry's deadline timer (or
           // a sweep from another request) may have ended the claim while this
           // read was in flight. Check after EVERY await before touching the
@@ -1542,10 +1659,16 @@ export class WindsurfClient {
         } else {
           windowStart = Math.max(pollFloor, stepOffset - CASCADE_STEP_OVERLAP);
           const stepsProto = buildGetTrajectoryStepsRequest(cascadeId, windowStart);
-          const stepsResp = await grpcUnary(
-            this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto),
-            readTimeoutMs()
-          );
+          let stepsResp;
+          try {
+            stepsResp = await grpcUnary(
+              this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto),
+              readTimeoutMs()
+            );
+          } catch (e) {
+            if (!readFailedAtDeadline(e)) throw e;
+            break pollLoop;
+          }
           steps = parseTrajectorySteps(stepsResp);
           lastWindowStart = windowStart;
           const totalSteps = windowStart + steps.length;
@@ -1568,11 +1691,18 @@ export class WindsurfClient {
             const origin = pending.origin || '';
             if (!isReadUrlAutoApproveAllowed(url, origin)) continue;
             if (!cascadeTrajectoryId) {
-              const statusResp = await grpcUnary(
-                this.port, this.csrfToken,
-                `${LS_SERVICE}/GetCascadeTrajectory`,
-                grpcFrame(buildGetTrajectoryRequest(cascadeId))
-              );
+              let statusResp;
+              try {
+                statusResp = await grpcUnary(
+                  this.port, this.csrfToken,
+                  `${LS_SERVICE}/GetCascadeTrajectory`,
+                  grpcFrame(buildGetTrajectoryRequest(cascadeId)),
+                  readTimeoutMs()
+                );
+              } catch (e) {
+                if (!readFailedAtDeadline(e)) throw e;
+                break pollLoop;
+              }
               const info = parseTrajectoryInfo(statusResp);
               cascadeTrajectoryId = info.trajectoryId || '';
               lastStatus = info.status;
@@ -1595,7 +1725,7 @@ export class WindsurfClient {
                 this.port, this.csrfToken,
                 `${LS_SERVICE}/HandleCascadeUserInteraction`,
                 grpcFrame(req),
-                10000
+                budgetTimeout(10_000)
               );
               // R-3 (RATE-RETRY audit): record the approval only AFTER the RPC
               // succeeded. Recording before meant one failed approval made the
@@ -1850,9 +1980,16 @@ export class WindsurfClient {
 
         // Check status
         const statusProto = buildGetTrajectoryRequest(cascadeId);
-        const statusResp = await grpcUnary(
-          this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectory`, grpcFrame(statusProto)
-        );
+        let statusResp;
+        try {
+          statusResp = await grpcUnary(
+            this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectory`, grpcFrame(statusProto),
+            readTimeoutMs()
+          );
+        } catch (e) {
+          if (!readFailedAtDeadline(e)) throw e;
+          break pollLoop;
+        }
         const statusInfo = parseTrajectoryInfo(statusResp);
         const status = statusInfo.status;
         if (statusInfo.trajectoryId) cascadeTrajectoryId = statusInfo.trajectoryId;
@@ -1885,11 +2022,17 @@ export class WindsurfClient {
             // pass. Using the advanced `stepOffset` would miss steps the next
             // poll had not fetched yet; the window never reaches behind
             // pollFloor, so pre-turn steps on a resume are not replayed.
-            const finalResp = await grpcUnary(
-              this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`,
-              grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, lastWindowStart)),
-              readTimeoutMs()
-            );
+            let finalResp;
+            try {
+              finalResp = await grpcUnary(
+                this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`,
+                grpcFrame(buildGetTrajectoryStepsRequest(cascadeId, lastWindowStart)),
+                readTimeoutMs()
+              );
+            } catch (e) {
+              if (!readFailedAtDeadline(e)) throw e;
+              break pollLoop;
+            }
             // The final sweep is an awaited trajectory read like any other:
             // a claim that ended while it was in flight must not emit the
             // top-up content or reach the success tail.
@@ -1902,7 +2045,11 @@ export class WindsurfClient {
               stepOffset = turn.stepOffset;
               for (let i = 0; i < finalSteps.length; i++) {
                 const consumed = await turn.consumeFinalStep(finalSteps[i], lastWindowStart + i);
-                if (consumed.textDelta) totalYielded += consumed.textDelta.length;
+                if (consumed.textDelta) {
+                  totalYielded += consumed.textDelta.length;
+                  sawText = true;
+                  lastGrowthAt = Date.now();
+                }
               }
             } else {
               stepOffset = Math.max(stepOffset, lastWindowStart + finalSteps.length);
@@ -1918,6 +2065,8 @@ export class WindsurfClient {
                   const delta = responseText.slice(prev);
                   yieldedByStep.set(stepIndex, responseText.length);
                   totalYielded += delta.length;
+                  sawText = true;
+                  lastGrowthAt = Date.now();
                   chunks.push({ text: delta, thinking: '', isError: false });
                   // C2: the end-of-turn top-ups are producer frames like any
                   // other; a pressured writer must hold them (and the terminal
@@ -1935,12 +2084,17 @@ export class WindsurfClient {
                   const delta = modifiedText.slice(cursor);
                   yieldedByStep.set(stepIndex, modifiedText.length);
                   totalYielded += delta.length;
+                  sawText = true;
+                  lastGrowthAt = Date.now();
                   chunks.push({ text: delta, thinking: '', isError: false });
                   await onChunk?.({ text: delta, thinking: '', isError: false });
                 }
               }
             }
-            endReason = sawText ? 'idle_done' : 'idle_empty';
+            // F2: the sweep is part of this turn. Any text it emitted (or that
+            // an earlier poll already emitted) means the turn is done, never
+            // empty — `idle_empty` is reserved for a turn with zero output.
+            endReason = (sawText || totalYielded > 0) ? 'idle_done' : 'idle_empty';
             break;
           }
         } else {
@@ -1991,7 +2145,9 @@ export class WindsurfClient {
         sawText,
         lastStatus,
         approvalError,
-        ms: Date.now() - startTime,
+        // Whole-turn duration (send phase included), matching the deadline the
+        // turn was actually held to.
+        ms: Date.now() - turnStart,
       };
       const shortNormalDone = (endReason === 'idle_done' || endReason === 'native_tool_call')
         && (sawText || seenToolCallIds.size > 0);
@@ -2052,6 +2208,10 @@ export class WindsurfClient {
           log.warn('Cascade: generator-metadata window start unknown — skipping the aggregate usage read instead of re-summing from record 0');
         } else {
           const metaReq = buildGetGeneratorMetadataRequest(cascadeId, generatorOffset);
+          // Post-turn accounting keeps its own 5 s bound, NOT the turn
+          // deadline: the turn already completed upstream, and dropping this
+          // read would lose the real token settlement of a billed turn
+          // (test/cascade-detach-lazy-resume.test.js T28).
           const metaResp = await grpcUnary(
             this.port, this.csrfToken,
             `${LS_SERVICE}/GetCascadeTrajectoryGeneratorMetadata`,

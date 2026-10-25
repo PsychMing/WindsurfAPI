@@ -286,7 +286,9 @@ export class CascadeTurn {
   /**
    * The final IDLE sweep's polish pass. `responseText` is topped up first;
    * `modifiedText` is only appended when it is a strict extension of
-   * responseText (a rewrite would splice wrong bytes onto the stream).
+   * responseText (a rewrite would splice wrong bytes onto the stream). Both
+   * top-ups mark `sawText`: this sweep is often the FIRST place a turn's text
+   * becomes visible, and a turn that emitted text did not end empty.
    */
   async consumeFinalStep(step, stepIndex) {
     if (stepIndex < this.stepOffset && stepIndex + 1 > this.consumedThrough) {
@@ -301,6 +303,11 @@ export class CascadeTurn {
       textDelta = responseText.slice(prev);
       this.yieldedByStep.set(stepIndex, responseText.length);
       this.totalYielded += textDelta.length;
+      // F2: the sweep can be the FIRST place this step's text is visible, so
+      // it must account for the emission exactly like consumeStep does.
+      // Leaving sawText false made the turn end `idle_empty` after the bytes
+      // had already been streamed.
+      this.sawText = true;
       this.lastGrowthAt = Date.now();
       await this.#emit({ text: textDelta, thinking: '', isError: false });
     }
@@ -310,6 +317,7 @@ export class CascadeTurn {
       const polish = modifiedText.slice(cursor);
       this.yieldedByStep.set(stepIndex, modifiedText.length);
       this.totalYielded += polish.length;
+      this.sawText = true;
       this.lastGrowthAt = Date.now();
       await this.#emit({ text: polish, thinking: '', isError: false });
       textDelta += polish;
