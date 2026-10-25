@@ -4212,19 +4212,22 @@ export function fullBillableTokens(usage) {
 //     an opaque account ref, so it can say which account served a recent
 //     request but cannot retain or query a per-account history;
 //   • request-ring rows are keyed by a caller hash, with no account attribution.
-// This ring is written from recordAccountSpend, which already holds the account
-// record, so a row can only exist for a request actually billed to that account.
+// This ring is written from recordAccountSpend (billed successes) and
+// recordAccountAttempt (failed attempts that still have an account owner). A
+// row therefore always belongs to an account; a pool-wide failure with no
+// account (empty pool, un-attributed env-token call) writes nothing.
 // The consequences are stated on the drawer card, not just here:
-//   • billed successes only (a 429 / abort never reaches spend accounting);
+//   • billed rows carry tokens + cost; failed rows carry outcome/status at zero cost;
 //   • process-local and bounded (ACCOUNT_REQUEST_CAP rows per account);
 //   • never persisted — accounts.json stays free of request history;
-//   • no key material: model name, token counts and cost figures only.
+//   • no key material: model name, token counts, cost figures and outcome only.
 export const ACCOUNT_REQUEST_CAP = 100;
 const _accountRequests = new Map();
 
-export function recordAccountRequest(account, { model = '', usage = null, creditCost = 0, acuCost = 0, attemptId = '', now = Date.now() } = {}) {
+export function recordAccountRequest(account, { model = '', usage = null, creditCost = 0, acuCost = 0, attemptId = '', billed = true, outcome = '', status = null, now = Date.now() } = {}) {
   const id = account?.id;
   if (!id) return null;
+  const isBilled = billed !== false;
   const entry = {
     ts: now,
     // The upstream attempt that produced this row (the reservation timestamp).
@@ -4232,11 +4235,19 @@ export function recordAccountRequest(account, { model = '', usage = null, credit
     // account's credential rotated between two otherwise identical turns.
     attemptId: attemptId == null ? '' : String(attemptId).slice(0, 80),
     model: typeof model === 'string' ? model.slice(0, 120) : '',
-    promptTokens: Math.max(0, Number(usage?.prompt_tokens) || 0),
-    completionTokens: Math.max(0, Number(usage?.completion_tokens) || 0),
-    totalTokens: fullBillableTokens(usage),
-    credit: Math.max(0, Number(creditCost) || 0),
-    acu: Math.max(0, Number(acuCost) || 0),
+    // `billed:false` is a FAILED attempt: the account was asked to serve it and
+    // did not. Its cost fields are forced to zero below so a caller cannot
+    // accidentally charge a failed row into the billed summary.
+    billed: isBilled,
+    ...(isBilled ? {} : {
+      outcome: typeof outcome === 'string' ? outcome.slice(0, 40) : '',
+      status: Number.isFinite(Number(status)) && Number(status) > 0 ? Math.trunc(Number(status)) : null,
+    }),
+    promptTokens: isBilled ? Math.max(0, Number(usage?.prompt_tokens) || 0) : 0,
+    completionTokens: isBilled ? Math.max(0, Number(usage?.completion_tokens) || 0) : 0,
+    totalTokens: isBilled ? fullBillableTokens(usage) : 0,
+    credit: isBilled ? Math.max(0, Number(creditCost) || 0) : 0,
+    acu: isBilled ? Math.max(0, Number(acuCost) || 0) : 0,
   };
   let ring = _accountRequests.get(id);
   if (!ring) { ring = []; _accountRequests.set(id, ring); }
@@ -4246,30 +4257,70 @@ export function recordAccountRequest(account, { model = '', usage = null, credit
 }
 
 /**
- * Newest-first page of an account's billed requests plus totals over the whole
- * retained window. `total` is the ring size, never the page size, so a caller
- * can tell "50 of 50" from "50 of 3".
+ * Record a FAILED upstream attempt against the account that was asked to serve
+ * it. No account id ⇒ no row: an unattributed failure (empty pool, env-token
+ * call) belongs to nobody, and inventing an owner would make the per-account
+ * history lie. The row is deliberately cost-free (`billed:false`, zero tokens /
+ * credit / ACU); `outcome` is a short machine label (rate_limited,
+ * connection_error, client_abort, upstream_error, …) and `status` the HTTP-ish
+ * verdict the client saw (429 / 502 / 499 / …). Neither field carries upstream
+ * message text, which can contain request content.
+ */
+export function recordAccountAttempt(account, { model = '', outcome = '', status = null, attemptId = '', now = Date.now() } = {}) {
+  if (!account?.id) return null;
+  return recordAccountRequest(account, {
+    model,
+    usage: null,
+    creditCost: 0,
+    acuCost: 0,
+    attemptId,
+    billed: false,
+    outcome,
+    status,
+    now,
+  });
+}
+
+/**
+ * Newest-first page of an account's requests plus the billed totals over the
+ * whole retained window. `total` is the ring size (billed + failed rows), never
+ * the page size, so a caller can tell "50 of 50" from "50 of 3". `billed` and
+ * `failed` split that total; `summary` stays a BILLED summary — a failed row
+ * never moves its token/credit/ACU counters or its `lastTs`.
  */
 export function getAccountRequests(id, { limit = 50 } = {}) {
   const ring = _accountRequests.get(String(id || '')) || [];
   const n = Math.max(1, Math.min(ACCOUNT_REQUEST_CAP, Number(limit) || 50));
+  let billed = 0;
+  let failed = 0;
   const summary = {
-    requests: ring.length,
+    requests: 0,
     promptTokens: 0,
     completionTokens: 0,
     totalTokens: 0,
     credit: 0,
     acu: 0,
-    lastTs: ring.length ? ring[ring.length - 1].ts : 0,
+    lastTs: 0,
   };
   for (const r of ring) {
+    if (r.billed === false) { failed++; continue; }
+    billed++;
+    summary.requests += 1;
     summary.promptTokens += r.promptTokens;
     summary.completionTokens += r.completionTokens;
     summary.totalTokens += r.totalTokens;
     summary.credit += r.credit;
     summary.acu += r.acu;
+    summary.lastTs = r.ts;
   }
-  return { items: ring.slice(-n).reverse(), total: ring.length, capacity: ACCOUNT_REQUEST_CAP, summary };
+  return {
+    items: ring.slice(-n).reverse(),
+    total: ring.length,
+    billed,
+    failed,
+    capacity: ACCOUNT_REQUEST_CAP,
+    summary,
+  };
 }
 
 /** Drop an account's ring when the account itself is gone. */

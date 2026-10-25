@@ -16,11 +16,13 @@ import {
   configureBindHost,
   forgetAccountRequests,
   getAccountRequests,
+  recordAccountAttempt,
   recordAccountRequest,
   recordAccountSpend,
   removeAccount,
   _resetLockoutForTests,
 } from '../src/auth.js';
+import { finalizeConnectAccount } from '../src/handlers/chat.js';
 import { handleDashboardApi } from '../src/dashboard/api.js';
 import { _resetRuntimeConfigForTests } from '../src/runtime-config.js';
 
@@ -77,7 +79,10 @@ describe('account request ring', () => {
     const page = getAccountRequests('ring-acct-1', { limit: 1 });
     assert.deepEqual(page.items.map((r) => r.model), ['b']);
     assert.equal(page.total, 2, 'total is the ring size, not the page size');
+    assert.equal(page.billed, 2);
+    assert.equal(page.failed, 0);
     assert.equal(page.items.length, 1);
+    assert.equal(page.items[0].billed, true, 'recordAccountRequest is billed by default');
     assert.deepEqual(page.summary, {
       requests: 2,
       promptTokens: 4,
@@ -125,18 +130,75 @@ describe('account request ring', () => {
     assert.equal(row.acu, 0);
   });
 
-  it('is written by recordAccountSpend, so only billed requests appear', () => {
+  it('only billed rows enter the billed summary; failures are counted separately', () => {
     const acct = addAccount('spend-attribution');
     recordAccountSpend(acct.apiKey, { prompt_tokens: 10, completion_tokens: 5 }, { creditCost: 2, acuCost: 0.25, model: 'claude-sonnet-4' });
-    // A request against a key that belongs to no account must not create a row.
+    const before = getAccountRequests(acct.id);
+    recordAccountAttempt({ id: acct.id }, { model: 'claude-sonnet-4', outcome: 'rate_limited', status: 429, attemptId: 'attempt-7' });
+    // A request against a key that belongs to no account must not create a row,
+    // and a failure with no account id belongs to nobody.
     recordAccountSpend('not-an-account-key', { prompt_tokens: 1 }, { model: 'x' });
+    recordAccountAttempt(null, { model: 'x', outcome: 'upstream_error', status: 502 });
 
     const page = getAccountRequests(acct.id);
-    assert.equal(page.total, 1);
-    assert.equal(page.items[0].model, 'claude-sonnet-4');
-    assert.equal(page.items[0].totalTokens, 15);
-    assert.equal(page.items[0].credit, 2);
-    assert.equal(page.items[0].acu, 0.25);
+    assert.equal(page.total, 2, 'the failed attempt occupies a retained slot');
+    assert.equal(page.billed, 1);
+    assert.equal(page.failed, 1);
+    // The billed summary is byte-for-byte what the success alone produced: the
+    // failed row must not move a single counter or lastTs.
+    assert.deepEqual(page.summary, before.summary, 'a failed row must not move the billed summary');
+    assert.deepEqual(page.summary, {
+      requests: 1,
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      credit: 2,
+      acu: 0.25,
+      lastTs: before.summary.lastTs,
+    });
+    const [failedRow, billedRow] = page.items;
+    assert.equal(billedRow.model, 'claude-sonnet-4');
+    assert.equal(billedRow.billed, true);
+    assert.equal(failedRow.billed, false);
+    assert.equal(failedRow.outcome, 'rate_limited');
+    assert.equal(failedRow.status, 429);
+    assert.equal(failedRow.attemptId, 'attempt-7');
+    assert.equal(failedRow.totalTokens, 0);
+    assert.equal(failedRow.promptTokens, 0);
+    assert.equal(failedRow.completionTokens, 0);
+    assert.equal(failedRow.credit, 0);
+    assert.equal(failedRow.acu, 0);
+  });
+
+  it('refuses an unattributed failure instead of inventing an owner', () => {
+    assert.equal(recordAccountAttempt(null, { model: 'x' }), null);
+    assert.equal(recordAccountAttempt({}, { model: 'x' }), null);
+    assert.equal(recordAccountAttempt({ id: '' }, { model: 'x' }), null);
+    assert.equal(getAccountRequests('x').total, 0);
+  });
+
+  it('records CONNECT failure exits against the account that was attempted', () => {
+    const acct = addAccount('connect-failures');
+    acct.reservationTimestamp = 4242;
+    const base = { model: 'swe-2', startTime: Date.now() };
+
+    finalizeConnectAccount(acct, { ...base, err: Object.assign(new Error('rate limited'), { code: 'RATE_LIMITED' }) });
+    finalizeConnectAccount(acct, { ...base, err: Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }) });
+    finalizeConnectAccount(acct, { ...base, err: Object.assign(new Error('client gone'), { name: 'AbortError' }), aborted: true });
+
+    const page = getAccountRequests(acct.id);
+    assert.equal(page.billed, 0);
+    assert.equal(page.failed, 3);
+    assert.deepEqual(page.items.map((r) => [r.outcome, r.status]), [
+      ['client_abort', 499],
+      ['connection_error', 502],
+      ['rate_limited', 429],
+    ]);
+    assert.equal(page.items[0].attemptId, '4242');
+    assert.equal(page.items.every((r) => r.billed === false && r.credit === 0 && r.totalTokens === 0), true);
+    assert.equal(page.summary.requests, 0);
+    assert.equal(page.summary.totalTokens, 0);
+    assert.equal(page.summary.credit, 0);
   });
 
   it('drops the ring when the account is removed', () => {
@@ -179,16 +241,22 @@ describe('GET /accounts/:id/requests', () => {
     configureBindHost('0.0.0.0');
     const acct = addAccount('route-history');
     recordAccountSpend(acct.apiKey, { prompt_tokens: 4, completion_tokens: 6 }, { creditCost: 1, model: 'gemini-2.5-flash' });
+    recordAccountAttempt({ id: acct.id }, { model: 'gemini-2.5-flash', outcome: 'rate_limited', status: 429 });
 
     const res = fakeRes();
     await handleDashboardApi('GET', `/accounts/${acct.id}/requests`, {}, authed(`/accounts/${acct.id}/requests?limit=10`), res);
     assert.equal(res.statusCode, 200);
     const body = res.json();
     assert.equal(body.ok, true);
-    assert.equal(body.total, 1);
+    assert.equal(body.total, 2, 'the window counts billed rows and failed attempts');
+    assert.equal(body.billed, 1);
+    assert.equal(body.failed, 1);
     assert.equal(body.capacity, ACCOUNT_REQUEST_CAP);
-    assert.equal(body.items[0].model, 'gemini-2.5-flash');
-    assert.equal(body.items[0].totalTokens, 10);
+    assert.equal(body.items[0].billed, false, 'the failed attempt is the newest row');
+    assert.equal(body.items[1].model, 'gemini-2.5-flash');
+    assert.equal(body.items[1].totalTokens, 10);
+    assert.equal(body.summary.requests, 1, 'the billed summary ignores the failed row');
+    assert.equal(body.summary.totalTokens, 10);
     assert.equal(typeof body.accountRef, 'string');
     assert.ok(body.accountRef.length <= 16, 'the ref is a short hash, not an identifier');
     assert.equal(res.body.includes(acct.apiKey), false, 'the upstream key must never reach the response');

@@ -76,6 +76,30 @@ describe('buildTurnsSection', () => {
     assert.equal(turns.items[1].model, 'swe-2-max');
   });
 
+  it('keeps failed attempts out of the billed-turn view', () => {
+    const failed = row(NOW - 5_000, {
+      billed: false, promptTokens: 0, completionTokens: 0, totalTokens: 0, credit: 0, acu: 0,
+      outcome: 'rate_limited', status: 429,
+    });
+    const turns = buildTurnsSection({
+      accounts: [{ id: 'a1', ref: 'acct-11111111' }],
+      readRequests: () => ({
+        items: [failed, row(NOW - 10_000)],
+        total: 2,
+        billed: 1,
+        failed: 1,
+        capacity: 100,
+        summary: { requests: 1, promptTokens: 10, completionTokens: 5, totalTokens: 15, credit: 1, acu: 0.5, lastTs: NOW - 10_000 },
+      }),
+      now: NOW,
+    });
+    assert.equal(turns.retained, 1, 'the ring total that counts billed turns comes from summary.requests');
+    assert.equal(turns.accountsWithTurns, 1);
+    assert.equal(turns.window.turns, 1, 'a failed attempt is not a billed turn');
+    assert.equal(turns.items.length, 1);
+    assert.equal(turns.items[0].ts, NOW - 10_000);
+  });
+
   it('counts the trailing window from the rows it actually read', () => {
     const turns = buildTurnsSection({
       accounts: [{ id: 'a1', ref: 'acct-11111111' }],

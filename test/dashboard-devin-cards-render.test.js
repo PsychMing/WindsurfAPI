@@ -312,6 +312,28 @@ describe('request history card', () => {
     assert.match(html, /1,?\.?5|1\.5/, 'the credit total must render');
   });
 
+  it('renders a failed attempt as a zero-cost verdict and splits the counts', () => {
+    const html = renderRequestHistoryCard(I18n, self, {
+      ...payload,
+      total: 3,
+      billed: 2,
+      failed: 1,
+      items: [
+        { ts: 1_700_000_200_000, model: 'swe-2', billed: false, outcome: 'rate_limited', status: 429, totalTokens: 0, credit: 0, acu: 0 },
+        ...payload.items,
+      ],
+    }, 'acct-1');
+    assert.match(html, /dm-stat-value">2<\/span><span class="dm-stat-label">i18n:account\.detail\.requests\.billed/);
+    assert.match(html, /dm-stat-value">1<\/span><span class="dm-stat-label">i18n:account\.detail\.requests\.failed/);
+    assert.match(html, /i18n:account\.detail\.requests\.shown\|3/);
+    assert.equal((html.match(/class="dm-req-row/g) || []).length, 3);
+    assert.equal((html.match(/dm-req-row is-failed/g) || []).length, 1);
+    assert.match(html, /429 · rate_limited/, 'the verdict must ride the row title');
+    // The failed row must not render a zeroed token/credit pair that would read
+    // as a free successful call; it renders a dash plus the localized label.
+    assert.match(html, /—<\/span>\s*<span class="dm-req-num is-credit" style="color:var\(--warn\)">i18n:account\.detail\.requests\.failed/);
+  });
+
   it('escapes a hostile model name from the upstream', () => {
     const html = renderRequestHistoryCard(I18n, self, {
       ...payload,
