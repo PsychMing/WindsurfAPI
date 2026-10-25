@@ -331,7 +331,7 @@ describe('request history card', () => {
     assert.match(html, /429 · rate_limited/, 'the verdict must ride the row title');
     // The failed row must not render a zeroed token/credit pair that would read
     // as a free successful call; it renders a dash plus the localized label.
-    assert.match(html, /—<\/span>\s*<span class="dm-req-num is-credit" style="color:var\(--warn\)">i18n:account\.detail\.requests\.failed/);
+    assert.match(html, /—<\/span>\s*<span class="dm-req-num is-credit" style="color:\s*var\(--warn-text\)">i18n:account\.detail\.requests\.failed/);
   });
 
   it('escapes a hostile model name from the upstream', () => {
