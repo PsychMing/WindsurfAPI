@@ -47,6 +47,7 @@ import {
   buildToolPreambleForProto, buildCompactToolPreambleForProto,
   buildSchemaCompactToolPreambleForProto, buildSkinnyToolPreambleForProto,
   trimToolsForWeakModel, isWeakEmulationModel, interleaveParallelToolMessages,
+  orderToolResultsAfterCalls,
 } from './tool-emulation.js';
 import {
   getNativeBridgeDecision, buildReverseLookup,
@@ -3867,9 +3868,21 @@ async function _handleChatCompletionsInner(body, context = {}) {
     // silently falling back to prompt emulation.
     if (emulateTools) log.info(`Chat[${reqId}]: TOOLCALL nativeFlag=${nativeFlag} defsOn=${nativeDefsOn} callsOn=${nativeCallsOn} suppressPreamble=${suppressPreamble} mode=${(nativeDefsOn && nativeCallsOn) ? 'NATIVE' : 'emulation'}`);
     const nativeStructured = nativeDefsOn && nativeCallsOn;
+    // P2-1: native #6/#7 encoding does NOT require tools to be declared. When the
+    // native flag is on, connectParams.nativeToolCall below makes the builder emit
+    // ChatToolCall/tool_result frames for the history even with `tools` absent
+    // (or tools:[] / tool_choice:'none'), so the #273 repair must run on that
+    // branch too. It used to run only inside normalizeMessagesForCascade under
+    // nativeStructured, which is false without tools — a reversed pair then
+    // reached the wire as [1,4,2,1], the exact shape measured as a 502.
+    // The tools branch is unchanged: nativeStructured's normalizer already
+    // repairs, and the text-emulation branch must keep its bytes (it folds
+    // results into user turns, so there is no role=4 frame to order).
     let connectMessages = emulateTools
       ? normalizeMessagesForCascade(messages, connectTools, { modelKey: reqModelName, provider: null, route: 'devin_connect', toolChoice: tool_choice, injectUserPreamble: !suppressPreamble, stripOrphans: nativeDefsOn, nativeStructured })
-      : interleaveParallelToolMessages(messages);
+      : nativeFlag
+        ? interleaveParallelToolMessages(orderToolResultsAfterCalls(messages))
+        : interleaveParallelToolMessages(messages);
     // HYBRID native path: DEVIN_CONNECT has no proto tool_calling_section
     // slot, so the description-only preamble (buildToolPreambleForProto with
     // nativeStructured:true) is never built by normalizeMessagesForCascade —
