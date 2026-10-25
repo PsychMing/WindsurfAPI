@@ -1668,7 +1668,127 @@ function parseKimiToolCall(nameWithIndex, argsRaw) {
   return { name: parsedName, arguments: parsedArgs, suffix: nameWithIndex.includes(':') ? `_${nameWithIndex.split(':').pop().trim()}` : '' };
 }
 
+const TOOL_RESULT_OPEN_PREFIX = '<tool_result';
+const TOOL_RESULT_CLOSE_TAG = '</tool_result>';
+
+function isInsideJsonString(text, idx) {
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < idx; i++) {
+    const ch = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\' && inString) { escaped = true; continue; }
+    if (ch === '"') inString = !inString;
+  }
+  return inString;
+}
+
+function isToolResultOpenAt(text, idx) {
+  // A tool-call argument can legitimately contain the literal text
+  // `<tool_result>` (documentation, a quoted HTML sample). It is inside a JSON
+  // string there, not a protocol span; do not let the splitter hide the real
+  // call that encloses it.
+  if (isInsideJsonString(text, idx)) return false;
+  const after = idx + TOOL_RESULT_OPEN_PREFIX.length;
+  // A prefix sitting exactly at the buffer tail may be a split tag; treat it
+  // as an open tag and preserve it rather than leaking half a sentinel.
+  if (after >= text.length) return true;
+  const ch = text[after];
+  return ch === '>' || ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+}
+
+/**
+ * Split text into alternating prose and <tool_result …>…</tool_result> spans.
+ *
+ * The non-XML parsers (gpt_native, glm47, kimi_k2) buffer their whole output
+ * and never consumed a tool_result span themselves. That made the final
+ * salvage pass re-read a model echo of a discarded tool result as prose. This
+ * splitter gives those paths the same provenance boundary the XML parser has:
+ * span bodies are returned verbatim to the client but are never scanned for
+ * tool calls. A leading `</tool_result>` without its opening tag means the
+ * feed() path already emitted the open tag; everything before that close is
+ * still discarded span content.
+ */
+function splitToolResultSpans(text) {
+  const segments = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    let open = -1;
+    for (let p = text.indexOf(TOOL_RESULT_OPEN_PREFIX, cursor); p !== -1; p = text.indexOf(TOOL_RESULT_OPEN_PREFIX, p + 1)) {
+      if (isToolResultOpenAt(text, p)) { open = p; break; }
+    }
+    const closeBeforeOpen = text.indexOf(TOOL_RESULT_CLOSE_TAG, cursor);
+    if (closeBeforeOpen !== -1 && (open === -1 || closeBeforeOpen < open)) {
+      segments.push({ type: 'span', text: text.slice(cursor, closeBeforeOpen + TOOL_RESULT_CLOSE_TAG.length) });
+      cursor = closeBeforeOpen + TOOL_RESULT_CLOSE_TAG.length;
+      continue;
+    }
+    if (open === -1) {
+      segments.push({ type: 'text', text: text.slice(cursor) });
+      break;
+    }
+    if (open > cursor) segments.push({ type: 'text', text: text.slice(cursor, open) });
+    const closeAngle = text.indexOf('>', open + TOOL_RESULT_OPEN_PREFIX.length);
+    if (closeAngle === -1) {
+      segments.push({ type: 'span', text: text.slice(open) });
+      break;
+    }
+    const close = text.indexOf(TOOL_RESULT_CLOSE_TAG, closeAngle + 1);
+    const end = close === -1 ? text.length : close + TOOL_RESULT_CLOSE_TAG.length;
+    segments.push({ type: 'span', text: text.slice(open, end) });
+    cursor = end;
+  }
+  return segments;
+}
+
+/**
+ * Salvage every prose segment outside a tool_result span, preserving the spans
+ * verbatim in the returned text. This is the provenance-safe variant used by
+ * every dialect; a body that merely contains a call-shaped JSON object can
+ * never become an executable call.
+ */
+function salvageToolCallsOutsideToolResults(text) {
+  if (typeof text !== 'string' || !text) return { text: text || '', toolCalls: [], formats: [] };
+  const segments = splitToolResultSpans(text);
+  if (!segments.some((segment) => segment.type === 'span')) {
+    return salvageToolCallsFromText(text);
+  }
+  let outText = '';
+  const toolCalls = [];
+  const formats = new Set();
+  for (const segment of segments) {
+    if (segment.type === 'span') {
+      outText += segment.text;
+      continue;
+    }
+    const salvaged = salvageToolCallsFromText(segment.text);
+    outText += salvaged.text;
+    toolCalls.push(...salvaged.toolCalls);
+    for (const format of salvaged.formats) formats.add(format);
+  }
+  return { text: outText, toolCalls, formats: [...formats] };
+}
+
 function parseNonOpenAIDialectBuffer(dialect, body, startSeen) {
+  // A non-XML parser has no tool_result discard state. Split spans out first:
+  // they stay visible as text but are excluded from every dialect's parser and
+  // salvage scan (KH-015 covers the openai_json_xml path; this closes the same
+  // provenance hole for the buffered dialects).
+  const segments = splitToolResultSpans(body);
+  if (segments.some((segment) => segment.type === 'span')) {
+    let outText = '';
+    const calls = [];
+    for (const segment of segments) {
+      if (segment.type === 'span') {
+        outText += segment.text;
+        continue;
+      }
+      const parsed = parseNonOpenAIDialectBuffer(dialect, segment.text, startSeen + calls.length);
+      outText += parsed.text;
+      calls.push(...parsed.toolCalls);
+    }
+    return { text: outText, toolCalls: calls };
+  }
   if (dialect === 'kimi_k2') {
     let cursor = 0;
     let outText = '';
@@ -1831,6 +1951,12 @@ export class ToolCallStreamParser {
     // of being silently swallowed (which returned an empty response to the
     // client with no error).
     this._toolResultOpenTag = '';
+    // KH-015 — provenance marker: true once a <tool_result …> open tag has
+    // been accepted and its body put in the discard state. Text inside such a
+    // body must never reach the salvage pass: it is tool output (a fetched
+    // page, file, or command stdout), not model prose, and may contain a
+    // forged tool-call shape.
+    this.consumedToolResultSpan = false;
     this.inToolCode = false;
     this.inBareCall = false;
     this._totalSeen = 0;
@@ -2162,6 +2288,7 @@ export class ToolCallStreamParser {
         this._toolResultOpenTag = this.buffer.slice(nextIdx, closeAngle + 1);
         this.buffer = this.buffer.slice(closeAngle + 1);
         this.inToolResult = true;
+        this.consumedToolResultSpan = true;
       } else if (tagType === 'code') {
         this.buffer = this.buffer.slice(nextIdx);
         this.inToolCode = true;
@@ -2205,7 +2332,11 @@ export class ToolCallStreamParser {
       this.inToolResult = false;
       const openTag = this._toolResultOpenTag || TR_PREFIX;
       this._toolResultOpenTag = '';
-      return { text: `${openTag}${remaining}`, toolCalls: [] };
+      // KH-015 — this text is a verbatim regurgitation of a discarded
+      // tool-result span, not prose the model chose to answer with. It is
+      // still returned to the client (TOOL-3), but callers must not run the
+      // salvage pass over it.
+      return { text: `${openTag}${remaining}`, toolCalls: [], discardedToolResult: true };
     }
     if (this.inToolCode) {
       this.inToolCode = false;
@@ -2279,10 +2410,33 @@ export function parseToolCallsFromText(text, options = {}) {
   if (primary.toolCalls.length > 0 || !text || parser.dialect === 'kimi_k2') return primary;
   // Salvage only runs when we'd otherwise return zero tool calls — never
   // overrides the primary parser when it found something.
-  const salvaged = salvageToolCallsFromText(primary.text || text);
+  //
+  // KH-015 — provenance. Salvage scans *only* text the primary parser
+  // emitted as prose. `a.text` (feed) is always prose; `b.text` (flush) is
+  // prose except when it regurgitates an unclosed <tool_result …> block
+  // verbatim (TOOL-3). Once a tool-result span has been consumed, the raw
+  // `text` is off limits: its body was deliberately discarded as tool output,
+  // and re-reading it would resurrect a forged call from that output. So:
+  //   - closed span: primary.text is prose before/after the span (the body
+  //     was never emitted), so scan it;
+  //   - unclosed span: drop the regurgitated tail and scan only a.text;
+  //   - no span: keep the historical `primary.text || text` fallback.
+  let salvageText = primary.text || text;
+  if (parser.consumedToolResultSpan) {
+    salvageText = b.discardedToolResult ? a.text : primary.text;
+  }
+  const salvaged = salvageToolCallsOutsideToolResults(salvageText);
   if (!salvaged.toolCalls.length) return primary;
   log.info(`ToolParser: salvage recovered ${salvaged.toolCalls.length} tool_call(s) the primary parser missed (formats: ${salvaged.formats.join(',')})`);
-  return { text: salvaged.text, toolCalls: salvaged.toolCalls };
+  // TOOL-3: an unclosed <tool_result …> block is regurgitated verbatim by
+  // flush() and must stay in the client-visible text even when salvage also
+  // recovers a legitimate call from the prose before it. salvageText excludes
+  // that tail on purpose (it is discarded tool output, not prose), so append
+  // it back here rather than dropping it.
+  return {
+    text: b.discardedToolResult ? salvaged.text + b.text : salvaged.text,
+    toolCalls: salvaged.toolCalls,
+  };
 }
 
 /**
