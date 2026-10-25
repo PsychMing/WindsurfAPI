@@ -636,7 +636,7 @@ swe-1.5 / 1.5-fast / 1.6 / 1.6-fast / 1.7 / 1.7-lightning · arena-fast · arena
 
 > **DEVIN_CONNECT 模型拼写**：dotted `claude-sonnet-4.6` 是刻意保留的 alias，解析到上游 `claude-sonnet-4-6-thinking`（思考变体，credit 6）。要非 thinking 基座，显式写 catalog selector `claude-sonnet-4-6`（credit 4）—— 两种拼写都 `mapped:true`，别名是默认选择而不是降级。
 
-> **免费账号 entitled 模型**主要是 `gemini-2.5-flash`、`glm-4.7`、`glm-5` / `5.1`、`kimi-k2` / `k2.5` / `k2-6`、`qwen-3` 等开源系列；Claude / GPT 全系 + Opus 系列要 Pro。具体每个账号的 entitled 清单看 dashboard。
+> **免费账号 entitled 模型**主要是 `gemini-2.5-flash`、`glm-4.7`、`glm-5` / `5.1`、`kimi-k2` / `k2.5` / `k2-6`、`qwen-3` 等开源系列；Claude / GPT 全系 + Opus 系列要 Pro。具体每个账号的 entitled 清单看 dashboard。冷启动静态基表只有 `gemini-2.5-flash`；其余是**按账号探测**出来的（GetUserStatus 白名单 + 一次成功调用），新号只显示 1 个属正常，dashboard 点 Probe 后补齐。
 >
 > **工具调用稳定性**（v2.0.82+ 实测）：Claude family 走 `<tool_use>` 协议最稳；GLM-4.7 / Kimi-K2.5 走 NLU 兜底 + 可选 retry 大部分 case 能调；GLM-5.1 在 cascade 后端不稳（经常空回复 textLen=0），proxy 救不动；GPT 在 cascade 协议层不传 tools[] schema 也救不全。Claude Code 调本地工具优先 `claude-haiku-4.5` / `claude-sonnet-4.6`。
 
@@ -733,7 +733,7 @@ A: 已修。cold stall 检测按输入长度自适应（基数 30s，每 1500 �
 A: 能。`export ANTHROPIC_BASE_URL=http://你的API` + `export ANTHROPIC_API_KEY=你的key`。`/v1/messages` 支持 system + tools + tool_use + tool_result + stream + multi-turn 全套，已实测通过。
 
 **Q: 免费账号能用什么模型**
-A: 主要是 `gemini-2.5-flash`、`glm-4.7` / `5` / `5.1`、`kimi-k2` / `k2.5` / `k2-6`、`qwen-3` 这些开源系列。Claude family + GPT 全系 + Opus / Max / Thinking 高阶模型要 Pro entitlement。具体每个账号的 entitled 清单 dashboard 里看 — `model_not_entitled` 错误返回的 `available_in_pool` 字段也会列出账号池能用的。
+A: 主要是 `gemini-2.5-flash`、`glm-4.7` / `5` / `5.1`、`kimi-k2` / `k2.5` / `k2-6`、`qwen-3` 这些开源系列。Claude family + GPT 全系 + Opus / Max / Thinking 高阶模型要 Pro entitlement。具体每个账号的 entitled 清单 dashboard 里看 — `model_not_entitled` 错误返回的 `available_in_pool` 字段也会列出账号池能用的。静态冷启动基表只有 `gemini-2.5-flash`（#149），其余靠逐账号探测；新号只显示 1 个不是 bug。
 
 **Q: 免费账号调工具稳吗**
 A: 看模型。Claude family `<tool_use>` 协议训练扎实最稳（free 账号若 entitled 也是优选）；GLM-4.7 / Kimi-K2.5 走 NLU 兜底 + `WINDSURFAPI_NLU_RETRY=1` retry-with-correction 多数 case 能调；GLM-5.1 在 cascade 后端经常空回复 proxy 救不动；GPT 系列受 cascade 协议层限制（不传 OpenAI tools[] schema）也不稳。**Claude Code / Cline / Codex 调本地文件 / 跑命令优先 `claude-haiku-4.5` 或 `claude-sonnet-4.6`**。
