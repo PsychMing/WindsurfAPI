@@ -245,6 +245,10 @@ export function buildTurnsSection({
     const rows = Array.isArray(page.items) ? page.items : [];
     for (const row of rows) {
       if (!row || !Number.isFinite(row.ts)) continue;
+      // This section is "billed turns": the shared ring also retains failed
+      // attempts (billed:false), which carry zero cost and must not inflate the
+      // last-hour turn count or the rendered turn table.
+      if (row.billed === false) continue;
       const entry = {
         ts: row.ts,
         accountRef: str(acct.ref, 40),

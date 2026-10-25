@@ -3420,10 +3420,12 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     return json(res, payload.ok ? 200 : (payload.httpStatus || 404), payload);
   }
 
-  // GET /accounts/:id/requests — the account's own billed-request history.
-  // Read-only, process-local, no upstream call and no key material: rows carry
-  // model + token counts + cost. `total` is the ring size, so the drawer can
-  // print "50 of 100" instead of implying the page is the whole history.
+  // GET /accounts/:id/requests — the account's own request history: billed
+  // requests plus failed attempts attributed to it. Read-only, process-local,
+  // no upstream call and no key material: rows carry model + token counts +
+  // cost, or model + outcome + status for a failure. `total` is the ring size
+  // (billed + failed), and `billed`/`failed` split it, so the drawer can print
+  // "50 of 100" instead of implying the page is the whole history.
   const accountRequests = subpath.match(/^\/accounts\/([^/]+)\/requests$/);
   if (accountRequests && method === 'GET') {
     const acct = getAccountPublic(accountRequests[1], { view: 'summary' });

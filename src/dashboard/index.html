@@ -10092,9 +10092,10 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   },
 
   // Card — per-account request history. Fed by GET /accounts/:id/requests, which
-  // reads the process-local ring written by recordAccountSpend. The card states
-  // both limits on its face (billed successes only, process-local) because a
-  // short list must never read as "this account has served nothing".
+  // reads the process-local ring written by recordAccountSpend (billed) and
+  // recordAccountAttempt (failed, zero-cost). The card states both limits on its
+  // face (process-local, billed + failed) because a short list must never read
+  // as "this account has served nothing".
   renderRequestHistoryCard(history, accountId) {
     const T = (k, v) => I18n.t('account.detail.requests.' + k, v);
     const head = (badge) => `<div class="detail-card-head">
@@ -10118,23 +10119,32 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const sum = history.summary || {};
     const total = Number(history.total) || 0;
     const cap = Number(history.capacity) || 0;
+    // Older payloads (and test fixtures) may predate the split; fall back to the
+    // billed summary rather than rendering an invented failed count.
+    const billedCount = Number.isFinite(Number(history.billed)) ? Number(history.billed) : (Number(sum.requests) || 0);
+    const failedCount = Number.isFinite(Number(history.failed)) ? Number(history.failed) : 0;
     const num = (n) => (n == null || !Number.isFinite(Number(n)) ? '—' : Number(n).toLocaleString());
     const frac = (n) => (n == null || !Number.isFinite(Number(n)) ? '—' : (Math.round(Number(n) * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 }));
     const acuFmt = (n) => (n == null ? '—' : (n > 0 && n < 0.01 ? Number(n).toLocaleString(undefined, { maximumSignificantDigits: 4 }) : frac(n)));
     const badge = `<span class="badge muted no-dot" style="margin-left:auto" title="${this.esc(T('windowTip', { cap }))}">${this.esc(T('window', { total, cap }))}</span>`;
     const rows = items.map((r) => {
       const when = r.ts ? new Date(r.ts).toLocaleString() : '—';
-      return `<div class="dm-req-row" title="${this.esc(when)}">
+      // A failed attempt has no cost to show; render the verdict instead of a
+      // zeroed token/credit pair, which would read as a free successful call.
+      const failed = r.billed === false;
+      const verdict = [r.status == null ? '' : String(r.status), r.outcome || ''].filter(Boolean).join(' · ');
+      return `<div class="dm-req-row${failed ? ' is-failed' : ''}" title="${this.esc(failed && verdict ? `${when} · ${verdict}` : when)}">
         <span class="dm-row-time">${this.esc(this.dmAgo(r.ts))}</span>
         <span class="dm-req-model" title="${this.esc(r.model || '')}">${this.esc(r.model || '—')}</span>
-        <span class="dm-req-num">${this.esc(num(r.totalTokens))} ${this.esc(T('tokenUnit'))}</span>
-        <span class="dm-req-num is-credit">${this.esc(frac(r.credit))}</span>
+        <span class="dm-req-num">${failed ? '—' : `${this.esc(num(r.totalTokens))} ${this.esc(T('tokenUnit'))}`}</span>
+        <span class="dm-req-num is-credit"${failed ? ' style="color:var(--warn)"' : ''}>${this.esc(failed ? T('failed') : frac(r.credit))}</span>
       </div>`;
     }).join('');
     return `<div class="detail-card" data-dm-card="requests" style="grid-column:1/-1">
       ${head(badge)}
       <div class="dm-grid">
-        <div class="dm-stat"><span class="dm-stat-value">${this.esc(num(sum.requests))}</span><span class="dm-stat-label">${this.esc(T('requests'))}</span></div>
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(num(billedCount))}</span><span class="dm-stat-label">${this.esc(T('billed'))}</span></div>
+        <div class="dm-stat"><span class="dm-stat-value">${this.esc(num(failedCount))}</span><span class="dm-stat-label">${this.esc(T('failed'))}</span></div>
         <div class="dm-stat"><span class="dm-stat-value">${this.esc(num(sum.totalTokens))}</span><span class="dm-stat-label">${this.esc(T('tokens'))}</span></div>
         <div class="dm-stat"><span class="dm-stat-value">${this.esc(frac(sum.credit))}</span><span class="dm-stat-label">${this.esc(T('credit'))}</span></div>
         <div class="dm-stat"><span class="dm-stat-value">${this.esc(acuFmt(sum.acu))}</span><span class="dm-stat-label">${this.esc(T('acu'))}</span></div>

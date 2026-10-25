@@ -5,7 +5,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { WindsurfClient, contentToString, isCascadeTransportError, acquireLsUseOrThrow, detachedClaimLostError } from '../client.js';
-import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountInternal, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, markSelectorIneligible, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, isAllConnectAccountsUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
+import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountInternal, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, markSelectorIneligible, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, isAllConnectAccountsUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, getConnectFreeFallbackSelectors, reLoginAccount as _reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, recordAccountAttempt, ensureDeviceSeed, requestReauthCheck } from '../auth.js';
 
 import { isStickyEnabled, setStickyBinding, peekStickyBinding } from '../account/sticky-session.js';
 import { resolveModel, getModelInfo, pickRateLimitFallback, isModelDisabledUpstream, getModelCaps } from '../models.js';
@@ -2592,6 +2592,35 @@ function credentialEpochCurrent(acct, credentialKey = null) {
   return currentApiKeyForId(acct.id, attempted) === attempted;
 }
 
+// Connection-shaped failures for the per-account history. Deliberately NOT the
+// full TRANSPORT_FAULT_CODES set: that one answers "is this the ACCOUNT's
+// fault?" and includes request-shaped codes (NO_TOKEN, invalid_argument, …)
+// that are not connection failures. These are the codes where the socket or the
+// upstream call itself failed.
+const CONNECTION_FAULT_CODES = new Set([
+  'TIMEOUT', 'DEADLINE_EXCEEDED',
+  'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH',
+  'ENETUNREACH', 'EAI_AGAIN', 'ECONNABORTED',
+  'unavailable', 'aborted', 'cancelled', 'deadline_exceeded',
+]);
+
+// Classify a failed CONNECT attempt for the per-account history. The ring keeps
+// a short machine label plus the HTTP-ish status the client saw; upstream
+// message text never enters it (it can carry request content or headers).
+function connectAttemptOutcome(err, aborted) {
+  if (aborted) return { outcome: 'client_abort', status: 499 };
+  const code = typeof err?.code === 'string' ? err.code : '';
+  if (code === 'RATE_LIMITED') return { outcome: 'rate_limited', status: 429 };
+  if (code === 'QUOTA_EXHAUSTED') return { outcome: 'quota_exhausted', status: 402 };
+  if (CONNECTION_FAULT_CODES.has(code)) {
+    // A stalled socket is a connection failure, not a model verdict. The two
+    // timeout codes carry the 504 the HTTP mapper gives them; every other
+    // connection code is a generic upstream/connection failure (502).
+    return { outcome: 'connection_error', status: (code === 'TIMEOUT' || code === 'DEADLINE_EXCEEDED') ? 504 : 502 };
+  }
+  return { outcome: 'upstream_error', status: connectErrorToHttp(code).status };
+}
+
 // `model` is the ATTRIBUTION name: the dashboard request row (and the token
 // row recorded next to it) files this attempt under it. The connect path passes
 // the served display name (connectDisplayModel) so both rows land in the same
@@ -2654,6 +2683,21 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
     // judgements about whether the account misbehaved, and a client disconnect is
     // no evidence of that — those stay exempt.
     const aborted = abortedHint || isAbortError(err);
+    // Per-account request history: a failed attempt is attributed to the account
+    // that was asked to serve it, at zero cost. The early returns above are the
+    // no-attribution cases (env token / account removed) and deliberately write
+    // nothing — an unattributed failure must not be pinned on a replacement that
+    // happens to hold the same synthetic key. Best-effort: the ring must never
+    // fail the release path.
+    try {
+      const verdict = connectAttemptOutcome(err, aborted);
+      recordAccountAttempt(live, {
+        model,
+        outcome: verdict.outcome,
+        status: verdict.status,
+        attemptId: acct.reservationTimestamp,
+      });
+    } catch { /* history is best-effort */ }
     if (err.code === 'QUOTA_EXHAUSTED') {
       // The account ran out of credit/quota — unlike a tier wall this IS an
       // account-specific dry-well. Cool it down so getApiKey stops re-selecting
@@ -5505,10 +5549,15 @@ async function _handleChatCompletionsInner(body, context = {}) {
 
     try { await ensureLsFn(acct.proxy); } catch (e) {
       lastErr = isLsPoolExhausted(e) ? lsPoolExhaustedResponse(e) : { status: e.status || 503, body: { error: { message: e.message || String(e), type: e.type || 'ls_unavailable' } } };
+      try { recordAccountAttempt(acct, { model: displayModel, outcome: 'connection_error', status: e.status || 503 }); } catch {}
       break;
     }
     const ls = getLsForFn(acct.proxy);
-    if (!ls) { lastErr = { status: 503, body: { error: { message: 'No LS instance available', type: 'ls_unavailable' } } }; break; }
+    if (!ls) {
+      lastErr = { status: 503, body: { error: { message: 'No LS instance available', type: 'ls_unavailable' } } };
+      try { recordAccountAttempt(acct, { model: displayModel, outcome: 'connection_error', status: 503 }); } catch {}
+      break;
+    }
     // Cascade pins cascade_id to a specific LS port too; if the LS it was
     // born on has been replaced, the cascade_id is dead.
     if (reuseEntry && reuseEntry.lsPort !== ls.port) {
@@ -6331,6 +6380,9 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     // counting an upstream fault — the caller's socket is already gone.
     if (signal?.aborted || err?.name === 'AbortError' || err?.code === 'ABORT_ERR') {
       log.info('Chat[non-stream]: aborted (client gone) — not billing or caching');
+      // The turn did not complete, but the account was asked to serve it — keep
+      // that fact in the per-account history at zero cost.
+      try { recordAccountAttempt({ id: accountId }, { model, outcome: 'client_abort', status: 499 }); } catch {}
       return {
         status: 499,
         body: { error: { message: 'Client closed request', type: 'client_disconnect', code: 'client_disconnect' } },
@@ -6384,6 +6436,17 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     if (err.isModelError && err.kind !== 'transient_stall' && !isRateLimit && !isInternal) {
       updateCapability(liveApiKey, modelKey, false, 'model_error');
     }
+    // Per-account history: one failed row per failed attempt, attributed to the
+    // account that was asked to serve it. Cost fields are zero by construction,
+    // so a failure can never move the billed summary.
+    try {
+      const verdict = isRateLimit ? { outcome: 'rate_limited', status: 429 }
+        : isDeadline ? { outcome: 'upstream_error', status: 504 }
+        : isPolicyBlocked ? { outcome: 'policy_blocked', status: 451 }
+        : (isTransport || isTransient) ? { outcome: 'connection_error', status: 502 }
+        : { outcome: 'upstream_error', status: err.isModelError ? 403 : 502 };
+      recordAccountAttempt({ id: accountId }, { model, ...verdict });
+    } catch {}
     recordRequest(model, false, Date.now() - startTime, accountId);
     log.error('Chat error:', err.message);
     // v2.0.61 — policy block surfaces as 451 Unavailable For Legal Reasons,
@@ -7529,10 +7592,15 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               lastErr = isLsPoolExhausted(e)
                 ? Object.assign(new Error(e.message), { type: 'ls_pool_exhausted', status: e.status || 503 })
                 : e;
+              try { recordAccountAttempt(acct, { model, outcome: 'connection_error', status: e.status || 503 }); } catch {}
               break;
             }
             ls = getLsForFn(acct.proxy);
-            if (!ls) { lastErr = new Error('No LS instance available'); break; }
+            if (!ls) {
+              lastErr = new Error('No LS instance available');
+              try { recordAccountAttempt(acct, { model, outcome: 'connection_error', status: 503 }); } catch {}
+              break;
+            }
             if (reuseEntry && reuseEntry.lsPort !== ls.port) {
               log.info(`Chat[${reqId}]: reuse MISS — LS port changed`);
               checkedOutReuseEntry = null;
@@ -8149,6 +8217,9 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // as if it were a complete turn.
             if (abortController.signal.aborted || err?.name === 'AbortError' || err?.code === 'ABORT_ERR') {
               log.info(`Chat[${reqId}]: stream aborted (client gone) — not retrying`);
+              // The account was asked to serve this turn even though the client
+              // left; keep the failed attempt in its history at zero cost.
+              try { recordAccountAttempt({ id: currentAccountId }, { model, outcome: 'client_abort', status: 499 }); } catch {}
               if (resumeClaim) {
                 // F21/F22/F24: re-detach with the turn's own snapshot when the
                 // producer managed one; otherwise keep the frozen snapshot.
@@ -8263,6 +8334,17 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             if (err.isModelError && err.kind !== 'transient_stall' && !isRateLimit && !isInternal) {
               updateCapability(liveApiKey, modelKey, false, 'model_error');
             }
+            // Per-account history: one failed row per failed attempt, attributed
+            // to the account that was asked to serve it. Cost fields are zero by
+            // construction, so a failure can never move the billed summary.
+            try {
+              const verdict = isRateLimit ? { outcome: 'rate_limited', status: 429 }
+                : isDeadline ? { outcome: 'upstream_error', status: 504 }
+                : isPolicyBlocked ? { outcome: 'policy_blocked', status: 451 }
+                : (isTransport || isTransient) ? { outcome: 'connection_error', status: 502 }
+                : { outcome: 'upstream_error', status: err.isModelError ? 403 : 502 };
+              recordAccountAttempt({ id: currentAccountId }, { model, ...verdict });
+            } catch {}
             if (isRateLimit && strictReuse && checkedOutReuseEntry && fpBefore && checkedOutReuseEntry.apiKey === currentApiKey) {
               log.info(`Chat[${reqId}]: strict reuse preserved cascade after rate limit`);
               break;
