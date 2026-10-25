@@ -91,7 +91,12 @@ it('rollback refuses an untracked path that reset --hard would overwrite, then f
     const forcedRes = fakeRes();
     await handleDashboardApi('POST', '/self-update/rollback', { forceReset: true }, { headers: {}, socket: { remoteAddress: '127.0.0.1' } }, forcedRes);
     const forced = forcedRes.json();
-    assert.equal(forced.ok, true, JSON.stringify(forced));
+    // D6: the force reset and stash are applied, but the scheduler declined,
+    // so this is a pending rollback with its retry point intact — not success.
+    assert.equal(forced.ok, false, JSON.stringify(forced));
+    assert.equal(forced.error, 'ERR_RESTART_NOT_SCHEDULED');
+    assert.equal(forced.rollbackPointRetained, true);
+    assert.equal(forced.rolledBackTo, before.slice(0, 7));
     assert.equal(git(root, ['rev-parse', 'HEAD']), before);
     assert.equal(readFileSync(victim, 'utf8'), 'tracked rollback content\n');
     assert.equal(git(root, ['show', 'stash@{0}^3:victim.txt']), 'owner untracked content');
