@@ -5,7 +5,9 @@
  * P2-12 was "the provider swatches are hardcoded hex and 5/11 fall under 3:1 on
  * one theme or the other". The fix moved them to theme-aware tokens; this gate
  * is what keeps them honest, and it also re-checks the token pairs the account
- * UI leans on (labels, badges, dots, brand blocks).
+ * UI leans on (labels, badges, dots, brand blocks). The DashboardColor pass
+ * adds the status/accent -text twins on --surface/-soft and the
+ * --border-control boundary on every surface rung.
  *
  * Floors (WCAG 2.2):
  *   4.5:1 — text (--text, --text-muted, --text-dim; badge labels; brand button text)
@@ -47,6 +49,22 @@ export const SOFT = {
   '--accent-soft': '--accent',
 };
 
+/** AA label twins: the -text hue must clear 4.5 on --surface AND on the
+ *  matching -soft wash it is painted over (chips, tiers, status rows). */
+export const TEXT_ON_SOFT = {
+  '--accent-text': '--accent-soft',
+  '--success-text': '--success-soft',
+  '--warn-text': '--warn-soft',
+  '--error-text': '--error-soft',
+  '--info-text': '--info-soft',
+};
+
+/** Interactive control boundaries — 3:1 on every rung of the surface ladder. */
+export const UI_BORDERS = ['--border-control'];
+
+/** Accent interaction states used as rings/borders — graphical 3:1 floor. */
+export const ACCENT_STATES = ['--accent-hover', '--accent-active', '--accent-focus'];
+
 export const TEXT_FLOOR = 4.5;
 export const GRAPHICAL_FLOOR = 3;
 export const LADDER_FLOOR = 1.08;
@@ -73,6 +91,16 @@ function onSurface(vars, name) {
   const surface = color(vars, '--surface');
   const fg = color(vars, name);
   return fg.a < 1 ? composite(fg, surface) : fg;
+}
+
+/** Resolve a foreground over a possibly-translucent background that itself
+ *  sits on `base`. Used for label-on-soft and border-on-surface pairs. */
+function onBackground(vars, fgName, bgName, baseName = '--surface') {
+  const base = color(vars, baseName);
+  let bg = color(vars, bgName);
+  if (bg.a < 1) bg = composite(bg, base);
+  const fg = color(vars, fgName);
+  return fg.a < 1 ? composite(fg, bg) : fg;
 }
 
 export function lintDashboardContrast(html = readDashboardHtml()) {
@@ -107,17 +135,43 @@ export function lintDashboardContrast(html = readDashboardHtml()) {
       }
     }
 
+    // 2c. AA status/accent labels on --surface and on their own soft wash.
+    for (const [token, soft] of Object.entries(TEXT_ON_SOFT)) {
+      for (const bg of ['--surface', '--surface-2', '--surface-3', soft]) {
+        const ratio = contrastRatio(onBackground(vars, token, bg), onSurface(vars, bg));
+        if (ratio < TEXT_FLOOR) problems.push(`${theme}: ${token} is ${ratio}:1 on ${bg} (needs ${TEXT_FLOOR})`);
+      }
+    }
+
     // 3. Graphical tokens (status dots, meter fills, focus rings).
     for (const token of GRAPHICAL) {
       const ratio = contrastRatio(onSurface(vars, token), surface);
       if (ratio < GRAPHICAL_FLOOR) problems.push(`${theme}: ${token} is ${ratio}:1 on --surface (needs ${GRAPHICAL_FLOOR})`);
     }
 
-    // 4. Filled blocks: the label colour on the fill.
-    const accent = color(vars, '--accent');
+    // 3b. Accent interaction states are rings/borders too — same 3:1 floor.
+    for (const token of ACCENT_STATES) {
+      const ratio = contrastRatio(onSurface(vars, token), surface);
+      if (ratio < GRAPHICAL_FLOOR) problems.push(`${theme}: ${token} is ${ratio}:1 on --surface (needs ${GRAPHICAL_FLOOR})`);
+    }
+
+    // 3c. Control borders must stay visible on every surface rung.
+    for (const token of UI_BORDERS) {
+      for (const bg of ['--surface', '--surface-2', '--surface-3']) {
+        const ratio = contrastRatio(onBackground(vars, token, bg), color(vars, bg));
+        if (ratio < GRAPHICAL_FLOOR) problems.push(`${theme}: ${token} is ${ratio}:1 on ${bg} (needs ${GRAPHICAL_FLOOR})`);
+      }
+    }
+
+    // 4. Filled blocks: the label colour on the fill. Status fills carry the
+    // same --on-accent label as the accent fill (buttons, chips, meters).
     const onAccent = color(vars, '--on-accent');
-    const accentRatio = contrastRatio(onAccent, accent);
-    if (accentRatio < TEXT_FLOOR) problems.push(`${theme}: --on-accent is ${accentRatio}:1 on --accent (needs ${TEXT_FLOOR})`);
+    for (const fill of ['--accent', '--success', '--warn', '--error', '--info']) {
+      const ratio = contrastRatio(onAccent, color(vars, fill));
+      if (ratio < TEXT_FLOOR) problems.push(`${theme}: --on-accent is ${ratio}:1 on ${fill} (needs ${TEXT_FLOOR})`);
+    }
+    const accentRatio = contrastRatio(onAccent, color(vars, '--accent-hover'));
+    if (accentRatio < TEXT_FLOOR) problems.push(`${theme}: --on-accent is ${accentRatio}:1 on --accent-hover (needs ${TEXT_FLOOR})`);
 
     for (const brand of ['google', 'github']) {
       const fg = color(vars, `--brand-${brand}-fg`);

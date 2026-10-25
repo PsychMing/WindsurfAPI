@@ -15,9 +15,9 @@
 :root {
   color-scheme: light;     /* native controls (date pickers, scrollbars) = light */
   /* ── Cool-neutral light theme (pre-workbuddy KiroStudio palette: zinc
-     greys, clay accent — no warm cast). Ratios measured 2026-10-23 with
-     WCAG 2.2 sRGB math; see evidence/ThemeRevert.md for the restored /
-     AA-adjusted pairs. ── */
+     greys, clay accent — no warm cast). Ratios measured 2026-10-25 with
+     WCAG 2.2 sRGB math; see evidence/DashboardColor.md for the palette
+     table and every new pair. ── */
   --paper:      #f4f4f5;   /* neutral grey-white main background */
   --paper-2:    #ececee;   /* secondary surface */
   --paper-3:    #e2e2e5;   /* faint zone base */
@@ -25,34 +25,57 @@
   --ink-soft:   #3f3f46;
   --mid-gray:   #a1a1aa;
 
-  /* legacy var names kept (referenced site-wide), remapped to new semantics */
+  /* ── Surface / elevation ramp ────────────────────────────────────────────
+     One ladder, no parallel palette:
+       0 page      --bg / --paper
+       1 card      --surface
+       2 control   --surface-2   (fields, segmented wells)
+       3 raised    --surface-3   (chips, highest fill)
+     --bg-elev is the field step. Shadows pair with the same ramp:
+     --shadow-sm (card) → --shadow (hover/popover) → --shadow-lg (modal).
+     Adjacent steps keep ≥1.08 separation, asserted by
+     scripts/check-dashboard-contrast.mjs. */
   --bg: var(--paper);
-  --bg-elev: var(--paper);
+  --bg-elev: var(--surface-2);
   --surface: #ffffff;
   --surface-2: var(--paper-2);
   --surface-3: var(--paper-3);
   --border: rgba(24,24,27,.10);
   --border-strong: rgba(24,24,27,.18);
+  --border-control: rgba(24,24,27,.58); /* interactive boundary — ≥3:1 on every surface */
   --text: var(--ink);
   --text-muted: #52525b;
   --text-dim: #626269;     /* 6.05 surface / 5.13 surface-2 / 4.68 surface-3 — 10px labels sit on --surface-2 */
   --text-faint: #a1a1aa;   /* disabled + decorative only, never body copy */
 
-  /* Anthropic accent — signature clay orange */
-  --accent: #d06b49;       /* 3.57 surface / 3.04 accent-soft */
+  /* Anthropic accent — signature clay orange. --accent is the fill/dot hue;
+     --accent-text is the AA label/link hue; --accent-hover/active/focus are
+     the interaction states (fills and rings). */
+  --accent: #d06b49;       /* 3.57 surface / 3.04 accent-soft — fill only */
   --accent-hover: #c86543;
+  --accent-active: #b85738;
+  --accent-focus: #a84a2e; /* 5.70 surface — 3:1 focus-ring floor */
+  --accent-text: #a3462b;  /* 6.05 surface / 5.16 accent-soft / 4.68 surface-3 */
   --accent-soft: rgba(208,107,73,.14);
   --on-accent: #18181b;    /* 4.96 on accent — white would be 3.57 */
+  --gradient-accent: linear-gradient(135deg, var(--accent-soft) 0%, transparent 72%);
   --blue: #6a9bcc;
   --green: #788c5d;
+  /* Status fills (--success/--warn/--error/--info) carry --on-accent labels
+     and 3:1 dots. The -text twins are the AA label hue on the matching
+     -soft wash (and on --surface). */
   --success: #788c5d;      /* 4.82 with --on-accent */
   --success-soft: rgba(120,140,93,.16);
-  --warn: #b07d1c;         /* 3.21 on warn-soft */
+  --success-text: #4f6b36; /* 6.02 surface / 5.08 success-soft / 4.66 surface-3 */
+  --warn: #b07d1c;         /* 4.89 with --on-accent */
   --warn-soft: rgba(217,162,87,.16);
-  --error: #cc6658;        /* 3.14 on error-soft */
+  --warn-text: #8a5a00;    /* 5.93 surface / 5.25 warn-soft / 4.58 surface-3 */
+  --error: #cc6658;        /* 4.73 with --on-accent */
   --error-soft: rgba(198,93,78,.14);
-  --info: #5b8cc0;         /* 3.04 on info-soft */
+  --error-text: #ad392c;   /* 6.18 surface / 5.19 error-soft / 4.78 surface-3 */
+  --info: #5b8cc0;         /* 5.03 with --on-accent */
   --info-soft: rgba(106,155,204,.16);
+  --info-text: #2a6599;    /* 6.14 surface / 5.29 info-soft / 4.75 surface-3 */
   --think: #6b5b95;
   --think-soft: rgba(107,91,149,.12);
   --tip-bg: rgba(24,24,27,.98);
@@ -164,28 +187,37 @@
   --ink-soft: #c4c4c6;
   --mid-gray: #8a8a8f;
   --bg: var(--paper);
-  --bg-elev: var(--paper-2);
+  --bg-elev: var(--surface-2);
   --surface: #141414;
   --surface-2: #1d1d1d;
   --surface-3: #262626;
   --border: rgba(255,255,255,.10);
   --border-strong: rgba(255,255,255,.18);
+  --border-control: rgba(255,255,255,.42); /* interactive boundary — ≥3:1 on every surface */
   --text: var(--ink);
   --text-muted: #a1a1aa;
   --text-dim: #90909a;     /* 5.83 on surface — was #71717a (3.81 FAIL) */
   --text-faint: #71717a;
-  --accent: #d97757;       /* 5.90 */
+  --accent: #d97757;       /* 5.90 — fill only */
   --accent-hover: #c86543;
+  --accent-active: #b85f42;
+  --accent-focus: #e89a7d; /* 8.20 surface */
+  --accent-text: #df8a6b;  /* 7.01 surface / 5.28 accent-soft */
   --accent-soft: rgba(217,119,87,.20);
   --on-accent: #141414;    /* 5.86 — white would be 3.12 */
+  --gradient-accent: linear-gradient(135deg, var(--accent-soft) 0%, transparent 72%);
   --success: #788c5d;      /* 5.01 */
   --success-soft: rgba(120,140,93,.22);
+  --success-text: #96b277; /* 7.84 surface / 5.90 success-soft */
   --warn: #d9a257;         /* 8.12 */
   --warn-soft: rgba(217,162,87,.22);
+  --warn-text: #d9a95f;    /* 8.59 surface / 5.73 warn-soft */
   --error: #cc6658;        /* 4.92 */
   --error-soft: rgba(198,93,78,.22);
+  --error-text: #da8578;   /* 6.67 surface / 5.21 error-soft */
   --info: #6a9bcc;         /* 6.29 */
   --info-soft: rgba(106,155,204,.22);
+  --info-text: #7cb2ee;    /* 8.30 surface / 5.88 info-soft */
   --think: #b3a4d0;
   --think-soft: rgba(179,164,208,.16);
   --blue: #6a9bcc;
@@ -255,7 +287,7 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 5px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
-a { color: var(--accent); text-decoration: none; }
+a { color: var(--accent-text); text-decoration: none; }
 code {
   font-family: var(--mono);
   font-size: 12px;
@@ -351,12 +383,25 @@ code {
   /* min-width:0 lets this flex column shrink; .table-wrap owns horizontal scroll (accounts was 1628px @1440). */
 }
 .page-header {
+  position: relative;
+  isolation: isolate;
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 24px;
   gap: 16px;
   flex-wrap: wrap;
+}
+/* Subtle accent wash behind the title/actions. Absolute, so it adds no box
+   to the layout and cannot move the header's 24px rhythm. */
+.page-header::before {
+  content: "";
+  position: absolute;
+  inset: -10px -14px;
+  z-index: -1;
+  border-radius: var(--radius);
+  background: var(--gradient-accent);
+  pointer-events: none;
 }
 .page-title {
   font-family: var(--font);
@@ -404,7 +449,7 @@ code {
 .heal-cell:hover { box-shadow: var(--shadow-sm); transform: translateY(1px); }
 .heal-cell .heal-num { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; letter-spacing: -.02em; }
 .heal-cell.good .heal-num { color: var(--green); }
-.heal-cell.bad.hot .heal-num { color: var(--error); }
+.heal-cell.bad.hot .heal-num { color: var(--error-text); }
 .heal-cell.neutral .heal-num { color: var(--blue); }
 .heal-cell.zero .heal-num { color: var(--text-dim); }
 .heal-cell .heal-lbl { font-size: 11px; color: var(--text-muted); letter-spacing: .06em; text-transform: uppercase; margin-top: 2px; }
@@ -500,10 +545,10 @@ code {
 .sbar-fire { flex-shrink: 0; font-size: 12px; }
 .sbar-metric { flex-shrink: 0; font-family: var(--mono); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; min-width: 34px; }
 .sbar-metric .u { font-size: 8px; opacity: .6; }
-.sbar-rpm { color: var(--info); }
-.sbar-inflight { color: var(--accent); min-width: 52px; }
-.sbar-ok { color: var(--success); min-width: 30px; }
-.sbar-err { color: var(--error); min-width: 26px; }
+.sbar-rpm { color: var(--info-text); }
+.sbar-inflight { color: var(--accent-text); min-width: 52px; }
+.sbar-ok { color: var(--success-text); min-width: 30px; }
+.sbar-err { color: var(--error-text); min-width: 26px; }
 .sbar-muted { color: var(--text-dim); min-width: 26px; }
 .sbar.hot { border-color: rgba(255,120,30,.5); box-shadow: 0 0 8px rgba(255,110,20,.25) inset; }
 /* WebGL fire (KiroStudio FireCanvas port): a full-width burning band behind the
@@ -532,7 +577,7 @@ code {
 @keyframes phc-rise { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 .phc-head { display: flex; align-items: center; gap: 6px; font-weight: 600; font-family: var(--mono); }
 .phc-dot { width: 8px; height: 8px; border-radius: 50%; }
-.phc-fire { font-size: var(--fs-2xs); font-weight: 500; color: var(--warn); }
+.phc-fire { font-size: var(--fs-2xs); font-weight: 500; color: var(--warn-text); }
 .phc-email { color: var(--text-muted); font-size: 11px; margin: 2px 0 6px; word-break: break-all; }
 .phc-row { display: flex; justify-content: space-between; gap: 14px; }
 .phc-k { color: var(--text-muted); }
@@ -542,7 +587,7 @@ code {
 .rank-row { margin-bottom: 10px; }
 .rank-top { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
 .rank-no { width: 20px; height: 20px; flex: none; display: flex; align-items: center; justify-content: center; border-radius: 50%; font-family: var(--hand); font-weight: 700; font-size: 12px; background: var(--paper-3); color: var(--text-muted); }
-.rank-row.first .rank-no { background: var(--accent-soft); color: var(--accent); border: 1.5px solid var(--accent); }
+.rank-row.first .rank-no { background: var(--accent-soft); color: var(--accent-text); border: 1.5px solid var(--accent); }
 .rank-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rank-val { font-variant-numeric: tabular-nums; color: var(--text-muted); }
 .rank-track { height: 7px; border-radius: 9999px; background: var(--paper-3); overflow: hidden; }
@@ -604,12 +649,12 @@ code {
 .skeleton-line { height: 1em; margin: 6px 0; }
 .skeleton-card { height: 96px; }
 .batch-bar { display: flex; align-items: center; gap: 12px; padding: 8px 12px; margin-bottom: 10px; background: var(--surface, rgba(255,255,255,.04)); border: 1px solid var(--border, rgba(255,255,255,.08)); border-radius: 8px; }
-.batch-bar .batch-count { font-size: var(--fs-md); font-weight: 600; color: var(--accent); }
-.card.accent .card-value { color: var(--accent); }
-.card.success .card-value { color: var(--success); }
-.card.warn .card-value { color: var(--warn); }
-.card.error .card-value { color: var(--error); }
-.card.info .card-value { color: var(--info); }
+.batch-bar .batch-count { font-size: var(--fs-md); font-weight: 600; color: var(--accent-text); }
+.card.accent .card-value { color: var(--accent-text); }
+.card.success .card-value { color: var(--success-text); }
+.card.warn .card-value { color: var(--warn-text); }
+.card.error .card-value { color: var(--error-text); }
+.card.info .card-value { color: var(--info-text); }
 /* semantic left rail + tinted icon so status reads at a glance in dark */
 .card.success, .card.info, .card.warn, .card.error, .card.accent { border-left: 3px solid transparent; }
 .card.success { border-left-color: var(--success); }
@@ -617,11 +662,11 @@ code {
 .card.warn    { border-left-color: var(--warn); }
 .card.error   { border-left-color: var(--error); }
 .card.accent  { border-left-color: var(--accent); }
-.card.success .card-icon { color: var(--success); }
-.card.info    .card-icon { color: var(--info); }
-.card.warn    .card-icon { color: var(--warn); }
-.card.error   .card-icon { color: var(--error); }
-.card.accent  .card-icon { color: var(--accent); }
+.card.success .card-icon { color: var(--success-text); }
+.card.info    .card-icon { color: var(--info-text); }
+.card.warn    .card-icon { color: var(--warn-text); }
+.card.error   .card-icon { color: var(--error-text); }
+.card.accent  .card-icon { color: var(--accent-text); }
 
 .metrics-grid {
   display: grid;
@@ -629,6 +674,9 @@ code {
   gap: 14px;
   margin-bottom: 24px;
 }
+/* KPI/summary cards carry the same accent wash as the page header. The image
+   paints over --surface; no geometry, border or content changes. */
+.metrics-grid .card { background-image: var(--gradient-accent); }
 /* Overview has 6 KPI cards — use column counts that divide evenly (3×2 / 2×3)
    so there is never a lone orphan card dangling on its own row. */
 #overview-cards { grid-template-columns: repeat(3, 1fr); }
@@ -662,7 +710,7 @@ code {
   padding-bottom: var(--acct-row-pad-y);
   font-size: var(--fs-sm);
 }
-#accounts-density-btn.active { background: var(--accent-soft); color: var(--accent); }
+#accounts-density-btn.active { background: var(--accent-soft); color: var(--accent-text); }
 .section-title {
   font-family: var(--font);
   font-size: 16px;
@@ -710,10 +758,15 @@ code {
   box-shadow: 0 1px 3px var(--accent-soft);
 }
 .btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn-primary:active:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-active);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.18);
+}
 
 .btn-outline {
   background: transparent;
-  border-color: var(--border-strong);
+  border-color: var(--border-control);
   color: var(--text);
 }
 .btn-outline:hover:not(:disabled) { background: var(--surface-2); border-color: var(--accent); }
@@ -750,7 +803,7 @@ code {
 .switch input { opacity: 0; width: 0; height: 0; }
 .switch-slider {
   position: absolute; cursor: pointer; inset: 0;
-  background: var(--surface-2); border: 1px solid var(--border);
+  background: var(--surface-2); border: 1px solid var(--border-control);
   border-radius: 22px; transition: .18s;
 }
 .switch-slider::before {
@@ -771,14 +824,14 @@ code {
   font-size: 13px;
   font-family: var(--font);
   background: var(--bg-elev);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-control);
   border-radius: var(--radius-sm);
   color: var(--text);
   outline: none;
   transition: all .15s;
   line-height: 1.35;
 }
-.input:hover, .select:hover, .textarea:hover { border-color: var(--border-strong); }
+.input:hover, .select:hover, .textarea:hover { border-color: var(--accent); }
 .input:focus, .select:focus, .textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
@@ -818,11 +871,11 @@ code {
 .cs-trigger {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   width: 100%; padding: 9px 12px; font-size: 13px; font-family: var(--font);
-  background: var(--bg-elev); border: 1px solid var(--border);
+  background: var(--bg-elev); border: 1px solid var(--border-control);
   border-radius: var(--radius-sm); color: var(--text); cursor: pointer;
   text-align: left; line-height: 1.35; transition: border-color .15s, box-shadow .15s;
 }
-.cs-trigger:hover { border-color: var(--border-strong); }
+.cs-trigger:hover { border-color: var(--accent); }
 .cs-trigger:focus-visible,
 .cs-trigger[aria-expanded="true"] {
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
@@ -849,7 +902,7 @@ code {
 .cs-opt[aria-selected="true"] { color: var(--text); font-weight: 500; }
 .cs-opt.cs-hi { background: var(--accent-soft); color: var(--text); }
 .cs-opt[aria-disabled="true"] { opacity: .4; cursor: not-allowed; }
-.cs-opt .cs-check { color: var(--accent); flex-shrink: 0; opacity: 0; font-size: 12px; }
+.cs-opt .cs-check { color: var(--accent-text); flex-shrink: 0; opacity: 0; font-size: 12px; }
 .cs-opt[aria-selected="true"] .cs-check { opacity: 1; }
 
 /* ── Custom number stepper (enhances native input[type=number]) ── */
@@ -892,9 +945,9 @@ code {
 /* Solid-fill buttons: a ring floated off the fill (gap + accent) so it reads on
    any background. */
 .btn-primary:focus-visible, .btn-danger:focus-visible, .btn-success:focus-visible {
-  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-focus);
 }
-a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+a:focus-visible { outline: 2px solid var(--accent-focus); outline-offset: 2px; border-radius: 2px; }
 /* Non-button elements promoted to role=button (reveal-key code, tier span, remove
    chip) get a visible keyboard focus ring too. */
 [role="button"]:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); border-radius: 3px; }
@@ -940,7 +993,7 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-
 .checkbox input { position: absolute; opacity: 0; pointer-events: none; }
 .checkbox .box {
   width: 16px; height: 16px;
-  border: 1.5px solid var(--border-strong);
+  border: 1.5px solid var(--border-control);
   border-radius: 4px;
   display: flex;
   align-items: center;
@@ -977,7 +1030,7 @@ input[type=radio]:not(.segmented input) {
   margin: 0;
   flex-shrink: 0;
   vertical-align: -3px;
-  border: 1.5px solid var(--border-strong);
+  border: 1.5px solid var(--border-control);
   background: var(--bg-elev);
   cursor: pointer;
   transition: background .15s, border-color .15s, box-shadow .15s;
@@ -1027,7 +1080,7 @@ input[type=radio]:not(.segmented input):disabled {
 .segmented {
   display: inline-flex;
   background: var(--bg-elev);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-control);
   border-radius: var(--radius-sm);
   padding: 3px;
   gap: 2px;
@@ -1447,7 +1500,7 @@ tbody tr:hover td { background: var(--surface-2); }
 .detail-model-chip-cost {
   font-family: var(--mono);
   font-size: 10px;
-  color: var(--warn);
+  color: var(--warn-text);
   padding: 1px 6px;
   background: rgba(245,158,11,.08);
   border: 1px solid rgba(245,158,11,.2);
@@ -1539,7 +1592,7 @@ tbody tr:hover td { background: var(--surface-2); }
   border-left: 3px solid var(--error);
   background: var(--surface-2);
 }
-.reauth-notice-title { font-weight: 600; color: var(--error); margin-bottom: 4px; }
+.reauth-notice-title { font-weight: 600; color: var(--error-text); margin-bottom: 4px; }
 .reauth-notice .btn { margin-top: 8px; }
 
 /* Tier pill */
@@ -1554,8 +1607,8 @@ tbody tr:hover td { background: var(--surface-2); }
   letter-spacing: .04em;
 }
 .tier.pro { background: var(--accent); color: var(--on-accent); }
-.tier.free { background: var(--info-soft); color: var(--info); }
-.tier.expired { background: var(--error-soft); color: var(--error); }
+.tier.free { background: var(--info-soft); color: var(--info-text); }
+.tier.expired { background: var(--error-soft); color: var(--error-text); }
 .tier.unknown { background: var(--surface-3); color: var(--text-muted); }
 
 /* ─── LS Pool Cards ───────────────────────────── */
@@ -1712,7 +1765,7 @@ tbody tr:hover td { background: var(--surface-2); }
 .model-chip.selected {
   background: var(--accent-soft);
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 /* Listed but not serveable by this deployment right now (no entitled account, or the name
    maps to nothing on this transport). Dimmed rather than hidden: the allow/deny list is
@@ -1736,7 +1789,7 @@ tbody tr:hover td { background: var(--surface-2); }
 .chip-badge.free { background: var(--success); color: var(--on-accent); }
 .chip-badge.paid { background: var(--warn); color: var(--on-accent); }
 .model-chip .remove {
-  color: var(--error);
+  color: var(--error-text);
   font-weight: 700;
   cursor: pointer;
   padding: 0 2px;
@@ -1778,9 +1831,9 @@ tbody tr:hover td { background: var(--surface-2); }
   width: 50px;
 }
 .log-entry.debug .lvl { color: var(--text-dim); }
-.log-entry.info .lvl { color: var(--info); }
-.log-entry.warn .lvl { color: var(--warn); }
-.log-entry.error .lvl { color: var(--error); }
+.log-entry.info .lvl { color: var(--info-text); }
+.log-entry.warn .lvl { color: var(--warn-text); }
+.log-entry.error .lvl { color: var(--error-text); }
 .log-entry.error { background: rgba(239,68,68,.03); }
 
 .log-controls {
@@ -1983,7 +2036,7 @@ tbody tr:hover td { background: var(--surface-2); }
 .help-tip {
   position: relative; display: inline-flex; align-items: center; justify-content: center;
   width: 15px; height: 15px; margin-left: 5px; border-radius: 50%;
-  border: 1px solid transparent; background: var(--accent-soft); color: var(--accent);
+  border: 1px solid transparent; background: var(--accent-soft); color: var(--accent-text);
   font-size: 10.5px; font-weight: 700; line-height: 1; cursor: help;
   vertical-align: middle; outline: none; user-select: none;
   transition: color .15s ease, border-color .15s ease, background .15s ease, box-shadow .15s ease, transform .15s ease;
@@ -2066,7 +2119,7 @@ tbody tr:hover td { background: var(--surface-2); }
 /* Expandable model-stats rows: clickable summary row + on-demand detail row. */
 .model-row { cursor: pointer; transition: background .12s ease; }
 .model-row:hover { background: var(--surface-2); }
-.model-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.model-row:focus-visible { outline: 2px solid var(--accent-focus); outline-offset: -2px; }
 .row-chevron { display: inline-block; width: 1em; color: var(--text-muted); font-size: 10px; transition: transform .12s ease; }
 .model-detail-row > td { padding: 0 !important; background: var(--surface-2); }
 .model-detail { display: flex; flex-wrap: wrap; gap: 20px; padding: 12px 16px; }
@@ -2164,7 +2217,7 @@ tbody tr:hover td { background: var(--surface-2); }
   border: 1px solid rgba(255,255,255,.08);
   backdrop-filter: blur(8px);
 }
-.bar-tooltip b { color: var(--accent); }
+.bar-tooltip b { color: var(--accent-text); }
 .bar-tooltip::after {
   content: "";
   position: absolute;
@@ -2181,8 +2234,8 @@ tbody tr:hover td { background: var(--surface-2); }
 .diff-stat { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
 .diff-box { max-height: 50vh; overflow: auto; font-family: var(--mono, monospace); font-size: 12px; line-height: 1.5; background: var(--bg-elev, rgba(0,0,0,.2)); border-radius: 8px; padding: 8px; margin: 0; }
 .diff-line { white-space: pre-wrap; word-break: break-all; padding: 0 6px; }
-.diff-add { background: rgba(74,222,128,.14); color: var(--success, #4ade80); }
-.diff-del { background: rgba(248,113,113,.14); color: var(--error, #f87171); }
+.diff-add { background: rgba(74,222,128,.14); color: var(--success-text); }
+.diff-del { background: rgba(248,113,113,.14); color: var(--error-text); }
 .diff-ctx { color: var(--muted); }
 .toast-stack {
   position: fixed;
@@ -2310,8 +2363,8 @@ tbody tr:hover td { background: var(--surface-2); }
   font-family: var(--mono);
   font-weight: 600;
 }
-.cap-item.ok { background: var(--success-soft); color: var(--success); }
-.cap-item.fail { background: var(--error-soft); color: var(--error); text-decoration: line-through; }
+.cap-item.ok { background: var(--success-soft); color: var(--success-text); }
+.cap-item.fail { background: var(--error-soft); color: var(--error-text); text-decoration: line-through; }
 
 /* ─── Utilities ───────────────────────────────── */
 .flex { display: flex; }
@@ -2344,15 +2397,15 @@ tbody tr:hover td { background: var(--surface-2); }
 .contributor-card .meta-top { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; }
 .contributor-card .identity { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .contributor-card .links { display: flex; align-items: center; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
-.contributor-card .meta-top .name { color: var(--accent); font-weight: 600; font-size: 15px; text-decoration: none; }
+.contributor-card .meta-top .name { color: var(--accent-text); font-weight: 600; font-size: 15px; text-decoration: none; }
 .contributor-card .meta-top .name:hover { text-decoration: underline; }
 .contributor-card .meta-top .pr-link { font-size: 12px; color: var(--text-dim); text-decoration: none; padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; }
-.contributor-card .meta-top .pr-link:hover { color: var(--accent); border-color: var(--accent); }
+.contributor-card .meta-top .pr-link:hover { color: var(--accent-text); border-color: var(--accent); }
 .contributor-card .meta-top .merged-at { font-size: 11px; color: var(--text-dim); }
 .contributor-card .pr-title { font-weight: 500; margin-top: 2px; font-size: 13px; line-height: 1.45; }
 .contributor-card .summary-toggle { margin-top: 6px; font-size: 12px; color: var(--text-dim); }
 .contributor-card .summary-toggle summary { cursor: pointer; width: fit-content; user-select: none; }
-.contributor-card .summary-toggle summary:hover { color: var(--accent); }
+.contributor-card .summary-toggle summary:hover { color: var(--accent-text); }
 .contributor-card .summary { font-size: 13px; color: var(--text-muted); line-height: 1.65; margin-top: 6px; }
 .contributor-card .rarity-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 38px; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 800; letter-spacing: 0.7px; font-family: var(--mono); line-height: 1.5; }
 /* v2.0.60 — extended rarity ladder. Rarer = more dramatic visual:
@@ -2385,14 +2438,14 @@ tbody tr:hover td { background: var(--surface-2); }
 }
 .contributor-card .rarity-UR { background: linear-gradient(135deg, #f5d06f, #e11d48 52%, #7c3aed); color: #fff; box-shadow: 0 0 0 1px rgba(225,29,72,0.28); }
 .contributor-card .rarity-SSR { background: linear-gradient(135deg, #f59e0b, #b45309); color: #fff7ed; box-shadow: 0 0 0 1px rgba(180,83,9,0.25); }
-.contributor-card .rarity-SR { background: var(--info-soft); color: var(--info); border: 1px solid rgba(56,189,248,0.28); }
+.contributor-card .rarity-SR { background: var(--info-soft); color: var(--info-text); border: 1px solid rgba(56,189,248,0.28); }
 .contributor-card .rarity-R { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .contributor-card .contribution-count { font-size: 11px; color: var(--text-dim); padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; line-height: 1.5; }
 .contributor-card .history-list { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-direction: column; gap: 8px; }
 .contributor-card .history-item { padding: 10px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-2); }
 .contributor-card .history-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .contributor-card .history-head .pr-link { font-size: 12px; color: var(--text-dim); text-decoration: none; padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; }
-.contributor-card .history-head .pr-link:hover { color: var(--accent); border-color: var(--accent); }
+.contributor-card .history-head .pr-link:hover { color: var(--accent-text); border-color: var(--accent); }
 .contributor-card .history-head .merged-at { font-size: 11px; color: var(--text-dim); }
 .contributor-card .history-rarity-label { font-size: 11px; color: var(--text-dim); font-style: italic; flex: 1; min-width: 0; }
 .contributor-card .history-title { font-size: 13px; font-weight: 500; margin-top: 6px; line-height: 1.45; }
@@ -2494,7 +2547,7 @@ tbody tr:hover td { background: var(--surface-2); }
   font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer;
 }
 .th-sort:hover { color: var(--text); }
-.th-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-xs); }
+.th-sort:focus-visible { outline: 2px solid var(--accent-focus); outline-offset: 2px; border-radius: var(--radius-xs); }
 .th-sort-mark { font-size: var(--fs-2xs); color: var(--text-dim); letter-spacing: normal; }
 #accounts-table th[aria-sort="ascending"] .th-sort-mark::after { content: "▲"; }
 #accounts-table th[aria-sort="descending"] .th-sort-mark::after { content: "▼"; }
@@ -2528,8 +2581,8 @@ tbody tr:hover td { background: var(--surface-2); }
 }
 .acct-name { font-size: var(--fs-lg); font-weight: 600; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-open { border: 0; background: none; padding: 0; color: var(--text); font-family: inherit; text-align: left; cursor: pointer; }
-.acct-open:hover { color: var(--accent); text-decoration: underline; }
-.acct-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
+.acct-open:hover { color: var(--accent-text); text-decoration: underline; }
+.acct-open:focus-visible { outline: 2px solid var(--accent-focus); outline-offset: 1px; border-radius: 2px; }
 .acct-line2 { display: flex; align-items: center; gap: var(--space-6); font-size: var(--fs-xs); line-height: 1.3; color: var(--text-dim); min-width: 0; }
 .acct-line2 code { background: transparent; border: 0; padding: 0; font-size: var(--fs-xs); color: var(--text-dim); }
 .acct-line2 .acct-key { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2539,13 +2592,13 @@ tbody tr:hover td { background: var(--surface-2); }
   max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   color: var(--text-dim); font-size: var(--fs-2xs);
 }
-.acct-last-check.is-skip { color: var(--warn); }
+.acct-last-check.is-skip { color: var(--warn-text); }
 .acct-last-check-text { overflow: hidden; text-overflow: ellipsis; }
 .acct-last-check-retry {
-  border: 0; background: transparent; padding: 0; color: var(--accent);
+  border: 0; background: transparent; padding: 0; color: var(--accent-text);
   font: inherit; font-size: var(--fs-2xs); cursor: pointer; text-decoration: underline; flex: none;
 }
-.acct-last-check-retry:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.acct-last-check-retry:focus-visible { outline: 2px solid var(--accent-focus); outline-offset: 1px; }
 .note-chip {
   display: inline-flex; align-items: center; max-width: 120px; height: 18px; padding: 0 var(--space-6);
   border-radius: 999px; border: 1px dashed var(--border-strong);
@@ -2557,7 +2610,7 @@ tbody tr:hover td { background: var(--surface-2); }
 .acct-state { display: inline-flex; align-items: center; gap: var(--space-6); flex-wrap: wrap; }
 .acct-state-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .acct-countdown { font-size: var(--fs-2xs); color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.acct-error-count { font-size: var(--fs-2xs); color: var(--error); font-weight: 600; }
+.acct-error-count { font-size: var(--fs-2xs); color: var(--error-text); font-weight: 600; }
 .acct-batch-chip { font-size: var(--fs-2xs); font-weight: 600; padding: 0 var(--space-6); border-radius: var(--radius-xs); }
 .acct-batch-chip.ok { background: var(--success-soft); color: var(--text); }
 .acct-batch-chip.fail { background: var(--error-soft); color: var(--text); }
@@ -2569,7 +2622,7 @@ tbody tr:hover td { background: var(--surface-2); }
   color: var(--text-muted); font-size: var(--fs-xl); line-height: 1; cursor: pointer;
 }
 .row-menu-btn:hover, .row-menu-btn[aria-expanded="true"] { background: var(--surface-2); border-color: var(--border); color: var(--text); }
-.row-menu-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.row-menu-btn:focus-visible { outline: 2px solid var(--accent-focus); outline-offset: 1px; }
 .row-menu {
   position: fixed; z-index: 160; min-width: 190px; padding: var(--space-4);
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
@@ -2580,7 +2633,7 @@ tbody tr:hover td { background: var(--surface-2); }
   background: transparent; color: var(--text); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer;
 }
 .row-menu [role="menuitem"]:hover, .row-menu [role="menuitem"]:focus-visible { background: var(--surface-2); outline: none; }
-.row-menu [role="menuitem"].danger { color: var(--error); }
+.row-menu [role="menuitem"].danger { color: var(--error-text); }
 .row-menu .menu-sep { height: 1px; margin: var(--space-4) var(--space-6); background: var(--border); }
 
 #accounts-batch-bar {
@@ -2592,11 +2645,11 @@ tbody tr:hover td { background: var(--surface-2); }
 }
 #accounts-batch-bar .batch-scope { font-size: var(--fs-sm); color: var(--text-muted); }
 #accounts-batch-bar .batch-scope button {
-  border: 0; background: transparent; padding: 0 var(--space-2); color: var(--accent);
+  border: 0; background: transparent; padding: 0 var(--space-2); color: var(--accent-text);
   font: inherit; font-size: var(--fs-sm); font-weight: 600; cursor: pointer; text-decoration: underline;
 }
 #accounts-batch-bar .batch-progress { font-size: var(--fs-sm); color: var(--text-muted); font-variant-numeric: tabular-nums; }
-#accounts-batch-bar .batch-fail-link { border: 0; background: transparent; color: var(--error); font: inherit; font-size: var(--fs-sm); cursor: pointer; text-decoration: underline; }
+#accounts-batch-bar .batch-fail-link { border: 0; background: transparent; color: var(--error-text); font: inherit; font-size: var(--fs-sm); cursor: pointer; text-decoration: underline; }
 #accounts-batch-bar .batch-fail-pop {
   position: absolute; bottom: calc(100% + 6px); left: 12px; max-width: 520px; max-height: 220px; overflow: auto;
   padding: var(--space-10) var(--space-12); background: var(--surface); border: 1px solid var(--border-strong);
@@ -2609,7 +2662,7 @@ tbody tr:hover td { background: var(--surface-2); }
 .acct-empty-title { font-family: var(--font-display); font-size: var(--fs-xl); font-weight: 600; }
 .acct-empty-sub { font-size: var(--fs-md); color: var(--text-muted); margin-top: var(--space-4); }
 .acct-empty-actions { margin-top: var(--space-14); display: flex; gap: var(--space-8); justify-content: center; flex-wrap: wrap; }
-.acct-empty.is-error .acct-empty-title { color: var(--error); }
+.acct-empty.is-error .acct-empty-title { color: var(--error-text); }
 
 /* Detail drawer (replaces the colspan=12 detail row) */
 .acct-drawer-mask {
@@ -2645,7 +2698,7 @@ tbody tr:hover td { background: var(--surface-2); }
 .detail-advanced > summary::before { content: '▸'; color: var(--text-dim); }
 .detail-advanced[open] > summary::before { content: '▾'; }
 .detail-advanced > summary:hover { color: var(--text); }
-.detail-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.detail-advanced > summary:focus-visible { outline: 2px solid var(--accent-focus); outline-offset: 2px; }
 .detail-advanced-hint { font-weight: 400; font-size: var(--fs-xs); color: var(--text-dim); }
 .detail-advanced .detail-grid { margin-top: var(--space-10); }
 
@@ -2659,7 +2712,7 @@ tbody tr:hover td { background: var(--surface-2); }
 }
 .add-tab:hover { color: var(--text); }
 .add-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
-.add-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.add-tab:focus-visible { outline: 2px solid var(--accent-focus); outline-offset: -2px; }
 .add-modal-body { padding: var(--space-16) var(--space-20) var(--space-20); overflow-y: auto; }
 .add-panel { display: none; }
 .add-panel.active { display: block; }
@@ -2680,7 +2733,7 @@ tbody tr:hover td { background: var(--surface-2); }
   color: var(--text); font: inherit;
 }
 .login-method:hover { border-color: var(--accent); background: var(--surface-2); }
-.login-method:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.login-method:focus-visible { outline: 2px solid var(--accent-focus); outline-offset: 2px; }
 .login-method-title { font-size: var(--fs-lg); font-weight: 700; }
 .login-method-desc { font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.5; }
 .login-method-token { justify-self: start; }
@@ -2722,7 +2775,7 @@ tbody tr:hover td { background: var(--surface-2); }
 .login-advanced { margin-top: var(--space-14); border-top: 1px dashed var(--border); padding-top: var(--space-8); }
 .login-advanced > summary { cursor: pointer; font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted); padding: var(--space-4) 0; }
 .login-advanced > summary:hover { color: var(--text); }
-.login-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.login-advanced > summary:focus-visible { outline: 2px solid var(--accent-focus); outline-offset: 2px; }
 .login-advanced-body { padding-top: var(--space-8); }
 .login-advanced-body .section { margin-bottom: var(--space-8); }
 
@@ -3136,7 +3189,7 @@ tbody tr:hover td { background: var(--surface-2); }
             <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('refresh')" data-i18n="batchOps.refresh">刷新余额</button>
             <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('reset')" data-i18n="accounts.batch.reset">重置错误</button>
             <button class="btn btn-ghost btn-xs" onclick="App.batchAccountOp('export')" data-i18n="accounts.batch.export">导出所选</button>
-            <button class="btn btn-ghost btn-xs" style="color:var(--error)" onclick="App.batchAccountOp('delete')" data-i18n="batchOps.delete">删除</button>
+            <button class="btn btn-ghost btn-xs" style="color: var(--error-text)" onclick="App.batchAccountOp('delete')" data-i18n="batchOps.delete">删除</button>
             <button class="btn btn-ghost btn-xs" onclick="App.clearAccountSelection()" data-i18n="batchOps.clear">清除选择</button>
           </div>
           <span class="batch-progress" id="accounts-batch-progress" aria-live="polite"></span>
@@ -3261,7 +3314,7 @@ tbody tr:hover td { background: var(--surface-2); }
                     </div>
                   </li>
                 </ol>
-                <a id="oauth-manual-link" href="#" class="hidden" onclick="return App.openWindsurfSignin(event)" style="display:inline-block;margin-top:8px;font-size:12px;color:var(--accent)" data-i18n="oauth.openManually">登录页没弹出来？点这里手动打开</a>
+                <a id="oauth-manual-link" href="#" class="hidden" onclick="return App.openWindsurfSignin(event)" style="display:inline-block;margin-top:8px;font-size:12px;color: var(--accent-text)" data-i18n="oauth.openManually">登录页没弹出来？点这里手动打开</a>
               </div>
             </div>
           </div>
@@ -3414,7 +3467,7 @@ tbody tr:hover td { background: var(--surface-2); }
             <div class="section-body">
               <div style="padding:8px 12px;margin-bottom:12px;background:var(--surface-2);border-radius:var(--radius);font-size:12px;color:var(--text-muted);line-height:1.6">
                 <span data-i18n="help.tokenGuide">推荐用 Token 方式添加账号 点</span>
-                <a href="https://windsurf.com/show-auth-token" target="_blank" style="color:var(--accent);font-weight:600">windsurf.com/show-auth-token</a>
+                <a href="https://windsurf.com/show-auth-token" target="_blank" style="color: var(--accent-text);font-weight:600">windsurf.com/show-auth-token</a>
                 <span data-i18n="help.tokenGuideEnd">登录后复制 Token 粘贴到下面就行 所有登录方式（邮箱/Google/GitHub）都能用</span>
               </div>
               <div class="field-row">
@@ -4322,7 +4375,7 @@ tbody tr:hover td { background: var(--surface-2); }
     <p data-i18n="login.subtitle">请输入管理密码以继续</p>
     <input type="password" id="login-password" class="input" data-i18n-placeholder="login.passwordPlaceholder" placeholder="Dashboard 密码" onkeydown="if(event.key==='Enter')App.login()">
     <button class="btn btn-primary" id="login-btn" onclick="App.login()" data-i18n="login.button">登 录</button>
-    <div id="login-error" style="margin-top:12px;color:var(--error);font-size:13px;min-height:18px"></div>
+    <div id="login-error" style="margin-top:12px;color: var(--error-text);font-size:13px;min-height:18px"></div>
   </div>
 </div>
 
@@ -4983,7 +5036,7 @@ const App = {
         errEl.style.lineHeight = '1.65';
         errEl.style.textAlign = 'left';
         errEl.innerHTML = `
-          <strong style="color:var(--warn);display:block;margin-bottom:8px">${I18n.t('login.lockedTitle') || 'Dashboard locked'}</strong>
+          <strong style="color: var(--warn-text);display:block;margin-bottom:8px">${I18n.t('login.lockedTitle') || 'Dashboard locked'}</strong>
           <div>${I18n.t('login.lockedDesc') || 'Server bound to public host without DASHBOARD_PASSWORD. v2.0.55 fail-closed: API_KEY no longer doubles as the dashboard password.'}</div>
           <div style="margin-top:10px">${I18n.t('login.lockedFix') || 'Fix:'}</div>
           <pre style="background:var(--surface-2);padding:10px;border-radius:6px;font-size:12px;margin-top:6px;white-space:pre-wrap"># .env
@@ -4991,7 +5044,7 @@ DASHBOARD_PASSWORD=YOUR_STRONG_PASSWORD
 
 # restart container
 docker compose up -d --force-recreate</pre>
-          <div style="margin-top:8px;font-size:12px">${I18n.t('login.lockedDocs') || 'See'} <a href="https://github.com/dwgx/WindsurfAPI/blob/master/docs/releases/RELEASE_NOTES_2.0.55.md" target="_blank" style="color:var(--accent)">${I18n.t('login.releaseNotes', {version: '2.0.55'})}</a>.</div>
+          <div style="margin-top:8px;font-size:12px">${I18n.t('login.lockedDocs') || 'See'} <a href="https://github.com/dwgx/WindsurfAPI/blob/master/docs/releases/RELEASE_NOTES_2.0.55.md" target="_blank" style="color: var(--accent-text)">${I18n.t('login.releaseNotes', {version: '2.0.55'})}</a>.</div>
         `;
       }
       return;
@@ -5571,7 +5624,7 @@ docker compose up -d --force-recreate</pre>
       }));
     }
     status.innerHTML = `
-      <div style="color:var(--warn);font-weight:600;margin-bottom:4px">${I18n.t('status.selfUpdateUnavailable')}</div>
+      <div style="color: var(--warn-text);font-weight:600;margin-bottom:4px">${I18n.t('status.selfUpdateUnavailable')}</div>
       <div class="text-sm text-muted">${I18n.t('status.selfUpdateDockerHint')}</div>
       ${dockerHintParts.join('')}`;
     if (apply) {
@@ -5597,7 +5650,7 @@ docker compose up -d --force-recreate</pre>
         }
         if (/not a git repository/i.test(r.error || '')) {
           status.innerHTML = `
-            <div style="color:var(--warn);font-weight:600;margin-bottom:4px">${I18n.t('status.notGitRepo')}</div>
+            <div style="color: var(--warn-text);font-weight:600;margin-bottom:4px">${I18n.t('status.notGitRepo')}</div>
             <div class="text-sm text-muted">${I18n.t('status.notGitRepoHint')}</div>`;
           apply.classList.add('hidden');
           return;
@@ -5612,7 +5665,7 @@ docker compose up -d --force-recreate</pre>
         // container in place. Show a "ready to apply" prompt instead of
         // the git diff card.
         status.innerHTML = `
-          <div style="color:var(--accent);font-weight:600;margin-bottom:6px">${I18n.t('status.dockerReady')}</div>
+          <div style="color: var(--accent-text);font-weight:600;margin-bottom:6px">${I18n.t('status.dockerReady')}</div>
           <div class="text-sm" style="display:grid;gap:3px">
             <div>${I18n.t('status.dockerImage')} <code>${this.esc(r.image || '')}</code></div>
             <div>${I18n.t('status.dockerProject')} <code>${this.esc(r.project || '')}</code></div>
@@ -5625,7 +5678,7 @@ docker compose up -d --force-recreate</pre>
       apply.dataset.mode = 'git';
       if (r.diverged) {
         status.innerHTML = `
-          <div style="color:var(--warn);font-weight:600;margin-bottom:6px">${I18n.t('status.updateDiverged')}</div>
+          <div style="color: var(--warn-text);font-weight:600;margin-bottom:6px">${I18n.t('status.updateDiverged')}</div>
           <div class="text-sm text-muted">${I18n.t('status.updateDivergedHint', {
             current: this.esc(r.commit || ''),
             target: this.esc(r.remoteCommit || ''),
@@ -5637,7 +5690,7 @@ docker compose up -d --force-recreate</pre>
           ? `<div class="text-sm text-muted">${I18n.t('status.unreleasedHint', { count: r.unreleasedCount, tag: this.esc(r.latestTag || '') })}</div>`
           : '';
         status.innerHTML = `
-          <div style="color:var(--accent);font-weight:600;margin-bottom:6px">${I18n.t('status.updateAvailable')}</div>
+          <div style="color: var(--accent-text);font-weight:600;margin-bottom:6px">${I18n.t('status.updateAvailable')}</div>
           <div class="text-sm" style="display:grid;gap:3px">
             <div>${I18n.t('status.currentVersion')} <code>${this.esc(r.commit)}</code> <span class="text-muted">${this.esc(r.localMessage)}</span></div>
             <div>${I18n.t('status.remoteVersion')} <code>${this.esc(r.remoteCommit)}</code> <span class="text-muted">${this.esc(r.remoteMessage || '')}</span></div>
@@ -5649,12 +5702,12 @@ docker compose up -d --force-recreate</pre>
         const unreleasedNote = r.unreleasedCount > 0
           ? `<div class="text-sm text-muted" style="margin-top:6px">${I18n.t('status.unreleasedHint', { count: r.unreleasedCount, tag: this.esc(r.latestTag || '') })}</div>`
           : '';
-        status.innerHTML = '<span style="color:var(--success)">✓ ' + I18n.t('status.upToDate', {commit: this.esc(r.commit), message: this.esc(r.localMessage)}) + '</span>' + unreleasedNote;
+        status.innerHTML = '<span style="color: var(--success-text)">✓ ' + I18n.t('status.upToDate', {commit: this.esc(r.commit), message: this.esc(r.localMessage)}) + '</span>' + unreleasedNote;
         apply.classList.add('hidden');
         apply.disabled = true;
       }
     } catch (err) {
-      status.innerHTML = `<span style="color:var(--error)">✗ ${this.esc(err.message)}</span>`;
+      status.innerHTML = `<span style="color: var(--error-text)">✗ ${this.esc(err.message)}</span>`;
     } finally {
       btn.disabled = false;
     }
@@ -5707,7 +5760,7 @@ docker compose up -d --force-recreate</pre>
         }
         const delaySec = r.delaySeconds || 8;
         status.innerHTML = `
-          <div style="color:var(--success);font-weight:600;margin-bottom:6px">${I18n.t('status.dockerUpdating', { image: this.esc(r.image || ''), delay: delaySec })}</div>
+          <div style="color: var(--success-text);font-weight:600;margin-bottom:6px">${I18n.t('status.dockerUpdating', { image: this.esc(r.image || ''), delay: delaySec })}</div>
           <div class="text-sm text-muted">${I18n.t('status.dockerSidecarStarted', { id: this.esc(r.deployerId || '') })}</div>`;
         setTimeout(() => location.reload(), (delaySec + 4) * 1000);
         return;
@@ -5725,7 +5778,7 @@ docker compose up -d --force-recreate</pre>
       }
       if (r.changed) {
         status.innerHTML = `
-          <div style="color:var(--success);font-weight:600;margin-bottom:6px">${I18n.t('status.updateComplete', { before: this.esc(r.before), after: this.esc(r.after) })}</div>
+          <div style="color: var(--success-text);font-weight:600;margin-bottom:6px">${I18n.t('status.updateComplete', { before: this.esc(r.before), after: this.esc(r.after) })}</div>
           <div class="text-sm text-muted">${I18n.t('status.restarting')}</div>
           <pre style="margin-top:8px;font-size:11px;max-height:200px;overflow:auto;padding:8px;background:var(--surface-2);border-radius:4px">${this.esc(r.pullOutput || '')}</pre>`;
         // 失败回滚：更新后轮询健康，30s 内服务未恢复 → 提示 + 一键回滚按钮
@@ -5738,7 +5791,7 @@ docker compose up -d --force-recreate</pre>
         apply.classList.add('hidden');
       }
     } catch (err) {
-      status.innerHTML = `<span style="color:var(--error)">✗ ${this.esc(err.message)}</span>`;
+      status.innerHTML = `<span style="color: var(--error-text)">✗ ${this.esc(err.message)}</span>`;
     } finally {
       apply.disabled = false;
     }
@@ -5774,7 +5827,7 @@ docker compose up -d --force-recreate</pre>
         if (!hr.ok) throw new Error(`health ${hr.status}`);
         const h = await hr.json();
         if (healthMatchesUpdate(h)) {
-          status.innerHTML += `<div class="text-sm" style="color:var(--success);margin-top:8px">${I18n.t('status.healthOk')}</div>`;
+          status.innerHTML += `<div class="text-sm" style="color: var(--success-text);margin-top:8px">${I18n.t('status.healthOk')}</div>`;
           setTimeout(() => location.reload(), 1000);
           return;
         }
@@ -5786,7 +5839,7 @@ docker compose up -d --force-recreate</pre>
         // 30s 未恢复 → 回滚提示 + 按钮
         const rollback = document.getElementById('btn-rollback-update');
         status.innerHTML = `
-          <div style="color:var(--error);font-weight:600;margin-bottom:6px">${I18n.t('status.updateFailed')}</div>
+          <div style="color: var(--error-text);font-weight:600;margin-bottom:6px">${I18n.t('status.updateFailed')}</div>
           <div class="text-sm text-muted">${I18n.t('status.rollbackHint')}</div>`;
         if (rollback) rollback.classList.remove('hidden');
         if (apply) apply.classList.add('hidden');
@@ -5830,7 +5883,7 @@ docker compose up -d --force-recreate</pre>
       }
       if (!r.ok) {
         if (r.error === 'ERR_NO_ROLLBACK_POINT') {
-          status.innerHTML = `<span style="color:var(--error)">✗ ${I18n.t('status.noRollbackPoint')}</span>`;
+          status.innerHTML = `<span style="color: var(--error-text)">✗ ${I18n.t('status.noRollbackPoint')}</span>`;
         } else {
           const conflicts = r.error === 'ERR_IGNORED_PATH_CONFLICT' && Array.isArray(r.conflictPaths)
             ? r.conflictPaths.slice(0, 10).join(', ')
@@ -5842,7 +5895,7 @@ docker compose up -d --force-recreate</pre>
         return;
       }
       status.innerHTML = `
-        <div style="color:var(--success);font-weight:600;margin-bottom:6px">${I18n.t('status.rolledBack', { commit: this.esc(r.rolledBackTo || '') })}</div>
+        <div style="color: var(--success-text);font-weight:600;margin-bottom:6px">${I18n.t('status.rolledBack', { commit: this.esc(r.rolledBackTo || '') })}</div>
         <div class="text-sm text-muted">${I18n.t('status.restarting')}</div>`;
       if (rollback) rollback.classList.add('hidden');
       this._pollHealthAfterUpdate(status, apply, {
@@ -5850,7 +5903,7 @@ docker compose up -d --force-recreate</pre>
         previousPid: previousHealth?.pid,
       });
     } catch (err) {
-      status.innerHTML = `<span style="color:var(--error)">✗ ${this.esc(err.message)}</span>`;
+      status.innerHTML = `<span style="color: var(--error-text)">✗ ${this.esc(err.message)}</span>`;
       rollback.disabled = false;
     }
   },
@@ -5871,7 +5924,7 @@ docker compose up -d --force-recreate</pre>
     try {
       const r = await this.api('POST', '/restart');
       if (!r.ok && r.error === 'ERR_NO_SUPERVISOR') {
-        if (status) status.innerHTML = `<span style="color:var(--warn)">${I18n.t('status.restartNoSupervisor')}</span>`;
+        if (status) status.innerHTML = `<span style="color: var(--warn-text)">${I18n.t('status.restartNoSupervisor')}</span>`;
         this.toast(I18n.t('status.restartNoSupervisor'), 'warn');
         if (btn) btn.disabled = false;
         return;
@@ -5886,13 +5939,13 @@ docker compose up -d --force-recreate</pre>
         try {
           const h = await fetch('/health').then(x => x.ok ? x.json() : null).catch(() => null);
           if (h && Date.now() < deadline) {
-            if (status) status.innerHTML = `<span style="color:var(--success)">${I18n.t('toast.restartSuccess')}</span>`;
+            if (status) status.innerHTML = `<span style="color: var(--success-text)">${I18n.t('toast.restartSuccess')}</span>`;
             setTimeout(() => location.reload(), 1200);
             return;
           }
         } catch { /* still down, keep polling */ }
         if (Date.now() < deadline) return poll();
-        if (status) status.innerHTML = `<span style="color:var(--warn)">${I18n.t('status.restartTimeout')}</span>`;
+        if (status) status.innerHTML = `<span style="color: var(--warn-text)">${I18n.t('status.restartTimeout')}</span>`;
         if (btn) btn.disabled = false;
       };
       poll();
@@ -6800,7 +6853,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       .map(([, source]) => this.usageReason(source.error || 'upstream'));
     if (failedSources.length) notices.push(`${T('partial')} — ${failedSources.join(' · ')}`);
     const noticeHtml = notices.length
-      ? `<div class="section-body" style="padding:0 20px 10px"><div class="section-desc" style="color:var(--warn)">${this.esc(notices.join(' · '))}</div></div>`
+      ? `<div class="section-body" style="padding:0 20px 10px"><div class="section-desc" style="color: var(--warn-text)">${this.esc(notices.join(' · '))}</div></div>`
       : '';
 
     const cycle = org.cycle || {};
@@ -7163,7 +7216,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         ${kv(T('credit'), frac(summary.credit))}
         ${kv(T('acu'), acu(summary.acu))}
       </div>
-      ${turns.capped ? `<div class="dm-note" style="color:var(--warn)">${this.esc(T('scanCapped', { scanned: num(turns.scanned), total: num(turns.totalAccounts) }))}</div>` : ''}
+      ${turns.capped ? `<div class="dm-note" style="color: var(--warn-text)">${this.esc(T('scanCapped', { scanned: num(turns.scanned), total: num(turns.totalAccounts) }))}</div>` : ''}
       <div class="dm-subhead">${this.esc(T('sources'))}</div>
       <div class="table-wrap"><table><thead><tr>
         <th>${this.esc(T('source'))}</th><th>${this.esc(T('state'))}</th><th>${this.esc(T('detail'))}</th>
@@ -7245,7 +7298,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const rec = reconcile;
     const recHtml = rec
       ? (rec.ok === false
-        ? `<div class="dm-note" style="color:var(--error)">${this.esc(this.devinReason(rec.error))}</div>`
+        ? `<div class="dm-note" style="color: var(--error-text)">${this.esc(this.devinReason(rec.error))}</div>`
         : `<div class="detail-kv">
             <span class="k">${this.esc(T('reconcile.account'))}</span><span class="v"><code>${this.esc(rec.accountRef || '—')}</code></span>
             <span class="k">${this.esc(T('reconcile.local'))}</span><span class="v">${this.esc(String(rec.localCount ?? '—'))}</span>
@@ -7255,7 +7308,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
             <span class="k">${this.esc(T('reconcile.stale'))}</span><span class="v">${this.esc(rec.stale ? T('yes') : T('no'))}</span>
           </div>
           ${Array.isArray(rec.degraded) && rec.degraded.length
-            ? `<div class="dm-note" style="color:var(--warn)">${this.esc(T('reconcile.degraded', { sources: rec.degraded.map((d) => d.source).join(', ') }))}</div>`
+            ? `<div class="dm-note" style="color: var(--warn-text)">${this.esc(T('reconcile.degraded', { sources: rec.degraded.map((d) => d.source).join(', ') }))}</div>`
             : ''}`)
       : `<div class="dm-note">${this.esc(T('reconcile.idle'))}</div>`;
     return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
@@ -7303,13 +7356,13 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         ${kv(T('restrict'), d.restrictEnabled ? T('on') : T('off'))}
         ${kv(T('freeList'), Array.isArray(d.freeTierModels) && d.freeTierModels.length ? d.freeTierModels.join(', ') : '—')}
       </div>
-      ${d.restrictionFailOpen ? `<div class="dm-note" style="color:var(--warn)">${this.esc(I18n.t('drought.restrictionFailOpen'))}</div>` : ''}`;
+      ${d.restrictionFailOpen ? `<div class="dm-note" style="color: var(--warn-text)">${this.esc(I18n.t('drought.restrictionFailOpen'))}</div>` : ''}`;
 
     let acuHtml;
     if (!acu) {
       acuHtml = `<div class="dm-note">${this.esc(T('acu.idle'))}</div>`;
     } else if (!Array.isArray(acu.orgs) || acu.orgs.length === 0) {
-      acuHtml = `<div class="dm-note" style="color:var(--error)">${this.esc(this.devinReason(acu.error))}</div>`;
+      acuHtml = `<div class="dm-note" style="color: var(--error-text)">${this.esc(this.devinReason(acu.error))}</div>`;
     } else {
       const orgCards = acu.orgs.map((org, index) => {
         const derived = org.derived || {};
@@ -7352,7 +7405,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       if (acu.unresolvedAccounts) notes.push(I18n.t('usage.unresolved', { count: acu.unresolvedAccounts }));
       acuHtml = `<div class="dm-subhead">${this.esc(T('acu.title'))}<span class="dm-subhead-count">${this.esc(I18n.t('usage.updated', { when: this.dmAgo(acu.generatedAt) }))}</span></div>
         <div style="display:grid;gap:10px">${orgCards}</div>
-        ${notes.length ? `<div class="dm-note" style="color:var(--warn)">${this.esc(notes.join(' · '))}</div>` : ''}
+        ${notes.length ? `<div class="dm-note" style="color: var(--warn-text)">${this.esc(notes.join(' · '))}</div>` : ''}
         <div class="dm-note">${this.esc(T('acu.note'))}</div>`;
     }
     return `<div class="dm-subhead">${this.esc(T('droughtTitle'))}</div>
@@ -7644,7 +7697,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       const r = await this.api('GET', '/langserver/binary');
       if (!r.ok) {
         const msg = I18n.t('toast.lsBinaryUnreadable', { error: r.error || 'unknown' });
-        el.innerHTML = `<span style="color:var(--error)">${msg}</span> · <code style="font-family:monospace">${r.path || ''}</code>`;
+        el.innerHTML = `<span style="color: var(--error-text)">${msg}</span> · <code style="font-family:monospace">${r.path || ''}</code>`;
         return;
       }
       const sizeMb = (r.sizeBytes / (1024 * 1024)).toFixed(1);
@@ -8058,19 +8111,19 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         turnstileToken: this._turnstileToken,
       });
       if (r.success) {
-        status.innerHTML = `<span style="color:var(--success)">${this.esc(r.message || 'Code sent')}</span>`;
+        status.innerHTML = `<span style="color: var(--success-text)">${this.esc(r.message || 'Code sent')}</span>`;
         document.getElementById('otp-complete-section').classList.remove('hidden');
         this.toast(I18n.t('otp.codeSent') || 'Verification code sent', 'success');
       } else {
         const errKey = r.error ? `error.${r.error}` : null;
         const msg = (errKey && I18n.t(errKey) !== errKey) ? I18n.t(errKey) : (r.error || 'Failed to send code');
-        status.innerHTML = `<span style="color:var(--error)">${this.esc(msg)}</span>`;
+        status.innerHTML = `<span style="color: var(--error-text)">${this.esc(msg)}</span>`;
         this.toast(msg, 'error');
       }
     } catch (err) {
       const errKey = err.message ? `error.${err.message}` : null;
       const msg = (errKey && I18n.t(errKey) !== errKey) ? I18n.t(errKey) : err.message;
-      status.innerHTML = `<span style="color:var(--error)">${this.esc(msg)}</span>`;
+      status.innerHTML = `<span style="color: var(--error-text)">${this.esc(msg)}</span>`;
       this.toast(msg, 'error');
     } finally {
       btn.disabled = false;
@@ -8108,7 +8161,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         autoAdd,
       });
       if (r.success) {
-        status.innerHTML = `<span style="color:var(--success)">${I18n.t('toast.loginSuccess') || 'Login successful'}</span>`;
+        status.innerHTML = `<span style="color: var(--success-text)">${I18n.t('toast.loginSuccess') || 'Login successful'}</span>`;
         this.toast(autoAdd ? (I18n.t('toast.loginSuccessAdded') || 'Login successful, account added') : (I18n.t('toast.loginSuccess') || 'Login successful'), 'success');
         this.loadAccounts();
         // Reset form
@@ -8125,13 +8178,13 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       } else {
         const errKey = r.error ? `error.${r.error}` : null;
         const msg = (errKey && I18n.t(errKey) !== errKey) ? I18n.t(errKey) : (r.error || 'Login failed');
-        status.innerHTML = `<span style="color:var(--error)">${this.esc(msg)}</span>`;
+        status.innerHTML = `<span style="color: var(--error-text)">${this.esc(msg)}</span>`;
         this.toast(msg, 'error');
       }
     } catch (err) {
       const errKey = err.message ? `error.${err.message}` : null;
       const msg = (errKey && I18n.t(errKey) !== errKey) ? I18n.t(errKey) : err.message;
-      status.innerHTML = `<span style="color:var(--error)">${this.esc(msg)}</span>`;
+      status.innerHTML = `<span style="color: var(--error-text)">${this.esc(msg)}</span>`;
       this.toast(msg, 'error');
     } finally {
       btn.disabled = false;
@@ -8144,7 +8197,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       this.showWindsurfLoginResult(`
         <div class="section-header">
           <div>
-            <div class="section-title" style="color:var(--success)">✓ ${I18n.t('loginResult.success')}</div>
+            <div class="section-title" style="color: var(--success-text)">✓ ${I18n.t('loginResult.success')}</div>
             <div class="section-desc">${I18n.t('loginResult.apiKeyGenerated', {autoAdd: autoAdd ? I18n.t('loginResult.addedToPool') : ''})}</div>
           </div>
         </div>
@@ -8165,7 +8218,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     this.showWindsurfLoginResult(`
       <div class="section-header">
         <div>
-          <div class="section-title" style="color:var(--error)">${I18n.t('loginResult.fail')}</div>
+          <div class="section-title" style="color: var(--error-text)">${I18n.t('loginResult.fail')}</div>
         </div>
       </div>
       <div class="section-body"><p class="text-sm">${this.esc(errMsg)}</p>${this.getWindsurfLoginFailActions(r)}</div>`);
@@ -8679,7 +8732,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         const errKey = r.error ? `error.${r.error}` : null;
         this.showWindsurfLoginResult(`
           <div class="section-header">
-            <div><div class="section-title" style="color:var(--error)">${I18n.t('loginResult.fail')}</div></div>
+            <div><div class="section-title" style="color: var(--error-text)">${I18n.t('loginResult.fail')}</div></div>
           </div>
           <div class="section-body"><p class="text-sm">${this.esc((errKey && I18n.t(errKey) !== errKey) ? I18n.t(errKey) : (r.error || I18n.t('error.unknown')))}</p></div>`);
         const translatedErr = errKey && I18n.t(errKey) !== errKey ? I18n.t(errKey) : r.error;
@@ -8708,7 +8761,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       const errKey = err.message ? `error.${err.message}` : null;
       this.showWindsurfLoginResult(`
         <div class="section-header">
-          <div><div class="section-title" style="color:var(--error)">${I18n.t('loginResult.fail')}</div></div>
+          <div><div class="section-title" style="color: var(--error-text)">${I18n.t('loginResult.fail')}</div></div>
         </div>
         <div class="section-body"><p class="text-sm">${this.esc((errKey && I18n.t(errKey) !== errKey) ? I18n.t(errKey) : err.message)}</p></div>`);
       const translatedErr = (errKey && I18n.t(errKey) !== errKey) ? I18n.t(errKey) : err.message;
@@ -9400,7 +9453,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const cr = a.credits || null;
     if (!cr) return `<span class="text-xs text-dim">${I18n.t('status.notFetched')}</span>`;
     if (cr.lastError && cr.percent == null && !cr.prompt?.limit) {
-      return `<span class="text-xs" style="color:var(--error)" title="${this.esc(cr.lastError)}">${I18n.t('status.fetchFailed')}</span>`;
+      return `<span class="text-xs" style="color: var(--error-text)" title="${this.esc(cr.lastError)}">${I18n.t('status.fetchFailed')}</span>`;
     }
     const planName = cr.planName || '-';
     const fetchedAgo = cr.fetchedAt ? `${Math.round((Date.now() - cr.fetchedAt) / 60000)}m` : '-';
@@ -9426,7 +9479,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       ? I18n.t('creditsBar.weeklyDetail', { pct: cr.weeklyPercent.toFixed(0), reset: fmtReset(cr.weeklyResetAt) })
       : I18n.t('creditsBar.weeklyNA');
     const balanceHtml = a.balance != null
-      ? `<span style="color:var(--success);font-weight:700" title="${this.esc(I18n.t('account.balance.tip'))}">$${Number(a.balance).toFixed(2)}</span>`
+      ? `<span style="color: var(--success-text);font-weight:700" title="${this.esc(I18n.t('account.balance.tip'))}">$${Number(a.balance).toFixed(2)}</span>`
       : '';
     return `<div class="acct-quota">
       <div class="acct-quota-head"><b>${this.esc(String(planName).slice(0, 10))}</b> <span style="color:var(--text-dim)">${this.esc(fetchedAgo)}</span>${balanceHtml}</div>
@@ -9441,7 +9494,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     if (!tierModelCount) return `<span class="text-xs text-dim">-</span>`;
     const availCount = Math.max(0, tierModelCount - blockedCount);
     return `<button class="btn btn-ghost btn-xs" style="min-width:72px;padding-left:0" onclick="App.openBlockedModal('${this.escJsAttr(a.id)}')" title="${I18n.t('account.editModels')}">
-      <span style="color:var(--success);font-weight:600">${availCount}</span>
+      <span style="color: var(--success-text);font-weight:600">${availCount}</span>
       <span style="color:var(--text-dim)">/${tierModelCount}</span>
       ${blockedCount > 0 ? `<span class="acct-blocked-count" title="${I18n.t('accounts.status.blockedCount')}">-${blockedCount}</span>` : ''}
     </button>`;
@@ -10109,7 +10162,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     if (history.ok === false) {
       return `<div class="detail-card" data-dm-card="requests" style="grid-column:1/-1">
         ${head()}
-        <div class="dm-empty" style="color:var(--error)">${this.esc(T('loadFailed'))}</div>
+        <div class="dm-empty" style="color: var(--error-text)">${this.esc(T('loadFailed'))}</div>
         <div class="dm-controls" style="margin:8px 0 0">
           <button class="btn btn-outline btn-sm" onclick="App.refreshAccountRequests('${this.escJsAttr(accountId)}')">${this.esc(T('retry'))}</button>
         </div>
@@ -10137,7 +10190,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         <span class="dm-row-time">${this.esc(this.dmAgo(r.ts))}</span>
         <span class="dm-req-model" title="${this.esc(r.model || '')}">${this.esc(r.model || '—')}</span>
         <span class="dm-req-num">${failed ? '—' : `${this.esc(num(r.totalTokens))} ${this.esc(T('tokenUnit'))}`}</span>
-        <span class="dm-req-num is-credit"${failed ? ' style="color:var(--warn)"' : ''}>${this.esc(failed ? T('failed') : frac(r.credit))}</span>
+        <span class="dm-req-num is-credit"${failed ? ' style="color: var(--warn-text)"' : ''}>${this.esc(failed ? T('failed') : frac(r.credit))}</span>
       </div>`;
     }).join('');
     return `<div class="detail-card" data-dm-card="requests" style="grid-column:1/-1">
@@ -10293,7 +10346,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           <span class="k">${T('retryAfter')}</span><span class="v">${this.esc(retry)}</span>
           <span class="k">${T('rpm')}</span><span class="v">${local.rpmHeadroom == null ? '—' : `${this.esc(String(local.rpmHeadroom))} / ${this.esc(String(local.rpmLimit))}`}</span>
           <span class="k">${T('pool')}</span><span class="v">${pool.entitled == null ? '—' : (pool.entitled ? T('yes') : T('no'))}${pool.freeNow ? ` · ${T('freeNow')}` : ''}</span>
-          ${reasons.length ? `<span class="k">${T('reason')}</span><span class="v" style="color:var(--warn)">${this.esc(reasonText)}</span>` : ''}
+          ${reasons.length ? `<span class="k">${T('reason')}</span><span class="v" style="color: var(--warn-text)">${this.esc(reasonText)}</span>` : ''}
           <span class="k">${T('checked')}</span><span class="v">${this.esc(this.dmAgo(P.fetchedAt))}</span>
         </div>`;
     }
@@ -10444,7 +10497,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       const val = isN ? '—' : v.toFixed(0) + '%';
       const reset = resetAt
         ? `<div class="bar-reset">⟳ ${T('resetAt')} ${fmtUnix(resetAt)}</div>`
-        : (isN && noDataText ? `<div class="bar-reset" style="color:var(--warn)">${noDataText}</div>` : '');
+        : (isN && noDataText ? `<div class="bar-reset" style="color: var(--warn-text)">${noDataText}</div>` : '');
       return `<div class="detail-bar">
         <span class="bar-label">${label}</span>
         ${track}
@@ -10541,7 +10594,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
             <div class="detail-kv">
               <span class="k">${T('runtime.status')}</span><span class="v"><span class="badge ${this.esc(stateMeta.cls)}">${this.esc(this.accountStateLabel(stateMeta))}</span>${a.rateLimited ? ` <span class="badge warn">${I18n.t('card.rateLimit.badge')}</span>` : ''}${!a.rateLimited && a.capacityThrottled ? ` <span class="badge" style="background:var(--info-bg,rgba(96,165,250,.15));color:var(--info,#60a5fa)" title="${this.esc(I18n.t('card.capacity.tip'))}">${I18n.t('card.capacity.badge')}</span>` : ''}</span>
               ${state === 'banned' ? `<span class="k">${T('runtime.bannedAt')}</span><span class="v">${a.bannedAt ? new Date(a.bannedAt).toLocaleString() : '—'}</span>` : ''}
-              ${state === 'banned' && a.bannedReason ? `<span class="k">${T('runtime.bannedReason')}</span><span class="v" style="color:var(--error);font-size:11px">${this.esc(a.bannedReason)}</span>` : ''}
+              ${state === 'banned' && a.bannedReason ? `<span class="k">${T('runtime.bannedReason')}</span><span class="v" style="color: var(--error-text);font-size:11px">${this.esc(a.bannedReason)}</span>` : ''}
               <span class="k">${T('runtime.errors')}</span><span class="v" style="color:${a.errorCount > 0 ? 'var(--error)' : 'inherit'}">${a.errorCount || 0}</span>
               <span class="k">${T('runtime.rpm')}</span><span class="v">${a.rpmUsed ?? 0} / ${a.rpmLimit ?? 0}</span>
             </div>
@@ -10553,7 +10606,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
             <div class="detail-kv">
               <span class="k">${T('runtime.accountId')}</span><span class="v"><code>${this.esc(a.id)}</code></span>
               <span class="k">${T('runtime.apiKey')}</span><span class="v"><code>${this.esc(a.apiKey_masked || a.id || '')}</code></span>
-              ${cr.lastError ? `<span class="k">${T('runtime.lastError')}</span><span class="v" style="color:var(--error);font-size:11px" title="${this.esc(String(cr.lastError).slice(0, 240))}">${this.esc(T('runtime.lastErrorHuman'))}</span>` : ''}
+              ${cr.lastError ? `<span class="k">${T('runtime.lastError')}</span><span class="v" style="color: var(--error-text);font-size:11px" title="${this.esc(String(cr.lastError).slice(0, 240))}">${this.esc(T('runtime.lastErrorHuman'))}</span>` : ''}
             </div>
             ${this.renderSpendCells(a.totalSpend)}
           </div>
@@ -10976,7 +11029,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;padding:8px 10px;background:var(--surface-2);border-radius:6px">
           <div class="text-xs text-dim">${I18n.t('modal.blockedModels.hint')}</div>
           <div style="font-size:13px">
-            ${I18n.t('modal.blockedModels.enabled')} <span id="bm-avail" style="color:var(--success);font-weight:600">${availInit}</span>
+            ${I18n.t('modal.blockedModels.enabled')} <span id="bm-avail" style="color: var(--success-text);font-weight:600">${availInit}</span>
             <span style="color:var(--text-dim)"> / ${total}</span>
           </div>
         </div>
@@ -11050,7 +11103,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           <div class="detail-kv">
             <span class="k">${T('name')}</span><span class="v"><b>${this.esc(cr.planName || us.planName || '—')}</b></span>
             <span class="k">${T('tier')}</span><span class="v"><span class="tier ${this.esc(a.tier || 'unknown')}" style="padding:1px 8px;font-size:10px">${this.esc(a.tier || 'unknown')}</span>${a.tierManual ? ' <span style="color:var(--text-dim);font-size:10px">✎ ' + I18n.t('account.tierManualBadge') + '</span>' : ''}</span>
-            ${a.balance != null ? `<span class="k">${T('balance')}</span><span class="v"><b style="color:var(--success)">$${Number(a.balance).toFixed(2)}</b></span>` : ''}
+            ${a.balance != null ? `<span class="k">${T('balance')}</span><span class="v"><b style="color: var(--success-text)">$${Number(a.balance).toFixed(2)}</b></span>` : ''}
             <span class="k">${T('start')}</span><span class="v">${fmtDate(planStart)}</span>
             <span class="k">${T('end')}</span><span class="v">${fmtDate(planEnd)}${trialDaysLeft != null ? ` <span style="color:${trialDaysLeft <= 3 ? 'var(--error)' : 'var(--text-dim)'};font-size:11px">(${trialDaysLeft}d left)</span>` : ''}</span>
             ${resetRow('dailyReset', a.periodStart)}
@@ -11278,14 +11331,14 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       opts.body = JSON.stringify({ text });
       const r = await fetch('/dashboard/api/accounts/import-text', opts);
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) { out.innerHTML = `<div class="text-sm" style="color:var(--error)">${this.esc((data && (data.error||data.message)) || I18n.t('toast.requestFailed', { status: r.status }))}</div>`; return; }
+      if (!r.ok) { out.innerHTML = `<div class="text-sm" style="color: var(--error-text)">${this.esc((data && (data.error||data.message)) || I18n.t('toast.requestFailed', { status: r.status }))}</div>`; return; }
       const added = (data.added || []).length, skipped = (data.skipped || []).length, failed = (data.failed || []).length;
       out.innerHTML = `<div class="text-sm">${I18n.t('section.smartImport.result', { added, skipped, failed })}</div>`;
       el.value = ''; // clear paste (never persist tokens)
       this.toast(I18n.t('section.smartImport.done', { added }), added > 0 ? 'success' : 'info');
       if (added > 0) this.loadAccounts();
     } catch (e) {
-      out.innerHTML = `<div class="text-sm" style="color:var(--error)">${this.esc(e.message || 'error')}</div>`;
+      out.innerHTML = `<div class="text-sm" style="color: var(--error-text)">${this.esc(e.message || 'error')}</div>`;
     }
   },
   async discoverLocalWindsurf() {    const root = document.getElementById('local-windsurf-result');
@@ -11296,14 +11349,14 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       if (r.error) {
         const errKey = r.error ? `error.${r.error}` : null;
         const msg = (errKey && I18n.t(errKey) !== errKey) ? I18n.t(errKey) : (r.message || r.error);
-        root.innerHTML = `<div class="text-sm" style="color:var(--error)">${this.esc(msg)}</div>`;
+        root.innerHTML = `<div class="text-sm" style="color: var(--error-text)">${this.esc(msg)}</div>`;
         return;
       }
       if (!r.accounts || r.accounts.length === 0) {
         const sourcesHtml = (r.sources || []).map(s => `<li>${this.esc(s.path)} — ${s.ok ? `${s.accountCount} ${I18n.t('localImport.found')}` : this.esc(s.reason || 'unknown')}</li>`).join('');
         root.innerHTML = `
           <div style="padding:12px;background:var(--surface-2);border-radius:var(--radius);font-size:13px;line-height:1.6">
-            <div style="color:var(--warn);font-weight:600">${I18n.t('localImport.empty')}</div>
+            <div style="color: var(--warn-text);font-weight:600">${I18n.t('localImport.empty')}</div>
             <div style="color:var(--text-muted);margin-top:4px">${I18n.t('localImport.scannedPaths')}：</div>
             <ul style="margin:6px 0 0 18px;color:var(--text-muted);font-size:12px">${sourcesHtml}</ul>
             <div style="color:var(--text-muted);margin-top:6px">SQLite: ${r.sqliteSupport} · ${r.platform}</div>
@@ -11329,7 +11382,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           </table>
         </div>`;
     } catch (e) {
-      root.innerHTML = `<div class="text-sm" style="color:var(--error)">${this.esc(e.message || String(e))}</div>`;
+      root.innerHTML = `<div class="text-sm" style="color: var(--error-text)">${this.esc(e.message || String(e))}</div>`;
     }
   },
 
@@ -11767,7 +11820,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         <td class="nowrap">
           <div class="btn-group">
             <button class="btn btn-outline btn-xs" onclick="App.editAccountProxy('${this.escJsAttr(a.id)}','${this.escJsAttr(a.email)}')">${I18n.t('action.configure')}</button>
-            ${p ? `<button class="btn btn-ghost btn-xs" style="color:var(--error)" onclick="App.clearAccountProxy('${this.escJsAttr(a.id)}')">${I18n.t('action.clear')}</button>` : ''}
+            ${p ? `<button class="btn btn-ghost btn-xs" style="color: var(--error-text)" onclick="App.clearAccountProxy('${this.escJsAttr(a.id)}')">${I18n.t('action.clear')}</button>` : ''}
           </div>
         </td>
       </tr>`;
@@ -13309,7 +13362,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       return `
       <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--surface)">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-          <div><code style="color:var(--accent);font-weight:600">${safeKey}</code> <span class="text-sm text-muted">${this.esc(labels[key] || key)}</span></div>
+          <div><code style="color: var(--accent-text);font-weight:600">${safeKey}</code> <span class="text-sm text-muted">${this.esc(labels[key] || key)}</span></div>
           <div class="btn-group">
             <button class="btn btn-ghost btn-xs" onclick="App.resetSystemPrompt('${keyArg}')">${I18n.t('experimental.default')}</button>
             <button class="btn btn-primary btn-xs" onclick="App.saveSystemPrompt('${keyArg}')">${I18n.t('experimental.save')}</button>
