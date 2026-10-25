@@ -195,6 +195,19 @@ describe('Codex 0.164 regression: parallel_tool_calls:false is served, never ref
     assert.equal(hintIgnored(), 0, 'nothing was dropped, so nothing is counted');
   });
 
+  it('threads tool_choice on the same switch (the other field behind it)', async () => {
+    process.env.DEVIN_CONNECT = '1';
+    process.env.DEVIN_CONNECT_TOOL_CHOICE = '1';
+    const seen = stubConnect();
+
+    const r = await handleChatCompletions(request({ tool_choice: 'required' }));
+
+    assert.equal(r.status, 200, JSON.stringify(r?.body));
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].toolChoice, 'required',
+      'tool_choice is inert on the live route too unless the handler threads it');
+  });
+
   it('leaves parallel_tool_calls:true unchanged (upstream default needs no field)', async () => {
     process.env.DEVIN_CONNECT = '1';
     delete process.env.DEVIN_CONNECT_TOOL_CHOICE;

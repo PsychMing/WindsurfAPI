@@ -2,7 +2,7 @@
   "tests": [
     "test/parallel-tool-calls-connect.test.js"
   ],
-  "expectBaselinePass": 11,
+  "expectBaselinePass": 12,
   "mutations": [
     {
       "name": "REGRESSION: the 400 comes back for parallel_tool_calls:false — the exact P1 that made Codex CLI 0.164 unusable on its first turn (evidence/ClientSandboxes.md §3.3 C1)",
