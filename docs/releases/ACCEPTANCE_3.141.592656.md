@@ -5,9 +5,9 @@
 它把 **27 行 V 台账逐行绑定到发布提交**，并记录 B01–B05 的实测命令、计数、skip 名单与日志哈希。
 
 - 发布版本：**3.141.592656**
-- 发布提交（B01）：本附录随发布提交提交；该提交的父提交是 `12aebfcb`（F2/F3 分支 tip），
-  `src/` 与 `c8bfbace` 相同。认证树是紧随其后的 docs-only 提交（tag 目标），其 SHA 由
-  `git rev-list -n1 v3.141.592656` 解析；本附录在 tag 树修订中写入发布提交的精确 SHA。
+- 发布提交（B01）：**`cd5666ff1aabb527ab93fdf3c3b46a65f173b1c2`**（本附录首次提交于该发布提交；
+  其父提交 `12aebfcb` 是 F2/F3 分支 tip，`src/` 与 `c8bfbace` 相同）。认证树是紧随其后的
+  docs-only 提交（tag 目标），其 SHA 由 `git rev-list -n1 v3.141.592656` 解析。
 - 上一个已发布 tag：`v3.141.592655` → `c60d746985f0feffe5d29ff13773f4bfbdf9aa5b`。
 - 源码基线：`c62b5be7`（D 批与 V 批已合入）；F2/F3 修复提交 `c8bfbace`。
 - 台账算术源：`evidence/audit/VERDICT.md:7-16` —— **27 行 = 4 P0 + 18 P1 + 5 P2**。
@@ -75,18 +75,18 @@
 
 ## 4. 认证执行记录（B01–B05）
 
-**本节在 tag 树修订中写入实测计数与日志哈希。** 命令均在发布提交（B01）上执行，使用
+**本节记录实测计数与日志哈希。** 命令均在发布提交（B01）上执行，使用
 `node --import ./test/setup-env.mjs`（禁止裸 `node --test`）；Windows 主机为 `dwgx`，Linux 为
 `hmc`（Debian 13，12 vCPU）。日志目录 `evidence/final/logs/`（`*.log` 被 gitignore，哈希记录在本表）。
 
 | 行 | 命令 / 环境 | 结果 | 日志 |
 |---|---|---|---|
-| B02 | HMC Node `v22.23.4`（`/root/node22matrix-360/node-v22.23.4-linux-x64/bin/node`）`npm run test:release` | 待 §4 修订 | 待 §4 修订 |
-| B03 | `node scripts/mutation-sweep.mjs`（97 份 spec） | 待 §4 修订 | 待 §4 修订 |
-| B04a | Windows `GATE_INERT_SKIP_PATHS="…" npm run gate` | 待 §4 修订 | 待 §4 修订 |
-| B04b | HMC Node `v24.21.0` `npm run test:release` | 待 §4 修订 | 待 §4 修订 |
-| B04c | wire：`WIRE_BASE_TREE=<clean external c60d7469> WIRE_BASE_TAG=v3.141.592655 WIRE_BASE_SHA=c60d746985f0feffe5d29ff13773f4bfbdf9aa5b node --import ./test/setup-env.mjs --test --test-reporter=tap test/wire-byte-identity.test.js` | **270/270 byte-identical，0 expected diffs，0 unexpected**（发布树预跑） | 待 §4 修订 |
-| B05 | `node --import ./test/setup-env.mjs --test test/docs-consistency-guard.test.js` | 待 §4 修订 | 待 §4 修订 |
+| B02 | HMC Node `v22.23.4`（`/root/node22matrix-360/node-v22.23.4-linux-x64/bin/node`）`npm run test:release` | **exit 0 — 590/590 files, 7,194 tests / 7,189 pass / 0 fail / 5 skip**；5 skip = 4 个 Windows-only `icacls` + `wire-byte-identity`（未设 `WIRE_BASE_TREE`）；`detach-soak`、`devin-connect-relogin-live` 是 suite-level skip（0 tests） | `evidence/final/logs/B02-node22-cd5666ff.log`，6,373,344 B，`sha256 0c2b1d8bf81f71d70aaf908c0017b53d360da4d14d75cb285158325da69239da` |
+| B03 | `node scripts/mutation-sweep.mjs`（97 份 spec，HMC，Node `v24.21.0`） | **exit 0 — 97/97 spec OK；862 条 = 845 CAUGHT + 17 声明 SURVIVED；0 unexpected、0 baseline drift、0 untrustworthy**（每份 spec 的 `expectBaselinePass` 全部匹配；`VERDICT coverage: 97/97`） | `evidence/final/logs/B03-mutation-sweep-cd5666ff.log`，340,449 B，`sha256 94477f8095bfa72a21cba88842d3d115199ba187141e1caf03bfc5898327b0a7`；`verdicts.log` `sha256 c1fcc6c78d02f83ac8873f4d04732f44fd3d377f5dd2f4bec39c1cd03268d798`；`manifest.json` `sha256 160d6caa722d961af57d0964fb5ebc45e9a7fd72edeb2469e2306542adc7c2d8` |
+| B04a | Windows `GATE_INERT_SKIP_PATHS="test/wire-byte-identity.test.js;test/devin-connect-relogin-live.test.js;test/mutate-verify-harness.test.js;test/self-update-untracked-safety.test.js;test/detach-soak.test.js;test/detach-ls-pool-pressure.test.js" npm run gate` | **PASS exit 0 — 590/590 files, 7,193 tests / 7,097 pass / 0 fail / 96 skip**；5 inert file(s) / 6 declared（unused: `test/wire-byte-identity.test.js`）；spec-static、spec-baseline、secret-scan、`git diff --check`、`git diff --cached --check` 全 PASS | `evidence/final/logs/B04a-windows-gate-cd5666ff.log`，`sha256 edbb91c39df7e2c0ea4faff5177619f6baa8a8e08b14c45024bdab1fe1751f5e` |
+| B04b | HMC Node `v24.21.0` `npm run test:release` | **exit 0 — 590/590 files, 7,194 tests / 7,189 pass / 0 fail / 5 skip**；skip 名单与 B02 相同（4 个 `icacls` + wire；两个 suite-level skip） | `evidence/final/logs/B04b-node24-cd5666ff.log`，6,373,293 B，`sha256 5a1479686406009156879cb2f91b70f6ed2e46117fb896d4311138c33d1dc216` |
+| B04c | wire：`WIRE_BASE_TREE=/opt/windsurf-wire-base-c60d7469 WIRE_BASE_TAG=v3.141.592655 WIRE_BASE_SHA=c60d746985f0feffe5d29ff13773f4bfbdf9aa5b WIRE_BASE_REQUIRED=1 node --import ./test/setup-env.mjs --test --test-reporter=tap test/wire-byte-identity.test.js` | **exit 0 — 270/270 byte-identical，0 expected diffs，0 unexpected**；`WIRE_PROVENANCE` tested_head=`cd5666ff…`, base_head=`c60d7469…`, `tag_ref_verified:true`, `tested_dirty:false` | `evidence/final/logs/B04c-wire-cd5666ff.tap.log`，`sha256 10013ffad21afa064f695f537768a337f655394357ab233a5f8917bed92a9d63` |
+| B05 | `node --import ./test/setup-env.mjs --test test/docs-consistency-guard.test.js` | **exit 0 — 47/47 pass, 0 fail**（9 suites；含 §0 版本/标签真值、CHANGELOG 216 份计数、未验证登记册链接） | `evidence/final/logs/B05-docs-guard-preB.log`，`sha256 59e0af36ca552c5e9a29031911349aeedf81e988b5c1f3846bb1c6b9a349857e` |
 
 ## 5. 残差与 `[UNVERIFIED]` 边界
 

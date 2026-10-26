@@ -1,5 +1,12 @@
 # 验收证据 — P0/P1/P2 修复批次（master `2598299e`）
 
+> **2026-10-26 对账（发布 3.141.592656）**：本文件是 `2598299e` 的历史验收记录。以下旧陈述已被
+> [`docs/releases/ACCEPTANCE_3.141.592656.md`](../docs/releases/ACCEPTANCE_3.141.592656.md) 取代，
+> 不得当作当前状态：V-27「未修」（D4 已关闭，`test/cache-replay-usage-accounting.test.js` 3/3）；
+> V-10/V-13/V-08/V-04 的开放边界（分别由 D2/D3/D8/D1 关闭）；「96-spec mutation sweep pending」
+> （发布树实测 97/97，见附录）；「master 2598299e / 3.141.592656 不存在」（发布树已到
+> `cd5666ff` 的 3.141.592656 准备提交）。历史段落保留原文，但不得再把它们当作当前状态引用。
+
 本文件记录两批修复的实际覆盖，并修正旧版的验收算术。**算术源**是
 `evidence/audit/VERDICT.md` 的 27 行去重台账，不是本文件的叙述：
 
@@ -56,7 +63,7 @@ V-23/24/25/26 是 **P2**，不能计入 P1 完成数。
 | V-24 | P2 | 批 2 / `17cbff4f` | 已合入 | 提交说明（同一提交） | `test/windsurf-login-identity.test.js` |
 | V-25 | P2 | 批 2 / `17cbff4f` | 已合入 | 提交说明（同一提交） | `test/dashboard-batch-import-redaction.test.js` |
 | V-26 | P2 | 批 2 / `072ce6d6` | 已合入；delete+re-add ABA 子claim 未复现（pinned control） | `evidence/FixV17V18V26.md` | `test/auth-snapshot-epoch.test.js` |
-| V-27 | P2 | **未修** | 开放；无实现、无测试 | `evidence/audit/FIX-QUEUE.md:76`（排队）；`evidence/audit2/Transport.md` 只做静态确认 | 前瞻：`test/cache-replay-usage-accounting.test.js`（D4，尚不存在） |
+| V-27 | P2 | **未修 → 已修（D4，2026-10-26）** | 开放；无实现、无测试（历史；D4 已关闭：`test/cache-replay-usage-accounting.test.js` 3/3） | `evidence/audit/FIX-QUEUE.md:76`（排队）；`evidence/audit2/Transport.md` 只做静态确认；`evidence/FixD2D3D4D5.md` §D4 | 前瞻：`test/cache-replay-usage-accounting.test.js`（D4 前尚不存在；现已存在并 3/3） |
 
 矩阵口径：每一行的「证明测试」都在本树存在（V-27 的前瞻文件除外，已注明尚不存在）；
 「已合入」不等于该行在所有调用路径上关闭 —— 四个「边界未闭」的 V 行是二轮审计的
@@ -103,9 +110,15 @@ gate **7,016 pass / 0 fail / 96 skip**。二轮审计的 fresh-clone Linux 终�
 （`evidence/audit2/MatrixFinal.md`）在 Node 24.21.0 与 22.23.4 上各 **7,108 pass /
 0 fail / 5 skip（7,113 tests / 584 files）**；wire 对 `v3.141.592655` **270/270
 字节一致、0 差异、allowlist 为空**。**96-spec mutation sweep 仍为 pending**
-（`MatrixFinal.md` §4）—— 不得把 Linux 全绿当作 mutation 已验。
+（历史；`MatrixFinal.md` §4 是 `2598299e` 的旧结论；发布树实测 97 份 spec / 862 条，见
+`docs/releases/ACCEPTANCE_3.141.592656.md`）—— 不得把 Linux 全绿当作 mutation 已验。
 
 ## 4. 未关闭项与发布真相
+
+> **2026-10-26 对账**：本节以下各条是 `2598299e` 时的状态，已被
+> [`docs/releases/ACCEPTANCE_3.141.592656.md`](../docs/releases/ACCEPTANCE_3.141.592656.md) 取代：
+> V-27 已由 D4 关闭；V-10/V-08/V-13/V-04 的边界分别由 D2/D8/D3/D1 关闭；mutation sweep 已在
+> 发布树完成 97/97；版本真相更新为 `3.141.592656` 的准备提交 `cd5666ff`（tag 尚未创建）。
 
 - **V-27（P2）未修**：缓存命中仍可能被 additive upstream credit/token recorder 记账。
   `evidence/audit/FIX-QUEUE.md:76` 仍要求真实的 cache-replay 记账测试；D4 的

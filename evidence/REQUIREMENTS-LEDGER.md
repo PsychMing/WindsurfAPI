@@ -1,5 +1,12 @@
 # 需求考古台账 — 每条需求 → 实际产物 → 验收方式（2026-10-26）
 
+> **2026-10-26 对账（发布 3.141.592656）**：R3/R13 的「96-spec mutation sweep pending」与
+> 「V-27 未修」已过时。发布树 `cd5666ff` 上：V-27 由 D4 关闭
+> （`test/cache-replay-usage-accounting.test.js` 3/3）；全量 mutation 覆盖 97 份 spec / 862 条
+> （17 条声明 survivor），实测结果见
+> [`docs/releases/ACCEPTANCE_3.141.592656.md`](../docs/releases/ACCEPTANCE_3.141.592656.md)；
+> F2/F3 两条 Cascade 阻塞项已关闭。历史行保留原文，但不得再把它们当作当前状态引用。
+
 | # | 你的原话/需求 | 实际做到 | 产物与证据 | 验收 |
 |---|---|---|---|---|
 | R1 | 版本跳到 3.141592654 | 发布+部署 | tag `65285ca`→`d5e7ace`；10 assets；HMC 3.141.592654 | `git ls-remote --tags`；HMC `/health` |
