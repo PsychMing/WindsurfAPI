@@ -2,7 +2,8 @@
 
 自 v3.141.592655 以来的 **53 个提交 / 148 个文件**（`git rev-list --count v3.141.592655..12aebfcb`；
 `git diff --shortstat v3.141.592655..12aebfcb`：18,533 增 / 1,884 删）把二轮审计的 27 行 V 台账与
-D 波跟进全部收口，并关闭两条 Cascade 发布阻塞项 F2/F3。本版是 **patch**：协议形状未变，
+D 波指定修正已落地（D9 仍为仅设计的开放风险），并关闭两条 Cascade 发布阻塞项 F2/F3 的已测机制。
+这不关闭 audit2 的其他残余 P2，也不构成 live/部署认证；边界见 §6。本版是 **patch**：协议形状未变，
 请求字节相对 `v3.141.592655` 仍是 **270/270 逐字节一致、0 差异、allowlist 为空**。
 
 > **版本号**：`3.141.592655` 之后的 patch，语义化版本写作 **3.141.592656**（tag `v3.141.592656`，
@@ -15,6 +16,9 @@ D 波跟进全部收口，并关闭两条 Cascade 发布阻塞项 F2/F3。本版
 旧台账的两处算术错误已按 `audit/VERDICT.md:7-16` 的 27 行去重表修正：批 1 是 **4 P0 + 9 P1**
 （不是「10 个 P1 根因」），批 2 是 **9 P1 + 4 P2**；V-23/24/25/26 是 P2，不计入 18 项 P1。
 本版把 V-27 也从「未修」改为关闭：
+
+本节“关闭”仅指各 V-ID 的具名机制已有修复与测试证据，不等于所有 Cascade/传输/部署风险均已关闭，
+也不包括 audit2 的独立残余 P2；后者列于 §6。
 
 | 严重度 | 行数 | 行 | 状态 |
 |---|---:|---|---|
@@ -107,6 +111,15 @@ final IDLE sweep 常常是某一 step 的文本**第一次**可见的位置（LS
   矩阵（含 F2/F3 的 live 控制）仍 `[UNVERIFIED]`。
 - **真实 Docker / 部署 / 回滚**：D6 是 fake Docker/git 注入；没有 registry pull、daemon recreate、
   真实重启或生产部署。生产 `:18999` 未作为测试目标；B07 的备份/部署/回滚演练仍未执行。
+- **audit2 残余 P2 未关闭（按当前发布策略非阻塞，不等于无害）**：27 行 V 台账与 F2/F3 的关闭不覆盖以下独立风险。
+  - **F5（Cascade 多轮）**：重放 prompt 的相反角色 closing tag 与最新 human turn 未被统一转义，可伪造对话结构；这是 prompt-integrity 风险，未证明跨租户暴露。
+  - **S03（dashboard）**：请求体在 Host/auth 门之前缓冲并解析；未认证并发连接可在读取期间各保留约 10–20 MB，需前置 Host 校验、较小长度上限与请求 deadline。
+  - **历史 downstream key**：已从当前文档删除不等于撤销；轮换/吊销仍 `[UNVERIFIED]`。不得发布 key 值；若仍有效须按安全事件处理。
+  - **L1（LS 冷启动/容量压力）**：全局 admission lock 跨越 capacity/memory 等待，可阻塞无关 LS 启动最多两轮 30 s；已就绪 LS 请求不受影响。
+  - **L2（默认 auto-restart）**：LS ready 后立即清零重试计数，ready-then-crash 循环可永远达不到 retry cap。
+  - **F4（Cascade 图片）**：历史图片有 4 张/1.6 MB 预算，但当前轮图片不纳入同一 count/aggregate-byte 预算；HTTP 10 MiB 上限仍限制网络输入。
+  - **Devin ACP-1/ACP-2（opt-in）**：pre-abort 后注册的 listener 不会触发，可能在调用方离开后开始工作；不可写 stdin 会静默丢 RPC，pending prompt 可等到默认 10 min timeout。尚无 live billable-turn 测量。
+  - **其余已列 P2**：Update P2-5（forced-update stash 未向操作者呈现）、G5（unbounded unary buffering）、C1（同步压缩）、W1（async Promise executor）仍未关闭；未进入 top-10 不代表已修复。
 - **D9 是设计，不是实现**：源码 OTA 无 tag 签名校验、docker 镜像未签名、`banner.yml` 执行运行时
   拉取的代码；本版按当前发布策略接受该风险，不声称「verified OTA/supply chain」。
 - **P3 清理未做**：`DIRECTION.md` 明确延后；README 的模型计数/双 API 表述、63 个死 i18n key、

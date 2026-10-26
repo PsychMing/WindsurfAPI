@@ -15,17 +15,17 @@
 |---|---|
 | 扫描 | `docs/releases/*.md` 共 216 个文件 |
 | 命中 | 26 个文件 / 26 个小节 |
-| bullet | 88 条 |
+| bullet | 97 条 |
 | 已复核 | 2 |
-| 仍缺 | 86 |
+| 仍缺 | 95 |
 | 已修 | 0 |
-| 无 marker | 23 |
+| 无 marker | 32 |
 
 ## 按 release
 
 | release | 小节 | bullet | 已复核 | 仍缺 | 已修 | 无 marker |
 |---|---:|---:|---:|---:|---:|---:|
-| [3.141.592656](releases/RELEASE_NOTES_3.141.592656.md) | 1 | 7 | 0 | 7 | 0 | 7 |
+| [3.141.592656](releases/RELEASE_NOTES_3.141.592656.md) | 1 | 16 | 0 | 16 | 0 | 16 |
 | [3.141.592655](releases/RELEASE_NOTES_3.141.592655.md) | 1 | 9 | 0 | 9 | 0 | 9 |
 | [3.141.592654](releases/RELEASE_NOTES_3.141.592654.md) | 1 | 7 | 0 | 7 | 0 | 7 |
 | [3.10.0](releases/RELEASE_NOTES_3.10.0.md) | 1 | 3 | 0 | 3 | 0 | 0 |
@@ -54,19 +54,28 @@
 
 ## 3.141.592656 — `docs/releases/RELEASE_NOTES_3.141.592656.md`
 
-1 个小节 · 7 条：已复核 0 · 仍缺 7 · 已修 0（无 marker 7）
+1 个小节 · 16 条：已复核 0 · 仍缺 16 · 已修 0（无 marker 16）
 
-小节 `## 6. 已知 / 尚未验证`（`:101`）
+小节 `## 6. 已知 / 尚未验证`（`:105`）
 
 | # | 位置 | bullet | marker | 状态 |
 |---:|---|---|---|---|
-| 1 | `RELEASE_NOTES_3.141.592656.md:105` | **真实上游未重跑**：V/D 波与 F2/F3 的证据来自单元测试、真实 handler 与 fake LS/受控 socket； 没有用真实 LS gRPC、真实付费账号或真实 Claude/Codex/Devin 客户端复验这些路径。Cascade live 矩阵（含 F2/F3 的 live 控制）仍 `[UNVERIFIED]`。 | — | 仍缺 |
-| 2 | `RELEASE_NOTES_3.141.592656.md:108` | **真实 Docker / 部署 / 回滚**：D6 是 fake Docker/git 注入；没有 registry pull、daemon recreate、 真实重启或生产部署。生产 `:18999` 未作为测试目标；B07 的备份/部署/回滚演练仍未执行。 | — | 仍缺 |
-| 3 | `RELEASE_NOTES_3.141.592656.md:110` | **D9 是设计，不是实现**：源码 OTA 无 tag 签名校验、docker 镜像未签名、`banner.yml` 执行运行时 拉取的代码；本版按当前发布策略接受该风险，不声称「verified OTA/supply chain」。 | — | 仍缺 |
-| 4 | `RELEASE_NOTES_3.141.592656.md:112` | **P3 清理未做**：`DIRECTION.md` 明确延后；README 的模型计数/双 API 表述、63 个死 i18n key、 32 个前缀外 env switch 等仍是已知文档债，不是本版回归。 | — | 仍缺 |
-| 5 | `RELEASE_NOTES_3.141.592656.md:114` | **Node 下限未实测**：只跑了 22.23.4 与 24.21.0；`>=22.13.0` 的 floor 本身 `[UNVERIFIED]`。 | — | 仍缺 |
-| 6 | `RELEASE_NOTES_3.141.592656.md:115` | **Windows 本机 inert 声明**：6 条平台/live 文件按 `GATE_INERT_SKIP_PATHS` 声明，不当作绿； 具体名单与计数见验收附录。 | — | 仍缺 |
-| 7 | `RELEASE_NOTES_3.141.592656.md:117` | **托管 CI / 发布产物**：tag、release workflow、cosign 资产核验与 HMC 部署都必须在 tag 后另行 执行与核对（B06/B07）；本文件不代表它们已经发生。 | — | 仍缺 |
+| 1 | `RELEASE_NOTES_3.141.592656.md:109` | **真实上游未重跑**：V/D 波与 F2/F3 的证据来自单元测试、真实 handler 与 fake LS/受控 socket； 没有用真实 LS gRPC、真实付费账号或真实 Claude/Codex/Devin 客户端复验这些路径。Cascade live 矩阵（含 F2/F3 的 live 控制）仍 `[UNVERIFIED]`。 | — | 仍缺 |
+| 2 | `RELEASE_NOTES_3.141.592656.md:112` | **真实 Docker / 部署 / 回滚**：D6 是 fake Docker/git 注入；没有 registry pull、daemon recreate、 真实重启或生产部署。生产 `:18999` 未作为测试目标；B07 的备份/部署/回滚演练仍未执行。 | — | 仍缺 |
+| 3 | `RELEASE_NOTES_3.141.592656.md:114` | **audit2 残余 P2 未关闭（按当前发布策略非阻塞，不等于无害）**：27 行 V 台账与 F2/F3 的关闭不覆盖以下独立风险。 | — | 仍缺 |
+| 4 | `RELEASE_NOTES_3.141.592656.md:115` | **F5（Cascade 多轮）**：重放 prompt 的相反角色 closing tag 与最新 human turn 未被统一转义，可伪造对话结构；这是 prompt-integrity 风险，未证明跨租户暴露。 | — | 仍缺 |
+| 5 | `RELEASE_NOTES_3.141.592656.md:116` | **S03（dashboard）**：请求体在 Host/auth 门之前缓冲并解析；未认证并发连接可在读取期间各保留约 10–20 MB，需前置 Host 校验、较小长度上限与请求 deadline。 | — | 仍缺 |
+| 6 | `RELEASE_NOTES_3.141.592656.md:117` | **历史 downstream key**：已从当前文档删除不等于撤销；轮换/吊销仍 `[UNVERIFIED]`。不得发布 key 值；若仍有效须按安全事件处理。 | — | 仍缺 |
+| 7 | `RELEASE_NOTES_3.141.592656.md:118` | **L1（LS 冷启动/容量压力）**：全局 admission lock 跨越 capacity/memory 等待，可阻塞无关 LS 启动最多两轮 30 s；已就绪 LS 请求不受影响。 | — | 仍缺 |
+| 8 | `RELEASE_NOTES_3.141.592656.md:119` | **L2（默认 auto-restart）**：LS ready 后立即清零重试计数，ready-then-crash 循环可永远达不到 retry cap。 | — | 仍缺 |
+| 9 | `RELEASE_NOTES_3.141.592656.md:120` | **F4（Cascade 图片）**：历史图片有 4 张/1.6 MB 预算，但当前轮图片不纳入同一 count/aggregate-byte 预算；HTTP 10 MiB 上限仍限制网络输入。 | — | 仍缺 |
+| 10 | `RELEASE_NOTES_3.141.592656.md:121` | **Devin ACP-1/ACP-2（opt-in）**：pre-abort 后注册的 listener 不会触发，可能在调用方离开后开始工作；不可写 stdin 会静默丢 RPC，pending prompt 可等到默认 10 min timeout。尚无 live billable-turn 测量。 | — | 仍缺 |
+| 11 | `RELEASE_NOTES_3.141.592656.md:122` | **其余已列 P2**：Update P2-5（forced-update stash 未向操作者呈现）、G5（unbounded unary buffering）、C1（同步压缩）、W1（async Promise executor）仍未关闭；未进入 top-10 不代表已修复。 | — | 仍缺 |
+| 12 | `RELEASE_NOTES_3.141.592656.md:123` | **D9 是设计，不是实现**：源码 OTA 无 tag 签名校验、docker 镜像未签名、`banner.yml` 执行运行时 拉取的代码；本版按当前发布策略接受该风险，不声称「verified OTA/supply chain」。 | — | 仍缺 |
+| 13 | `RELEASE_NOTES_3.141.592656.md:125` | **P3 清理未做**：`DIRECTION.md` 明确延后；README 的模型计数/双 API 表述、63 个死 i18n key、 32 个前缀外 env switch 等仍是已知文档债，不是本版回归。 | — | 仍缺 |
+| 14 | `RELEASE_NOTES_3.141.592656.md:127` | **Node 下限未实测**：只跑了 22.23.4 与 24.21.0；`>=22.13.0` 的 floor 本身 `[UNVERIFIED]`。 | — | 仍缺 |
+| 15 | `RELEASE_NOTES_3.141.592656.md:128` | **Windows 本机 inert 声明**：6 条平台/live 文件按 `GATE_INERT_SKIP_PATHS` 声明，不当作绿； 具体名单与计数见验收附录。 | — | 仍缺 |
+| 16 | `RELEASE_NOTES_3.141.592656.md:130` | **托管 CI / 发布产物**：tag、release workflow、cosign 资产核验与 HMC 部署都必须在 tag 后另行 执行与核对（B06/B07）；本文件不代表它们已经发生。 | — | 仍缺 |
 
 ## 3.141.592655 — `docs/releases/RELEASE_NOTES_3.141.592655.md`
 
