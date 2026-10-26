@@ -1,7 +1,7 @@
 # v3.141.592657
 
-自 v3.141.592656 以来的 **16 个提交 / 43 个文件**（`git rev-list --count v3.141.592656..HEAD`；
-`git diff --shortstat v3.141.592656..HEAD`：4,057 增 / 216 删）把 D9 供应链控制的三个可落地部分
+自 v3.141.592656 以来的 **16 个提交 / 43 个文件**（`git rev-list --count v3.141.592656..f6b843fe`；
+`git diff --shortstat v3.141.592656..f6b843fe`：4,057 增 / 216 删）把 D9 供应链控制的三个可落地部分
 落到了默认路径：banner 生成器改为 commit + 逐文件 sha256 锁定，Docker 镜像按 digest 签名并在
 dashboard OTA 中强制校验，源码 OTA 在改动 Git 前校验签名的 `release-attestation.json`。同时修复
 了 F3 截止边界上最后一毫秒的 phase timeout 误分类。本版是 **patch**：协议形状未变，请求字节相对
@@ -26,7 +26,7 @@ dashboard OTA 中强制校验，源码 OTA 在改动 Git 前校验签名的 `rel
 - `banner.yml` 的 fetch 步骤改为 `node scripts/fetch-repokit.mjs --dest /tmp/repokit`，验证在
   render/commit 之前；不再回退到 `main`，也没有 `continue-on-error`。`contents: write` 保留，因为
   自动提交仍需要它——这是已接受的风险，不是已关闭项。
-- 同一批把仓库内 42 个 `uses:` 全部钉到 commit SHA（含 release/banner/ci/baseline-audit/
+- 同一批把仓库内 45 个 `uses:` 全部钉到 commit SHA（含 release/banner/ci/baseline-audit/
   star-history 的 checkout、setup-node、upload-artifact 等），`ci.yml` 显式声明
   `contents: read`，`baseline-audit.yml` 保持只读。
 

@@ -16,7 +16,7 @@
 
 | 控制 | 实现 | 证明测试 / 边界 |
 |---|---|---|
-| BannerLock | `repo-kit.lock.json` 固定 `dwgx/DWGX` commit `0b44ea0168cf04654683812d6d3d7e64e5f3acf8` + 四文件 sha256；`scripts/fetch-repokit.mjs` 在 import 前逐文件校验并失败关闭；`banner.yml` 不再 fetch `main`；42 个 `uses:` 钉 SHA | `test/banner-workflow-pins.test.js`；`evidence/final/BannerLock.md`。锁定字节不等于代码安全，`contents: write` 保留。 |
+| BannerLock | `repo-kit.lock.json` 固定 `dwgx/DWGX` commit `0b44ea0168cf04654683812d6d3d7e64e5f3acf8` + 四文件 sha256；`scripts/fetch-repokit.mjs` 在 import 前逐文件校验并失败关闭；`banner.yml` 不再 fetch `main`；45 个 `uses:` 钉 SHA | `test/banner-workflow-pins.test.js`；`evidence/final/BannerLock.md`。锁定字节不等于代码安全，`contents: write` 保留。 |
 | DockerSign | release `docker` job 按 digest 用 cosign keyless 签名并发布 `image-digest.txt` + `.sigstore.json`；dashboard Docker OTA 解析 tag→digest、要求等于签名 digest、按 digest pull、校验 `RepoDigests`；`docker:24-cli` digest 固定；所有 compose `up` 加 `--no-build` | `test/docker-self-update.test.js`（48/48）、`test/docker-oneclick-update.test.js`、`test/release-workflow.test.js`、`test/release-signing.test.js`；`evidence/final/DockerSign.md`。真实 GHCR/daemon 在 B06/B07 核对。 |
 | SourceAttest | release job 生成并签名 `release-attestation.json`（tag/commit/tree + 5 个资产 sha256）；`/self-update` 与 `update.sh` 在 Git mutation 前校验；默认 `warn`、`required` 可选；`WINDSURFAPI_ATTESTATION_DIR` 支持预置 | `test/release-attestation.test.js`、`test/self-update-attestation.test.js`、`test/release-workflow.test.js`。tag 触发签名不是独立审批；源码 OTA 仍信任 Owner。 |
 
@@ -48,8 +48,9 @@
 
 | 行 | 内容 | 结果 |
 |---|---|---|
-| B06 | annotated tag `v3.141.592657` → 发布提交；push master + tag；release workflow；资产 14 个；cosign 验签 | [PENDING] |
-| B07 | HMC `/opt/windsurf-api` 部署、时间戳备份、stage/prod smoke、rollback drill | [PENDING] |
+| B06 | annotated tag `v3.141.592657`（对象 `4a407480375ae1f7a9740806a270e73fc5236976`）→ 认证提交 `a7d2e33f5e2c6c11c85f82dc50f18f2c7b1cd2d8`；push master + tag；release workflow `40274593446`（attempt 1） | **success** — Test 593 文件 / 7,249 tests / 7,245 pass / 0 fail / 4 skip；Docker、macOS arm64、macOS x64、Windows 单 exe、GitHub Release 全 success；18m59s；<https://github.com/dwgx/WindsurfAPI/actions/runs/40274593446> |
+| B06 assets | 14 个 release assets；`verify-release-assets.mjs` + cosign v3.1.4；image digest 与 attestation | **PASS** — 5 个签名 blob（4 资产 + `SHA256SUMS`）+ 4 条 manifest 条目；`image-digest.txt` 签名 blob 验证 OK；GHCR 镜像 `sha256:cd2c6b7ebbaaa909ca19ed11e1dd928b37e21706379e19534a2764d643b526a1` cosign verify OK；`release-attestation.json` 签名验证 OK 且 commit/tree/5 资产哈希匹配 |
+| B07 | HMC `/opt/windsurf-api` 部署、时间戳备份、stage/prod smoke、rollback drill | **PASS** — 备份 `/opt/windsurf-api.prev24-20261026T053115Z`（20M，3.141.592656）；回滚树 `/opt/windsurf-api.old-3.141.592656-20261026T053115Z`；stage smoke 全 200；prod smoke 全 200（models 270）；rollback drill 3.141.592657→3.141.592656→3.141.592657 全 200；最终 PID 1272334、NRestarts 0、health 200 |
 
 ## 5. 残差与 `[UNVERIFIED]` 边界
 
@@ -59,8 +60,9 @@
   触发的 cosign 不是独立审批。`WINDSURFAPI_UPDATE_ATTESTATION=warn` 是默认值，老安装可在没有
   attestation 时继续升级。`deploy/update.sh` 的 Docker 路径仍按 tag/镜像引用更新，不在 dashboard
   的 digest gate 内。
-- **Docker 实网签名**：hermetic 测试覆盖逻辑；真实 GHCR push、cosign 签名、daemon digest 校验与
-  rollback 由 B06/B07 记录，不在 B02–B05 的认证内。
+- **Docker 实网签名**：hermetic 测试覆盖逻辑；B06 已用真实 GHCR push、cosign 签名与 `cosign verify`
+  验证镜像 digest 和 `image-digest.txt`；真实 Docker daemon 的 digest pull/recreate/rollback 仍未执行
+  （B07 只覆盖 HMC 源码树）。
 - **真实上游 / 真实 LS / 真实客户端**：没有用真实付费账号、真实 LS gRPC 或真实 Claude/Codex/
   Devin 客户端复验；Cascade live 矩阵仍 `[UNVERIFIED]`。
 - **真实 Docker / 部署 / 回滚**：D6 是 fake Docker/git；B07 只覆盖 HMC 源码树部署，不覆盖 Docker
@@ -68,4 +70,5 @@
 - **P3 清理**：`DIRECTION.md` 明确延后；README 模型计数/双 API 表述、63 个死 i18n key、32 个
   前缀外 env switch 等仍是已知文档债。
 - **Node 下限**：只跑 22.23.4 与 24.21.0；`>=22.13.0` floor 本身未实测。
-- **托管 CI / 发布产物**：B06/B07 必须另行执行；本附录在 B01–B05 阶段不代表它们已经发生。
+- **托管 CI / 发布产物**：B06 已执行并记录（release `40274593446`，14 assets，cosign 全过）；
+  B07 已执行并记录（HMC 3.141.592657）。本附录 §3 的 B01–B05 计数仍是发布提交上的实测值。

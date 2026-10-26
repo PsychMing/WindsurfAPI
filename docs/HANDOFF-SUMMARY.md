@@ -31,9 +31,10 @@ in the dated evidence files; this page is the index to them.
 - **D9 supply chain.** BannerLock (commit + per-file sha256 lock, fail-before-import, 45 workflow
   `uses:` SHA-pinned), DockerSign (cosign-signed image digest, digest-pinned deploy, `--no-build`)
   and SourceAttest (`release-attestation.json` verified before Git mutation; `warn` default,
-  `required` opt-in) are implemented and covered by hermetic tests. Real GHCR push, real
-  Fulcio/Sigstore validation and the first hosted workflow run remain `[UNVERIFIED]` until the
-  first release after the change.
+  `required` opt-in) are implemented and covered by hermetic tests. B06 已用真实 release `40274593446` 验证：GHCR image digest
+  `sha256:cd2c6b7ebbaaa909ca19ed11e1dd928b37e21706379e19534a2764d643b526a1` 的 cosign verify OK、
+  `image-digest.txt` / `release-attestation.json` bundle 验证 OK、14 assets 齐全；真实 Docker daemon
+  pull/recreate/rollback 仍 `[UNVERIFIED]`。
 - **Documentation.** `docs/DOC-MAP.md` now covers the D9/release-gate evidence; the two READMEs,
   `docs/README.md`, `docs/ENV-SWITCHES.md` and `docs/review.html` were recounted; `CONTRIBUTING.md`
   carries the six-path Windows inert recipe. The tree has 217 release-note files and 227 git tags
@@ -52,9 +53,9 @@ in the dated evidence files; this page is the index to them.
 
 ## Open items
 
-1. **Tag / publish / deploy `v3.141.592657`** — the tag now exists at `a7d2e33f`. Remaining: wait
-   for release CI, verify all 14 assets with cosign, then deploy to HMC with a timestamped backup
-   and an exercised rollback (B06/B07 in the acceptance appendix).
+1. **Tag / publish / deploy `v3.141.592657`** — DONE: tag `v3.141.592657` → `a7d2e33f`;
+   release CI `40274593446` success; 14 assets verified with cosign; HMC deployed 3.141.592657 with
+   timestamped backup `/opt/windsurf-api.prev24-20261026T053115Z` and an exercised rollback drill.
 2. **D9 policy items (Owner).** M0 (verify tag ruleset / phishing-resistant MFA / least-privilege
    tokens), an independent release approver or offline root, and the `environment: release`
    decision. Without them D9's residual risk is accepted, not eliminated.
