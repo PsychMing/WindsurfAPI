@@ -1043,10 +1043,18 @@ export class WindsurfClient {
         throw turnDeadlineError(`request budget exhausted before ${label} (${turnBudgetMs}ms)`);
       }
     };
+    // A budget-bounded phase timer can fire on the last wall-clock millisecond:
+    // Date.now() truncates both endpoints, so `remainingBudgetMs()` may still
+    // read 1-2 ms when the timer that consumed the budget rejects. Treat that
+    // final tick as spent — no retry can fit inside it, and reporting a
+    // transport error would rotate accounts for a deadline this turn caused
+    // itself (B06 CI: a 120 ms StartCascade test ended at 120.24 ms with
+    // "gRPC unary timeout" instead of the budget stop).
+    const DEADLINE_TOLERANCE_MS = 5;
     // Once the clock is spent, a phase failure is the route deadline, not an
     // upstream/panel fault: throw the budget stop instead of retrying.
     const throwIfSpent = (err, phase) => {
-      if (remainingBudgetMs() > 0) return;
+      if (remainingBudgetMs() > DEADLINE_TOLERANCE_MS) return;
       throw isBudgetExceededError(err) ? err : turnDeadlineError(
         `request budget exhausted during ${phase} (${turnBudgetMs}ms)`, err,
       );

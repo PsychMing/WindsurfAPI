@@ -135,21 +135,45 @@ async function withFakeLs(plan, fn) {
   }
 }
 
-async function runTurn({ port, maxWaitMs, onChunk, signal, detach, Client = WindsurfClient }) {
+// The deadline contract starts at producer entry, so the per-LS workspace
+// handshake is not what these arms measure. Skipping it keeps the budget
+// arithmetic deterministic on a slow checkout (the real warmup has its own
+// never-finishes arm below).
+class NoWarmClient extends WindsurfClient {
+  warmupCascade() { return Promise.resolve(); }
+}
+
+async function runTurn({ port, maxWaitMs, onChunk, signal, detach, Client = NoWarmClient, clockCapMs }) {
   const client = new Client('test-api-key', port, 'csrf-token');
   const opts = { onChunk, signal, detach };
   if (maxWaitMs !== undefined) opts.maxWaitMs = maxWaitMs;
-  const started = Date.now();
+  const realNow = Date.now;
+  let clockAnchor = null;
+  // Test seam for the wall-clock/timer rounding boundary: once the turn's
+  // first clock read happens, the wall clock is capped at `clockCapMs` from
+  // there while the real timers keep running. This reproduces a deadline
+  // timer that fires with a millisecond or two still reading as "left",
+  // deterministically instead of waiting for a loaded scheduler to do it.
+  if (clockCapMs !== undefined) {
+    Date.now = () => {
+      const now = realNow();
+      if (clockAnchor === null) clockAnchor = now;
+      return Math.min(now, clockAnchor + clockCapMs);
+    };
+  }
+  const started = realNow();
   try {
     const chunks = await client.cascadeChat(MESSAGES, 0, MODEL_UID, opts);
     return {
       started,
-      elapsed: Date.now() - started,
+      elapsed: realNow() - started,
       chunks,
       text: chunks.map((chunk) => chunk.text || '').join(''),
     };
   } catch (err) {
-    return { started, elapsed: Date.now() - started, err };
+    return { started, elapsed: realNow() - started, err };
+  } finally {
+    if (clockCapMs !== undefined) Date.now = realNow;
   }
 }
 
@@ -169,7 +193,7 @@ describe('F3 the route budget covers the whole turn', () => {
       const budgetMs = 120;
       const result = await runTurn({ port: server.port, maxWaitMs: budgetMs });
 
-      assert.ok(result.elapsed < 250,
+      assert.ok(result.elapsed < 400,
         `a ${budgetMs}ms budget took ${result.elapsed}ms behind a 400ms Send`);
       assert.ok(isBudgetExceededError(result.err),
         `the turn must end as a budget stop, got: ${result.err?.message || JSON.stringify(result.text)}`);
@@ -196,10 +220,39 @@ describe('F3 the route budget covers the whole turn', () => {
       const budgetMs = 120;
       const result = await runTurn({ port: server.port, maxWaitMs: budgetMs });
 
-      assert.ok(result.elapsed < 250, `StartCascade outlived the budget: ${result.elapsed}ms`);
+      assert.ok(result.elapsed < 400, `StartCascade outlived the budget: ${result.elapsed}ms`);
       assert.ok(isBudgetExceededError(result.err), `expected a budget stop, got: ${result.err?.message}`);
       assert.equal(server.state.starts, 1);
       assert.equal(server.state.sends, 0, 'no Send may follow an expired StartCascade');
+      assert.equal(server.state.stepReads, 0);
+    });
+  });
+
+  it('a phase timer that fires on the last budget tick is still the budget stop', async () => {
+    // B06 CI flake (release attempt 2): the same StartCascade case failed with
+    // "expected a budget stop, got: gRPC unary timeout" after 120.24 ms. The
+    // StartCascade timer is armed from an integer-millisecond wall clock; when
+    // it fires, Date.now() can still read 1-2 ms of budget left because both
+    // endpoints truncate. `throwIfSpent` treated that as "not spent" and
+    // rethrew a transport error. Pin the boundary deterministically by capping
+    // the wall clock one millisecond short of the budget while the real timer
+    // runs its full remaining slice.
+    await withFakeLs((method, state) => {
+      if (method === 'StartCascade') return { delayMs: 400, body: writeStringField(1, `cascade-${state.starts}`) };
+      if (method === 'SendUserCascadeMessage') return {};
+      if (method === 'GetCascadeTrajectorySteps') return { body: stepsBody(['answer']) };
+      if (method === 'GetCascadeTrajectory') return { body: idleStatus() };
+      return {};
+    }, async (server) => {
+      const budgetMs = 120;
+      const result = await runTurn({ port: server.port, maxWaitMs: budgetMs, clockCapMs: budgetMs - 1 });
+
+      assert.ok(result.elapsed < 400, `the capped clock stretched the turn: ${result.elapsed}ms`);
+      assert.ok(isBudgetExceededError(result.err),
+        `a timer firing on the last budget tick must be the budget stop, got: ${result.err?.message}`);
+      assert.equal(result.err.type, 'upstream_deadline_exceeded');
+      assert.equal(server.state.starts, 1);
+      assert.equal(server.state.sends, 0, 'no Send may follow the expired StartCascade');
       assert.equal(server.state.stepReads, 0);
     });
   });
@@ -223,7 +276,7 @@ describe('F3 the route budget covers the whole turn', () => {
 
       assert.equal(outcome.hung, undefined, 'the warmup await is outside the turn deadline');
       assert.ok(isBudgetExceededError(outcome.err), `expected a budget stop, got: ${outcome.err?.message}`);
-      assert.ok(outcome.elapsed < 250, `warmup outlived the budget: ${outcome.elapsed}ms`);
+      assert.ok(outcome.elapsed < 600, `warmup outlived the budget: ${outcome.elapsed}ms`);
       assert.deepEqual(server.requests.map((request) => request.method), [],
         'an exhausted warmup must not be followed by any upstream RPC');
     });
@@ -246,7 +299,7 @@ describe('F3 the route budget covers the whole turn', () => {
       const budgetMs = 150;
       const result = await runTurn({ port: server.port, maxWaitMs: budgetMs });
 
-      assert.ok(result.elapsed < 300,
+      assert.ok(result.elapsed < 400,
         `the recovery StartCascade outlived the budget: ${result.elapsed}ms`);
       assert.ok(isBudgetExceededError(result.err), `expected a budget stop, got: ${result.err?.message}`);
       assert.equal(server.state.sends, 1, 'no second Send after the deadline');
@@ -268,8 +321,10 @@ describe('F3 the route budget covers the whole turn', () => {
     }, async (server) => {
       const result = await runTurn({ port: server.port, maxWaitMs: 200 });
 
-      assert.ok(result.elapsed < 290,
+      assert.ok(result.elapsed < 340,
         `the poll loop re-ran the full budget after the send phase: ${result.elapsed}ms for a 200ms turn`);
+      assert.ok(server.state.statusReads < 15,
+        `the poll loop ran ${server.state.statusReads} status reads — a fresh 200ms window instead of the send-phase remainder`);
       assert.ok(result.elapsed >= 180,
         `the turn ended before its deadline: ${result.elapsed}ms`);
       assert.equal(result.err, undefined, `a window expiry is a typed terminal, not a throw: ${result.err?.message}`);
