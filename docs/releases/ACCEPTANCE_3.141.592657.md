@@ -6,7 +6,7 @@
 日志哈希，以及 B06/B07 的发布与部署结果。
 
 - 发布版本：**3.141.592657**
-- 发布提交（B01）：**[PENDING — filled at certification commit]**
+- 发布提交（B01）：**`5afb7ace6d77c92f97589a45d3542d4f5a666ba4`**（tree `a5d067da48e2055f425a5f5369c37c3dceb6d4de`；本附录在认证提交中补齐 B02–B05 计数）
 - 上一个已发布 tag：`v3.141.592656` → `9115ebe7183f9460df8fcce8520a0365f856ba9f`。
 - 源码基线：`f6b843fe`（master，D9 三支与 deadline flake 修复已合入）。
 - 发布范围：16 个提交 / 43 个文件（`git rev-list --count v3.141.592656..HEAD`；
@@ -37,12 +37,12 @@
 
 | 行 | 命令 / 环境 | 结果 | 日志 |
 |---|---|---|---|
-| B02 | HMC Node `v22.23.4`（`/root/node22matrix-360/node-v22.23.4-linux-x64/bin/node`）`npm run test:release` | [PENDING] | [PENDING] |
-| B03 | `node scripts/mutation-sweep.mjs`（97 份 spec，HMC，Node `v24.21.0`） | [PENDING] | [PENDING] |
-| B04a | Windows `GATE_INERT_SKIP_PATHS="test/wire-byte-identity.test.js;test/devin-connect-relogin-live.test.js;test/mutate-verify-harness.test.js;test/self-update-untracked-safety.test.js;test/detach-soak.test.js;test/detach-ls-pool-pressure.test.js" npm run gate` | [PENDING] | [PENDING] |
-| B04b | HMC Node `v24.21.0` `npm run test:release` | [PENDING] | [PENDING] |
-| B04c | wire：`WIRE_BASE_TREE=/opt/windsurf-wire-base-9115ebe7 WIRE_BASE_TAG=v3.141.592656 WIRE_BASE_SHA=9115ebe7183f9460df8fcce8520a0365f856ba9f WIRE_BASE_REQUIRED=1 node --import ./test/setup-env.mjs --test --test-reporter=tap test/wire-byte-identity.test.js` | [PENDING] | [PENDING] |
-| B05 | `node --import ./test/setup-env.mjs --test test/docs-consistency-guard.test.js` | [PENDING] | [PENDING] |
+| B02 | HMC Node `v22.23.4`（`/root/node22matrix-360/node-v22.23.4-linux-x64/bin/node`）`npm run test:release` | **exit 0 — 593/593 files, 7,249 tests / 7,244 pass / 0 fail / 5 skip**；5 skip = 4 个 Windows-only `icacls` + `wire-byte-identity`（未设 `WIRE_BASE_TREE`）；`detach-soak`、`devin-connect-relogin-live` 是 suite-level skip（0 tests） | `evidence/final/logs/B02-node22-5afb7ace.log`，6,434,635 B，`sha256 70921a3c707d96e7f6d00544efa38be728c5e717e98e5612c48e521add351a03` |
+| B03（缩减路径，按 Owner 指示） | HMC Node `v24.21.0` `node scripts/spec-baseline-check.mjs --all`（97 份 spec 全量基线检查） | **exit 0 — 97 spec(s) measured, 0 drift, 0 untrustworthy**；完整 mutation sweep 不在本次阻塞发布路径，发布后另行补跑 | `evidence/final/logs/B03-spec-baseline-all-5afb7ace.log`，8,064 B，`sha256 0192c74f074c7bb655ab8c13c4adb9f1359c3ce0a249dbae6f1a658155d9efa1` |
+| B04a | Windows `GATE_INERT_SKIP_PATHS="test/wire-byte-identity.test.js;test/devin-connect-relogin-live.test.js;test/mutate-verify-harness.test.js;test/self-update-untracked-safety.test.js;test/detach-soak.test.js;test/detach-ls-pool-pressure.test.js" npm run gate` | **PASS exit 0 — 593/593 files, 7,248 tests / 7,146 pass / 0 fail / 102 skip**；5 inert file(s) / 6 declared（unused: `test/wire-byte-identity.test.js`）；spec-static、spec-baseline、secret-scan、`git diff --check`、`git diff --cached --check` 全 PASS | `evidence/final/logs/B04a-windows-gate-5afb7ace.log`，3,612,754 B，`sha256 c6b9a7afc5641957221faf86e6d01f3faba05228528cae46454d38be68ed358b` |
+| B04b | HMC Node `v24.21.0` `npm run test:release` | **exit 0 — 593/593 files, 7,249 tests / 7,244 pass / 0 fail / 5 skip**；skip 名单与 B02 相同 | `evidence/final/logs/B04b-node24-5afb7ace.log`，3,737,916 B，`sha256 24ef60e5d47cf8981f4d09a38f79d6cd85fdb142c34abb25d90a460d6d6731bd` |
+| B04c | wire：`WIRE_BASE_TREE=/opt/windsurf-wire-base-9115ebe7 WIRE_BASE_TAG=v3.141.592656 WIRE_BASE_SHA=9115ebe7183f9460df8fcce8520a0365f856ba9f WIRE_BASE_REQUIRED=1 node --import ./test/setup-env.mjs --test --test-reporter=tap test/wire-byte-identity.test.js` | **exit 0 — 270/270 byte-identical，0 expected diffs，0 unexpected**；`WIRE_PROVENANCE` tested_head=`5afb7ace…`, base_head=`9115ebe7…`, `tag_ref_verified:true`, `tested_dirty:false` | `evidence/final/logs/B04c-wire-5afb7ace.tap.log`，12,529 B，`sha256 77f83861deac63515f8605e3637f0e2452464947aa46835980047a53f6c04fdd` |
+| B05 | `node --import ./test/setup-env.mjs --test test/docs-consistency-guard.test.js` | **exit 0 — 47/47 pass, 0 fail**（9 suites） | `evidence/final/logs/B05-docs-guard-5afb7ace.log`，5,073 B，`sha256 64c666b3a68c1501e29b4ec3b7a04f60b52b570ec75dc71e982f4fcd9a47c1af` |
 
 ## 4. 发布与部署记录（B06–B07）
 
