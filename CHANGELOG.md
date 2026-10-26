@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 216 份发布说明</a> ·
+  <a href="docs/releases/">全部 217 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **216** 份,v2.0.6 → v3.141.592656 |
-| git tag | 226 个（2026-10-26 实测；以 `git tag \| wc -l` 为准） |
-| 当前 | **v3.141.592656**(2026-10-26) |
+| 发布说明 | **217** 份,v2.0.6 → v3.141.592657 |
+| git tag | 227 个（2026-10-26 实测；以 `git tag \| wc -l` 为准） |
+| 当前 | **v3.141.592657**(2026-10-26) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -41,6 +41,10 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.141.592657](docs/releases/RELEASE_NOTES_3.141.592657.md) · 2026-10-26
+
+D9 供应链控制落地:banner 生成器改为 commit + 逐文件 sha256 锁定、42 个 `uses:` 钉 SHA;Docker 镜像按 digest 用 cosign keyless 签名并发布 `image-digest.txt` + bundle,dashboard Docker OTA 解析 tag→digest、要求相等、按 digest pull 并校验 `RepoDigests`,deployer 镜像 digest 固定、所有 compose `up` 加 `--no-build`;源码 OTA 在改 Git 前校验签名的 `release-attestation.json`(默认 `warn`、`required` 可强开,`WINDSURFAPI_ATTESTATION_DIR` 支持预置)。同时修复 F3 截止边界最后一毫秒的 phase timeout 误分类(5 ms 容差,504 deadline 而非传输错误)。wire 对 v3.141.592656 **270/270 逐字节一致、0 差异**;全量 mutation 覆盖 **97 份 spec / 863 条突变**,逐项计数见发布附录。D9 的 Owner 信任边界、真实 Docker/部署与 live 矩阵仍 `[UNVERIFIED]`。
 
 ### [v3.141.592656](docs/releases/RELEASE_NOTES_3.141.592656.md) · 2026-10-26
 

@@ -73,7 +73,8 @@
 ## docs/releases/ — release records
 
 - `docs/releases/README.md` — Release runbook: procedure, gate, tag rules, asset/signing contract and note house style. — current
-- `docs/releases/ACCEPTANCE_3.141.592656.md` — Acceptance appendix for 3.141.592656: V-01…V-27 matrix, gate commands, skip lists and log hashes. — current
+- `docs/releases/ACCEPTANCE_3.141.592657.md` — Acceptance appendix for 3.141.592657: D9 controls, F3 fix, gate commands, skip lists and log hashes. — current
+- `docs/releases/ACCEPTANCE_3.141.592656.md` — Acceptance appendix for 3.141.592656: V-01…V-27 matrix, gate commands, skip lists and log hashes. — superseded (previous release)
 - `docs/releases/RELEASE_NOTES_2.0.6.md` — Release notes for v2.0.6 (published GitHub Release body). — current (published record)
 - `docs/releases/RELEASE_NOTES_2.0.7.md` — Release notes for v2.0.7 (published GitHub Release body). — current (published record)
 - `docs/releases/RELEASE_NOTES_2.0.8.md` — Release notes for v2.0.8 (published GitHub Release body). — current (published record)
@@ -289,7 +290,8 @@
 - `docs/releases/RELEASE_NOTES_3.10.1.md` — Release notes for v3.10.1 (published GitHub Release body). — current (published record)
 - `docs/releases/RELEASE_NOTES_3.141.592654.md` — Release notes for v3.141.592654 (published GitHub Release body). — current (published record)
 - `docs/releases/RELEASE_NOTES_3.141.592655.md` — Release notes for v3.141.592655 (published GitHub Release body). — current (published record)
-- `docs/releases/RELEASE_NOTES_3.141.592656.md` — Release notes for v3.141.592656 (published GitHub Release body). — current
+- `docs/releases/RELEASE_NOTES_3.141.592657.md` — Release notes for v3.141.592657 (published GitHub Release body). — current
+- `docs/releases/RELEASE_NOTES_3.141.592656.md` — Release notes for v3.141.592656 (published GitHub Release body). — superseded (previous release)
 
 ## Stale claims fixed in this sweep
 

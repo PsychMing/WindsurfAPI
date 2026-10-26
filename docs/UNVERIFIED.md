@@ -13,18 +13,19 @@
 
 | 项 | 值 |
 |---|---|
-| 扫描 | `docs/releases/*.md` 共 216 个文件 |
-| 命中 | 26 个文件 / 26 个小节 |
-| bullet | 97 条 |
+| 扫描 | `docs/releases/*.md` 共 217 个文件 |
+| 命中 | 27 个文件 / 27 个小节 |
+| bullet | 113 条 |
 | 已复核 | 2 |
-| 仍缺 | 95 |
+| 仍缺 | 111 |
 | 已修 | 0 |
-| 无 marker | 32 |
+| 无 marker | 48 |
 
 ## 按 release
 
 | release | 小节 | bullet | 已复核 | 仍缺 | 已修 | 无 marker |
 |---|---:|---:|---:|---:|---:|---:|
+| [3.141.592657](releases/RELEASE_NOTES_3.141.592657.md) | 1 | 16 | 0 | 16 | 0 | 16 |
 | [3.141.592656](releases/RELEASE_NOTES_3.141.592656.md) | 1 | 16 | 0 | 16 | 0 | 16 |
 | [3.141.592655](releases/RELEASE_NOTES_3.141.592655.md) | 1 | 9 | 0 | 9 | 0 | 9 |
 | [3.141.592654](releases/RELEASE_NOTES_3.141.592654.md) | 1 | 7 | 0 | 7 | 0 | 7 |
@@ -51,6 +52,31 @@
 | [3.9.41](releases/RELEASE_NOTES_3.9.41.md) | 1 | 6 | 0 | 6 | 0 | 0 |
 | [3.9.40](releases/RELEASE_NOTES_3.9.40.md) | 1 | 3 | 0 | 3 | 0 | 0 |
 | [3.9.39](releases/RELEASE_NOTES_3.9.39.md) | 1 | 3 | 0 | 3 | 0 | 0 |
+
+## 3.141.592657 — `docs/releases/RELEASE_NOTES_3.141.592657.md`
+
+1 个小节 · 16 条：已复核 0 · 仍缺 16 · 已修 0（无 marker 16）
+
+小节 `## 6. 已知 / 尚未验证`（`:125`）
+
+| # | 位置 | bullet | marker | 状态 |
+|---:|---|---|---|---|
+| 1 | `RELEASE_NOTES_3.141.592657.md:129` | **D9 不是「全部关闭」**：banner 已 hash-lock、Docker 镜像已按 digest 签名且 dashboard 路径强制 校验、源码 OTA 已有签名 attestation；但源码 OTA 与所有 release 签名最终仍信任单个 Owner 的 tag/账号权限。tag 触发的 cosign 不是独立审批；`WINDSURFAPI_UPDATE_ATTESTATION=warn` 是默认值， 老安装可以继续在没有 attestation 的情况下升级。`deploy/update.sh` 的 Docker 路径仍按 tag/镜像 引用更新，不在 dashboard 的 digest gate 内。 | — | 仍缺 |
+| 2 | `RELEASE_NOTES_3.141.592657.md:134` | **Docker 实网签名未在认证时验证**：DockerSign 的测试是 hermetic 的（注入 detect/pull/request 与 fake registry）；真实 GHCR push、cosign 签名、daemon digest 校验与 rollback 需要 tag 后的 release workflow 和真实 Docker 主机执行，属于 B06/B07 的核对范围，不在本文件的预认证内。 | — | 仍缺 |
+| 3 | `RELEASE_NOTES_3.141.592657.md:137` | **真实上游 / 真实 LS / 真实客户端未重跑**：本版的 banner/docker/source-attest 变更不改变上游 协议路径；Cascade 证据仍是 fake LS/受控 socket，没有用真实 LS gRPC、真实付费账号或真实 Claude/Codex/Devin 客户端复验。Cascade live 矩阵仍 `[UNVERIFIED]`。 | — | 仍缺 |
+| 4 | `RELEASE_NOTES_3.141.592657.md:140` | **audit2 残余 P2 未关闭（按当前发布策略非阻塞，不等于无害）**：27 行 V 台账与 F2/F3 的关闭 不覆盖以下独立风险。 | — | 仍缺 |
+| 5 | `RELEASE_NOTES_3.141.592657.md:142` | **F5（Cascade 多轮）**：重放 prompt 的相反角色 closing tag 与最新 human turn 未被统一转义， 可伪造对话结构；这是 prompt-integrity 风险，未证明跨租户暴露。 | — | 仍缺 |
+| 6 | `RELEASE_NOTES_3.141.592657.md:144` | **S03（dashboard）**：请求体在 Host/auth 门之前缓冲并解析；未认证并发连接可在读取期间各保留 约 10–20 MB，需前置 Host 校验、较小长度上限与请求 deadline。 | — | 仍缺 |
+| 7 | `RELEASE_NOTES_3.141.592657.md:146` | **历史 downstream key**：已从当前文档删除不等于撤销；轮换/吊销仍 `[UNVERIFIED]`。不得发布 key 值；若仍有效须按安全事件处理。 | — | 仍缺 |
+| 8 | `RELEASE_NOTES_3.141.592657.md:148` | **L1（LS 冷启动/容量压力）**：全局 admission lock 跨越 capacity/memory 等待，可阻塞无关 LS 启动最多两轮 30 s；已就绪 LS 请求不受影响。 | — | 仍缺 |
+| 9 | `RELEASE_NOTES_3.141.592657.md:150` | **L2（默认 auto-restart）**：LS ready 后立即清零重试计数，ready-then-crash 循环可永远达不到 retry cap。 | — | 仍缺 |
+| 10 | `RELEASE_NOTES_3.141.592657.md:152` | **F4（Cascade 图片）**：历史图片有 4 张/1.6 MB 预算，但当前轮图片不纳入同一 count/aggregate-byte 预算；HTTP 10 MiB 上限仍限制网络输入。 | — | 仍缺 |
+| 11 | `RELEASE_NOTES_3.141.592657.md:154` | **Devin ACP-1/ACP-2（opt-in）**：pre-abort 后注册的 listener 不会触发，可能在调用方离开后开始 工作；不可写 stdin 会静默丢 RPC，pending prompt 可等到默认 10 min timeout。尚无 live billable-turn 测量。 | — | 仍缺 |
+| 12 | `RELEASE_NOTES_3.141.592657.md:157` | **其余已列 P2**：Update P2-5（forced-update stash 未向操作者呈现）、G5（unbounded unary buffering）、C1（同步压缩）、W1（async Promise executor）仍未关闭；未进入 top-10 不代表已修复。 | — | 仍缺 |
+| 13 | `RELEASE_NOTES_3.141.592657.md:159` | **P3 清理未做**：`DIRECTION.md` 明确延后；README 的模型计数/双 API 表述、63 个死 i18n key、 32 个前缀外 env switch 等仍是已知文档债，不是本版回归。 | — | 仍缺 |
+| 14 | `RELEASE_NOTES_3.141.592657.md:161` | **Node 下限未实测**：只跑了 22.23.4 与 24.21.0；`>=22.13.0` 的 floor 本身 `[UNVERIFIED]`。 | — | 仍缺 |
+| 15 | `RELEASE_NOTES_3.141.592657.md:162` | **Windows 本机 inert 声明**：平台/live 文件按 `GATE_INERT_SKIP_PATHS` 声明，不当作绿；具体名单 与计数见验收附录。 | — | 仍缺 |
+| 16 | `RELEASE_NOTES_3.141.592657.md:164` | **托管 CI / 发布产物 / HMC 部署**：tag、release workflow、cosign 资产核验与 HMC 部署都必须在 tag 后另行执行与核对（B06/B07）；本文件不代表它们已经发生。 | — | 仍缺 |
 
 ## 3.141.592656 — `docs/releases/RELEASE_NOTES_3.141.592656.md`
 
