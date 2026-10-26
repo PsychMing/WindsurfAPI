@@ -1,6 +1,6 @@
 # Documentation Map
 
-> One line per documentation file in scope (tracked `docs/`, the root project docs, and the tracked D9/release evidence reports listed under `evidence/`): `path — purpose — status`. Snapshot: **2026-10-26**, branch `docs/final-20261026`. Release: **v3.141.592657**（本波发布，tag SHA 以 release lane 回报为准）.
+> One line per documentation file in scope (tracked `docs/`, the root project docs, and the tracked D9/release evidence reports listed under `evidence/`): `path — purpose — status`. Snapshot: **2026-10-26**, branch `docs/final-20261026`. Release: **v3.141.592657**（本波发布，tag `v3.141.592657` → `a7d2e33f`）.
 >
 > Status key: `current` = accurate for its stated scope/date (including frozen historical records); `stale → fixed` = had a stale current-state claim, corrected in this sweep; `stale → deferred` = stale claim left in place with a reason; `superseded` = replaced by a newer record but retained as published history; `duplicate` = superseded or generated copy.
 

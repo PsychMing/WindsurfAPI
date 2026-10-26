@@ -12,8 +12,8 @@ in the dated evidence files; this page is the index to them.
 
 - **Versions.** `v3.141.592654` and `v3.141.592655` were released and deployed during the
   session; `v3.141.592656` (annotated `19ed5b8c` → `9115ebe7`) shipped with 10 assets and cosign
-  verification, and was deployed to HMC. `v3.141.592657`（本波发布，tag SHA 以 release lane 回报为准） is the D9 patch prepared on
-  top of master `f6b843fe` (release commit `5afb7ace`).
+  verification, and was deployed to HMC. `v3.141.592657`（本波发布，tag `v3.141.592657` → `a7d2e33f`） is the D9 patch prepared
+  on top of master `f6b843fe` (release commit `5afb7ace`; certification commit `a7d2e33f`).
 - **Fixes.** The second audit's 27-row V ledger is closed for its tested mechanisms (4 P0 + 18 P1
   + 5 P2), the D1–D8/D10 follow-up wave landed, F2 (final-sweep false `EMPTY_RESPONSE`) and F3
   (route budget starting after warmup/Send) are fixed with red-first tests, and the last-tick
@@ -24,9 +24,10 @@ in the dated evidence files; this page is the index to them.
   separates load-bearing controls from theater and records the residual Owner-channel risk.
 - **Tests.** Final-tree Windows gate **7,146 pass / 0 fail / 102 skip (593 files)**; Linux Node 24
   and Node 22 each **7,244 pass / 0 fail / 5 skip (593 files)**; wire **270/270 byte-identical,
-  0 diffs** against `v3.141.592656`; mutation corpus **97 specs / 863 mutations (846 caught + 17
-  declared survivors)**. The per-run hashes and any still-open certification rows are in
-  `docs/releases/ACCEPTANCE_3.141.592657.md` §3.
+  0 diffs** against `v3.141.592656`. B03 used the Owner-approved reduced path
+  (`spec-baseline-check --all`: 97 specs, 0 drift); the full mutation sweep (97 specs / 863
+  mutations: 846 caught + 17 declared survivors) is deferred to post-release. Per-run hashes are
+  in `docs/releases/ACCEPTANCE_3.141.592657.md` §3.
 - **D9 supply chain.** BannerLock (commit + per-file sha256 lock, fail-before-import, 45 workflow
   `uses:` SHA-pinned), DockerSign (cosign-signed image digest, digest-pinned deploy, `--no-build`)
   and SourceAttest (`release-attestation.json` verified before Git mutation; `warn` default,
@@ -40,9 +41,9 @@ in the dated evidence files; this page is the index to them.
 
 ## Current state
 
-- `v3.141.592657`（本波发布，tag SHA 以 release lane 回报为准）; source master before the release
-  merge = `f6b843fe`, release commit = `5afb7ace` (docs-ahead master after this sweep is expected).
-  D9 controls are active in the tree and take effect for this tag.
+- `v3.141.592657`（本波发布，tag `v3.141.592657` → `a7d2e33f`）; source baseline = `f6b843fe`,
+  release commit = `5afb7ace`, certification commit = `a7d2e33f`. D9 controls are active in the
+  tree and take effect for this tag.
 - D9 is **not fully closed**: source OTA and every release signature still trust the single
   Owner's tag/account authority. `environment: release` with an independent reviewer, or an
   offline signing root, is still an Owner decision (`evidence/final/D9-GATE.md` §3).
@@ -51,10 +52,9 @@ in the dated evidence files; this page is the index to them.
 
 ## Open items
 
-1. **Tag / publish / deploy `v3.141.592657`** if `git tag -l 'v3.141.592657'` is still empty: run the
-   release flow (bump already done in `5afb7ace`), push `master` then the annotated tag, wait for
-   release CI, verify all 14 assets with cosign, then deploy to HMC with a timestamped backup and
-   an exercised rollback (B06/B07 in the acceptance appendix).
+1. **Tag / publish / deploy `v3.141.592657`** — the tag now exists at `a7d2e33f`. Remaining: wait
+   for release CI, verify all 14 assets with cosign, then deploy to HMC with a timestamped backup
+   and an exercised rollback (B06/B07 in the acceptance appendix).
 2. **D9 policy items (Owner).** M0 (verify tag ruleset / phishing-resistant MFA / least-privilege
    tokens), an independent release approver or offline root, and the `environment: release`
    decision. Without them D9's residual risk is accepted, not eliminated.
@@ -82,7 +82,7 @@ in the dated evidence files; this page is the index to them.
 # Version / tag / tree identity
 git rev-parse HEAD
 git tag -l 'v3.141.592657'
-git rev-parse 'v3.141.592657^{commit}'        # must equal the tag target above once the tag exists
+git rev-parse 'v3.141.592657^{commit}'        # must equal a7d2e33f
 
 # Final-tree gates (Windows PowerShell or Git Bash; 6 inert declarations)
 GATE_INERT_SKIP_PATHS="test/wire-byte-identity.test.js;test/devin-connect-relogin-live.test.js;test/mutate-verify-harness.test.js;test/self-update-untracked-safety.test.js;test/detach-soak.test.js;test/detach-ls-pool-pressure.test.js" npm run gate
