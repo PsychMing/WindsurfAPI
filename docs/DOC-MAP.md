@@ -306,6 +306,6 @@
 ## Deferred / intentionally not changed
 
 - `README.md` / `README.en.md` banner star count (`★3,107`) vs `docs/assets/star-history.svg` (`3,108`): the banner block is bot-generated; per `HANDOFF-2026-10-15.md` it must be refreshed by `banner.yml`, not hand-edited. **Deferred.**
-- `docs/HANDOFF-2026-10-15.md` §6.2 still shows the 2026-10-15 snapshot (85 specs / 767 mutations); it is explicitly historical, and the live numbers are in §0 (97 / 862). `CONTRIBUTING.md` now points at §0. **Deferred (append-only).**
+- `docs/HANDOFF-2026-10-15.md` §6.2 still shows the 2026-10-15 snapshot (85 specs / 767 mutations); it is explicitly historical, and the live numbers are in §0 (97 / 863). `CONTRIBUTING.md` now points at §0. **Deferred (append-only).**
 - `docs/review.html` architecture prose is still dated 2026-06-17; only its counts were refreshed. A full re-review is outside a docs sweep. **Deferred.**
 - Old release notes, archived handoffs and `HISTORY-LEDGER-*` volumes contain claims that were true at their date; they are append-only published records and are not rewritten. **Intentional.**

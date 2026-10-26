@@ -1,11 +1,11 @@
 {
   "_scope_note": "F2/F3 (evidence/audit2/Cascade.md:254-296): the final-sweep text must count as turn output, and the route budget must cover warmup/StartCascade/Send/retry/polling/detach instead of starting at the poll loop. Both defects were reproduced at 2598299e (streamed 'answer' -> 502 EMPTY_RESPONSE; 100 ms budget -> 310 ms behind a 250 ms Send) and re-pinned here against the fixed producer. Each mutation re-introduces one half of the fix; the two expectCaught:false entries are MEASURED survivors with the reason they cannot be seen from outside.",
-  "_baseline_provenance": "MEASURED 2026-10-26 on the fix commit, Windows, Node v24.19.0, worktree w-FixF2F3. scripts/mutate-verify.mjs cannot run on this box (mutation-harness-utils.mjs requires git at a POSIX absolute path and throws at import, same limitation recorded in client-invariants.json), so the sweep used the harness's counting contract directly: exact anchor applied alone (must match exactly once), TAP structured counters, restore via `git checkout HEAD -- <file>`, clean tree + unchanged HEAD verified before and after. Baseline 18/18 green and identical in every mutated run. Results: mutations 1,3,5,6,7 CAUGHT (fail 1,1,3,1,1); mutations 2 and 4 SURVIVED by construction (see their names). Full log: evidence/final/FixF2F3.md.",
+  "_baseline_provenance": "MEASURED 2026-10-26 on the deadline-flake fix commit, Windows, Node v24.19.0, worktree D:/Project/WindsurfAPI. The sweep is run with scripts/mutate-verify-dirty.mjs in WSL (Ubuntu 24.04, /usr/bin/git, /opt/node24/bin/node v24.21.0) because mutation-harness-utils.mjs requires git at a POSIX absolute path. Baseline 19/19 green and identical in every mutated run. Results: 6 CAUGHT arms and 2 declared SURVIVORS (see their names). Full log: evidence/final/DeadlineFlake.md.",
   "tests": [
     "test/cascade-final-sweep-terminal.test.js",
     "test/cascade-turn-deadline.test.js"
   ],
-  "expectBaselinePass": 18,
+  "expectBaselinePass": 19,
   "mutations": [
     {
       "name": "F2: the idle_empty classifier arm ignores delivered output again — a turn whose text arrived in the final sweep is reported as an empty upstream failure (502 EMPTY_RESPONSE) after the bytes were streamed",
@@ -36,8 +36,14 @@
     {
       "name": "F3: a phase failure after the deadline is no longer converted to the route-budget stop — a Send/StartCascade that ran out of turn time surfaces as a transport error, which rotates accounts and retries a request that has no time left",
       "file": "src/client.js",
-      "anchor": "      if (remainingBudgetMs() > 0) return;",
+      "anchor": "      if (remainingBudgetMs() > DEADLINE_TOLERANCE_MS) return;",
       "replacement": "      if (true) return;"
+    },
+    {
+      "name": "F3: the last-tick deadline tolerance collapses to zero — a phase timer that fires on the deadline's final wall-clock millisecond rethrows `gRPC unary timeout`, the exact B06 CI flake (attempt 2: 120.24 ms StartCascade test)",
+      "file": "src/client.js",
+      "anchor": "    const DEADLINE_TOLERANCE_MS = 5;",
+      "replacement": "    const DEADLINE_TOLERANCE_MS = 0;"
     },
     {
       "name": "F3: the Send RPC loses its remaining-time bound — a Send issued inside the budget can run to gRPC's 30 s default, so the turn returns after the deadline instead of stopping at it",
