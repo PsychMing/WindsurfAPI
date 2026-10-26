@@ -1,16 +1,16 @@
 # Release signing
 
 > **Status: releases are signed from v3.10.0 onward.** The release workflow signs
-> the four published binaries/zips and `SHA256SUMS` with cosign keyless signing:
-> the signer identity is the workflow's GitHub OIDC token, exchanged for a
-> short-lived Fulcio certificate. There is no long-lived private key, no signing
-> secret, and no key material in this repository. Releases before v3.10.0 are
-> unsigned and have no signature assets.
+> the four published binaries/zips, `SHA256SUMS`, and the pushed Docker image
+> **digest** with cosign keyless signing: the signer identity is the workflow's
+> GitHub OIDC token, exchanged for a short-lived Fulcio certificate. There is no
+> long-lived private key, no signing secret, and no key material in this
+> repository. Releases before v3.10.0 are unsigned and have no signature assets.
 
 ## What a release publishes
 
-`.github/workflows/release.yml` attaches five signed blobs to the GitHub Release,
-plus one Sigstore bundle for each one:
+`.github/workflows/release.yml` attaches five signed release blobs to the GitHub
+Release, plus one Sigstore bundle for each one:
 
 | Blob | Produced by |
 |---|---|
@@ -30,6 +30,13 @@ The bundle is the durable proof. A Fulcio certificate lives for minutes, and
 `cosign verify-blob --certificate` checks it against the current time unless a
 signed timestamp is supplied. Verify the bundle; there is no detached `.sig` or
 `.pem` pair attached to v3.10.0+ releases.
+
+The `docker` job additionally publishes the image's content address:
+
+| Artifact | Contents | Use |
+|---|---|---|
+| `image-digest.txt` | the `sha256:` manifest digest of the pushed GHCR image | the only digest Docker OTA may deploy |
+| `image-digest.txt.sigstore.json` | Sigstore bundle for `image-digest.txt` | proves the digest file came from this workflow |
 
 The manifest uses the **asset names as they appear on the release page** (flat),
 so `sha256sum -c SHA256SUMS` works in the directory where the assets were
@@ -91,6 +98,30 @@ Get-Content SHA256SUMS | ForEach-Object {
 }
 ```
 
+### Verify the Docker image
+
+The image signature lives in GHCR, attached to the digest, not in the release
+download. Read the digest from `image-digest.txt` and verify both the file and
+the image:
+
+```bash
+# The file that names the digest must itself be signed.
+cosign verify-blob \
+  --bundle image-digest.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/dwgx/WindsurfAPI/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  image-digest.txt
+
+# Then verify the image digest named by that file.
+cosign verify ghcr.io/dwgx/windsurf-api@sha256:<digest> \
+  --certificate-identity-regexp '^https://github\.com/dwgx/WindsurfAPI/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The tag (`latest`, `3.141.592656`, …) is only a lookup key. Docker OTA resolves
+it through the daemon's registry-metadata endpoint and refuses to pull or deploy
+unless the result equals the digest in `image-digest.txt`.
+
 The identity is the workflow ref that GitHub's OIDC token carries for a tag
 push. To pin one exact release, replace the regexp with:
 
@@ -130,8 +161,11 @@ It does **not** prove:
   uses major action tags (SEC-11 is not fully closed). A compromised upstream
   action runs before the signature is produced, so the signature would faithfully
   cover a malicious build.
-- **The Docker image.** This signing covers release assets only; the GHCR image
-  is not signed by this workflow.
+- **The Docker image's build provenance beyond its digest.** The image is signed
+  by manifest digest, so the signature attests to those bytes. It does not prove
+  a reproducible build, and a tag that still points at the digest is not itself
+  evidence. Verify the digest, never the tag. The release-asset helper covers
+  only release assets; verify the image with `cosign verify` as shown above.
 
 The signature is a provenance claim from a specific repository identity. It is
 not a substitute for the hash check, and the hash check is not a substitute for
@@ -156,6 +190,21 @@ is read anywhere in the signing path. A signing failure fails the job, so a
 release cannot be published with the notes claiming signatures but no signature
 assets.
 
+The separate `docker` job has `packages: write` and `id-token: write`. After
+`docker/build-push-action` returns the pushed digest it:
+
+1. runs `cosign sign --yes ghcr.io/dwgx/windsurf-api@<digest>` (the signature is
+   stored in GHCR next to that digest);
+2. writes `image-digest.txt` with the same digest and exposes it as the job
+   output `digest`;
+3. runs `cosign sign-blob` over `image-digest.txt`;
+4. uploads both files as the `image-digest` artifact, which the `release` job
+   attaches to the GitHub Release.
+
+A digest mismatch between the pushed image and the recorded file cannot happen
+inside this job: both come from the same `steps.build.outputs.digest`, and the
+step fails if it is not `sha256:<64 hex>`.
+
 Signing depends on Sigstore (Fulcio for the certificate, Rekor for the
 transparency entry, TUF for the trust root). An outage blocks the release rather
 than silently shipping unsigned assets. That is deliberate: a release that says
@@ -163,8 +212,10 @@ it is signed and is not is worse than an obviously unsigned one.
 
 ## Install and self-update paths
 
-These paths do not download GitHub Release assets, so the cosign signatures do
-not cover them. Do not pretend otherwise in support replies.
+The git self-update path does not download GitHub Release assets, so the
+release-asset cosign signatures do not cover it. Docker OTA consumes
+`image-digest.txt` from the matching release and refuses a tag that does not
+resolve to that signed digest. Do not pretend the git path is signed.
 
 ### Dashboard `/self-update` (git checkout)
 
@@ -180,19 +231,29 @@ deployment must already have) and is intentionally not wired: a verifier that
 fails closed on machines without the key would break every existing
 installation. That remains future work.
 
-### `deploy/update.sh` (Docker)
+### Docker OTA
 
-The script pulls a mutable tag by default and recreates only the app service,
-with a `/health` gate and rollback. Release-asset signatures do not cover the
-image. The stronger posture is to pin a digest:
+The dashboard one-click update (when `/var/run/docker.sock` is mounted) never
+treats a tag as an execution target. It resolves the running tag through the
+daemon's `GET /distribution/<repo>:<tag>/json` endpoint, then requires the
+result to equal the digest in `<DATA_DIR>/image-digest.txt`; a missing file, an
+unreadable digest or a mismatch refuses before any pull or container create.
+The app image is pulled by digest, the `docker:24-cli` deployer is pinned by
+digest in source, and every `docker compose up` uses `--no-build` so Compose can
+never build from the on-disk checkout.
+
+Download `image-digest.txt` (and verify its `.sigstore.json` bundle) from the
+matching GitHub Release and place it at `<DATA_DIR>/image-digest.txt` before the
+first update. A digest-pinned `WINDSURFAPI_IMAGE=repo@sha256:…` is an explicit
+operator pin and needs no attestation file.
+
+`deploy/update.sh` still pulls the reference passed by `--tag`/`--image`; pin it
+to a digest by hand:
 
 ```bash
 docker buildx imagetools inspect ghcr.io/dwgx/windsurf-api:<tag>
 bash deploy/update.sh --image ghcr.io/dwgx/windsurf-api@sha256:<digest>
 ```
-
-A future change could sign the image by digest with the same keyless identity;
-that is not part of this release-asset signing work.
 
 ### Windows / manual install
 
@@ -210,7 +271,9 @@ covered by the release-asset signatures described here.
 
 ## Historical releases
 
-- v3.10.0 and later: signed as described above.
+- v3.10.0 and later: release assets signed as described above.
+- Docker images: signed by digest from the first release that publishes
+  `image-digest.txt`; earlier images are unsigned.
 - v3.9.53–v3.9.60: `SHA256SUMS` only, unsigned. v3.9.53 recorded build-tree
   paths (`dist-windows/...`, `dist-macos/...`); later releases use flat names.
 - Earlier releases: no manifest and no signatures.

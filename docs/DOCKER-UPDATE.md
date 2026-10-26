@@ -213,15 +213,27 @@ but only when `/var/run/docker.sock` is mounted into the container. That mount
 is effectively root on the host, which is why it is commented out by default in
 `docker-compose.yml`.
 
-The dashboard path is now health-gated like this script:
+The dashboard path is now health-gated like this script and trusts only a
+digest, never a tag:
 
-1. Before any pull or recreate it records the running image ID, the rollback tag
+1. It resolves the running tag through the daemon's
+   `GET /distribution/<repo>:<tag>/json` endpoint (no layer download) and
+   requires the result to equal the digest in `<DATA_DIR>/image-digest.txt`.
+   Missing or mismatched verification material refuses the update before any
+   pull or container create. Download `image-digest.txt` from the matching
+   GitHub Release (and verify its `.sigstore.json` bundle with
+   `cosign verify-blob`) and place it in the data directory first; a
+   digest-pinned `WINDSURFAPI_IMAGE=repo@sha256:…` is an explicit operator pin.
+2. Before any pull or recreate it records the running image ID, the rollback tag
    and the Compose project/service in `<DATA_DIR>/self-update-docker.json`. If
    that record cannot be written, the update is refused.
-2. The deployer sidecar recreates the stack, polls `/health` inside the app
+3. The app image is pulled by digest; the `docker:24-cli` deployer is pinned by
+   digest and every `docker compose up` uses `--no-build`, so Compose can never
+   build from the on-disk checkout.
+4. The deployer sidecar recreates the stack, polls `/health` inside the app
    container, and on failure restores the previous image as
    `<repo>:rollback` and recreates the app service from it.
-3. The deployer container is **not** auto-removed: its exit code is the durable
+5. The deployer container is **not** auto-removed: its exit code is the durable
    outcome (0 healthy · 1 rolled back healthy · 2 rollback failed · 3 recreate
    failed) until the next `/self-update/check` records it in the journal and
    removes the container.

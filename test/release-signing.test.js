@@ -101,6 +101,20 @@ describe('release signing workflow', () => {
       'release signing must not consume repository secrets');
   });
 
+  it('signs the Docker image digest in the docker job and documents it', () => {
+    const docker = jobBlock('docker');
+    assert.match(docker, /\bid-token:\s*write\b/,
+      'the docker job must be able to obtain a Fulcio certificate');
+    assert.match(docker, /cosign sign --yes "\$\{IMAGE\}@\$\{\{\s*steps\.build\.outputs\.digest\s*\}\}"/,
+      'the image must be signed by digest, not by a mutable tag');
+    assert.match(docker, /image-digest\.txt/,
+      'the signed digest must be published as image-digest.txt');
+    assert.match(signingDoc, /image-digest\.txt/,
+      'the signing doc must describe the Docker image digest asset');
+    assert.match(signingDoc, /cosign verify\s+ghcr\.io\/dwgx\/windsurf-api@sha256:/,
+      'the doc must show how to verify the image digest signature');
+  });
+
   it('signs exactly the published assets plus SHA256SUMS, after hashing and before upload', () => {
     assert.ok(signStepStart > release.indexOf('Generate SHA256SUMS'),
       'the manifest must be generated before it is signed');
