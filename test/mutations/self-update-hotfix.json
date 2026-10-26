@@ -7,7 +7,7 @@
     "test/audit-fixes.test.js",
     "test/docker-self-update.test.js"
   ],
-  "expectBaselinePass": 180,
+  "expectBaselinePass": 187,
   "mutations": [
     {
       "name": "dashboard stable-tag selection accepts leading-zero pseudo versions",
