@@ -99,6 +99,12 @@ import {
   runDockerSelfUpdate,
 } from './docker-self-update.js';
 import { BatchImportParseError, parseBatchImportInput } from './import-parser.js';
+import {
+  DEFAULT_ATTESTATION_REPOSITORY,
+  normalizeAttestationMode,
+  parseGitHubRepository,
+  verifyReleaseAttestation,
+} from '../release-attestation.js';
 import { detectSupervisor, gracefulRestart } from '../restart.js';
 import { getActiveServer } from '../server-registry.js';
 import { abortActiveSse } from '../sse-registry.js';
@@ -4086,6 +4092,7 @@ let rollbackPointWriterForTest = null;
 let selfUpdateSupervisorDetectorForTest = null;
 let selfUpdateRestartSchedulerForTest = null;
 let dockerSelfUpdateOverridesForTest = null;
+let releaseAttestationVerifierForTest = null;
 let selfUpdateMutationInFlight = false;
 // Hold the mutation lock for the whole out-of-band deployer window (flush
 // delay + recreate + health gate + possible rollback + second gate), so a
@@ -4117,6 +4124,10 @@ export function setSelfUpdateRestartSchedulerForTest(scheduler) {
 
 export function setDockerSelfUpdateForTest(overrides) {
   dockerSelfUpdateOverridesForTest = overrides && typeof overrides === 'object' ? overrides : null;
+}
+
+export function setReleaseAttestationVerifierForTest(verifier) {
+  releaseAttestationVerifierForTest = typeof verifier === 'function' ? verifier : null;
 }
 
 function detectSelfUpdateSupervisor() {
@@ -4752,6 +4763,43 @@ async function latestReleaseTag(branch) {
   }
 }
 
+/**
+ * D9 source-OTA attestation: verify the tag `releaseUpdateState` selected.
+ * The candidate has already been materialized and proven reachable; this binds
+ * its peeled commit to the signed release-attestation.json before any mutation
+ * target is returned. `warn` is the default rollout so existing installs keep
+ * updating; `required` makes missing material fatal.
+ */
+async function verifySelectedReleaseAttestation(release) {
+  const mode = normalizeAttestationMode(process.env.WINDSURFAPI_UPDATE_ATTESTATION);
+  let repository = '';
+  try {
+    const originUrl = (await runGit(['remote', 'get-url', 'origin'])).trim();
+    const parsed = parseGitHubRepository(originUrl);
+    if (parsed && parsed.toLowerCase() === DEFAULT_ATTESTATION_REPOSITORY.toLowerCase()) {
+      repository = DEFAULT_ATTESTATION_REPOSITORY;
+    }
+  } catch {
+    // A missing/unreadable origin is not a policy failure by itself: without a
+    // canonical repository there is no attestation to download, and the mode
+    // decides whether that absence is fatal (required) or a warning (warn).
+    repository = '';
+  }
+
+  const options = {
+    tag: release.name,
+    commit: release.commit,
+    mode,
+    dir: process.env.WINDSURFAPI_ATTESTATION_DIR || '',
+    repository,
+  };
+  const result = releaseAttestationVerifierForTest
+    ? await releaseAttestationVerifierForTest(options)
+    : await verifyReleaseAttestation(options);
+  if (result?.warning) log.warn(`self-update attestation: ${result.warning}`);
+  return result;
+}
+
 function safeUpdateBranch(branch) {
   const candidate = String(branch || '').trim();
   // `git rev-parse --abbrev-ref HEAD` returns the literal "HEAD" for a
@@ -4772,6 +4820,9 @@ async function releaseUpdateState(branch, currentCommit, { followUnreleased = fa
       'No stable release tag is reachable from the update branch; use forceUpdate only if you intentionally want the branch head.',
     );
   }
+  // D9: bind the selected release tag's peeled commit to the signed release
+  // attestation before `releasedCommit` can become a mutation target.
+  if (latestTag) await verifySelectedReleaseAttestation(release);
   const releasedCommit = release.commit;
   const targetCommit = followUnreleased ? remoteHead : releasedCommit;
 

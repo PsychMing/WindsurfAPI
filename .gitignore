@@ -26,6 +26,8 @@ scripts/*
 !scripts/unverified-register.mjs
 !scripts/check-dashboard-copy.mjs
 !scripts/verify-release-assets.mjs
+!scripts/generate-release-attestation.mjs
+!scripts/verify-release-attestation.mjs
 !scripts/secret-scan.mjs
 !scripts/support-bundle.mjs
 !scripts/run-test-shard.mjs

@@ -79,6 +79,57 @@ describe('release workflow', () => {
     }
   });
 
+  it('generates and signs release-attestation.json and attaches both files', () => {
+    const release = jobBlock('release');
+    const generate = release.indexOf('Generate release attestation');
+    const sign = release.indexOf('Sign the release attestation');
+    const upload = release.indexOf('Create GitHub Release');
+
+    assert.ok(generate > release.indexOf('Generate SHA256SUMS'),
+      'the attestation must hash the assets after SHA256SUMS exists');
+    assert.ok(generate < release.indexOf('Install cosign'),
+      'the attestation must exist before the signing steps');
+    assert.ok(sign > release.indexOf('Sign the published assets and SHA256SUMS'),
+      'the attestation is signed with the same keyless identity as the assets');
+    assert.ok(sign < upload, 'the signature must exist before the release upload');
+
+    const generateStep = release.slice(generate, sign);
+    assert.match(generateStep, /node scripts\/generate-release-attestation\.mjs/,
+      'the release job must run the generator');
+    assert.match(generateStep, /--tag "\$GITHUB_REF_NAME"/,
+      'the attestation must name the release tag');
+    assert.match(generateStep, /--commit "\$\(git rev-parse HEAD\)"/,
+      'the attestation must name the tag commit');
+    assert.match(generateStep, /--tree "\$\(git rev-parse 'HEAD\^\{tree\}'\)"/,
+      'the attestation must name the commit tree');
+
+    const signStep = release.slice(sign, upload);
+    assert.match(signStep, /cosign sign-blob/,
+      'the attestation must be signed as a blob');
+    assert.match(signStep, /--bundle release-attestation\.json\.sigstore\.json/,
+      'the signature must be a durable Sigstore bundle');
+
+    const files = /files: \|([\s\S]*)$/.exec(release)[1];
+    assert.match(files, /^\s+release-attestation\.json$/m,
+      'release-attestation.json must be attached to the GitHub Release');
+    assert.match(files, /^\s+release-attestation\.json\.sigstore\.json$/m,
+      'the attestation bundle must be attached to the GitHub Release');
+  });
+
+  it('downloads and attaches the signed image digest artifact', () => {
+    const release = jobBlock('release');
+    assert.match(
+      release,
+      /- name: Download the signed image digest\n[\s\S]{0,400}?uses: actions\/download-artifact@(?:v7|[0-9a-f]{40})\b[\s\S]{0,200}?name: image-digest\b/,
+      'the release job must download the docker job\'s signed digest artifact',
+    );
+    const files = /files: \|([\s\S]*)$/.exec(release)[1];
+    assert.match(files, /^\s+image-digest\.txt$/m,
+      'image-digest.txt must be attached to the GitHub Release');
+    assert.match(files, /^\s+image-digest\.txt\.sigstore\.json$/m,
+      'the image digest bundle must be attached to the GitHub Release');
+  });
+
   it('publishes SHA256SUMS covering exactly the four release assets', () => {
     const release = jobBlock('release');
     // SEC-04: a tampered download must be distinguishable from a real one.

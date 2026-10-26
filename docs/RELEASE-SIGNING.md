@@ -9,8 +9,9 @@
 
 ## What a release publishes
 
-`.github/workflows/release.yml` attaches five signed blobs to the GitHub Release,
-plus one Sigstore bundle for each one:
+`.github/workflows/release.yml` attaches five signed binary/manifest blobs to
+the GitHub Release, plus one Sigstore bundle for each one. It also publishes the
+source-OTA attestation described below (with its own bundle):
 
 | Blob | Produced by |
 |---|---|
@@ -30,6 +31,13 @@ The bundle is the durable proof. A Fulcio certificate lives for minutes, and
 `cosign verify-blob --certificate` checks it against the current time unless a
 signed timestamp is supplied. Verify the bundle; there is no detached `.sig` or
 `.pem` pair attached to v3.10.0+ releases.
+
+The `release` job also publishes the source-OTA attestation:
+
+| Artifact | Contents | Use |
+|---|---|---|
+| `release-attestation.json` | tag, commit, tree and the SHA-256 of every published asset | binds the release tag to the exact commit and asset bytes |
+| `release-attestation.json.sigstore.json` | Sigstore bundle for the attestation | proves the binding came from this workflow at this tag |
 
 The manifest uses the **asset names as they appear on the release page** (flat),
 so `sha256sum -c SHA256SUMS` works in the directory where the assets were
@@ -163,22 +171,37 @@ it is signed and is not is worse than an obviously unsigned one.
 
 ## Install and self-update paths
 
-These paths do not download GitHub Release assets, so the cosign signatures do
-not cover them. Do not pretend otherwise in support replies.
+The git self-update path verifies the release attestation (see below), not the
+binary signatures: `release-attestation.json` binds the tag to the commit the
+checkout will install. Docker OTA is covered separately by `image-digest.txt`
+when that signing path is enabled.
 
 ### Dashboard `/self-update` (git checkout)
 
 `src/dashboard/api.js` updates by fetching a stable `vX.Y.Z` tag, checking that
 the tag object and peeled commit are consistent, that the commit is an ancestor
-of the update branch, and that the move is a fast-forward. The trust anchor is
-GitHub's ref namespace plus TLS plus the configured `origin` URL. It never
-downloads `SHA256SUMS` or a binary, so there is nothing here for cosign to
-verify.
+of the update branch, and that the move is a fast-forward. Before the tag can
+become a mutation target, it also verifies `release-attestation.json`:
 
-Adding `git verify-tag` is a separate root of trust (a signing key that every
-deployment must already have) and is intentionally not wired: a verifier that
-fails closed on machines without the key would break every existing
-installation. That remains future work.
+- the attested `commit` must equal the tag's peeled commit; a mismatch is
+  refused in every mode;
+- when `release-attestation.json.sigstore.json` is present, `cosign verify-blob`
+  must verify it with the release workflow identity and issuer;
+- `WINDSURFAPI_UPDATE_ATTESTATION=warn` (default) logs a warning and proceeds
+  when the attestation, its bundle or cosign is missing, so an existing install
+  without cosign keeps updating; `required` refuses instead.
+
+`update.sh` runs the same check (`scripts/verify-release-attestation.mjs`)
+before any stash/reset/merge. A pre-staged `WINDSURFAPI_ATTESTATION_DIR` serves
+air-gapped hosts and forks.
+
+The signature proves "this release workflow published this tag→commit binding
+for these bytes", not human approval or a reproducible build. Anyone who can
+push a `v*` tag can mint the same identity; tag protection and a review-gated
+release environment are separate controls.
+
+Adding `git verify-tag` is a different root of trust (a signing key that every
+deployment must already have) and remains intentionally not wired.
 
 ### `deploy/update.sh` (Docker)
 

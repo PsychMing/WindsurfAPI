@@ -827,8 +827,10 @@ MIT License. See [LICENSE](LICENSE).
 [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md) 用 `cosign verify-blob` 验证
 `SHA256SUMS.sigstore.json` 后再 `sha256sum -c SHA256SUMS`。清单使用**扁平文件名**，把资产
 放在同一目录即可；v3.9.53 的清单带 `dist-windows/` / `dist-macos/` 前缀，v3.10.0 之前的
-Release 没有签名。Dashboard 的 git 自更新与 Docker 更新不下载 Release 资产，cosign 签名不
-覆盖它们（Docker 可用 digest 固定），细节见 docs/RELEASE-SIGNING.md。
+Release 没有签名。git 自更新不下载二进制，但会校验 Release 的 `release-attestation.json`
+（tag→commit/tree 与各资产 SHA-256，cosign 签名）；默认
+`WINDSURFAPI_UPDATE_ATTESTATION=warn`，缺失只告警，设为 `required` 则拒绝。Docker 可用
+digest 固定；细节见 docs/RELEASE-SIGNING.md。
 
 **别把 token、API key、cookie、上游账号凭据
 写进 issue、PR、日志或提交的配置文件里。** 如果报告问题必须带上鉴权信息，只贴脱敏后的元数据

@@ -353,6 +353,14 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Download the signed image digest
+        # DockerSign's docker job uploads `image-digest` (digest + cosign
+        # bundle). The release job attaches both files; the docker job owns
+        # producing them.
+        uses: actions/download-artifact@v7
+        with:
+          name: image-digest
+
       - name: Download Windows exe
         uses: actions/download-artifact@v7
         with:
@@ -404,6 +412,20 @@ jobs:
           sha256sum windsurfapi-macos.zip >> SHA256SUMS
           cat SHA256SUMS
 
+      - name: Generate release attestation
+        # D9: bind the tag to the exact commit/tree and to the bytes of every
+        # published asset. The file is signed in the next-but-one step with the
+        # same keyless identity as the assets, then attached to the release.
+        # `git rev-parse HEAD` is the tag's commit (checkout is at the tag).
+        run: |
+          node scripts/generate-release-attestation.mjs \
+            --tag "$GITHUB_REF_NAME" \
+            --commit "$(git rev-parse HEAD)" \
+            --tree "$(git rev-parse 'HEAD^{tree}')" \
+            --repository "$GITHUB_REPOSITORY" \
+            --out release-attestation.json
+          cat release-attestation.json
+
       - name: Install cosign
         # SEC-04/SEC-11: the signer is pinned by commit SHA (the tag is mutable)
         # and to an exact cosign release, so the tool that produces the
@@ -447,6 +469,22 @@ jobs:
           done
           ls -l *.sigstore.json
 
+      - name: Sign the release attestation (keyless)
+        # D9: the statement itself is a published blob. Sign it with the same
+        # workflow identity that signs SHA256SUMS, so a consumer can prove the
+        # tag/commit/asset binding came from this workflow at this tag.
+        run: |
+          set -euo pipefail
+          cosign sign-blob \
+            --yes \
+            --bundle release-attestation.json.sigstore.json \
+            release-attestation.json
+          [ -s release-attestation.json.sigstore.json ] || {
+            echo "::error::release attestation signature bundle is empty"
+            exit 1
+          }
+          ls -l release-attestation.json release-attestation.json.sigstore.json
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -463,4 +501,8 @@ jobs:
             dist-windows/windsurfapi-windows.zip
             dist-macos/windsurfapi-macos-arm64
             windsurfapi-macos.zip
+            image-digest.txt
+            image-digest.txt.sigstore.json
+            release-attestation.json
+            release-attestation.json.sigstore.json
             SHA256SUMS
