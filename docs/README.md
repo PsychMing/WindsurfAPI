@@ -16,9 +16,9 @@
 > Full inventory: [DOC-MAP.md](DOC-MAP.md) — one line per tracked document with purpose and
 > current / stale / duplicate status.
 
-Project-level entry points: [AGENTS.md](../AGENTS.md) (work loop, gate commands and landmines) ·
-[CONTRIBUTING.md](../CONTRIBUTING.md) (merge bar, review rules and testing) ·
-[CHANGELOG.md](../CHANGELOG.md) (version index) · [README.en.md](../README.en.md) (English README).
+Project-level entry points: [CONTRIBUTING.md](../CONTRIBUTING.md) (merge bar, review rules and
+testing) · [CHANGELOG.md](../CHANGELOG.md) (version index) · [README.en.md](../README.en.md)
+(English README).
 
 ```mermaid
 flowchart TD
