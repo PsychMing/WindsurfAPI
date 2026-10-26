@@ -1,16 +1,16 @@
 # Documentation Map
 
-> One line per documentation file in scope (tracked `docs/` plus the root project docs): `path — purpose — status`. Snapshot: **2026-10-26**, branch `docs/sweep-20261026`.
+> One line per documentation file in scope (tracked `docs/`, the root project docs, and the tracked D9/release evidence reports listed under `evidence/`): `path — purpose — status`. Snapshot: **2026-10-26**, branch `docs/final-20261026`. Release: **v3.141.592657**（本波发布，tag SHA 以 release lane 回报为准）.
 >
-> Status key: `current` = accurate for its stated scope/date (including frozen historical records); `stale → fixed` = had a stale current-state claim, corrected in this sweep; `stale → deferred` = stale claim left in place with a reason; `duplicate` = superseded or generated copy.
+> Status key: `current` = accurate for its stated scope/date (including frozen historical records); `stale → fixed` = had a stale current-state claim, corrected in this sweep; `stale → deferred` = stale claim left in place with a reason; `superseded` = replaced by a newer record but retained as published history; `duplicate` = superseded or generated copy.
 
 ## Root
 
-- `README.md` — Chinese main README: install, API surfaces, model catalog, dashboard, release/secret boundary. — stale → fixed (Claude 73→80, Gemini 22→26; signature artifacts→one bundle)
-- `README.en.md` — English mirror of the main README. — stale → fixed (Claude 73→80, Gemini 22→26; signature artifacts→one bundle)
+- `README.md` — Chinese main README: install, API surfaces, model catalog, dashboard, release/secret boundary. — stale → fixed (D9: signature paragraph now covers image-digest and release-attestation; release count stated; Claude 80 / Gemini 26 rechecked)
+- `README.en.md` — English mirror of the main README. — stale → fixed (D9: signature paragraph now covers image-digest and release-attestation; release count stated; Claude 80 / Gemini 26 rechecked)
 - `AGENTS.md` — Repository operating notes: work loop, test/gate commands, landmines, local assets. — current (local, gitignored)
-- `CHANGELOG.md` — Version index and release summaries; banner and table both state the release-notes count. — stale → fixed (git tag 214→226)
-- `CONTRIBUTING.md` — Merge bar, review rules, testing/gate instructions and contribution conventions. — stale → fixed (current-count pointer §6.2→§0)
+- `CHANGELOG.md` — Version index and release summaries; banner and table both state the release-notes count. — current (217 release notes / 227 tags, 2026-10-26)
+- `CONTRIBUTING.md` — Merge bar, review rules, testing/gate instructions and contribution conventions. — stale → fixed (Windows inert set 4→6 paths; current-count pointer moved to HANDOFF-SUMMARY §Verify + acceptance §3)
 - `SECURITY.md` — Security vulnerability disclosure policy. — current
 - `CLAUDE.md` — One-line pointer to AGENTS.md. — duplicate (local pointer, gitignored)
 
@@ -18,24 +18,24 @@
 
 - `docs/AUDIT-LEDGER.md` — Append-only audit ledger: which subsystems were probed, the conclusion, and where each guard lives (17 rounds). — current
 - `docs/DETACH-ROLLOUT.md` — Detached-cache rollout gates: gate 2 concurrency stress and the two-week gate 1 serve/admit measurement; default stays OFF. — current
-- `docs/DOC-MAP.md` — This inventory: one line per tracked document with purpose and current / stale / duplicate status. — current
+- `docs/DOC-MAP.md` — This inventory: one line per tracked document with purpose and current / stale / superseded / duplicate status. — current
 - `docs/DEVIN-CONNECT-CUTOVER.md` — Production cutover runbook for DEVIN_CONNECT (production runs it ON; code default is OFF). — current
 - `docs/DOCKER-UPDATE.md` — One-command Docker update procedure: pull/build, health gate, automatic rollback, data volumes untouched. — current
-- `docs/ENV-SWITCHES.md` — Environment-variable reference for the source-only switches (181 three-prefix switches, 90 source-only, 2026-10-26). — stale → fixed (bare-grep undercount 45→59)
+- `docs/ENV-SWITCHES.md` — Environment-variable reference for the source-only switches (183 three-prefix switches, 90 source-only, 2026-10-26). — stale → fixed (D9 +2 switches; bare-grep undercount 59; 183 total / 124 bare)
 - `docs/GITHUB-CORPUS.md` — Method and shape of the offline GitHub PR/issue corpus (89 PRs / 183 issues, snapshot 2026-10-15). — current
 - `docs/HISTORY-LEDGER-VIZ.html` — Interactive visualization of the history ledger; frozen at v3.9.34 / 2026-09-15. — duplicate (generated; frozen historical snapshot)
 - `docs/HISTORY-LEDGER.md` — Global history ledger; frozen at 2026-08-11 / v3.9.21 and explicitly not current state. — stale → fixed (volume glob/count wording)
 - `docs/OPENCODE-REVIEW.md` — Decision record for OpenCodeReview: not adopted as CI; blocker, trial procedure and enablement path. — current
 - `docs/QUERY-KEY-DEPRECATION.md` — Status, risk and phased removal plan for `?key=` query-parameter authentication. — current
-- `docs/README.md` — Documentation index: user, operator, internals, takeover, history and release entry points. — stale → fixed (82→90 switches, 85→97 specs, missing index entries)
-- `docs/RELEASE-SIGNING.md` — Release signing and verification: cosign keyless, Sigstore bundles, trust boundary and OTA caveats. — stale → fixed (three signature artifacts→one .sigstore.json bundle)
+- `docs/README.md` — Documentation index: user, operator, internals, takeover, history and release entry points. — stale → fixed (183/124 switch counts, 97-spec corpus, D9 evidence and HANDOFF-SUMMARY entries)
+- `docs/RELEASE-SIGNING.md` — Release signing and verification: cosign keyless, Sigstore bundles, trust boundary and OTA caveats. — stale → fixed (three signature artifacts→one .sigstore.json bundle; D9 adds image-digest and release-attestation verification)
 - `docs/REQUEST-TAIL-CONTRACT.md` — Decided policy for the two local request-tail 400s, per-surface differences and the machine-checkable guard. — current
 - `docs/UNVERIFIED.md` — Generated cross-release register of every 「尚未验证」 bullet with 已复核 / 仍缺 / 已修 status. — current (generated)
 - `docs/dashboard-i18n.md` — Dashboard internationalization guide: locale bundles, helper and regression checks. — current
-- `docs/index.html` — GitHub Pages static output: landing page and generated model catalog (source: src/models.js). — duplicate (generated; badge v3.9.37→v3.141.592656, 264→283 models)
+- `docs/index.html` — GitHub Pages static output: landing page and generated model catalog (source: src/models.js). — duplicate (generated; badge v3.141.592657, 283 models)
 - `docs/login-flows.md` — Dashboard account login flows: probe-first rules and click paths for password, email-code, OAuth and token accounts. — current
 - `docs/reasoning-dedup.md` — Design of reasoning/content duplicate suppression in the DEVIN_CONNECT stream path. — current
-- `docs/review.html` — Public architecture review page: startup → routes → protocol bridge → pools → dashboard → security → tests. — stale → fixed (145→283 models, 114→590 tests; prose still dated 2026-06-17)
+- `docs/review.html` — Public architecture review page: startup → routes → protocol bridge → pools → dashboard → security → tests. — stale → fixed (283 models, 114→593 test files; prose still dated 2026-06-17)
 
 ## docs/ — handoffs (append-only)
 
@@ -55,6 +55,7 @@
 - `docs/HANDOFF-2026-09-17.md` — Archived handoff for v3.9.36. — duplicate (superseded by HANDOFF-2026-10-15.md)
 - `docs/HANDOFF-2026-09-22.md` — Archived engineering-audit snapshot (finite audit, not product status). — duplicate (archived audit snapshot)
 - `docs/HANDOFF-2026-10-15.md` — Live handoff: current state, inbound queue, frozen/owner-gated items, local-only assets and gap register. — current
+- `docs/HANDOFF-SUMMARY.md` — One-page final handoff for the 2026-10-26 session: delivered versions/fixes/audits/tests/D9, current state, open items and per-item verification commands. — current (final summary for 2026-10-26; live head remains HANDOFF-2026-10-15.md)
 
 ## docs/ — history ledger (frozen 2026-08-11 / v3.9.21)
 
@@ -293,21 +294,35 @@
 - `docs/releases/RELEASE_NOTES_3.141.592657.md` — Release notes for v3.141.592657 (published GitHub Release body). — current
 - `docs/releases/RELEASE_NOTES_3.141.592656.md` — Release notes for v3.141.592656 (published GitHub Release body). — superseded (previous release)
 
+## evidence/ — D9 and release-gate evidence (2026-10-26)
+
+- `evidence/D9-TRUST-DESIGN.md` — D9 Policy T design: threat model, T1–T4 trust anchors, M0–M4 minimal control set and rollout boundary. — current (design; implementation status tracked in D9-GATE.md)
+- `evidence/final/D9-GATE.md` — D9 single-Owner trust assessment: which controls are load-bearing vs theater, the minimal M0–M4 set, and the residual risk accepted after it. — current (2026-10-26 audit)
+- `evidence/final/BannerLock.md` — BannerLock evidence: commit + per-file sha256 lock for the banner generator, fail-before-import verifier, 42 `uses:` SHA pins at that merge (45 in the final D9 tree); 12/12 negative and positive tests. — current (implemented; hosted `banner.yml` run `[UNVERIFIED]`)
+- `evidence/final/DockerSign.md` — DockerSign evidence: image digest signed by cosign keyless, `image-digest.txt` + bundle, dashboard tag→digest gate, `docker:24-cli` digest pin, `--no-build`; targeted 107 tests / full suite 7,244 tests. — current (implemented; real GHCR/tag build `[UNVERIFIED]`)
+- `evidence/final/SourceAttest.md` — SourceAttest evidence: release-attestation.json generation/signing, dashboard and `update.sh` verification before Git mutation, `warn` default / `required` opt-in; 592 files / 7,227 tests on the slice. — current (implemented; real Fulcio/Sigstore validation `[UNVERIFIED]`)
+- `evidence/final/GATE-EVIDENCE.md` — Audit of the concurrency and live-model reports: arithmetic recomputation, corrections required, hermetic acceptance left open. — current (audit; LiveModelsB/Concurrency corrections outstanding, R10/R11/R15 still `[UNVERIFIED]`)
+- `evidence/final/GATE-RELEASE.md` — Pre-tag release gate for 3.141.592656: BLOCKED on a stale HANDOFF §0 master line. — superseded (by GATE-REAUDIT-9115ebe7.md)
+- `evidence/final/GATE-REAUDIT-9115ebe7.md` — Final re-audit of 9115ebe7: TAG-READY (pre-tag), B00a/B00b/B01–B05 cleared; B06/B07 remain post-tag gates. — current (historical for v3.141.592656)
+- `evidence/final/GATE-RISK.md` — Release-note honesty audit for 3.141.592656: OVERSTATED until Fixes A–C; fixes applied in `0f63592d`, re-audit HONEST. — current (applied)
+
 ## Stale claims fixed in this sweep
 
-1. `README.md` / `README.en.md` — model summary counts corrected from Claude 73 / Gemini 22 to **80 / 26** (`src/models.js` at `9115ebe7`: anthropic 80, openai 118, google 26); signature text corrected from `.sig` + `.pem` + `.sigstore.json` to the single `.sigstore.json` bundle actually attached since v3.10.0.
-2. `docs/README.md` — source-only switch count 82→**90** and bare-grep undercount 45→**59** (181 total vs 122 bare); mutation-spec corpus 85→**97**; added missing DETACH-ROLLOUT, REQUEST-TAIL-CONTRACT, HISTORY-LEDGER set and ACCEPTANCE entries.
-3. `CHANGELOG.md` — `git tag` count 214→**226** (2026-10-26 `git tag | wc -l`; includes `v3.141.592656`).
-4. `docs/ENV-SWITCHES.md` — bare-`env.` undercount 45→**59** with the 2026-10-26 measurement (181 full / 122 bare).
-5. `docs/RELEASE-SIGNING.md` — “three signature artifacts” corrected to one `.sigstore.json` bundle per signed blob; removed the stale detached `.sig`/`.pem` verification block.
-6. `docs/index.html` — stale hero badge `v3.9.37`→`v3.141.592656`; model count 264→**283**; static provider counts refreshed; `MODELS` array regenerated from `src/models.js` with `scripts/gen-docs-models.js`.
-7. `docs/review.html` — snapshot facts corrected: active model entries 145→**283**, root test files 114→**590** (2026-10-26); test-category boxes explicitly marked as the 2026-06-17 114-file sample.
-8. `CONTRIBUTING.md` — current-count pointer moved from the 2026-10-15 §6.2 snapshot to the live handoff §0 current-state block (zh + en).
+1. `README.md` / `README.en.md` — model summary counts corrected from Claude 73 / Gemini 22 to **80 / 26** (`src/models.js`: anthropic 80, openai 118, google 26); signature text corrected from `.sig` + `.pem` + `.sigstore.json` to the single `.sigstore.json` bundle, and extended for D9 to cover the signed Docker `image-digest.txt` and the signed `release-attestation.json`; release count line added (227 tags / 217 release notes, 2026-10-26).
+2. `docs/README.md` — source-only switch count **90**, bare-grep undercount **59** (183 total vs 124 bare after D9's two new switches); mutation-spec corpus 85→**97**; added D9 evidence section, HANDOFF-SUMMARY entry and the missing DETACH-ROLLOUT / REQUEST-TAIL-CONTRACT / HISTORY-LEDGER / ACCEPTANCE entries.
+3. `CHANGELOG.md` — `git tag` count 214→**227** and release-notes count 217 (2026-10-26 `git tag | wc -l` / `ls docs/releases/RELEASE_NOTES_*.md | wc -l`; includes `v3.141.592657`).
+4. `docs/ENV-SWITCHES.md` — D9 adds `WINDSURFAPI_UPDATE_ATTESTATION` and `WINDSURFAPI_ATTESTATION_DIR`; header recount 181→**183** full / 122→**124** bare, source-only table stays **90** (`.env.example` + README now cover 93).
+5. `docs/RELEASE-SIGNING.md` — “three signature artifacts” corrected to one `.sigstore.json` bundle per signed blob; removed the stale detached `.sig`/`.pem` verification block; D9 adds image-digest and release-attestation verification.
+6. `docs/index.html` — stale hero badge `v3.9.37`→`v3.141.592657`; model count 264→**283**; static provider counts refreshed; `MODELS` array regenerated from `src/models.js` with `scripts/gen-docs-models.js`.
+7. `docs/review.html` — snapshot facts corrected: active model entries 145→**283**, root test files 114→**590**→**593** (2026-10-26 final tree); test-category boxes explicitly marked as the 2026-06-17 114-file sample.
+8. `CONTRIBUTING.md` — current-count pointer moved from the 2026-10-15 §6.2 snapshot to `docs/HANDOFF-SUMMARY.md` §Verify and the acceptance appendix; Windows inert set corrected 4→**6** paths (adds `detach-soak` and `detach-ls-pool-pressure`).
 9. `docs/HISTORY-LEDGER.md` — “`HISTORY-LEDGER-2026-*.md` 11 份” corrected to 9 dated volumes + PRS/ISSUES = 11 detail files.
+10. `docs/DOC-MAP.md` — inventory extended with the D9/release-gate evidence section (D9-GATE, BannerLock, DockerSign, SourceAttest, GATE-*) and statuses marked current / superseded / duplicate; snapshot branch updated to `docs/final-20261026`.
+11. `docs/HANDOFF-SUMMARY.md` — new one-page final handoff for the 2026-10-26 session.
 
 ## Deferred / intentionally not changed
 
 - `README.md` / `README.en.md` banner star count (`★3,107`) vs `docs/assets/star-history.svg` (`3,108`): the banner block is bot-generated; per `HANDOFF-2026-10-15.md` it must be refreshed by `banner.yml`, not hand-edited. **Deferred.**
-- `docs/HANDOFF-2026-10-15.md` §6.2 still shows the 2026-10-15 snapshot (85 specs / 767 mutations); it is explicitly historical, and the live numbers are in §0 (97 / 863). `CONTRIBUTING.md` now points at §0. **Deferred (append-only).**
+- `docs/HANDOFF-2026-10-15.md` §6.2 still shows the 2026-10-15 snapshot (85 specs / 767 mutations); it is explicitly historical, and the live numbers are in `docs/releases/ACCEPTANCE_3.141.592657.md` §3. `CONTRIBUTING.md` points at `docs/HANDOFF-SUMMARY.md` §Verify and the acceptance appendix. **Deferred (append-only).**
 - `docs/review.html` architecture prose is still dated 2026-06-17; only its counts were refreshed. A full re-review is outside a docs sweep. **Deferred.**
 - Old release notes, archived handoffs and `HISTORY-LEDGER-*` volumes contain claims that were true at their date; they are append-only published records and are not rewritten. **Intentional.**

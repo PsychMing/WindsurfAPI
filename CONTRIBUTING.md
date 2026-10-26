@@ -78,7 +78,8 @@ flowchart TD
 
 项目有完整的自动测试套件，PR 合并前 CI 会自动跑。权威计数口径是
 `npm run test:release`（逐文件进程隔离）。**当前数字见
-[最新交接文档 §0 当前状态](docs/HANDOFF-2026-10-15.md)，本文不复述** —— 这里此前钉着 v3.9.14 的
+[最终交接摘要 §Verify](docs/HANDOFF-SUMMARY.md) 与
+[发布验收附录 §3](docs/releases/ACCEPTANCE_3.141.592657.md)，本文不复述** —— 这里此前钉着 v3.9.14 的
 "3418 / 261"，而那之后又发了五个版本。一个数字写在不是它权威来源的地方就会烂。
 全量 `npm test` 的总数**不再漂**：2026-09-13 实测，真正的原因不是"输出竞态"而是
 `--test-force-exit` 会在跑完**部分 suite 之后**就让进程以 **0** 退出 —— 同一份字节跑 10 轮得到
@@ -219,7 +220,8 @@ the routed path, or making parseFields recurse).
 
 The project has a full automated test suite and CI runs it on every PR. The authoritative
 count comes from `npm run test:release` (one process per file). **The current number lives in
-the current-state block of the newest handoff ([docs/HANDOFF-2026-10-15.md](docs/HANDOFF-2026-10-15.md) §0)
+the final handoff summary ([docs/HANDOFF-SUMMARY.md](docs/HANDOFF-SUMMARY.md) §Verify) and the
+release acceptance appendix ([docs/releases/ACCEPTANCE_3.141.592657.md](docs/releases/ACCEPTANCE_3.141.592657.md) §3),
 and is deliberately not repeated here** — this spot used to pin "3418 / 261 as of v3.9.14" and five
 releases shipped after that. A number written anywhere other than its authoritative source
 rots. Totals from a plain `npm test` **no longer drift**: measured 2026-09-13, the cause was not
@@ -281,14 +283,16 @@ GATE_INERT_SKIP_PATHS=test/wire-byte-identity.test.js;test/devin-connect-relogin
 `test/wire-byte-identity.test.js` skips without `WIRE_BASE_TREE` because it is a CI-only
 comparison; `test/devin-connect-relogin-live.test.js` skips its whole suite at the describe
 level when not armed (`RELOGIN_LIVE=1` plus credentials) and reports `tests 0 / suites 1 /
-skipped 0`. A native Windows host measures four (2026-10-06 on the Windows machine these docs
-were written from): it also lacks `/usr/bin/git`, so `test/mutate-verify-harness.test.js` and
+skipped 0`. A native Windows host measures six (2026-10-26, final tree): it also lacks
+`/usr/bin/git`, so `test/mutate-verify-harness.test.js` and
 `test/self-update-untracked-safety.test.js` execute nothing there (`REAL_GIT` is null;
-`test/git-fixture-env.js` requires git at a trusted absolute POSIX path). The full measured
-Windows set is:
+`test/git-fixture-env.js` requires git at a trusted absolute POSIX path). `test/detach-soak.test.js`
+is a suite-level skip unless `DETACH_SOAK=1` (it needs a real 120 s TTL), and
+`test/detach-ls-pool-pressure.test.js` skips its POSIX-only pressure arms on Windows
+(`ensureLs` must spawn a shebang fake LS). The full measured Windows set is:
 
 ```text
-GATE_INERT_SKIP_PATHS=test/wire-byte-identity.test.js;test/devin-connect-relogin-live.test.js;test/mutate-verify-harness.test.js;test/self-update-untracked-safety.test.js
+GATE_INERT_SKIP_PATHS=test/wire-byte-identity.test.js;test/devin-connect-relogin-live.test.js;test/mutate-verify-harness.test.js;test/self-update-untracked-safety.test.js;test/detach-soak.test.js;test/detach-ls-pool-pressure.test.js
 ```
 
 Semicolon- or newline-separated, repo-relative, `/` or `\`. The variable is an override with no

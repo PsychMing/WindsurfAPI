@@ -1,9 +1,9 @@
 # 环境变量参考（补 .env.example 未收录的部分）
 
 README 的表格列常用变量，[.env.example](../.env.example) 是完整清单 —— 两者合计覆盖
-**91** 个。本文补齐**剩下 90 个只存在于源码里**的开关：注释很全，但运营翻不到。
-（2026-10-26 按 master `2598299e` 用下面的全形式脚本重测：三前缀开关 **181**。
-`.env.example` + README 覆盖 91，本文覆盖 90 —— 其中 5 个此前只写了缩写
+**93** 个。本文补齐**剩下 90 个只存在于源码里**的开关：注释很全，但运营翻不到。
+（2026-10-26 按 master `f6b843fe` 用下面的全形式脚本重测：三前缀开关 **183**。
+`.env.example` + README 覆盖 93，本文覆盖 90 —— 其中 5 个此前只写了缩写
 （`..._PROVIDERS` / `..._ROUTES` / `..._CALLERS` / `..._ACCOUNTS` /
 `..._WEBFETCH_AUTO_APPROVE_ORIGINS`），现已补成完整名字。旧口径是 5 种读取形式，
 本树只数到 172，漏掉的 9 个见下。
@@ -22,7 +22,8 @@ README 的表格列常用变量，[.env.example](../.env.example) 是完整清�
 `DEVIN_CONNECT_PROSE_INTENT_DETECT`（`src/devin-connect-openai.js`，默认开，仅记日志）、
 `WINDSURFAPI_HISTORY_BUDGET_TURNS` 与 `WINDSURFAPI_HISTORY_BUDGET_BYTES`
 （`src/history-budget.js`，`const X = 'FOO'` 形式），后两者同时收录进 `.env.example`。
-2026-10-26 在 master `2598299e` 重测：**181**。旧的 5 形式脚本只数到 **172**；差额 9 个是
+2026-10-26 在 master `f6b843fe` 重测：**183**（D9 新增 `WINDSURFAPI_UPDATE_ATTESTATION` 与
+`WINDSURFAPI_ATTESTATION_DIR`）。旧的 5 形式脚本只数到 **172**；差额 9 个是
 `csvListEnv`/`csvSetEnv`（7 个 `WINDSURFAPI_NATIVE_TOOL_BRIDGE_*`：`TOOLS`、`MODELS`、
 `PROVIDERS`、`ROUTES`、`CALLERS`、`ACCOUNTS`、`WEBFETCH_AUTO_APPROVE_ORIGINS`，
 `src/cascade-native-bridge.js:127-134`）和 `env?.NAME`（`WINDSURFAPI_REQUEST_BUDGET_MS`、
@@ -34,7 +35,7 @@ README 的表格列常用变量，[.env.example](../.env.example) 是完整清�
 `WINDSURFAPI_TRACE_DIR` 的前缀，正则不加边界会重复计数；二是**相当一部分读取点
 不长得像 `env.FOO`** —— `positiveIntEnv('FOO', 默认)`（`client.js`/`proto-trace.js`/
 `conversation-pool.js`）和 `runtime-config.js` 里 `{env: 'FOO', def: …}` 的表驱动写法
-都是真读取点。只匹配 `env.FOO` 会漏掉 **59** 个（2026-10-26 按当前树重测：全量 181、裸 `env.` 122；2026-10-16 @d3f0490 时点为 157 / 112，差值 45）。正确数法：
+都是真读取点。只匹配 `env.FOO` 会漏掉 **59** 个（2026-10-26 按当前树重测：全量 183、裸 `env.` 124；2026-10-16 @d3f0490 时点为 157 / 112，差值 45）。正确数法：
 
 ```bash
 python3 - <<'PY'
@@ -69,7 +70,7 @@ for f in files:
     for m in PAT.finditer(strip(pathlib.Path(f).read_text(errors='replace'))):
         n=next(g for g in m.groups() if g)
         if n.startswith(('DEVIN_CONNECT_','WINDSURFAPI_','CASCADE_')): names.add(n)
-print(len(names))   # 181（2026-10-26 按 2598299e 重测）
+print(len(names))   # 183（2026-10-26 按 f6b843fe 重测）
 PY
 ```
 
@@ -369,9 +370,9 @@ tag peel 出来的 commit；不一致或签名无效时**两种模式都拒绝**
 | `WINDSURFAPI_QUOTA_COOLDOWN` | **开**（`true`） | `bool` | 配额冷却。 |
 | `WINDSURFAPI_ON_DEMAND_RESERVE_USD` | `0` | 0–100000 | 按需消费的预留额度（`float`，美元）。**涉及真实花钱，改前想清楚。** |
 
-至此三前缀开关 **181** 个全部有据可查（2026-10-26 按 master `2598299e` 用上面的全形式脚本
+至此三前缀开关 **183** 个全部有据可查（2026-10-26 按 master `f6b843fe` 用上面的全形式脚本
 重测；旧的 5 形式脚本在同树只数到 172，漏掉的 9 个见文首）：`.env.example` + README 覆盖
-91 个（含 PR #249 的 `WINDSURFAPI_LEAK_TRACE`），本文覆盖其余 90 个。这个不变式由
+93 个（含 PR #249 的 `WINDSURFAPI_LEAK_TRACE` 与 D9 的两个 attestation 开关），本文覆盖其余 90 个。这个不变式由
 [`test/docs-consistency-guard.test.js`](../test/docs-consistency-guard.test.js) 的
 「every switch read in src/ is findable in some reader-facing doc」守着 ——
 **加新开关不写文档会直接让测试变红**。注意守卫只认 5 种读取形式

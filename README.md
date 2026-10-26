@@ -817,10 +817,13 @@ MIT License. See [LICENSE](LICENSE).
 
 ## 发布与密钥边界
 
-发布流程会自动推 Docker 镜像和 GitHub Release。从 v3.10.0 起，每个 Release 为四个发布资产
+发布流程会自动推 Docker 镜像和 GitHub Release。当前发布 **v3.141.592657**；仓库共 227 个
+git tag / 217 份发布说明（2026-10-26）。从 v3.10.0 起，每个 Release 为四个发布资产
 （Windows exe/zip、macOS arm64 二进制/zip）生成 `SHA256SUMS`，并用 **cosign keyless**
 （GitHub OIDC，仓库内没有任何私钥或签名 secret）为四个资产和清单各发布一个
-`.sigstore.json`（签名、Fulcio 证书与 Rekor inclusion proof 合在一个文件里）。签名证明“这些字节由本仓库的 release workflow 在某个 `v*` tag 上产生”，
+`.sigstore.json`（签名、Fulcio 证书与 Rekor inclusion proof 合在一个文件里）。从
+v3.141.592657 起，Docker 镜像摘要 `image-digest.txt` 与源码 OTA 来源证明
+`release-attestation.json` 也各带一个 `.sigstore.json`。签名证明“这些字节由本仓库的 release workflow 在某个 `v*` tag 上产生”，
 不证明人工审阅或构建可复现；
 能改写仓库/tag 的人仍能重新签名，因此 tag/commit 的 out-of-band 核对依然重要。下载后先验签再
 校验哈希：`node scripts/verify-release-assets.mjs <下载目录>`（需要 cosign），或按
