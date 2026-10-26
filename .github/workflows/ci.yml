@@ -1,5 +1,9 @@
 name: CI
 
+# Every job only reads the repository; keep the token from defaulting to write.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [master]
@@ -31,12 +35,12 @@ jobs:
       # `git clone --local` and reads history objects, so a shallow checkout fails it.
       # Measured 2026-09-13: with the default depth 1 the sweep died on the FIRST spec
       # with exit 2 and produced no verdict lines at all.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
       - name: Setup Node 24
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '24'
 
@@ -66,7 +70,7 @@ jobs:
 
       - name: Publish mutation evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mutation-report-${{ github.run_id }}-${{ strategy.job-index || 0 }}
           path: ${{ runner.temp }}/mutation-report/
@@ -77,10 +81,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup Node 24
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '24'
 
@@ -114,14 +118,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # Change-scoped selection diffs against origin/master, so the history has to be
           # here; a shallow clone would silently widen the selection to every spec.
           fetch-depth: 0
 
       - name: Setup Node 24
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '24'
 
@@ -151,12 +155,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
       - name: Setup Node 24
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '24'
 
@@ -168,13 +172,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # The comparison base is a tag, so the tags have to be here.
           fetch-depth: 0
 
       - name: Setup Node 24
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '24'
 
@@ -214,7 +218,7 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # test/docs-consistency-guard.test.js resolves the handoff's tag and commit
           # claims with git. The default depth-1 clone carries neither the history nor
@@ -225,7 +229,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Node 24
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '24'
           cache: 'npm'
