@@ -171,6 +171,7 @@ function updateScript(extra) {
     'rev-parse --abbrev-ref HEAD': 'master',
     'fetch --quiet --no-tags origin master': '',
     'rev-parse origin/master': REMOTE,
+    'remote get-url origin': '/tmp/windsurfapi-gate-fixture-origin.git',
     'log -1 --pretty=format:%s': 'local msg',
     'status --porcelain -uno': '',
     'ls-remote --tags origin refs/tags/v[0-9]*': [

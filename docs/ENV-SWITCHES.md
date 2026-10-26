@@ -194,6 +194,19 @@ username 分池，`=0` 关闭。
 | `WINDSURFAPI_VARIANT_FALLBACK_ON_RATE_LIMIT` | **开** | 撞限流时自动回落到同族其它变体（`handlers/chat.js`，`=== '0'` 关闭）。关掉后限流直接报错给客户端。 |
 | `WINDSURFAPI_RESPONSE_CACHE` | **开** | 响应缓存（`cache.js`）。链式兜底：`RESPONSE_CACHE_ENABLED ?? WINDSURFAPI_RESPONSE_CACHE ?? '1'`，所以前者优先。这个认多种关闭写法（`0`/`false`/`off`/`no`）。 |
 
+## 源码 OTA 来源证明（D9）
+
+`/self-update` 和 `update.sh` 在改动 Git 之前会校验 Release 资产
+`release-attestation.json`：它由 release workflow 生成（tag、commit、tree、各资产
+SHA-256），并用与二进制相同的 cosign keyless 身份签名成
+`release-attestation.json.sigstore.json`。校验要求 attestation 的 commit 等于所选
+tag peel 出来的 commit；不一致或签名无效时**两种模式都拒绝**。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `WINDSURFAPI_UPDATE_ATTESTATION` | `warn` | `warn`：attestation 存在就校验；缺失（没有资产、没有签名 bundle、没有 cosign、网络失败）只记 warning 并继续，保证老安装不需要 cosign 也能升级。`required`：缺失即拒绝更新。只认 `warn` / `required`，其他值直接拒绝启动这次更新。 |
+| `WINDSURFAPI_ATTESTATION_DIR` | 空 | 预置目录，里面放 `release-attestation.json` 与 `release-attestation.json.sigstore.json`。用于离线/内网主机和 fork；不设则从 `dwgx/WindsurfAPI` 的 GitHub Release 下载。fork 的签名身份不是本仓库时只能预置，或保持默认 `warn`。 |
+
 ## trace / dump / 运维
 
 排查时才开。几个会往磁盘写内容，注意目录别落进打包或提交范围。
