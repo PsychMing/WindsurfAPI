@@ -503,7 +503,7 @@ footer{border-top:1px solid var(--rule);padding:3rem 0 2.5rem;margin-top:2rem}
 <section class="hero">
   <div class="container">
     <div class="hero-inner reveal">
-      <div class="hero-badge">v3.9.37 — Devin 云端直连 · 零二进位 · 四协议</div>
+      <div class="hero-badge">v3.141.592656 — Devin 云端直连 · 零二进位 · 四协议</div>
       <h1>
         把 <em>Devin</em> 雲端的 AI 模型<br>
         變成你熟悉的 <span class="hl">API</span>。
@@ -641,24 +641,24 @@ footer{border-top:1px solid var(--rule);padding:3rem 0 2.5rem;margin-top:2rem}
   <div class="container">
     <div class="reveal">
       <div class="kicker">模型 · Models</div>
-      <h2 class="section-title">一個端點，<em>264 個模型</em>。</h2>
-      <p class="section-sub">橫跨 11 家供應商的 <b>264</b> 個現役模型，一致計費、即時切換，不必為每家重接一次 API。最新入列 <b>Claude Opus 5.5 / Fable 5.1</b>、<b>GPT-6 全系</b>（sol / luna / astra）、<b>Gemini 4 Argon</b>與 <b>DeepSeek V4.1</b>；另有思考型變體。清單由 <code>src/models.js</code> 權威生成、後端雲端目錄自動發現。頁面載入後數字跟陣列走。</p>
+      <h2 class="section-title">一個端點，<em>283 個模型</em>。</h2>
+      <p class="section-sub">橫跨 11 家供應商的 <b>283</b> 個現役模型，一致計費、即時切換，不必為每家重接一次 API。最新入列 <b>Claude Opus 5.5 / Fable 5.1</b>、<b>GPT-6 全系</b>（sol / luna / astra）、<b>Gemini 4 Argon</b>與 <b>DeepSeek V4.1</b>；另有思考型變體。清單由 <code>src/models.js</code> 權威生成、後端雲端目錄自動發現。頁面載入後數字跟陣列走。</p>
     </div>
 
     <div class="ms-model-filters reveal" role="group" aria-label="依供應商篩選模型" id="model-filters">
-      <button type="button" class="ms-model-filter is-active" data-filter="all" aria-pressed="true">全部 <span class="ms-count" id="count-all">264</span></button>
-      <button type="button" class="ms-model-filter" data-filter="anthropic" aria-pressed="false">Claude <span class="ms-count" id="count-anthropic">70</span></button>
+      <button type="button" class="ms-model-filter is-active" data-filter="all" aria-pressed="true">全部 <span class="ms-count" id="count-all">283</span></button>
+      <button type="button" class="ms-model-filter" data-filter="anthropic" aria-pressed="false">Claude <span class="ms-count" id="count-anthropic">77</span></button>
       <button type="button" class="ms-model-filter" data-filter="openai" aria-pressed="false">GPT <span class="ms-count" id="count-openai">107</span></button>
-      <button type="button" class="ms-model-filter" data-filter="google" aria-pressed="false">Gemini <span class="ms-count" id="count-google">22</span></button>
+      <button type="button" class="ms-model-filter" data-filter="google" aria-pressed="false">Gemini <span class="ms-count" id="count-google">26</span></button>
       <button type="button" class="ms-model-filter" data-filter="deepseek" aria-pressed="false">DeepSeek <span class="ms-count" id="count-deepseek">9</span></button>
       <button type="button" class="ms-model-filter" data-filter="moonshot" aria-pressed="false">Kimi <span class="ms-count" id="count-moonshot">8</span></button>
-      <button type="button" class="ms-model-filter" data-filter="zhipu" aria-pressed="false">GLM <span class="ms-count" id="count-zhipu">11</span></button>
+      <button type="button" class="ms-model-filter" data-filter="zhipu" aria-pressed="false">GLM <span class="ms-count" id="count-zhipu">16</span></button>
       <button type="button" class="ms-model-filter" data-filter="xai" aria-pressed="false">Grok <span class="ms-count" id="count-xai">14</span></button>
       <button type="button" class="ms-model-filter" data-filter="minimax" aria-pressed="false">MiniMax <span class="ms-count" id="count-minimax">1</span></button>
       <button type="button" class="ms-model-filter" data-filter="thinking_machines" aria-pressed="false">Inkling <span class="ms-count" id="count-thinking_machines">6</span></button>
       <button type="button" class="ms-model-filter" data-filter="nvidia" aria-pressed="false">Nemotron <span class="ms-count" id="count-nvidia">3</span></button>
-      <button type="button" class="ms-model-filter" data-filter="windsurf" aria-pressed="false">SWE <span class="ms-count" id="count-windsurf">13</span></button>
-      <button type="button" class="ms-model-filter" data-filter="thinking" aria-pressed="false">思考型 <span class="ms-count" id="count-thinking">14</span></button>
+      <button type="button" class="ms-model-filter" data-filter="windsurf" aria-pressed="false">SWE <span class="ms-count" id="count-windsurf">16</span></button>
+      <button type="button" class="ms-model-filter" data-filter="thinking" aria-pressed="false">思考型 <span class="ms-count" id="count-thinking">15</span></button>
       <button type="button" class="ms-model-filter" data-filter="free" aria-pressed="false">免費 <span class="ms-count" id="count-free">4</span></button>
     </div>
 
@@ -1125,6 +1125,8 @@ client = OpenAI(
     {k:'claude-sonnet-4.6-thinking-1m',p:'anthropic',c:16,thinking:1},
     {k:'claude-opus-4.6',p:'anthropic',c:6},
     {k:'claude-opus-4.6-thinking',p:'anthropic',c:8,thinking:1},
+    {k:'claude-opus-4-6-1m',p:'anthropic',c:10},
+    {k:'claude-opus-4-6-thinking-1m',p:'anthropic',c:12,thinking:1},
     {k:'claude-opus-4-7-medium',p:'anthropic',c:40},
     {k:'claude-opus-4-7-low',p:'anthropic',c:20},
     {k:'claude-opus-4-7-high',p:'anthropic',c:60},
@@ -1143,21 +1145,26 @@ client = OpenAI(
     {k:'claude-opus-4-8-high-fast',p:'anthropic',c:70},
     {k:'claude-opus-4-8-xhigh-fast',p:'anthropic',c:80},
     {k:'claude-opus-4-8-max-fast',p:'anthropic',c:100},
-    {k:'claude-fable-5-1-low',p:'anthropic',c:40},
-    {k:'claude-fable-5-1-medium',p:'anthropic',c:50},
-    {k:'claude-fable-5-1-high',p:'anthropic',c:70},
-    {k:'claude-fable-5-1-xhigh',p:'anthropic',c:80},
-    {k:'claude-fable-5-1-max',p:'anthropic',c:100},
-    {k:'claude-opus-5-5-low',p:'anthropic',c:75},
-    {k:'claude-opus-5-5-medium',p:'anthropic',c:80},
-    {k:'claude-opus-5-5-high',p:'anthropic',c:115},
-    {k:'claude-opus-5-5-xhigh',p:'anthropic',c:155},
-    {k:'claude-opus-5-5-max',p:'anthropic',c:160},
+    {k:'claude-fable-5-1-low',p:'anthropic',c:150},
+    {k:'claude-fable-5-1-medium',p:'anthropic',c:175},
+    {k:'claude-fable-5-1-high',p:'anthropic',c:200},
+    {k:'claude-fable-5-1-xhigh',p:'anthropic',c:225},
+    {k:'claude-fable-5-1-max',p:'anthropic',c:250},
+    {k:'claude-opus-5-5-low',p:'anthropic',c:35},
+    {k:'claude-opus-5-5-medium',p:'anthropic',c:45},
+    {k:'claude-opus-5-5-high',p:'anthropic',c:65},
+    {k:'claude-opus-5-5-xhigh',p:'anthropic',c:125},
+    {k:'claude-opus-5-5-max',p:'anthropic',c:150},
     {k:'claude-sonnet-5-5-low',p:'anthropic',c:12},
     {k:'claude-sonnet-5-5-medium',p:'anthropic',c:15},
     {k:'claude-sonnet-5-5-high',p:'anthropic',c:20},
     {k:'claude-sonnet-5-5-xhigh',p:'anthropic',c:30},
     {k:'claude-sonnet-5-5-max',p:'anthropic',c:40},
+    {k:'claude-haiku-5-5-low',p:'anthropic',c:3},
+    {k:'claude-haiku-5-5-medium',p:'anthropic',c:4},
+    {k:'claude-haiku-5-5-high',p:'anthropic',c:5},
+    {k:'claude-haiku-5-5-xhigh',p:'anthropic',c:8},
+    {k:'claude-haiku-5-5-max',p:'anthropic',c:10},
     {k:'claude-5-fable-low',p:'anthropic',c:40},
     {k:'claude-5-fable-medium',p:'anthropic',c:50},
     {k:'claude-5-fable-high',p:'anthropic',c:70},
@@ -1264,26 +1271,26 @@ client = OpenAI(
     {k:'gpt-5-6-terra-xhigh',p:'openai',c:30},
     {k:'gpt-5-6-terra-max',p:'openai',c:50},
     {k:'gpt-6-1-sol-low',p:'openai',c:30},
-    {k:'gpt-6-1-sol-medium',p:'openai',c:50},
-    {k:'gpt-6-1-sol-high',p:'openai',c:90},
-    {k:'gpt-6-1-sol-xhigh',p:'openai',c:150},
-    {k:'gpt-6-1-sol-max',p:'openai',c:200},
-    {k:'gpt-6-astra-low',p:'openai',c:30},
-    {k:'gpt-6-astra-medium',p:'openai',c:50},
-    {k:'gpt-6-astra-high',p:'openai',c:90},
-    {k:'gpt-6-astra-xhigh',p:'openai',c:150},
-    {k:'gpt-6-astra-max',p:'openai',c:200},
-    {k:'gpt-6-luna-none',p:'openai',c:3},
-    {k:'gpt-6-luna-low',p:'openai',c:4},
-    {k:'gpt-6-luna-medium',p:'openai',c:5},
-    {k:'gpt-6-luna-high',p:'openai',c:6},
-    {k:'gpt-6-luna-xhigh',p:'openai',c:8},
-    {k:'gpt-6-luna-max',p:'openai',c:30},
-    {k:'gpt-6-sol-none',p:'openai',c:10},
-    {k:'gpt-6-sol-low',p:'openai',c:30},
-    {k:'gpt-6-sol-medium',p:'openai',c:50},
-    {k:'gpt-6-sol-high',p:'openai',c:90},
-    {k:'gpt-6-sol-xhigh',p:'openai',c:150},
+    {k:'gpt-6-1-sol-medium',p:'openai',c:40},
+    {k:'gpt-6-1-sol-high',p:'openai',c:50},
+    {k:'gpt-6-1-sol-xhigh',p:'openai',c:70},
+    {k:'gpt-6-1-sol-max',p:'openai',c:100},
+    {k:'gpt-6-astra-low',p:'openai',c:100},
+    {k:'gpt-6-astra-medium',p:'openai',c:200},
+    {k:'gpt-6-astra-high',p:'openai',c:400},
+    {k:'gpt-6-astra-xhigh',p:'openai',c:375},
+    {k:'gpt-6-astra-max',p:'openai',c:500},
+    {k:'gpt-6-luna-none',p:'openai',c:2},
+    {k:'gpt-6-luna-low',p:'openai',c:3},
+    {k:'gpt-6-luna-medium',p:'openai',c:4},
+    {k:'gpt-6-luna-high',p:'openai',c:5},
+    {k:'gpt-6-luna-xhigh',p:'openai',c:6},
+    {k:'gpt-6-luna-max',p:'openai',c:7},
+    {k:'gpt-6-sol-none',p:'openai',c:65},
+    {k:'gpt-6-sol-low',p:'openai',c:135},
+    {k:'gpt-6-sol-medium',p:'openai',c:145},
+    {k:'gpt-6-sol-high',p:'openai',c:150},
+    {k:'gpt-6-sol-xhigh',p:'openai',c:190},
     {k:'gpt-6-sol-max',p:'openai',c:200},
     {k:'gemini-2.5-pro',p:'google',c:1},
     {k:'gemini-2.5-flash',p:'google',c:0.5,free:1},
@@ -1294,6 +1301,10 @@ client = OpenAI(
     {k:'gemini-3.0-flash-high',p:'google',c:1.75},
     {k:'gemini-3.1-pro-low',p:'google',c:1},
     {k:'gemini-3.1-pro-high',p:'google',c:2},
+    {k:'gemini-3-5-flash-minimal',p:'google',c:2},
+    {k:'gemini-3-5-flash-low',p:'google',c:4},
+    {k:'gemini-3-5-flash-medium',p:'google',c:8},
+    {k:'gemini-3-5-flash-high',p:'google',c:9},
     {k:'gemini-3-6-flash-minimal',p:'google',c:2},
     {k:'gemini-3-6-flash-low',p:'google',c:4},
     {k:'gemini-3-6-flash-medium',p:'google',c:8},
@@ -1343,6 +1354,11 @@ client = OpenAI(
     {k:'glm-5',p:'zhipu',c:1.5},
     {k:'glm-5.1',p:'zhipu',c:1.5},
     {k:'glm-5.2',p:'zhipu',c:1.5},
+    {k:'glm-5-2-none',p:'zhipu',c:1},
+    {k:'glm-5-2-none-1m',p:'zhipu',c:2},
+    {k:'glm-5-2-1m',p:'zhipu',c:3},
+    {k:'glm-5-2-max',p:'zhipu',c:3},
+    {k:'glm-5-2-max-1m',p:'zhipu',c:6},
     {k:'glm-5-3-flash-low',p:'zhipu',c:1},
     {k:'glm-5-3-flash-high',p:'zhipu',c:1},
     {k:'glm-5-3-flash-max',p:'zhipu',c:1},
@@ -1370,6 +1386,9 @@ client = OpenAI(
     {k:'swe-2-medium',p:'windsurf',c:6},
     {k:'swe-2-high',p:'windsurf',c:9},
     {k:'swe-2-max',p:'windsurf',c:12},
+    {k:'swe-2-medium-lightning',p:'windsurf',c:12},
+    {k:'swe-2-high-lightning',p:'windsurf',c:18},
+    {k:'swe-2-max-lightning',p:'windsurf',c:24},
     {k:'swe-1-7-lightning-medium',p:'windsurf',c:9},
     {k:'swe-1-7-medium',p:'windsurf',c:3},
   ];

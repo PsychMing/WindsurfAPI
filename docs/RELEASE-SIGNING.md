@@ -10,7 +10,7 @@
 ## What a release publishes
 
 `.github/workflows/release.yml` attaches five signed blobs to the GitHub Release,
-plus three signature artifacts for each one:
+plus one Sigstore bundle for each one:
 
 | Blob | Produced by |
 |---|---|
@@ -20,17 +20,16 @@ plus three signature artifacts for each one:
 | `windsurfapi-macos.zip` | arm64 binary (x64 if the optional job succeeded) + launch scripts |
 | `SHA256SUMS` | `sha256sum` over exactly the four assets above |
 
-For every row, the release also carries:
+For every row, the release also carries one file:
 
 | Artifact | Contents | Use |
 |---|---|---|
 | `<name>.sigstore.json` | Sigstore bundle: certificate, signature, Rekor inclusion proof | **authoritative** — verifies after the certificate expires |
-| `<name>.sig` | detached signature | tooling that consumes detached signatures |
-| `<name>.pem` | Fulcio certificate with the workflow identity | inspection; detached verification only while the certificate is valid |
 
 The bundle is the durable proof. A Fulcio certificate lives for minutes, and
 `cosign verify-blob --certificate` checks it against the current time unless a
-signed timestamp is supplied. Verify the bundle, not the bare `.pem`.
+signed timestamp is supplied. Verify the bundle; there is no detached `.sig` or
+`.pem` pair attached to v3.10.0+ releases.
 
 The manifest uses the **asset names as they appear on the release page** (flat),
 so `sha256sum -c SHA256SUMS` works in the directory where the assets were
@@ -78,18 +77,8 @@ done
 sha256sum -c SHA256SUMS
 ```
 
-The detached pair is also published, but only the bundle is durable:
-
-```bash
-# Works only while the Fulcio certificate is inside its short validity window
-# (minutes). Use the bundle above for a check that still works next year.
-cosign verify-blob \
-  --signature windsurfapi.exe.sig \
-  --certificate windsurfapi.exe.pem \
-  --certificate-identity-regexp '^https://github\.com/dwgx/WindsurfAPI/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  windsurfapi.exe
-```
+Only the `.sigstore.json` bundle is published from v3.10.0 onward; there is no
+detached `.sig`/`.pem` pair to verify. The bundle is the durable proof.
 
 On macOS use `shasum -a 256 -c SHA256SUMS`. On Windows, `Get-FileHash` replaces
 step 3:
@@ -156,10 +145,10 @@ The `release` job in `.github/workflows/release.yml`:
 1. assembles the Windows/macOS assets and generates `SHA256SUMS`;
 2. installs `sigstore/cosign-installer` pinned by commit SHA, with
    `cosign-release: 'v3.1.4'`;
-3. runs `cosign sign-blob` once per signed blob, writing
-   `<name>.sigstore.json`, `<name>.sig` and `<name>.pem`;
-4. refuses to continue if any signature artifact is empty;
-5. uploads the assets and all signature artifacts to the GitHub Release.
+3. runs `cosign sign-blob` once per signed blob, writing one
+   `<name>.sigstore.json` bundle per blob;
+4. refuses to continue if any signature bundle is empty;
+5. uploads the assets and all signature bundles to the GitHub Release.
 
 The job has `permissions: contents: write` and `id-token: write`. The OIDC
 permission is what lets cosign obtain a Fulcio certificate; no repository secret

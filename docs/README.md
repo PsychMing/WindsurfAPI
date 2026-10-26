@@ -10,14 +10,21 @@
 
 > **Which door is yours?** This directory holds the project's tracked documentation — count it
 > with `git ls-files docs/` — most of it append-only records aimed at whoever maintains the
-> project next. The three tables below are the short paths in. If you only want the gateway
+> project next. The tables below are the short paths in. If you only want the gateway
 > running, you need nothing under "Take it over".
+>
+> Full inventory: [DOC-MAP.md](DOC-MAP.md) — one line per tracked document with purpose and
+> current / stale / duplicate status.
+
+Project-level entry points: [AGENTS.md](../AGENTS.md) (work loop, gate commands and landmines) ·
+[CONTRIBUTING.md](../CONTRIBUTING.md) (merge bar, review rules and testing) ·
+[CHANGELOG.md](../CHANGELOG.md) (version index) · [README.en.md](../README.en.md) (English README).
 
 ```mermaid
 flowchart TD
     Q{"What do you need?"}
     Q -->|"run it"| RUN["Main README<br/>快速开始 / Quick start"]
-    Q -->|"tune it"| OPS["ENV-SWITCHES.md<br/>82 source-only switches"]
+    Q -->|"tune it"| OPS["ENV-SWITCHES.md<br/>90 source-only switches"]
     Q -->|"ship DEVIN_CONNECT"| CUT["DEVIN-CONNECT-CUTOVER.md<br/>prod is ON, code default is OFF"]
     Q -->|"understand it"| ARCH["review.html<br/>whole-system map"]
     Q -->|"know what was probed"| LED["AUDIT-LEDGER.md<br/>17 rounds, append-only"]
@@ -44,8 +51,9 @@ flowchart TD
 
 | Goal | Go here |
 |---|---|
-| Tune behaviour without touching code | **[ENV-SWITCHES.md](ENV-SWITCHES.md)** — the 82 switches that exist only in source. Read its header first: it explains how to count them correctly, because the obvious `grep` undercounts by 45 |
+| Tune behaviour without touching code | **[ENV-SWITCHES.md](ENV-SWITCHES.md)** — the 90 switches that exist only in source. Read its header first: it explains how to count them correctly, because a bare `env.` grep sees only 122 of the 181 (2026-10-26) |
 | Update a Docker deployment in one command | **[DOCKER-UPDATE.md](DOCKER-UPDATE.md)** — pull/build → health gate → automatic rollback; data volumes untouched |
+| Measure the detached-cache rollout gates | **[DETACH-ROLLOUT.md](DETACH-ROLLOUT.md)** — gate 2 stress procedure and the two-week gate 1 serve/admit measurement; default stays OFF until both pass |
 | Take `DEVIN_CONNECT` to production | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** — production runs with this ON while the code default is OFF, so this is not optional reading |
 | Log in / add an account (password, email code, token, Devin) | **[login-flows.md](login-flows.md)** — the probe-first rules, the exact click path for each account shape, and the CDP token capture |
 | Localise the dashboard | [dashboard-i18n.md](dashboard-i18n.md) |
@@ -113,6 +121,28 @@ Handoffs are **append-only**: a superseded one keeps its original conclusions, w
 included, because how a conclusion was reached is part of the record. For current state, the
 newest always wins.
 
+## 📜 History ledger (frozen 2026-08-11 / v3.9.21)
+
+The pre-v3.9.22 history is a separate append-only ledger, frozen at **2026-08-11 / v3.9.21**.
+It is **not current state** — its own banner says so. Use it for archaeology, not for today's
+status.
+
+- [HISTORY-LEDGER.md](HISTORY-LEDGER.md) — global timeline, contributor map, bug-fix index and
+  the "糊涂事清单"; the main entry point.
+- Detailed slices: [2026-04-early](HISTORY-LEDGER-2026-04-early.md) ·
+  [2026-04-late](HISTORY-LEDGER-2026-04-late.md) ·
+  [2026-05-bridge](HISTORY-LEDGER-2026-05-bridge.md) ·
+  [2026-06-connect](HISTORY-LEDGER-2026-06-connect.md) ·
+  [2026-07-early](HISTORY-LEDGER-2026-07-early.md) ·
+  [2026-07-mid](HISTORY-LEDGER-2026-07-mid.md) ·
+  [2026-07-late](HISTORY-LEDGER-2026-07-late.md) ·
+  [2026-08-feature](HISTORY-LEDGER-2026-08-feature.md) ·
+  [2026-08-docs](HISTORY-LEDGER-2026-08-docs.md)
+- [HISTORY-LEDGER-PRS.md](HISTORY-LEDGER-PRS.md) — 69 PRs, one by one.
+- [HISTORY-LEDGER-ISSUES.md](HISTORY-LEDGER-ISSUES.md) — 177 issues, one by one.
+- [HISTORY-LEDGER-VIZ.html](HISTORY-LEDGER-VIZ.html) — interactive visualization (numbers stop
+  at v3.9.34 / 2026-09-15).
+
 ## Verification tooling
 
 The test suite does **not** run the mutation specs, so three gates can be green while a spec
@@ -123,8 +153,8 @@ silently stopped guarding. These are the tools that close that gap:
   becomes a no-op that reports SURVIVED). Exit 2 on failure.
 - `scripts/spec-baseline-audit.mjs [filter]` — **re-measures every spec's `expectBaselinePass`
   by actually running its test files** (slow; the only measured number is ~40 min for the 25
-  specs that existed when it was written — the corpus is 85 specs today, and no timing for the
-  85-spec corpus has been measured). Run after merges, not per-PR.
+  specs that existed when it was written — the corpus is 97 specs today, and no timing for the
+  97-spec corpus has been measured). Run after merges, not per-PR.
   Baseline drift is a merge product: each PR measures its own spec right alone, and is wrong
   once stacked (#241 anchors, retry-rescue 82/87→88, reasoning-continuity 289→300).
 - `test/default-on-switch-registry.test.js` — ledger of every default-on behaviour switch;
@@ -146,11 +176,15 @@ silently stopped guarding. These are the tools that close that gap:
 - [OpenCodeReview decision](OPENCODE-REVIEW.md): why no review workflow exists yet (zero repo
   secrets; SARIF needs an LLM run), the trial procedure, and the ready-to-enable
   `workflow_dispatch`-only job.
+- [Request-tail contract](REQUEST-TAIL-CONTRACT.md): the decided policy for the two local 400s
+  on request tails, the per-surface differences, and the machine-checkable guard.
 
 ## Release history
 
 - [releases/](releases/): one file per version, v2.0.6 → present. Append-only published
   history — each file is a GitHub Release body.
+- [ACCEPTANCE_3.141.592656.md](releases/ACCEPTANCE_3.141.592656.md) — the current release's
+  acceptance appendix: V-01…V-27 matrix, gate commands, skip lists and log hashes.
 - **[releases/README.md](releases/README.md) is the release runbook** — the ordered
   procedure, the gate, and the house style for writing notes all live there, next to the
   task, rather than being summarised here. Read it before shipping anything: the version

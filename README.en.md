@@ -498,7 +498,7 @@ The **ACU & Usage** panel reads `app.devin.ai/{org}/billing/*` once per organiza
 100+ static models in the main catalog plus dynamic cloud-side models added at startup via `mergeCloudModels`. On the Cascade transport, after per-account cloud catalogs sync, `GET /v1/models` and the Dashboard show the union available across active accounts, while routing applies the selected account's own catalog. `DEVIN_CONNECT` remains governed by its separate selector catalog. The full static catalog remains available on the [GitHub Pages model catalog](https://dwgx.github.io/WindsurfAPI/#models) (auto-generated from `src/models.js`).
 
 <details>
-<summary><b>Claude (Anthropic)</b> — 73 models</summary>
+<summary><b>Claude (Anthropic)</b> — 80 models</summary>
 
 claude-3.5-sonnet / 3.7-sonnet / thinking · claude-4-sonnet / opus / thinking · claude-4.1-opus · claude-4.5-haiku / sonnet / opus · claude-sonnet-4.6 (incl. 1m / thinking / thinking-1m) · claude-opus-4.6 / thinking · **claude-opus-4.7-medium** · **claude-opus-4.8 series** (low / medium / high / xhigh / max + fast) · **claude-5-fable / claude-sonnet-5 / claude-opus-5 series** (low / medium / high / xhigh / max; opus-5 incl. fast) · **claude-fable-5.1 / claude-sonnet-5.5 / claude-opus-5.5 series** (low / medium / high / xhigh / max)
 
@@ -512,7 +512,7 @@ gpt-4o · gpt-4.1 · gpt-5 series (incl. medium / high / codex) · **gpt-5.1 ser
 </details>
 
 <details>
-<summary><b>Gemini (Google)</b> — 22 models</summary>
+<summary><b>Gemini (Google)</b> — 26 models</summary>
 
 gemini-2.5-pro / flash · gemini-3.0-pro / flash (minimal / low / medium / high — 4 reasoning levels) · gemini-3.1-pro (low / high) · gemini-3.6-flash (minimal / low / medium / high) · gemini-3.7 / 3.8-flash (low / medium / high) · gemini-4-argon (low / medium / high)
 
@@ -702,7 +702,7 @@ MIT License. See [LICENSE](LICENSE).
 
 ## Release and Secret Boundary
 
-Release automation may publish Docker images and GitHub Releases. Every release from v3.10.0 attaches a `SHA256SUMS` manifest covering the four published assets (Windows exe/zip, macOS arm64 binary/zip) and signs the four assets and the manifest with **cosign keyless** signing (GitHub OIDC; no private key or signing secret in the repository). Each signed blob also ships `.sig`, `.pem` and `.sigstore.json`. The signature proves the bytes were produced by this repository's release workflow for a `v*` tag; it does not prove human review or a reproducible build, and anyone who can rewrite the repository/tag can re-sign. Verify before running a download: `node scripts/verify-release-assets.mjs <download-dir>` (requires cosign), or follow [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md) to verify `SHA256SUMS.sigstore.json` with `cosign verify-blob` and then run `sha256sum -c SHA256SUMS` (`shasum -a 256 -c` on macOS; `Get-FileHash` on Windows). The manifest uses the flat asset names, so all files can sit in one directory; v3.9.53 recorded `dist-windows/` / `dist-macos/` paths, and releases before v3.10.0 are unsigned. The dashboard's git self-update and the Docker update do not download release assets, so the cosign signatures do not cover them (pin a Docker digest where needed); see docs/RELEASE-SIGNING.md for the trust boundary and the OTA checks. Keep tokens, API keys, cookies, and provider credentials out of issues, pull requests, logs, and committed config. If a report needs authentication details, share only redacted metadata and reproduction steps.
+Release automation may publish Docker images and GitHub Releases. Every release from v3.10.0 attaches a `SHA256SUMS` manifest covering the four published assets (Windows exe/zip, macOS arm64 binary/zip) and signs the four assets and the manifest with **cosign keyless** signing (GitHub OIDC; no private key or signing secret in the repository). Each signed blob also ships a single `.sigstore.json` bundle (signature, Fulcio certificate and Rekor inclusion proof in one file). The signature proves the bytes were produced by this repository's release workflow for a `v*` tag; it does not prove human review or a reproducible build, and anyone who can rewrite the repository/tag can re-sign. Verify before running a download: `node scripts/verify-release-assets.mjs <download-dir>` (requires cosign), or follow [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md) to verify `SHA256SUMS.sigstore.json` with `cosign verify-blob` and then run `sha256sum -c SHA256SUMS` (`shasum -a 256 -c` on macOS; `Get-FileHash` on Windows). The manifest uses the flat asset names, so all files can sit in one directory; v3.9.53 recorded `dist-windows/` / `dist-macos/` paths, and releases before v3.10.0 are unsigned. The dashboard's git self-update and the Docker update do not download release assets, so the cosign signatures do not cover them (pin a Docker digest where needed); see docs/RELEASE-SIGNING.md for the trust boundary and the OTA checks. Keep tokens, API keys, cookies, and provider credentials out of issues, pull requests, logs, and committed config. If a report needs authentication details, share only redacted metadata and reproduction steps.
 
 ---
 
