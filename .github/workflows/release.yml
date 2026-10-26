@@ -78,6 +78,13 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Policy T (D9 §5.3): keyless signing exchanges this job's GitHub OIDC
+      # token for a short-lived Fulcio certificate. No key or secret is used.
+      id-token: write
+    # The digest is the only immutable identity of the pushed image; keep it
+    # addressable from the release job and from the workflow run summary.
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
 
     steps:
       - name: Checkout
@@ -121,6 +128,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
@@ -137,12 +145,60 @@ jobs:
             BUILD_COMMIT_DATE=${{ env.COMMIT_DATE }}
             BUILD_BRANCH=${{ env.BUILD_BRANCH }}
 
+      - name: Install cosign
+        # Policy T (D9 §5.3): same pinned signer as the release-assets job.
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.1.4'
+
+      - name: Sign the pushed image digest (keyless)
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/windsurf-api
+        run: |
+          set -euo pipefail
+          digest='${{ steps.build.outputs.digest }}'
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::build-push did not return a sha256 image digest: $digest"
+            exit 1
+          fi
+          cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
+
+      - name: Record the signed image digest
+        id: image-digest
+        run: |
+          set -euo pipefail
+          digest='${{ steps.build.outputs.digest }}'
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::refusing to publish an invalid image digest: $digest"
+            exit 1
+          fi
+          printf '%s\n' "$digest" > image-digest.txt
+          test -s image-digest.txt
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Sign image-digest.txt (keyless)
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes --bundle image-digest.txt.sigstore.json image-digest.txt
+          test -s image-digest.txt.sigstore.json
+
+      - name: Upload the signed image digest
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: image-digest
+          path: |
+            image-digest.txt
+            image-digest.txt.sigstore.json
+          if-no-files-found: error
+
       - name: Summary
         run: |
           echo "## Docker Image Published" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Tags:**" >> "$GITHUB_STEP_SUMMARY"
           echo '${{ steps.meta.outputs.tags }}' | tr ',' '\n' | sed 's/^/- `/' | sed 's/$/`/' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Digest:** \`${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Platform:** \`linux/amd64\`" >> "$GITHUB_STEP_SUMMARY"
 

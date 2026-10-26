@@ -446,6 +446,7 @@ describe('deploy/update.sh pull → health → rollback', () => {
 // Exit codes: 0 healthy · 1 rolled back healthy · 2 rollback failed · 3 recreate failed.
 const DEPLOYER_OLD_ID = `sha256:${'1'.repeat(64)}`;
 const DEPLOYER_ROLLBACK_REF = 'ghcr.io/dwgx/windsurf-api:rollback';
+const DEPLOYER_TARGET = `ghcr.io/dwgx/windsurf-api@sha256:${'4'.repeat(64)}`;
 
 const FAKE_DEPLOYER_DOCKER = `#!/usr/bin/env bash
 printf '%s|IMAGE=%s\\n' "$*" "\${WINDSURFAPI_IMAGE:-}" >> "\${FAKE_DOCKER_LOG:?}"
@@ -506,6 +507,7 @@ function runDeployerScript(fixture, overrides = {}) {
     service: 'windsurf-api',
     oldImageId: DEPLOYER_OLD_ID,
     rollbackRef: DEPLOYER_ROLLBACK_REF,
+    targetImage: DEPLOYER_TARGET,
     delaySeconds: 0,
     // Two probes per gate: the sequences below are deterministic.
     healthTimeoutSeconds: 0.1,
@@ -533,7 +535,11 @@ describe('docker self-update deployer: health gate and rollback (D6)', () => {
     const result = runDeployerScript(fixture);
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const lines = logLines(fixture);
-    assert.ok(lines.some(line => /\bcompose\b.*\bup -d\b/.test(line)), 'must recreate the stack');
+    const firstUp = lines.find(line => /\bcompose\b.*\bup -d\b/.test(line));
+    assert.ok(firstUp, 'must recreate the stack');
+    assert.match(firstUp, /--no-build/, 'the first compose up must never build from the checkout');
+    assert.ok(firstUp.includes(`IMAGE=${DEPLOYER_TARGET}`),
+      'the first compose up must select the verified digest target');
     assert.equal(lines.some(line => line.startsWith('tag ')), false,
       'a healthy update must not tag a rollback image');
     assert.equal(lines.some(line => line.includes('--force-recreate')), false,

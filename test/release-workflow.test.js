@@ -79,6 +79,39 @@ describe('release workflow', () => {
     }
   });
 
+  it('signs the pushed Docker image digest and publishes image-digest.txt', () => {
+    const docker = jobBlock('docker');
+    const release = jobBlock('release');
+
+    // Policy T (D9 §5.3): keyless signing needs an OIDC token in the same job
+    // that pushes the image, and the build step must expose its digest.
+    assert.match(docker, /\bid-token:\s*write\b/,
+      'the docker job needs id-token: write for keyless cosign signing');
+    assert.match(docker, /\boutputs:\s*\n\s*digest:\s*\$\{\{\s*steps\.build\.outputs\.digest\s*\}\}/,
+      'the docker job must keep the image digest in its job output');
+    assert.match(docker, /- name: Build and push\n\s+id: build\n\s+uses: docker\/build-push-action@(?:v7|[0-9a-f]{40})\b/,
+      'the build-push step needs id: build so its digest output is addressable');
+
+    const buildIndex = docker.indexOf('Build and push');
+    const signIndex = docker.indexOf('cosign sign --yes');
+    const digestIndex = docker.indexOf('image-digest.txt');
+    assert.ok(buildIndex >= 0 && signIndex > buildIndex,
+      'the image digest must be signed after the push');
+    assert.ok(digestIndex > signIndex,
+      'image-digest.txt must record the digest that was signed');
+    assert.match(docker, /cosign sign --yes "\$\{IMAGE\}@\$\{\{\s*steps\.build\.outputs\.digest\s*\}\}"/,
+      'cosign must sign the image digest, not a mutable tag');
+    assert.match(docker, /printf '%s\\n' "\$digest" > image-digest\.txt/,
+      'image-digest.txt must contain the digest that was signed');
+    assert.match(docker, /cosign sign-blob[\s\S]{0,200}image-digest\.txt/,
+      'the digest file itself must carry a keyless signature bundle');
+    assert.match(docker, /name:\s*image-digest\b[\s\S]*?image-digest\.txt\.sigstore\.json/,
+      'the signed digest and its bundle must be uploaded as a job artifact');
+
+    // The release job's attachment of this artifact is owned by the
+    // SourceAttest lane; this branch owns the docker job that produces it.
+  });
+
   it('publishes SHA256SUMS covering exactly the four release assets', () => {
     const release = jobBlock('release');
     // SEC-04: a tampered download must be distinguishable from a real one.

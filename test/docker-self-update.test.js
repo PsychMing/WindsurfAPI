@@ -34,6 +34,8 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MOD = readFileSync(join(__dirname, '..', 'src/dashboard/docker-self-update.js'), 'utf8');
 const API = readFileSync(join(__dirname, '..', 'src/dashboard/api.js'), 'utf8');
+const DEPLOYER_IMAGE_SOURCE = /const DEPLOYER_IMAGE = '([^']+)'/.exec(MOD)?.[1];
+const APP_DIGEST = `sha256:${'c'.repeat(64)}`;
 const TERMINAL_PULL_SUCCESS = '{"status":"Downloaded newer image for windsurf-api:test"}\n';
 
 function fakeDockerPullTransport({ statusCode = 200, chunks = [], responseEvents = [], events = null, state = {} } = {}, calls = []) {
@@ -519,9 +521,27 @@ function readJournal(stateDir) {
   return JSON.parse(readFileSync(join(stateDir, 'self-update-docker.json'), 'utf8'));
 }
 
+function seedImageDigest(stateDir, digest = APP_DIGEST) {
+  writeFileSync(join(stateDir, 'image-digest.txt'), `${digest}\n`);
+}
+
+function digestAwareRequest({ digest = APP_DIGEST, repo = 'windsurf-api', onCall = null } = {}) {
+  return async (method, path, body) => {
+    if (onCall) onCall(method, path, body);
+    if (method === 'GET' && path.startsWith('/distribution/')) {
+      return { status: 200, body: { Descriptor: { digest } } };
+    }
+    if (method === 'GET' && path.startsWith('/images/')) {
+      return { status: 200, body: { RepoDigests: [`${repo}@${digest}`] } };
+    }
+    throw new Error(`unexpected request: ${method} ${path}`);
+  };
+}
+
 describe('docker self-update execution seams', () => {
   test('pulls both images, records the rollback point, then starts a health-gated deployer', async () => {
     const stateDir = makeStateDir();
+    seedImageDigest(stateDir);
     const calls = [];
     const result = await runDockerSelfUpdate({
       detect: async () => dockerCtx({
@@ -532,6 +552,12 @@ describe('docker self-update execution seams', () => {
       }),
       pull: async (image) => { calls.push(['pull', image]); },
       request: async (method, path, body) => {
+        if (method === 'GET' && path.startsWith('/distribution/')) {
+          return { status: 200, body: { Descriptor: { digest: APP_DIGEST } } };
+        }
+        if (method === 'GET' && path.startsWith('/images/')) {
+          return { status: 200, body: { RepoDigests: [`windsurf-api@${APP_DIGEST}`] } };
+        }
         calls.push([method, path, body]);
         if (path === '/containers/create') return { body: { Id: DEPLOYER_ID } };
         return { body: {} };
@@ -546,15 +572,19 @@ describe('docker self-update execution seams', () => {
       imageRef: 'windsurf-api:test',
       rollbackRef: 'windsurf-api:rollback',
     });
-    assert.deepEqual(calls.map(([kind, value]) => [kind, value]), [
-      ['pull', 'windsurf-api:test'],
-      ['pull', 'docker:24-cli'],
+    assert.deepEqual(calls.filter(([kind]) => kind === 'pull').map(([, image]) => image), [
+      `windsurf-api@${APP_DIGEST}`,
+      DEPLOYER_IMAGE_SOURCE,
+    ]);
+    assert.deepEqual(calls.filter(([kind]) => kind !== 'pull').map(([method, path]) => [method, path]), [
       ['POST', '/containers/create'],
       ['POST', `/containers/${DEPLOYER_ID}/start`],
     ]);
     const journal = readJournal(stateDir);
     assert.equal(journal.state, 'pending-recreate');
     assert.equal(journal.oldImageId, OLD_IMAGE_ID);
+    assert.equal(journal.targetImage, `windsurf-api@${APP_DIGEST}`,
+      'the journal must name the verified digest target, not the mutable tag');
     assert.equal(journal.deployerId, DEPLOYER_ID);
     const create = calls.find(([, path]) => path === '/containers/create');
     assert.equal(create[2].HostConfig.AutoRemove, false,
@@ -571,7 +601,7 @@ describe('docker self-update execution seams', () => {
     assert.match(script, /health_gate\(\)/, 'the deployer must health-gate the recreate');
     assert.match(script, /docker tag 'sha256:[0-9a-f]{64}' 'windsurf-api:rollback'/);
     assert.match(script, /WINDSURFAPI_IMAGE='windsurf-api:rollback' .*--no-deps --no-build --force-recreate 'windsurf-api'/);
-    assert.match(script, /up -d \|\| exit 3/);
+    assert.match(script, /up -d --no-build \|\| exit 3/);
     assert.match(script, /if health_gate; then exit 0; fi/);
     assert.match(script, /if health_gate; then exit 1; fi/);
     assert.match(script, /exit 2/);
@@ -600,10 +630,16 @@ describe('docker self-update execution seams', () => {
 
   test('records a durable failure state when the app image pull fails', async () => {
     const stateDir = makeStateDir();
+    seedImageDigest(stateDir);
     const result = await runDockerSelfUpdate({
       detect: async () => dockerCtx(),
       pull: async () => { throw new Error('registry denied'); },
-      request: async () => { throw new Error('create must not run'); },
+      request: async (method, path) => {
+        if (method === 'GET' && path.startsWith('/distribution/')) {
+          return { status: 200, body: { Descriptor: { digest: APP_DIGEST } } };
+        }
+        throw new Error('create must not run');
+      },
       stateDir,
     });
     assert.equal(result.ok, false);
@@ -616,29 +652,45 @@ describe('docker self-update execution seams', () => {
 
   test('fails closed before creating the deployer when either image pull fails', async () => {
     const stateDir = makeStateDir();
+    seedImageDigest(stateDir);
     const calls = [];
     const result = await runDockerSelfUpdate({
       detect: async () => dockerCtx(),
       pull: async (image) => {
         calls.push(image);
-        if (image === 'docker:24-cli') throw new Error('sidecar registry denied');
+        if (image === DEPLOYER_IMAGE_SOURCE) throw new Error('sidecar registry denied');
       },
-      request: async () => { throw new Error('create must not run'); },
+      request: async (method, path) => {
+        if (method === 'GET' && path.startsWith('/distribution/')) {
+          return { status: 200, body: { Descriptor: { digest: APP_DIGEST } } };
+        }
+        if (method === 'GET' && path.startsWith('/images/')) {
+          return { status: 200, body: { RepoDigests: [`windsurf-api@${APP_DIGEST}`] } };
+        }
+        throw new Error('create must not run');
+      },
       stateDir,
     });
     assert.equal(result.ok, false);
     assert.equal(result.reason, 'deployer-pull-failed');
-    assert.deepEqual(calls, ['windsurf-api:test', 'docker:24-cli']);
+    assert.deepEqual(calls, [`windsurf-api@${APP_DIGEST}`, DEPLOYER_IMAGE_SOURCE]);
     assert.equal(readJournal(stateDir).state, 'failed');
   });
 
   test('start failure deletes the created deployer best-effort and preserves the start error', async () => {
     const stateDir = makeStateDir();
+    seedImageDigest(stateDir);
     const calls = [];
     const result = await runDockerSelfUpdate({
       detect: async () => dockerCtx(),
       pull: async () => {},
       request: async (method, path) => {
+        if (method === 'GET' && path.startsWith('/distribution/')) {
+          return { status: 200, body: { Descriptor: { digest: APP_DIGEST } } };
+        }
+        if (method === 'GET' && path.startsWith('/images/')) {
+          return { status: 200, body: { RepoDigests: [`windsurf-api@${APP_DIGEST}`] } };
+        }
         calls.push([method, path]);
         if (path === '/containers/create') return { body: { Id: DEPLOYER_ID } };
         if (method === 'POST' && path.endsWith('/start')) throw new Error('authoritative start failure');
@@ -766,6 +818,198 @@ describe('docker self-update: deployer exit-code reconciliation', () => {
 });
 
 
+// Policy T (D9 §5): Docker OTA trusts only a digest. A tag is resolved through
+// the daemon's registry-metadata endpoint and must equal the digest recorded in
+// the signed `image-digest.txt` release asset. These tests use a fake registry;
+// no daemon, no network.
+describe('docker OTA digest trust (Policy T §5)', () => {
+  const APP_REPO = 'ghcr.io/dwgx/windsurf-api';
+  const REGISTRY_DIGEST = `sha256:${'c'.repeat(64)}`;
+  const SIGNED_DIGEST = `sha256:${'d'.repeat(64)}`;
+  const deployerImage = (() => {
+    const match = MOD.match(/const DEPLOYER_IMAGE = '([^']+)'/);
+    assert.ok(match, 'the module must define DEPLOYER_IMAGE');
+    return match[1];
+  })();
+
+  function seedDigest(stateDir, digest) {
+    writeFileSync(join(stateDir, 'image-digest.txt'), `${digest}\n`);
+  }
+
+  function fakeRegistry({ resolvedDigest = REGISTRY_DIGEST, repoDigests, calls = [] } = {}) {
+    return async (method, path, body) => {
+      calls.push([method, path, body]);
+      if (method === 'GET' && path.startsWith('/distribution/')) {
+        return { status: 200, body: { Descriptor: { digest: resolvedDigest } } };
+      }
+      if (method === 'GET' && path.startsWith('/images/')) {
+        return {
+          status: 200,
+          body: { RepoDigests: repoDigests ?? [`${APP_REPO}@${resolvedDigest}`] },
+        };
+      }
+      if (path === '/containers/create') return { body: { Id: DEPLOYER_ID } };
+      if (method === 'POST' && path.endsWith('/start')) return { body: {} };
+      throw new Error(`unexpected request: ${method} ${path}`);
+    };
+  }
+
+  test('refuses when the registry digest differs from the signed image-digest.txt', async () => {
+    const stateDir = makeStateDir();
+    seedDigest(stateDir, SIGNED_DIGEST);
+    const calls = [];
+    let pulls = 0;
+    const result = await runDockerSelfUpdate({
+      detect: async () => dockerCtx({ image: `${APP_REPO}:latest` }),
+      pull: async () => { pulls += 1; },
+      request: fakeRegistry({ resolvedDigest: REGISTRY_DIGEST, calls }),
+      stateDir,
+    });
+
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.equal(result.reason, 'image-digest-mismatch');
+    assert.match(result.detail, new RegExp(REGISTRY_DIGEST));
+    assert.match(result.detail, new RegExp(SIGNED_DIGEST));
+    assert.equal(pulls, 0, 'a digest mismatch must be refused before any image pull');
+    assert.equal(calls.some(([, path]) => path === '/containers/create'), false,
+      'a digest mismatch must never create the deployer');
+    assert.equal(existsSync(join(stateDir, 'self-update-docker.json')), false,
+      'a refusal before mutation must not leave a pending journal');
+  });
+
+  test('refuses a mutable tag when image-digest.txt is missing', async () => {
+    const stateDir = makeStateDir();
+    const calls = [];
+    let pulls = 0;
+    const result = await runDockerSelfUpdate({
+      detect: async () => dockerCtx({ image: `${APP_REPO}:latest` }),
+      pull: async () => { pulls += 1; },
+      request: fakeRegistry({ calls }),
+      stateDir,
+    });
+
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.equal(result.reason, 'image-mutable-ref');
+    assert.equal(result.cause, 'image-digest-missing');
+    assert.match(result.detail, /image-digest\.txt/);
+    assert.equal(pulls, 0);
+    assert.deepEqual(calls, [], 'missing verification material must be refused before touching the daemon');
+    assert.equal(existsSync(join(stateDir, 'self-update-docker.json')), false);
+  });
+
+  test('matching digest proceeds: pulls by digest, pins the deployer, and uses --no-build', async () => {
+    const stateDir = makeStateDir();
+    seedDigest(stateDir, REGISTRY_DIGEST);
+    const pulls = [];
+    const calls = [];
+    const result = await runDockerSelfUpdate({
+      detect: async () => dockerCtx({ image: `${APP_REPO}:latest` }),
+      pull: async (image) => { pulls.push(image); },
+      request: fakeRegistry({ calls }),
+      stateDir,
+    });
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(pulls, [`${APP_REPO}@${REGISTRY_DIGEST}`, deployerImage],
+      'the app image must be pulled by digest, then the digest-pinned deployer');
+    assert.match(deployerImage, /^docker:24-cli@sha256:[0-9a-f]{64}$/);
+
+    const create = calls.find(([, path]) => path === '/containers/create');
+    assert.ok(create, 'the deployer must be created after a verified digest');
+    assert.equal(create[2].Image, deployerImage, 'the docker.sock helper must be digest-pinned');
+    const script = create[2].Cmd[2];
+    const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.match(script,
+      new RegExp(`WINDSURFAPI_IMAGE='${escape(APP_REPO)}@${escape(REGISTRY_DIGEST)}'`),
+      'the deployer must recreate the app from the verified digest, not the mutable tag');
+    const upLines = script.split('\n').filter((line) => /\bup -d\b/.test(line));
+    assert.equal(upLines.length, 2, 'the script has the first recreate and the rollback recreate');
+    for (const line of upLines) {
+      assert.match(line, /--no-build/, `every compose up must be --no-build: ${line}`);
+    }
+  });
+
+  test('an operator-pinned digest reference is used verbatim without image-digest.txt', async () => {
+    const stateDir = makeStateDir();
+    const pinned = `${APP_REPO}@${REGISTRY_DIGEST}`;
+    const pulls = [];
+    const calls = [];
+    const result = await runDockerSelfUpdate({
+      detect: async () => dockerCtx({ image: pinned }),
+      pull: async (image) => { pulls.push(image); },
+      request: fakeRegistry({ calls }),
+      stateDir,
+    });
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(pulls, [pinned, deployerImage]);
+    assert.equal(calls.some(([, path]) => path.startsWith('/distribution/')), false,
+      'an operator-pinned digest needs no tag resolution');
+  });
+
+  test('refuses when the pulled image does not report the requested digest', async () => {
+    const stateDir = makeStateDir();
+    seedDigest(stateDir, REGISTRY_DIGEST);
+    const calls = [];
+    const result = await runDockerSelfUpdate({
+      detect: async () => dockerCtx({ image: `${APP_REPO}:latest` }),
+      pull: async () => {},
+      request: fakeRegistry({
+        calls,
+        repoDigests: [`${APP_REPO}@sha256:${'9'.repeat(64)}`],
+      }),
+      stateDir,
+    });
+
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.equal(result.reason, 'image-digest-unconfirmed');
+    assert.equal(calls.some(([, path]) => path === '/containers/create'), false,
+      'an unconfirmed digest must never create the deployer');
+  });
+
+  test('dockerPull sends a digest in the tag parameter, not inside fromImage', async () => {
+    const calls = [];
+    const body = TERMINAL_PULL_SUCCESS;
+    await dockerPull(`${APP_REPO}@${REGISTRY_DIGEST}`, {
+      request: fakeDockerPullTransport({ chunks: [body] }, calls),
+    });
+    assert.equal(
+      calls[0].path,
+      `/images/create?fromImage=${encodeURIComponent(APP_REPO)}&tag=${encodeURIComponent(REGISTRY_DIGEST)}`,
+      'Moby expects a digest pull as fromImage=<repo>&tag=sha256:<hex>',
+    );
+  });
+
+  test('the deployer script refuses a mutable target and marks every compose up --no-build', () => {
+    assert.match(deployerImage, /^docker:24-cli@sha256:[0-9a-f]{64}$/);
+    assert.throws(
+      () => buildDockerDeployerScript({
+        project: 'windsurf',
+        workingDir: '/srv/windsurf',
+        configFiles: ['/srv/windsurf/docker-compose.yml'],
+        service: 'windsurf-api',
+        oldImageId: OLD_IMAGE_ID,
+        rollbackRef: 'windsurf-api:rollback',
+        targetImage: 'windsurf-api:test',
+      }),
+      /digest-pinned/,
+      'a tag target must never reach the deployer command',
+    );
+    const script = buildDockerDeployerScript({
+      project: 'windsurf',
+      workingDir: '/srv/windsurf',
+      configFiles: ['/srv/windsurf/docker-compose.yml'],
+      service: 'windsurf-api',
+      oldImageId: OLD_IMAGE_ID,
+      rollbackRef: 'windsurf-api:rollback',
+      targetImage: `${APP_REPO}@${REGISTRY_DIGEST}`,
+    });
+    const upLines = script.split('\n').filter((line) => /\bup -d\b/.test(line));
+    assert.equal(upLines.length, 2);
+    for (const line of upLines) assert.match(line, /--no-build/);
+  });
+});
+
 describe('docker self-update wired into /self-update', () => {
   test('/self-update/check falls back to docker when git is unavailable', () => {
     const m = API.match(/subpath === '\/self-update\/check'[\s\S]+?\n  \}/);
@@ -816,9 +1060,9 @@ describe('docker self-update: deployer image pulled (#user 2026-05-01)', () => {
     // app), then pull(DEPLOYER_IMAGE) (the sidecar runtime), then the
     // POST /containers/create. A future refactor that drops the second
     // pull will resurrect the 404 No-such-image symptom.
-    const m = MOD.match(/await pull\(ctx\.image\)[\s\S]{0,1500}?await pull\(DEPLOYER_IMAGE\)[\s\S]{0,1500}?\/containers\/create/);
+    const m = MOD.match(/await pull\(targetImage\)[\s\S]{0,1500}?await pull\(DEPLOYER_IMAGE\)[\s\S]{0,1500}?\/containers\/create/);
     assert.ok(m,
-      'must pull ctx.image, then pull DEPLOYER_IMAGE, then POST /containers/create — in that order');
+      'must pull the verified target digest, then pull DEPLOYER_IMAGE, then POST /containers/create — in that order');
   });
 
   test('deployer-pull-failed reason is reported when the sidecar pull fails', () => {
