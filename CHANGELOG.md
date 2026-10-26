@@ -44,7 +44,7 @@ flowchart LR
 
 ### [v3.141.592657](docs/releases/RELEASE_NOTES_3.141.592657.md) · 2026-10-26
 
-D9 供应链控制落地:banner 生成器改为 commit + 逐文件 sha256 锁定、45 个 `uses:` 钉 SHA;Docker 镜像按 digest 用 cosign keyless 签名并发布 `image-digest.txt` + bundle,dashboard Docker OTA 解析 tag→digest、要求相等、按 digest pull 并校验 `RepoDigests`,deployer 镜像 digest 固定、所有 compose `up` 加 `--no-build`;源码 OTA 在改 Git 前校验签名的 `release-attestation.json`(默认 `warn`、`required` 可强开,`WINDSURFAPI_ATTESTATION_DIR` 支持预置)。同时修复 F3 截止边界最后一毫秒的 phase timeout 误分类(5 ms 容差,504 deadline 而非传输错误)。wire 对 v3.141.592656 **270/270 逐字节一致、0 差异**;mutation 语料 **97 份 spec / 863 条突变**（B03 按 Owner 指示走缩减路径：`spec-baseline-check --all` 97 specs / 0 drift；全量 sweep 发布后补跑），逐项计数见发布附录。D9 的 Owner 信任边界、真实 Docker/部署与 live 矩阵仍 `[UNVERIFIED]`。
+D9 供应链控制落地:banner 生成器改为 commit + 逐文件 sha256 锁定、45 个 `uses:` 钉 SHA;Docker 镜像按 digest 用 cosign keyless 签名并发布 `image-digest.txt` + bundle,dashboard Docker OTA 解析 tag→digest、要求相等、按 digest pull 并校验 `RepoDigests`,deployer 镜像 digest 固定、所有 compose `up` 加 `--no-build`;源码 OTA 在改 Git 前校验签名的 `release-attestation.json`(默认 `warn`、`required` 可强开,`WINDSURFAPI_ATTESTATION_DIR` 支持预置)。同时修复 F3 截止边界最后一毫秒的 phase timeout 误分类(5 ms 容差,504 deadline 而非传输错误)。wire 对 v3.141.592656 **270/270 逐字节一致、0 差异**;mutation 语料 **97 份 spec / 863 条突变**（B03 按 Owner 指示走缩减路径：`spec-baseline-check --all` 97 specs / 0 drift；全量 sweep 发布后补跑：**97/97 spec、863 条 = 846 捕获 + 17 声明**），逐项计数见发布附录。D9 的 Owner 信任边界、真实 Docker/部署与 live 矩阵仍 `[UNVERIFIED]`。
 
 ### [v3.141.592656](docs/releases/RELEASE_NOTES_3.141.592656.md) · 2026-10-26
 

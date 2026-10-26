@@ -116,8 +116,9 @@ gRPC timeout 就逃逸成传输错误（账号轮换 / 502），而不是 504 de
 - wire：基线由外部选择并证明为 `v3.141.592656` → `9115ebe7183f9460df8fcce8520a0365f856ba9f`，
   在干净的外部基线树上比较；要求 **270/270 逐字节一致、0 未声明差异**。
 - mutation：**97 份 spec / 863 条突变**（静态重算 `ls test/mutations/*.json | wc -l` = 97，
-  逐 spec 求和 863）；全量 sweep 要求 97/97 spec、0 意外 survivor、0 baseline drift、
-  0 untrustworthy。具体捕获/声明数与 `expectBaselinePass` 以验收附录为准。
+  逐 spec 求和 863）；发布门按 Owner 指示先用 `spec-baseline-check --all`（97 specs / 0 drift），
+  完整 sweep 已于 tag 后补跑：**97/97 spec、863 条 = 846 捕获 + 17 声明 survivor、0 意外、
+  0 baseline drift、0 untrustworthy**。具体日志与哈希见验收附录 §3。
 - Node 22 使用既有的 22.23.4 对照解释器（HMC
   `/root/node22matrix-360/node-v22.23.4-linux-x64/bin/node`）；声明的 `>=22.13.0` 下限本身仍未
   实测，见 §6。

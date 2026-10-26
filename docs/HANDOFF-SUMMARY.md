@@ -25,9 +25,9 @@ in the dated evidence files; this page is the index to them.
 - **Tests.** Final-tree Windows gate **7,146 pass / 0 fail / 102 skip (593 files)**; Linux Node 24
   and Node 22 each **7,244 pass / 0 fail / 5 skip (593 files)**; wire **270/270 byte-identical,
   0 diffs** against `v3.141.592656`. B03 used the Owner-approved reduced path
-  (`spec-baseline-check --all`: 97 specs, 0 drift); the full mutation sweep (97 specs / 863
-  mutations: 846 caught + 17 declared survivors) is deferred to post-release. Per-run hashes are
-  in `docs/releases/ACCEPTANCE_3.141.592657.md` §3.
+  (`spec-baseline-check --all`: 97 specs, 0 drift) for the release gate; the full mutation sweep was
+  run post-release: **97/97 specs, 863 mutations = 846 caught + 17 declared survivors, 0 unexpected,
+  0 drift, 0 untrustworthy**. Per-run hashes are in `docs/releases/ACCEPTANCE_3.141.592657.md` §3.
 - **D9 supply chain.** BannerLock (commit + per-file sha256 lock, fail-before-import, 45 workflow
   `uses:` SHA-pinned), DockerSign (cosign-signed image digest, digest-pinned deploy, `--no-build`)
   and SourceAttest (`release-attestation.json` verified before Git mutation; `warn` default,
