@@ -609,6 +609,17 @@ export function validateCountTokensRequest(body) {
   return null;
 }
 
+// Native replay of signed Claude thinking on DEVIN_CONNECT (default OFF). The
+// upstream verifies the signature (a one-character change is rejected with
+// invalid_argument) and only then lets the model see the replayed thinking,
+// which it does inside a tool loop: measured 2026-10-28 on claude-opus-5-5, a
+// secret fixed in turn-1 thinking was recalled 2/2 with #11+#12, 0/3 with #11
+// alone. Needs DEVIN_CONNECT_SIGNATURE_TAG so the client receives the
+// signatures in the first place.
+export function signedThinkingReplayEnabled(env = process.env) {
+  return String(env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING || '').trim() === '1';
+}
+
 // A3: normalize an Anthropic image block ({ type:'image', source:{...} }) into
 // the OpenAI image_url shape the internal handler / wire builder understand.
 // base64 sources become a data URI; url sources are forwarded as-is (OpenAI
@@ -813,6 +824,11 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       const toolCalls = [];
       const toolResults = [];
       const msgThinking = [];
+      // Signed thinking, kept only when EVERY thinking block on the turn carries a
+      // signature: the upstream verifies each signature against its own text, so a
+      // partial set cannot be replayed (see signedThinkingReplayEnabled).
+      const signedThinking = [];
+      let unsignedThinking = false;
       for (const block of m.content) {
         // Malformed block shapes are dropped, never fatal: a null/undefined
         // entry (or a bare string) used to throw
@@ -852,12 +868,21 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
           }
         } else if (block.type === 'thinking') {
           if (typeof block.thinking === 'string' && block.thinking) msgThinking.push(block.thinking);
+          if (typeof block.thinking === 'string' && block.thinking
+              && typeof block.signature === 'string' && block.signature) {
+            signedThinking.push({ thinking: block.thinking, signature: block.signature });
+          } else {
+            unsignedThinking = true;
+          }
           // Incoming assistant thinking blocks are dropped on history translation:
           // 1) Upstream swe-1-7 (K2 family) accepts outgoing candidate tag #11 in ChatMessage,
           //    but causally ignores its content (0/3 causal effect; tag #9 is incoming-only).
           // 2) Wholesale promotion (reasoning -> text content) is an industry anti-pattern
           //    inducing self-reflection loops on Kimi/DeepSeek families.
           // 3) Genuine Bedrock clients send #11+#12 (signature), but K2 family emits no signature.
+          // Exception: a SIGNED Claude thinking block is replayed natively (below) when
+          // DEVIN_CONNECT_REPLAY_SIGNED_THINKING=1 — measured 2026-10-28 on
+          // claude-opus-5-5: #11+#12 is verified upstream and recalled inside a tool loop.
         } else if (block.type === 'tool_use' && role === 'assistant') {
           const id = block.id || `call_${randomUUID().slice(0, 8)}`;
           toolNameById.set(id, block.name || '');
@@ -896,11 +921,20 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       // in OpenAI format. Push them before the user content message.
       for (const tr of toolResults) messages.push(tr);
       if (toolCalls.length) {
-        messages.push({
+        const assistantMsg = {
           role: 'assistant',
           content: textParts.length ? textParts.join('\n') : null,
           tool_calls: toolCalls,
-        });
+        };
+        // Only a tool-call turn: Anthropic drops thinking from turns before the
+        // last user turn anyway (measured: no recall there, signed or not), so
+        // replaying it on plain text turns would only add bytes. One block only:
+        // the wire has one #11/#12 slot per message.
+        if (signedThinkingReplayEnabled() && !unsignedThinking && signedThinking.length === 1) {
+          assistantMsg.reasoning_content = signedThinking[0].thinking;
+          assistantMsg.reasoning_signature = signedThinking[0].signature;
+        }
+        messages.push(assistantMsg);
       } else if (imageParts.length) {
         const contentArr = [...imageParts];
         if (textParts.length) contentArr.push({ type: 'text', text: textParts.join('\n') });
