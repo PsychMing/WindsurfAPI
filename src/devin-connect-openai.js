@@ -854,7 +854,18 @@ export async function streamChatCompletion(params, send, opts = {}) {
   // is used for tool parsing/session continuity; caching must use `delivered`
   // or a filtered/echoed <tool_call> block becomes the visible cached answer.
   let delivered = '';
-  let signatureTainted = false;
+  // Thinking signature of the CURRENT attempt, held back until the attempt can no
+  // longer be replaced by a rescue (first visible text, or end of stream). A
+  // rescue decision only comes after the attempt finishes, and a signature sent
+  // earlier would seal a thinking block the client later extends with the next
+  // attempt's reasoning.
+  let pendingSignature = '';
+  const flushSignature = () => {
+    if (pendingSignature && reasoning) {
+      send({ ...base, choices: [{ index: 0, delta: { reasoning_signature: pendingSignature }, finish_reason: null }] });
+    }
+    pendingSignature = '';
+  };
   // Same billing passthrough as the non-stream path.
   let streamBilling = null;
   // Native tool calls (DEVIN_CONNECT_TOOL_CALL_TAGS calibrated) ride the terminal
@@ -934,15 +945,22 @@ export async function streamChatCompletion(params, send, opts = {}) {
         // not keep the abandoned attempt — otherwise `content` ends up holding every
         // attempt concatenated, and the promotion re-sends that pile as the answer.
         if (ev.type === 'attempt_reset') {
+          // The abandoned attempt's reasoning is already on the wire. Its signature
+          // is dropped, and the Messages route is told to close that thinking block
+          // so the next attempt's reasoning opens a fresh one, which its own
+          // signature then seals. The abandoned block stays unsigned, so
+          // messages.js never replays it. Signatures are not bound to the context
+          // they were generated in (measured 2026-10-28: an attempt generated with
+          // the rescue nudge replays cleanly in a history without it, 6/6).
+          if (stopCarrier && reasoning) {
+            send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: null, _windsurf_reasoning_break: true }] });
+          }
+          pendingSignature = '';
           reasoning = '';
           content = '';
           delivered = '';
           collectedToolCalls.length = 0;
           nativeToolCalls = [];
-          // The abandoned attempt's reasoning deltas are already on the wire and
-          // the client folds both attempts into one thinking block, so no single
-          // upstream signature seals that text. Forward none for this response.
-          signatureTainted = true;
           continue;
         }
         if (ev.type === 'reasoning') {
@@ -951,13 +969,14 @@ export async function streamChatCompletion(params, send, opts = {}) {
           send({ ...base, choices: [{ index: 0, delta: { reasoning_content: ev.text }, finish_reason: null }] });
         } else if (ev.type === 'signature') {
           // Opt-in decode (DEVIN_CONNECT_SIGNATURE_TAG). Upstream sends it after
-          // the last reasoning frame and before content, so messages.js can close
-          // the thinking block with a signature_delta.
-          if (!signatureTainted && reasoning && ev.reasoning_signature) {
-            send({ ...base, choices: [{ index: 0, delta: { reasoning_signature: ev.reasoning_signature }, finish_reason: null }] });
-          }
+          // the last reasoning frame and before content; held until flushSignature.
+          if (ev.reasoning_signature) pendingSignature += ev.reasoning_signature;
         } else if (ev.type === 'content') {
           prime(); // first real delta: emit the deferred role chunk first
+          // Visible text rules out a rescue of this attempt (the rescue gate needs
+          // reasoning with no text), and messages.js closes the thinking block on
+          // the first text delta, so the signature must go out before it.
+          if (ev.text) flushSignature();
           content += ev.text;
           if (toolParser) {
             const { text, toolCalls } = toolParser.feed(ev.text);
@@ -992,13 +1011,17 @@ export async function streamChatCompletion(params, send, opts = {}) {
       if (budget && !budget.canStartAttempt()) throw err;
       if (params.signal?.aborted) throw err;
       // Nothing was emitted, so a clean restart cannot duplicate output.
-      content = ''; reasoning = ''; finishReason = 'stop'; usage = null;
+      content = ''; reasoning = ''; pendingSignature = ''; finishReason = 'stop'; usage = null;
       streamBilling = null; nativeToolCalls = []; delivered = '';
       collectedToolCalls.length = 0;
       stopGate = new StopSequenceGate(stop);
       stopHit = false; matchedStop = null;
     }
   }
+
+  // The stream is over and no rescue can follow; seal the last thinking block
+  // before tool calls or the promoted answer open the next block.
+  flushSignature();
 
   // Drain any tool_call still buffered at end-of-stream, plus the trailing text.
   // Skip when a stop sequence already ended the stream (stopHit) — the tail after

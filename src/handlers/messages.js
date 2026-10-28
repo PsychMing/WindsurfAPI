@@ -716,11 +716,12 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       const toolCalls = [];
       const toolResults = [];
       const msgThinking = [];
-      // Signed thinking, kept only when EVERY thinking block on the turn carries a
-      // signature: the upstream verifies each signature against its own text, so a
-      // partial set cannot be replayed (see signedThinkingReplayEnabled).
-      const signedThinking = [];
-      let unsignedThinking = false;
+      // Thinking blocks of the turn in order, for signed replay (see
+      // signedThinkingReplayEnabled). Only the LAST block can be replayed, and only
+      // when it is the turn's sole signed block: earlier unsigned blocks are
+      // attempts the proxy abandoned in a rescue retry (devin-connect-openai.js
+      // closes them unsigned), which never produced this turn's tool calls.
+      const thinkingBlocks = [];
       for (const block of m.content) {
         // Malformed block shapes are dropped, never fatal: a null/undefined
         // entry (or a bare string) used to throw
@@ -760,12 +761,10 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
           }
         } else if (block.type === 'thinking') {
           if (typeof block.thinking === 'string' && block.thinking) msgThinking.push(block.thinking);
-          if (typeof block.thinking === 'string' && block.thinking
-              && typeof block.signature === 'string' && block.signature) {
-            signedThinking.push({ thinking: block.thinking, signature: block.signature });
-          } else {
-            unsignedThinking = true;
-          }
+          thinkingBlocks.push({
+            thinking: typeof block.thinking === 'string' ? block.thinking : '',
+            signature: typeof block.signature === 'string' ? block.signature : '',
+          });
           // Incoming assistant thinking blocks are dropped on history translation:
           // 1) Upstream swe-1-7 (K2 family) accepts outgoing candidate tag #11 in ChatMessage,
           //    but causally ignores its content (0/3 causal effect; tag #9 is incoming-only).
@@ -822,9 +821,11 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
         // last user turn anyway (measured: no recall there, signed or not), so
         // replaying it on plain text turns would only add bytes. One block only:
         // the wire has one #11/#12 slot per message.
-        if (signedThinkingReplayEnabled() && !unsignedThinking && signedThinking.length === 1) {
-          assistantMsg.reasoning_content = signedThinking[0].thinking;
-          assistantMsg.reasoning_signature = signedThinking[0].signature;
+        const lastThinking = thinkingBlocks[thinkingBlocks.length - 1];
+        if (signedThinkingReplayEnabled() && lastThinking?.thinking && lastThinking.signature
+            && thinkingBlocks.filter((b) => b.signature).length === 1) {
+          assistantMsg.reasoning_content = lastThinking.thinking;
+          assistantMsg.reasoning_signature = lastThinking.signature;
         }
         messages.push(assistantMsg);
       } else if (imageParts.length) {
@@ -1563,6 +1564,13 @@ class AnthropicStreamTranslator {
     const choice = chunk.choices?.[0];
     if (choice) {
       const delta = choice.delta || {};
+      // A rescue retry replaced the attempt whose reasoning is streaming into the
+      // open thinking block: close it here (unsigned) so the next attempt's
+      // reasoning and signature land in a block of their own.
+      if (choice._windsurf_reasoning_break === true && this.current?.type === 'thinking') {
+        this.pendingThinkingSignature = '';
+        this.closeCurrentBlock();
+      }
       if (delta.reasoning_content) {
         if (leakTraceEnabled()) {
           log.info('LEAK_TRACE classify', {

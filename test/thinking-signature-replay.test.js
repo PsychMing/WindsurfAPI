@@ -99,27 +99,57 @@ describe('adapter: signature reaches the OpenAI-shaped response', () => {
     assert.equal(body.choices[0].message.reasoning_signature, 'EpkC');
   });
 
-  it('stream: each increment becomes a reasoning_signature delta', async () => {
+  const choicesOf = (frames) => frames.flatMap((f) => f.choices || []);
+
+  it('stream: the increments go out as one delta, right before the first text', async () => {
     __setStreamChatForTest(fake(SIGNED));
     const frames = [];
     await streamChatCompletion({ model: 'm', messages: [] }, (d) => frames.push(d));
-    const sigs = frames.flatMap((f) => f.choices || []).map((c) => c.delta?.reasoning_signature).filter(Boolean);
-    assert.deepEqual(sigs, ['Ep', 'kC']);
+    const order = choicesOf(frames)
+      .map((c) => (c.delta?.reasoning_signature ? `sig:${c.delta.reasoning_signature}` : c.delta?.content ? 'text' : c.delta?.reasoning_content ? 'think' : null))
+      .filter(Boolean);
+    assert.deepEqual(order, ['think', 'sig:EpkC', 'text']);
   });
 
-  it('stream: no signature after a rescue attempt_reset (the client saw both attempts)', async () => {
+  it('stream: a tool-call-only answer is sealed at end of stream, before the tool call', async () => {
     __setStreamChatForTest(fake([
-      { type: 'reasoning', text: 'first' },
-      { type: 'attempt_reset' },
-      { type: 'reasoning', text: 'second' },
+      { type: 'reasoning', text: 'think' },
       { type: 'signature', reasoning_signature: 'EpkC' },
-      { type: 'content', text: 'answer' },
-      { type: 'finish', reason: 'stop', usage: null },
+      { type: 'finish', reason: 'tool_calls', usage: null, toolCalls: [{ id: 'toolu_1', name: 'log_event', arguments: '{}' }] },
     ]));
     const frames = [];
     await streamChatCompletion({ model: 'm', messages: [] }, (d) => frames.push(d));
-    const sigs = frames.flatMap((f) => f.choices || []).filter((c) => c.delta?.reasoning_signature);
-    assert.equal(sigs.length, 0);
+    const order = choicesOf(frames)
+      .map((c) => (c.delta?.reasoning_signature ? 'sig' : c.delta?.tool_calls ? 'call' : null))
+      .filter(Boolean);
+    assert.deepEqual(order, ['sig', 'call']);
+  });
+
+  const RESCUED = [
+    { type: 'reasoning', text: 'first' },
+    { type: 'signature', reasoning_signature: 'OLD' },
+    { type: 'attempt_reset' },
+    { type: 'reasoning', text: 'second' },
+    { type: 'signature', reasoning_signature: 'NEW' },
+    { type: 'content', text: 'answer' },
+    { type: 'finish', reason: 'stop', usage: null },
+  ];
+
+  it('stream (Messages route): a rescue breaks the thinking block and seals only the final attempt', async () => {
+    __setStreamChatForTest(fake(RESCUED));
+    const frames = [];
+    await streamChatCompletion({ model: 'm', messages: [] }, (d) => frames.push(d), { stopCarrier: true });
+    const order = choicesOf(frames)
+      .map((c) => (c._windsurf_reasoning_break ? 'break' : c.delta?.reasoning_signature ? `sig:${c.delta.reasoning_signature}` : c.delta?.reasoning_content ? `think:${c.delta.reasoning_content}` : null))
+      .filter(Boolean);
+    assert.deepEqual(order, ['think:first', 'break', 'think:second', 'sig:NEW']);
+  });
+
+  it('stream (plain OpenAI route): no break carrier leaks out', async () => {
+    __setStreamChatForTest(fake(RESCUED));
+    const frames = [];
+    await streamChatCompletion({ model: 'm', messages: [] }, (d) => frames.push(d));
+    assert.equal(choicesOf(frames).some((c) => '_windsurf_reasoning_break' in c), false);
   });
 
   it('non-stream: a rescue keeps only the final attempt signature', async () => {
@@ -189,14 +219,152 @@ describe('/v1/messages: signed thinking survives into the connect request', () =
     assert.equal(a.reasoning_signature, SIG);
   });
 
-  it('when on, an unsigned or multi-block turn is not replayed', async () => {
+  it('when on, an unsigned turn, two signed blocks, or a signed block followed by an unsigned one is not replayed', async () => {
     process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING = '1';
-    await handleMessages(body([{ type: 'thinking', thinking: 't', signature: '' }]), { callerKey: 'sig-test' });
-    assert.equal(assistantWithCalls().reasoning_signature, undefined);
+    for (const blocks of [
+      [{ type: 'thinking', thinking: 't', signature: '' }],
+      [{ type: 'thinking', thinking: 'a', signature: SIG }, { type: 'thinking', thinking: 'b', signature: SIG }],
+      [{ type: 'thinking', thinking: 'a', signature: SIG }, { type: 'thinking', thinking: 'b', signature: '' }],
+    ]) {
+      await handleMessages(body(blocks), { callerKey: 'sig-test' });
+      assert.equal(assistantWithCalls().reasoning_signature, undefined, JSON.stringify(blocks.map((b) => !!b.signature)));
+    }
+  });
+
+  it('when on, an abandoned unsigned rescue block before the signed one is skipped', async () => {
+    process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING = '1';
     await handleMessages(body([
-      { type: 'thinking', thinking: 'a', signature: SIG },
-      { type: 'thinking', thinking: 'b', signature: SIG },
+      { type: 'thinking', thinking: 'abandoned attempt', signature: '' },
+      { type: 'thinking', thinking: 'final attempt', signature: SIG },
     ]), { callerKey: 'sig-test' });
-    assert.equal(assistantWithCalls().reasoning_signature, undefined);
+    const a = assistantWithCalls();
+    assert.equal(a.reasoning_content, 'final attempt');
+    assert.equal(a.reasoning_signature, SIG);
+  });
+});
+
+// The whole rescue path end to end: real rescue logic (streamChatWithEmptyRetry),
+// real adapter, real /v1/messages stream translator; only the upstream is faked.
+// The client must end up with an unsigned abandoned block and a signed final
+// block, and replaying that history must send exactly the final block upstream.
+describe('rescue retry: streamed history round-trips the final attempt signature', () => {
+  const KEYS = ['DEVIN_CONNECT', 'DEVIN_CONNECT_TOKEN', 'WINDSURF_API_KEY', 'DEVIN_CONNECT_REPLAY_SIGNED_THINKING',
+    'WINDSURFAPI_STRICT_MODEL', 'DEVIN_CONNECT_RETRY_ON_EMPTY_MS'];
+  const saved = {};
+  beforeEach(() => {
+    for (const k of KEYS) saved[k] = process.env[k];
+    process.env.DEVIN_CONNECT = '1';
+    process.env.DEVIN_CONNECT_TOKEN = TOKEN;
+    process.env.WINDSURFAPI_STRICT_MODEL = '0';
+    process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING = '1';
+    process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS = '0';
+    delete process.env.WINDSURF_API_KEY;
+  });
+  afterEach(() => {
+    __setStreamChatForTest(null);
+    __setConnectDeps(null);
+    for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+  });
+
+  function fakeRes() {
+    return {
+      body: '', writableEnded: false, headersSent: false,
+      writeHead() { this.headersSent = true; return this; },
+      setHeader() {}, flushHeaders() {},
+      write(c) { this.body += String(c); return true; },
+      end(c) { if (c) this.body += String(c); this.writableEnded = true; },
+      on() { return this; }, once() { return this; }, off() { return this; }, removeListener() { return this; },
+    };
+  }
+  function blocksFrom(raw) {
+    const blocks = [];
+    for (const frame of raw.split('\n\n')) {
+      const line = frame.split('\n').find((l) => l.startsWith('data: '));
+      if (!line) continue;
+      const ev = JSON.parse(line.slice(6));
+      if (ev.type === 'content_block_start') blocks[ev.index] = { ...ev.content_block, _json: '' };
+      if (ev.type === 'content_block_delta') {
+        const b = blocks[ev.index]; const d = ev.delta;
+        if (d.type === 'thinking_delta') b.thinking += d.thinking;
+        if (d.type === 'signature_delta') b.signature = (b.signature || '') + d.signature;
+        if (d.type === 'text_delta') b.text += d.text;
+        if (d.type === 'input_json_delta') b._json += d.partial_json;
+      }
+    }
+    return blocks.filter(Boolean).map(({ _json, ...b }) => (b.type === 'tool_use' ? { ...b, input: JSON.parse(_json || '{}') } : b));
+  }
+
+  it('abandoned attempt closes unsigned, final attempt is signed and is what gets replayed', async () => {
+    let upstreamCalls = 0;
+    __setStreamChatForTest(async function* () {
+      upstreamCalls++;
+      if (upstreamCalls === 1) {
+        // thinking-only, no tool call: triggers the rescue
+        yield { type: 'reasoning', text: 'abandoned attempt' };
+        yield { type: 'signature', reasoning_signature: 'OLD-SIG' };
+        yield { type: 'finish', reason: 'stop', usage: null };
+        return;
+      }
+      yield { type: 'reasoning', text: 'final attempt' };
+      yield { type: 'signature', reasoning_signature: 'NEW-SIG' };
+      yield { type: 'finish', reason: 'tool_calls', usage: null, toolCalls: [{ id: 'toolu_r1', name: 'log_event', arguments: '{}' }] };
+    });
+    const tools = [{ name: 'log_event', description: 'log', input_schema: { type: 'object', properties: {} } }];
+    const out = await handleMessages({ model: 'claude-opus-4.8', max_tokens: 64, stream: true, tools,
+      messages: [{ role: 'user', content: 'go' }] }, { callerKey: 'rescue-test' });
+    const res = fakeRes();
+    await out.handler(res);
+    assert.equal(upstreamCalls, 2, 'precondition: the rescue re-issued the request');
+
+    const blocks = blocksFrom(res.body);
+    const thinking = blocks.filter((b) => b.type === 'thinking');
+    assert.deepEqual(thinking.map((b) => [b.thinking, b.signature || '']), [['abandoned attempt', ''], ['final attempt', 'NEW-SIG']]);
+    assert.ok(blocks.some((b) => b.type === 'tool_use'), 'the final attempt tool call reached the client');
+
+    let seen = null;
+    __setConnectDeps({
+      toChatCompletion: async (params) => {
+        seen = params;
+        return { status: 200, body: { id: 'x', object: 'chat.completion', created: 0, model: params.model,
+          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } } };
+      },
+    });
+    const toolUse = blocks.find((b) => b.type === 'tool_use');
+    await handleMessages({ model: 'claude-opus-4.8', max_tokens: 64, tools, messages: [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: blocks },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUse.id, content: 'logged' }] },
+    ] }, { callerKey: 'rescue-test' });
+    const a = seen.messages.find((m) => m.role === 'assistant' && m.tool_calls?.length);
+    assert.equal(a.reasoning_content, 'final attempt');
+    assert.equal(a.reasoning_signature, 'NEW-SIG');
+  });
+});
+
+describe('/v1/messages stream translator: a reasoning break closes the open thinking block unsigned', () => {
+  it('drops a signature already pending for the abandoned block', async () => {
+    const chunk = (c) => `data: ${JSON.stringify(c)}\n\n`;
+    const out = await handleMessages({ model: 'claude-opus-4.8', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'go' }] }, {
+      async handleChatCompletions() {
+        return { status: 200, stream: true, async handler(res) {
+          res.write(chunk({ choices: [{ index: 0, delta: { reasoning_content: 'abandoned' }, finish_reason: null }] }));
+          res.write(chunk({ choices: [{ index: 0, delta: { reasoning_signature: 'STALE' }, finish_reason: null }] }));
+          res.write(chunk({ choices: [{ index: 0, delta: {}, finish_reason: null, _windsurf_reasoning_break: true }] }));
+          res.write(chunk({ choices: [{ index: 0, delta: { reasoning_content: 'final' }, finish_reason: null }] }));
+          res.write(chunk({ choices: [{ index: 0, delta: { reasoning_signature: 'FRESH' }, finish_reason: null }] }));
+          res.write(chunk({ choices: [{ index: 0, delta: { content: 'answer' }, finish_reason: null }] }));
+          res.write(chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }));
+          res.end('data: [DONE]\n\n');
+        } };
+      },
+    });
+    let body = '';
+    await out.handler({ writableEnded: false, write(c) { body += String(c); return true; }, end(c) { if (c) body += String(c); this.writableEnded = true; }, on() { return this; } });
+    const events = body.split('\n\n').map((f) => f.split('\n').find((l) => l.startsWith('data: '))).filter(Boolean).map((l) => JSON.parse(l.slice(6)));
+    const starts = events.filter((e) => e.type === 'content_block_start').map((e) => [e.index, e.content_block.type]);
+    const sigs = events.filter((e) => e.delta?.type === 'signature_delta').map((e) => [e.index, e.delta.signature]);
+    assert.deepEqual(starts, [[0, 'thinking'], [1, 'thinking'], [2, 'text']]);
+    assert.deepEqual(sigs, [[1, 'FRESH']]);
   });
 });
