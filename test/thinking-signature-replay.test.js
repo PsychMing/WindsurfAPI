@@ -368,3 +368,87 @@ describe('/v1/messages stream translator: a reasoning break closes the open thin
     assert.deepEqual(sigs, [[1, 'FRESH']]);
   });
 });
+
+// Plain (no tool call) assistant turns. Opus 4.5+ keeps prior turns' thinking,
+// and the upstream honors a replay after a later user message (measured
+// 2026-10-28: recall 3/3 replayed vs 0/4 without, forced-answer design).
+describe('signed thinking on a plain assistant turn', () => {
+  it('wire: writes #11 thinking and #12 signature on the role=2 text frame', () => {
+    const proto = buildGetChatMessageRequest({
+      token: TOKEN, model: 'm', env: {},
+      messages: [
+        { role: 'user', content: 'invent a city' },
+        { role: 'assistant', content: 'Saltmarrow', reasoning_content: 'population 312,847\n\n', reasoning_signature: SIG },
+        { role: 'user', content: 'population?' },
+      ],
+    });
+    const assistant = wireChats(proto).filter((c) => Number(getField(c, 2, 0).value) === __testing.SOURCE.ASSISTANT);
+    assert.equal(assistant.length, 1);
+    assert.equal(str(assistant[0], 3), 'Saltmarrow');
+    assert.equal(str(assistant[0], 11), 'population 312,847\n\n', '#11 is verbatim, never trimmed');
+    assert.equal(str(assistant[0], 12), SIG);
+  });
+
+  it('wire: no #12 without a signature, and the probe alone still writes only its #11', () => {
+    const plain = buildGetChatMessageRequest({ token: TOKEN, model: 'm', env: {},
+      messages: [{ role: 'user', content: 'u' }, { role: 'assistant', content: 'a', reasoning_content: 'r' }, { role: 'user', content: 'u2' }] });
+    for (const c of wireChats(plain)) { assert.equal(getField(c, 11, 2), null); assert.equal(getField(c, 12, 2), null); }
+    const signedWithProbe = buildGetChatMessageRequest({ token: TOKEN, model: 'm', env: { DEVIN_CONNECT_REPLAY_REASONING: '1' },
+      messages: [{ role: 'user', content: 'u' }, { role: 'assistant', content: 'a', reasoning_content: 'r', reasoning_signature: SIG }, { role: 'user', content: 'u2' }] });
+    const a = wireChats(signedWithProbe)[1];
+    assert.equal(a.filter((f) => f.field === 11).length, 1);
+    assert.equal(str(a, 12), SIG);
+  });
+
+  describe('/v1/messages end to end', () => {
+    const KEYS = ['DEVIN_CONNECT', 'DEVIN_CONNECT_TOKEN', 'WINDSURF_API_KEY', 'DEVIN_CONNECT_REPLAY_SIGNED_THINKING', 'WINDSURFAPI_STRICT_MODEL'];
+    const saved = {};
+    let seen = null;
+    beforeEach(() => {
+      for (const k of KEYS) saved[k] = process.env[k];
+      process.env.DEVIN_CONNECT = '1';
+      process.env.DEVIN_CONNECT_TOKEN = TOKEN;
+      process.env.WINDSURFAPI_STRICT_MODEL = '0';
+      delete process.env.WINDSURF_API_KEY;
+      seen = null;
+      __setConnectDeps({
+        toChatCompletion: async (params) => {
+          seen = params;
+          return { status: 200, body: { id: 'x', object: 'chat.completion', created: 0, model: params.model,
+            choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } } };
+        },
+      });
+    });
+    afterEach(() => {
+      __setConnectDeps(null);
+      for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    });
+    const history = (sig) => ([
+      { role: 'user', content: 'invent a city' },
+      { role: 'assistant', content: [{ type: 'thinking', thinking: 'population 312,847', signature: sig }, { type: 'text', text: 'Saltmarrow' }] },
+      { role: 'user', content: 'population?' },
+    ]);
+    const textTurn = () => seen.messages.find((m) => m.role === 'assistant' && !m.tool_calls?.length);
+
+    for (const withTools of [false, true]) {
+      it(`reaches the connect adapter on a ${withTools ? 'tool-bearing' : 'tool-less'} request`, async () => {
+        process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING = '1';
+        const tools = withTools ? [{ name: 'log_event', description: 'log', input_schema: { type: 'object', properties: {} } }] : undefined;
+        await handleMessages({ model: 'claude-opus-4.8', max_tokens: 64, ...(tools ? { tools } : {}), messages: history(SIG) }, { callerKey: 'sig-text' });
+        const a = textTurn();
+        assert.equal(a.reasoning_content, 'population 312,847');
+        assert.equal(a.reasoning_signature, SIG);
+      });
+    }
+
+    it('stays off when the switch is off, and for an unsigned block', async () => {
+      delete process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING;
+      await handleMessages({ model: 'claude-opus-4.8', max_tokens: 64, messages: history(SIG) }, { callerKey: 'sig-text' });
+      assert.equal(textTurn().reasoning_signature, undefined);
+      process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING = '1';
+      await handleMessages({ model: 'claude-opus-4.8', max_tokens: 64, messages: history('') }, { callerKey: 'sig-text' });
+      assert.equal(textTurn().reasoning_signature, undefined);
+    });
+  });
+});

@@ -552,10 +552,10 @@ export function validateCountTokensRequest(body) {
 
 // Native replay of signed Claude thinking on DEVIN_CONNECT (default OFF). The
 // upstream verifies the signature (a one-character change is rejected with
-// invalid_argument) and only then lets the model see the replayed thinking,
-// which it does inside a tool loop: measured 2026-10-28 on claude-opus-5-5, a
-// secret fixed in turn-1 thinking was recalled 2/2 with #11+#12, 0/3 with #11
-// alone. Needs DEVIN_CONNECT_SIGNATURE_TAG so the client receives the
+// invalid_argument) and only then lets the model see the replayed thinking:
+// measured 2026-10-28 on claude-opus-5-5, recalled 2/2 inside a tool loop with
+// #11+#12 (0/3 with #11 alone) and 3/3 after a later user message (0/4 without
+// replay). Needs DEVIN_CONNECT_SIGNATURE_TAG so the client receives the
 // signatures in the first place.
 export function signedThinkingReplayEnabled(env = process.env) {
   return String(env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING || '').trim() === '1';
@@ -808,32 +808,35 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       if (role === 'assistant' && msgThinking.length) {
         lastIncomingThinking = msgThinking.join('\n');
       }
+      // Signed thinking to replay on this assistant turn, tool-call turn or not:
+      // Opus 4.5+ keeps prior turns' thinking in context, and the upstream honors
+      // a replay after a later user message too (measured 2026-10-28: recall 3/3
+      // replayed vs 0/4 without, forced-answer design). One block only: the wire
+      // has one #11/#12 slot per message.
+      const lastThinking = thinkingBlocks[thinkingBlocks.length - 1];
+      const signedReplay = role === 'assistant' && signedThinkingReplayEnabled()
+        && lastThinking?.thinking && lastThinking.signature
+        && thinkingBlocks.filter((b) => b.signature).length === 1
+        ? lastThinking
+        : null;
+      const withSignedThinking = (msg) => (signedReplay
+        ? { ...msg, reasoning_content: signedReplay.thinking, reasoning_signature: signedReplay.signature }
+        : msg);
       // Tool results must directly follow the assistant tool_calls message
       // in OpenAI format. Push them before the user content message.
       for (const tr of toolResults) messages.push(tr);
       if (toolCalls.length) {
-        const assistantMsg = {
+        messages.push(withSignedThinking({
           role: 'assistant',
           content: textParts.length ? textParts.join('\n') : null,
           tool_calls: toolCalls,
-        };
-        // Only a tool-call turn: Anthropic drops thinking from turns before the
-        // last user turn anyway (measured: no recall there, signed or not), so
-        // replaying it on plain text turns would only add bytes. One block only:
-        // the wire has one #11/#12 slot per message.
-        const lastThinking = thinkingBlocks[thinkingBlocks.length - 1];
-        if (signedThinkingReplayEnabled() && lastThinking?.thinking && lastThinking.signature
-            && thinkingBlocks.filter((b) => b.signature).length === 1) {
-          assistantMsg.reasoning_content = lastThinking.thinking;
-          assistantMsg.reasoning_signature = lastThinking.signature;
-        }
-        messages.push(assistantMsg);
+        }));
       } else if (imageParts.length) {
         const contentArr = [...imageParts];
         if (textParts.length) contentArr.push({ type: 'text', text: textParts.join('\n') });
-        messages.push({ role, content: contentArr });
+        messages.push(withSignedThinking({ role, content: contentArr }));
       } else if (textParts.length) {
-        messages.push({ role, content: textParts.join('\n') });
+        messages.push(withSignedThinking({ role, content: textParts.join('\n') }));
       }
     }
   }
