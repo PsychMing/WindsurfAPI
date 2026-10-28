@@ -369,6 +369,10 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
     // rescue branch below drops the buffer together with the attempt.
     const rescuePossible = hasTools && rescueAttempt < rescueMax;
     let pendingReasoning = [];
+    // The thinking signature (opt-in decode, DEVIN_CONNECT_SIGNATURE_TAG) seals
+    // this attempt's reasoning, so it is held and released with it: committed
+    // together, or dropped together when a rescue replaces the attempt.
+    let pendingSignature = '';
     // Item 1 (loop break): leading think-tagged CONTENT is reclassified into the
     // reasoning channel HERE, at the stream-event level, BEFORE the rescue
     // decision below. A whole turn of ` thinking…` therefore stays a
@@ -436,6 +440,7 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
           // before the text it preceded.
           for (const text of pendingReasoning) yield { type: 'reasoning', text };
           pendingReasoning = [];
+          if (pendingSignature) { yield { type: 'signature', reasoning_signature: pendingSignature }; pendingSignature = ''; }
           sawContent = true;
           sawText = true;
           yield { type: 'content', text: routed.text };
@@ -447,6 +452,7 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
             // First text delta commits the attempt — see the classifier branch.
             for (const text of pendingReasoning) yield { type: 'reasoning', text };
             pendingReasoning = [];
+            if (pendingSignature) { yield { type: 'signature', reasoning_signature: pendingSignature }; pendingSignature = ''; }
             sawText = true;
           } else {
             sawReasoning = true;
@@ -460,6 +466,8 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
         yield ev;
       } else if (ev.type === 'finish') {
         finishEv = ev; // hold: decide retry after the stream drains
+      } else if (ev.type === 'signature' && rescuePossible && !sawText) {
+        pendingSignature += ev.reasoning_signature || '';
       } else {
         yield ev;
       }
@@ -474,6 +482,7 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
         // reason as a normal content delta.
         for (const text of pendingReasoning) yield { type: 'reasoning', text };
         pendingReasoning = [];
+        if (pendingSignature) { yield { type: 'signature', reasoning_signature: pendingSignature }; pendingSignature = ''; }
         sawContent = true;
         sawText = true;
         yield { type: 'content', text: rest };
@@ -554,6 +563,7 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
     // while a rescue was possible, before its terminal finish event.
     for (const text of pendingReasoning) yield { type: 'reasoning', text };
     pendingReasoning = [];
+    if (pendingSignature) { yield { type: 'signature', reasoning_signature: pendingSignature }; pendingSignature = ''; }
     if (finishEv) yield finishEv;
     return;
   }
@@ -899,7 +909,6 @@ export async function streamChatCompletion(params, send, opts = {}) {
   // is used for tool parsing/session continuity; caching must use `delivered`
   // or a filtered/echoed <tool_call> block becomes the visible cached answer.
   let delivered = '';
-  let signatureTainted = false;
   // Same billing passthrough as the non-stream path.
   let streamBilling = null;
   // Native tool calls (DEVIN_CONNECT_TOOL_CALL_TAGS calibrated) ride the terminal
@@ -987,10 +996,6 @@ export async function streamChatCompletion(params, send, opts = {}) {
           delivered = '';
           collectedToolCalls.length = 0;
           nativeToolCalls = [];
-          // The abandoned attempt's reasoning deltas are already on the wire and
-          // the client folds both attempts into one thinking block, so no single
-          // upstream signature seals that text. Forward none for this response.
-          signatureTainted = true;
           continue;
         }
         if (ev.type === 'reasoning') {
@@ -1000,8 +1005,9 @@ export async function streamChatCompletion(params, send, opts = {}) {
         } else if (ev.type === 'signature') {
           // Opt-in decode (DEVIN_CONNECT_SIGNATURE_TAG). Upstream sends it after
           // the last reasoning frame and before content, so messages.js can close
-          // the thinking block with a signature_delta.
-          if (!signatureTainted && reasoning && ev.reasoning_signature) {
+          // the thinking block with a signature_delta. The generator releases it
+          // only with a committed attempt, so it always seals exactly `reasoning`.
+          if (reasoning && ev.reasoning_signature) {
             await send({ ...base, choices: [{ index: 0, delta: { reasoning_signature: ev.reasoning_signature }, finish_reason: null }] });
           }
         } else if (ev.type === 'content') {

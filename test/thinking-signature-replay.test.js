@@ -107,19 +107,38 @@ describe('adapter: signature reaches the OpenAI-shaped response', () => {
     assert.deepEqual(sigs, ['Ep', 'kC']);
   });
 
-  it('stream: no signature after a rescue attempt_reset (the client saw both attempts)', async () => {
-    __setStreamChatForTest(fake([
-      { type: 'reasoning', text: 'first' },
-      { type: 'attempt_reset' },
-      { type: 'reasoning', text: 'second' },
-      { type: 'signature', reasoning_signature: 'EpkC' },
-      { type: 'content', text: 'answer' },
-      { type: 'finish', reason: 'stop', usage: null },
-    ]));
-    const frames = [];
-    await streamChatCompletion({ model: 'm', messages: [] }, (d) => frames.push(d));
-    const sigs = frames.flatMap((f) => f.choices || []).filter((c) => c.delta?.reasoning_signature);
-    assert.equal(sigs.length, 0);
+  // A real rescue: the first upstream attempt is thinking-only (no text, no tool
+  // call) on a tool-bearing request, so streamChatWithEmptyRetry replaces it. The
+  // abandoned attempt's reasoning AND signature must die with it; the client must
+  // see only the final attempt, sealed by the final attempt's own signature.
+  it('stream: a rescue drops the abandoned attempt signature together with its reasoning', async () => {
+    const saved = process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS;
+    process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS = '0';
+    let upstreamCalls = 0;
+    __setStreamChatForTest(async function* () {
+      upstreamCalls++;
+      if (upstreamCalls === 1) {
+        yield { type: 'reasoning', text: 'abandoned attempt' };
+        yield { type: 'signature', reasoning_signature: 'OLD-SIG' };
+        yield { type: 'finish', reason: 'stop', usage: null };
+        return;
+      }
+      yield { type: 'reasoning', text: 'final attempt' };
+      yield { type: 'signature', reasoning_signature: 'NEW-SIG' };
+      yield { type: 'finish', reason: 'tool_calls', usage: null, toolCalls: [{ id: 'toolu_r1', name: 'log_event', arguments: '{}' }] };
+    });
+    try {
+      const frames = [];
+      const tools = [{ type: 'function', function: { name: 'log_event', parameters: { type: 'object', properties: {} } } }];
+      await streamChatCompletion({ model: 'm', messages: [], tools }, (d) => frames.push(d));
+      assert.equal(upstreamCalls, 2, 'precondition: the rescue re-issued the request');
+      const order = frames.flatMap((f) => f.choices || [])
+        .map((c) => (c.delta?.reasoning_signature ? `sig:${c.delta.reasoning_signature}` : c.delta?.reasoning_content ? `think:${c.delta.reasoning_content}` : c.delta?.tool_calls ? 'call' : null))
+        .filter(Boolean);
+      assert.deepEqual(order, ['think:final attempt', 'sig:NEW-SIG', 'call']);
+    } finally {
+      if (saved === undefined) delete process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS; else process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS = saved;
+    }
   });
 
   it('non-stream: a rescue keeps only the final attempt signature', async () => {
