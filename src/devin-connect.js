@@ -699,6 +699,7 @@ function encodeChatMessage({
   toolCallId = '',
   reasoning = '',
   reasoningTagNum = 0,
+  signature = '',
   env = process.env,
 }) {
   const fields = [
@@ -715,6 +716,8 @@ function encodeChatMessage({
   if (reasoning && reasoningTagNum) {
     fields.push(writeStringField(reasoningTagNum, reasoning));
   }
+  // #12 thinking signature, only beside its #11 thinking (signed replay).
+  if (signature && reasoning && reasoningTagNum === 11) fields.push(writeStringField(12, signature));
   return Buffer.concat(fields);
 }
 
@@ -1800,13 +1803,20 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
     const reasoningText = source === SOURCE.ASSISTANT && reasoningTagNum
       ? String(msg.reasoning || msg.reasoning_content || '').trim()
       : '';
+    // Signed Claude thinking on a plain assistant turn: #11 verbatim (never
+    // trimmed, the signature seals the exact text) + #12, same as the tool-call
+    // branch. Wins over the REPLAY_REASONING probe so #11 is never doubled.
+    const signedThinking = source === SOURCE.ASSISTANT && msg.reasoning_signature && msg.reasoning_content
+      ? { text: String(msg.reasoning_content), signature: String(msg.reasoning_signature) }
+      : null;
     chatMessages.push(encodeChatMessage({
       source,
       text,
       images: imageTag ? extractInlineImages(msg.content) : [],
       imageTag,
-      reasoning: reasoningText,
-      reasoningTagNum,
+      reasoning: signedThinking ? signedThinking.text : reasoningText,
+      reasoningTagNum: signedThinking ? 11 : reasoningTagNum,
+      signature: signedThinking ? signedThinking.signature : '',
       env,
     }));
   }
