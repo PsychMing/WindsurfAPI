@@ -579,6 +579,7 @@ export async function toChatCompletion(params, opts = {}) {
   // are not retryable and throw straight through for the handler to map.
   let content = '';
   let reasoning = '';
+  let reasoningSignature = '';
   let finishReason = 'stop';
   let usage = null;
   // Per-request billing detail (credit / ACU cost) when the operator has calibrated
@@ -592,13 +593,17 @@ export async function toChatCompletion(params, opts = {}) {
   let nativeToolCalls = [];
   for (let attempt = 0; ; attempt++) {
     try {
-      content = ''; reasoning = ''; finishReason = 'stop'; usage = null; nativeToolCalls = [];
+      content = ''; reasoning = ''; reasoningSignature = ''; finishReason = 'stop'; usage = null; nativeToolCalls = [];
       for await (const ev of streamChatWithEmptyRetry(params, undefined, opts)) {
         // A rescue attempt REPLACES the previous one; drop what it produced or the
         // client is handed every attempt concatenated.
-        if (ev.type === 'attempt_reset') { content = ''; reasoning = ''; nativeToolCalls = []; billing = null; continue; }
+        if (ev.type === 'attempt_reset') { content = ''; reasoning = ''; reasoningSignature = ''; nativeToolCalls = []; billing = null; continue; }
         if (ev.type === 'content') content += ev.text;
         else if (ev.type === 'reasoning') reasoning += ev.text;
+        // Thinking signature (opt-in decode, DEVIN_CONNECT_SIGNATURE_TAG). The
+        // per-frame events are increments; the finish event's total is not used
+        // because a rescue attempt_reset must discard the abandoned increments.
+        else if (ev.type === 'signature') reasoningSignature += ev.reasoning_signature || '';
         else if (ev.type === 'finish') {
           if (ev.reason) finishReason = ev.reason;
           if (ev.usage) usage = ev.usage;
@@ -727,6 +732,9 @@ export async function toChatCompletion(params, opts = {}) {
   // OpenAI convention: content is a string (may be empty), never undefined.
   const message = { role: 'assistant', content: content || '' };
   if (reasoning && !promotedReasoning) message.reasoning_content = reasoning;
+  // The signature seals exactly this reasoning text; promoted reasoning is no
+  // longer a thinking block, so a signature beside it would seal nothing.
+  if (reasoning && !promotedReasoning && reasoningSignature) message.reasoning_signature = reasoningSignature;
   if (toolCalls.length) {
     message.tool_calls = toolCalls.map((tc, i) => ({
       id: toClientToolCallId(tc.id, `call_${i}_${Date.now().toString(36)}`),
@@ -846,6 +854,7 @@ export async function streamChatCompletion(params, send, opts = {}) {
   // is used for tool parsing/session continuity; caching must use `delivered`
   // or a filtered/echoed <tool_call> block becomes the visible cached answer.
   let delivered = '';
+  let signatureTainted = false;
   // Same billing passthrough as the non-stream path.
   let streamBilling = null;
   // Native tool calls (DEVIN_CONNECT_TOOL_CALL_TAGS calibrated) ride the terminal
@@ -930,12 +939,23 @@ export async function streamChatCompletion(params, send, opts = {}) {
           delivered = '';
           collectedToolCalls.length = 0;
           nativeToolCalls = [];
+          // The abandoned attempt's reasoning deltas are already on the wire and
+          // the client folds both attempts into one thinking block, so no single
+          // upstream signature seals that text. Forward none for this response.
+          signatureTainted = true;
           continue;
         }
         if (ev.type === 'reasoning') {
           prime(); // first real delta: emit the deferred role chunk first
           reasoning += ev.text;
           send({ ...base, choices: [{ index: 0, delta: { reasoning_content: ev.text }, finish_reason: null }] });
+        } else if (ev.type === 'signature') {
+          // Opt-in decode (DEVIN_CONNECT_SIGNATURE_TAG). Upstream sends it after
+          // the last reasoning frame and before content, so messages.js can close
+          // the thinking block with a signature_delta.
+          if (!signatureTainted && reasoning && ev.reasoning_signature) {
+            send({ ...base, choices: [{ index: 0, delta: { reasoning_signature: ev.reasoning_signature }, finish_reason: null }] });
+          }
         } else if (ev.type === 'content') {
           prime(); // first real delta: emit the deferred role chunk first
           content += ev.text;
