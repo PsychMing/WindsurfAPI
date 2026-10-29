@@ -34,7 +34,7 @@
       "name": "the Anthropic converter stops dropping turns that yield no text/image/tool — a textless turn becomes an empty-content message, so the shared guard now sees an assistant-terminated conversation (or an empty user turn) that the documented difference says is served, and the surface's answer flips from 200 to 400",
       "file": "src/handlers/messages.js",
       "anchor": "      } else if (textParts.length) {",
-      "replacement": "      } else {"
+      "replacement": "      } else if (true) {"
     },
     {
       "name": "the Gemini converter stops dropping turns that yield no text/image/tool — same flip as the Anthropic side: textless user/model turns materialise as empty-content messages and the request that was served becomes a 400 INVALID_ARGUMENT",
