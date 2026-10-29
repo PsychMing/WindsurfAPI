@@ -174,4 +174,30 @@ describe('Thinking outbound contract (messages handler)', () => {
     assert.equal(sigDeltaEvent.data.delta?.type, 'signature_delta', 'delta type must be signature_delta');
     assert.equal(sigDeltaEvent.data.delta?.signature, 'sig_stream_999', 'signature must match reasoning_signature');
   });
+
+  it('concatenates multiple signature chunks into one delta before block stop', async () => {
+    const result = await handleMessages({
+      model: 'claude-sonnet-4.6', max_tokens: 64, stream: true,
+      messages: [{ role: 'user', content: 'go' }],
+    }, {
+      async handleChatCompletions() {
+        return {
+          status: 200, stream: true,
+          async handler(res) {
+            res.write(chatChunk({ choices: [{ index: 0, delta: { reasoning_content: 'think', reasoning_signature: 'Ep' }, finish_reason: null }] }));
+            res.write(chatChunk({ choices: [{ index: 0, delta: { reasoning_signature: 'kC' }, finish_reason: null }] }));
+            res.write(chatChunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }));
+            res.end('data: [DONE]\n\n');
+          },
+        };
+      },
+    });
+    const res = fakeRes();
+    await result.handler(res);
+    const events = parseAnthropicEvents(res.body);
+    const signatureDeltas = events.filter(e => e.event === 'content_block_delta' && e.data.delta?.type === 'signature_delta');
+    assert.equal(signatureDeltas.length, 1, 'exactly one non-empty signature_delta');
+    assert.equal(signatureDeltas[0].data.delta.signature, 'EpkC');
+    assert.ok(events.indexOf(signatureDeltas[0]) < events.findIndex(e => e.event === 'content_block_stop'));
+  });
 });

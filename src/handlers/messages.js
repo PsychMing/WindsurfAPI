@@ -944,6 +944,8 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
         messages.push(withSignedThinking({ role, content: contentArr }));
       } else if (textParts.length) {
         messages.push(withSignedThinking({ role, content: textParts.join('\n') }));
+      } else if (signedReplay) {
+        messages.push({ role: 'assistant', content: null, reasoning_content: signedReplay.thinking, reasoning_signature: signedReplay.signature });
       }
     }
   }
@@ -1818,7 +1820,7 @@ class AnthropicStreamTranslator {
       // Forward-compat: if a future upstream attaches a real encrypted signature
       // to the reasoning stream, capture it so closeCurrentBlock round-trips the
       // genuine value instead of the empty-string placeholder.
-      if (delta.reasoning_signature) this.pendingThinkingSignature = delta.reasoning_signature;
+      if (delta.reasoning_signature) this.pendingThinkingSignature += delta.reasoning_signature;
       if (delta.content) {
         if (leakTraceEnabled()) {
           log.info('LEAK_TRACE classify', {

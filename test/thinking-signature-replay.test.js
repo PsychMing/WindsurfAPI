@@ -141,6 +141,38 @@ describe('adapter: signature reaches the OpenAI-shaped response', () => {
     }
   });
 
+  it('stream: a rescue retains signed reasoning-only history but drops unsigned empty history', async () => {
+    const saved = process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS;
+    process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS = '0';
+    const attempts = [];
+    __setStreamChatForTest(async function* (params) {
+      attempts.push(params.messages);
+      if (attempts.length === 1) {
+        yield { type: 'reasoning', text: 'abandoned attempt' };
+        yield { type: 'finish', reason: 'stop', usage: null };
+        return;
+      }
+      yield { type: 'content', text: 'answer' };
+      yield { type: 'finish', reason: 'stop', usage: null };
+    });
+    try {
+      const tools = [{ type: 'function', function: { name: 'log_event', parameters: { type: 'object', properties: {} } } }];
+      const messages = [
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: null, reasoning_content: 'signed-only', reasoning_signature: SIG },
+        { role: 'assistant', content: null, reasoning_content: 'unsigned-only' },
+        { role: 'user', content: 'next' },
+      ];
+      await streamChatCompletion({ model: 'm', messages, tools }, () => {});
+      assert.equal(attempts.length, 2, 'precondition: the rescue re-issued the request');
+      const signed = attempts[1].find((m) => m.role === 'assistant' && m.reasoning_signature === SIG);
+      assert.equal(signed?.reasoning_content, 'signed-only');
+      assert.equal(attempts[1].some((m) => m.reasoning_content === 'unsigned-only'), false);
+    } finally {
+      if (saved === undefined) delete process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS; else process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS = saved;
+    }
+  });
+
   it('non-stream: a rescue keeps only the final attempt signature', async () => {
     __setStreamChatForTest(fake([
       { type: 'reasoning', text: 'first' },
@@ -224,6 +256,35 @@ describe('/v1/messages: signed thinking survives into the connect request', () =
 // and the upstream honors a replay after a later user message (measured
 // 2026-10-28: recall 3/3 replayed vs 0/4 without, forced-answer design).
 describe('signed thinking on a plain assistant turn', () => {
+  for (const nativeToolCall of [false, true]) {
+    it(`wire: signed reasoning-only history survives nativeToolCall=${nativeToolCall}`, () => {
+      const proto = buildGetChatMessageRequest({
+        token: TOKEN, model: 'm', nativeToolCall, env: {},
+        messages: [
+          { role: 'user', content: 'first' },
+          { role: 'assistant', content: null, reasoning_content: 'signed-only', reasoning_signature: SIG },
+          { role: 'user', content: 'next' },
+        ],
+      });
+      const assistant = wireChats(proto).filter((c) => Number(getField(c, 2, 0).value) === __testing.SOURCE.ASSISTANT);
+      assert.equal(assistant.length, 1);
+      assert.equal(str(assistant[0], 11), 'signed-only');
+      assert.equal(str(assistant[0], 12), SIG);
+    });
+  }
+
+  it('wire: unsigned empty history remains dropped', () => {
+    const proto = buildGetChatMessageRequest({
+      token: TOKEN, model: 'm', env: {},
+      messages: [
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: null, reasoning_content: 'unsigned-only' },
+        { role: 'user', content: 'next' },
+      ],
+    });
+    assert.equal(wireChats(proto).filter((c) => Number(getField(c, 2, 0).value) === __testing.SOURCE.ASSISTANT).length, 0);
+  });
+
   it('wire: writes #11 thinking and #12 signature on the role=2 text frame', () => {
     const proto = buildGetChatMessageRequest({
       token: TOKEN, model: 'm', env: {},
@@ -292,6 +353,48 @@ describe('signed thinking on a plain assistant turn', () => {
         assert.equal(a.reasoning_signature, SIG);
       });
     }
+
+    it('replays a signed reasoning-only turn through the adapter and both wire modes', async () => {
+      process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING = '1';
+      delete process.env.DEVIN_CONNECT_REPLAY_REASONING;
+      const messages = [
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: [{ type: 'thinking', thinking: 'signed-only', signature: SIG }] },
+        { role: 'user', content: 'next' },
+      ];
+      await handleMessages({ model: 'claude-opus-4.8', max_tokens: 64, messages }, { callerKey: 'sig-only' });
+      const assistant = seen.messages.find((m) => m.role === 'assistant');
+      assert.deepEqual(assistant, {
+        role: 'assistant', content: null,
+        reasoning_content: 'signed-only', reasoning_signature: SIG,
+      });
+      for (const nativeToolCall of [false, true]) {
+        const proto = buildGetChatMessageRequest({ token: TOKEN, model: 'm', messages: seen.messages, nativeToolCall, env: {} });
+        const encoded = wireChats(proto).filter((c) => Number(getField(c, 2, 0).value) === __testing.SOURCE.ASSISTANT);
+        assert.equal(encoded.length, 1);
+        assert.equal(str(encoded[0], 11), 'signed-only');
+        assert.equal(str(encoded[0], 12), SIG);
+      }
+    });
+
+    it('drops unsigned and multi-block reasoning-only turns', async () => {
+      process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING = '1';
+      const histories = [
+        [{ type: 'thinking', thinking: 'unsigned-only', signature: '' }],
+        [
+          { type: 'thinking', thinking: 'first', signature: SIG },
+          { type: 'thinking', thinking: 'second', signature: SIG },
+        ],
+      ];
+      for (const content of histories) {
+        await handleMessages({ model: 'claude-opus-4.8', max_tokens: 64, messages: [
+          { role: 'user', content: 'first' },
+          { role: 'assistant', content },
+          { role: 'user', content: 'next' },
+        ] }, { callerKey: 'sig-only-control' });
+        assert.equal(seen.messages.some((m) => m.role === 'assistant'), false);
+      }
+    });
 
     it('stays off when the switch is off, and for an unsigned block', async () => {
       delete process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING;
