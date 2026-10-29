@@ -515,7 +515,7 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
       const filteredMsgs = origMsgs.filter((msg) => {
         if (msg.role !== 'assistant') return true;
         if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) return true;
-        if (msg.reasoning_signature && String(msg.reasoning_content || '').trim()) return true;
+        if (msg.reasoning_signature && String(msg.reasoning_content || '').length > 0) return true;
         return messageText(msg.content).trim() !== '';
       });
       let nudgeText = 'Stop reasoning. Emit the tool call markup now.';

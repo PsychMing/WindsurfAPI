@@ -160,6 +160,7 @@ describe('adapter: signature reaches the OpenAI-shaped response', () => {
       const messages = [
         { role: 'user', content: 'first' },
         { role: 'assistant', content: null, reasoning_content: 'signed-only', reasoning_signature: SIG },
+        { role: 'assistant', content: null, reasoning_content: ' \n', reasoning_signature: `${SIG}-whitespace` },
         { role: 'assistant', content: null, reasoning_content: 'unsigned-only' },
         { role: 'user', content: 'next' },
       ];
@@ -167,6 +168,7 @@ describe('adapter: signature reaches the OpenAI-shaped response', () => {
       assert.equal(attempts.length, 2, 'precondition: the rescue re-issued the request');
       const signed = attempts[1].find((m) => m.role === 'assistant' && m.reasoning_signature === SIG);
       assert.equal(signed?.reasoning_content, 'signed-only');
+      assert.equal(attempts[1].find((m) => m.reasoning_signature === `${SIG}-whitespace`)?.reasoning_content, ' \n');
       assert.equal(attempts[1].some((m) => m.reasoning_content === 'unsigned-only'), false);
     } finally {
       if (saved === undefined) delete process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS; else process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS = saved;
@@ -283,6 +285,17 @@ describe('signed thinking on a plain assistant turn', () => {
       ],
     });
     assert.equal(wireChats(proto).filter((c) => Number(getField(c, 2, 0).value) === __testing.SOURCE.ASSISTANT).length, 0);
+  });
+
+  it('wire: signed whitespace-only reasoning is retained verbatim', () => {
+    const proto = buildGetChatMessageRequest({
+      token: TOKEN, model: 'm', env: {},
+      messages: [{ role: 'assistant', content: null, reasoning_content: ' \n', reasoning_signature: SIG }],
+    });
+    const assistant = wireChats(proto).filter((c) => Number(getField(c, 2, 0).value) === __testing.SOURCE.ASSISTANT);
+    assert.equal(assistant.length, 1);
+    assert.equal(str(assistant[0], 11), ' \n');
+    assert.equal(str(assistant[0], 12), SIG);
   });
 
   it('wire: writes #11 thinking and #12 signature on the role=2 text frame', () => {

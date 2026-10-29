@@ -1720,7 +1720,7 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
     // to change (plus test/wire-h1-empty-assistant.test.js T4 and mutation M5).
     if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length
       && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())
-      && !(msg.reasoning_signature && String(msg.reasoning_content || '').trim())) {
+      && !(msg.reasoning_signature && String(msg.reasoning_content || '').length > 0)) {
       noteDroppedAssistantImages(msg);
       continue;
     }

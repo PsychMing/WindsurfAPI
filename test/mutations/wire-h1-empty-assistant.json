@@ -7,35 +7,35 @@
     {
       "name": "H1-M1: restore the text-only skip",
       "file": "src/devin-connect.js",
-      "anchor": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())\n      && !(msg.reasoning_signature && String(msg.reasoning_content || '').trim())) {",
+      "anchor": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())\n      && !(msg.reasoning_signature && String(msg.reasoning_content || '').length > 0)) {",
       "replacement": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length) {",
       "expectCaught": true
     },
     {
       "name": "H1-M2: admit reasoning while replay is disabled",
       "file": "src/devin-connect.js",
-      "anchor": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())\n      && !(msg.reasoning_signature && String(msg.reasoning_content || '').trim())) {",
+      "anchor": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())\n      && !(msg.reasoning_signature && String(msg.reasoning_content || '').length > 0)) {",
       "replacement": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(String(msg.reasoning || msg.reasoning_content || '').trim())) {",
       "expectCaught": true
     },
     {
       "name": "H1-M3: treat whitespace as encodable reasoning",
       "file": "src/devin-connect.js",
-      "anchor": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())\n      && !(msg.reasoning_signature && String(msg.reasoning_content || '').trim())) {",
+      "anchor": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())\n      && !(msg.reasoning_signature && String(msg.reasoning_content || '').length > 0)) {",
       "replacement": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || ''))) {",
       "expectCaught": true
     },
     {
       "name": "H1-M4: remove empty-turn filtering",
       "file": "src/devin-connect.js",
-      "anchor": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())\n      && !(msg.reasoning_signature && String(msg.reasoning_content || '').trim())) {",
+      "anchor": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())\n      && !(msg.reasoning_signature && String(msg.reasoning_content || '').length > 0)) {",
       "replacement": "    if (false) {",
       "expectCaught": true
     },
     {
       "name": "H1-M5: admit images on the default path without approval",
       "file": "src/devin-connect.js",
-      "anchor": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())\n      && !(msg.reasoning_signature && String(msg.reasoning_content || '').trim())) {",
+      "anchor": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())\n      && !(msg.reasoning_signature && String(msg.reasoning_content || '').length > 0)) {",
       "replacement": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())\n      && !(imageTag && extractInlineImages(msg.content).length)) {",
       "expectCaught": true
     },
@@ -49,7 +49,7 @@
     {
       "name": "H1-M7: remove the native-call exemption",
       "file": "src/devin-connect.js",
-      "anchor": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())\n      && !(msg.reasoning_signature && String(msg.reasoning_content || '').trim())) {",
+      "anchor": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())\n      && !(msg.reasoning_signature && String(msg.reasoning_content || '').length > 0)) {",
       "replacement": "    if (msg.role === 'assistant' && messageText(msg.content).trim() === ''\n      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())) {",
       "expectCaught": true
     },
