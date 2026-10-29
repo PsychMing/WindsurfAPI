@@ -818,8 +818,8 @@ MIT License. See [LICENSE](LICENSE).
 
 ## 发布与密钥边界
 
-发布流程会自动推 Docker 镜像和 GitHub Release。当前发布 **v3.141.592657**；仓库共 227 个
-git tag / 217 份发布说明（2026-10-26）。从 v3.10.0 起，每个 Release 为四个发布资产
+发布流程会自动推 Docker 镜像和 GitHub Release。当前发布 **v3.141.592658**；仓库共 228 个
+git tag / 218 份发布说明（2026-10-30）。从 v3.10.0 起，每个 Release 为四个发布资产
 （Windows exe/zip、macOS arm64 二进制/zip）生成 `SHA256SUMS`，并用 **cosign keyless**
 （GitHub OIDC，仓库内没有任何私钥或签名 secret）为四个资产和清单各发布一个
 `.sigstore.json`（签名、Fulcio 证书与 Rekor inclusion proof 合在一个文件里）。从

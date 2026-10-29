@@ -184,10 +184,11 @@ silently stopped guarding. These are the tools that close that gap:
 
 ## Release history
 
-- [releases/](releases/): one file per version, v2.0.6 → present — 217 release notes as of
-  2026-10-26. Append-only published history; each file is a GitHub Release body.
-- [ACCEPTANCE_3.141.592657.md](releases/ACCEPTANCE_3.141.592657.md) — the current release's
-  acceptance appendix: D9 controls, F3 fix, gate commands, skip lists and log hashes.
+- [releases/](releases/): one file per version, v2.0.6 → present — 218 release notes as of
+  2026-10-30. Append-only published history; each file is a GitHub Release body.
+- [ACCEPTANCE_3.141.592658.md](releases/ACCEPTANCE_3.141.592658.md) — the current release's
+  acceptance appendix: Gemini `type[]` lowering, signed-thinking replay, gate commands, skip
+  lists and log hashes.
 - **[releases/README.md](releases/README.md) is the release runbook** — the ordered
   procedure, the gate, and the house style for writing notes all live there, next to the
   task, rather than being summarised here. Read it before shipping anything: the version

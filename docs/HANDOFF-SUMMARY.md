@@ -12,8 +12,12 @@ in the dated evidence files; this page is the index to them.
 
 - **Versions.** `v3.141.592654` and `v3.141.592655` were released and deployed during the
   session; `v3.141.592656` (annotated `19ed5b8c` → `9115ebe7`) shipped with 10 assets and cosign
-  verification, and was deployed to HMC. `v3.141.592657`（本波发布，tag `v3.141.592657` → `a7d2e33f`） is the D9 patch prepared
+  verification, and was deployed to HMC. `v3.141.592657`（2026-10-26 发布，tag `v3.141.592657` → `a7d2e33f`） is the D9 patch prepared
   on top of master `f6b843fe` (release commit `5afb7ace`; certification commit `a7d2e33f`).
+  `v3.141.592658`（2026-10-30 发布）is the next patch: Gemini 原生 ToolDefs 的 `type` 数组降为
+  `anyOf`，加上默认关闭的签名 thinking 回放（`DEVIN_CONNECT_REPLAY_SIGNED_THINKING=1`）。发布提交
+  以 `git rev-parse 'v3.141.592658^{commit}'` 为准，父提交 `18879611`（combined `release/next-pr282`
+  tip，base `c5564f9a`）；逐项计数见 `docs/releases/ACCEPTANCE_3.141.592658.md`。
 - **Fixes.** The second audit's 27-row V ledger is closed for its tested mechanisms (4 P0 + 18 P1
   + 5 P2), the D1–D8/D10 follow-up wave landed, F2 (final-sweep false `EMPTY_RESPONSE`) and F3
   (route budget starting after warmup/Send) are fixed with red-first tests, and the last-tick
@@ -37,14 +41,15 @@ in the dated evidence files; this page is the index to them.
   pull/recreate/rollback 仍 `[UNVERIFIED]`。
 - **Documentation.** `docs/DOC-MAP.md` now covers the D9/release-gate evidence; the two READMEs,
   `docs/README.md`, `docs/ENV-SWITCHES.md` and `docs/review.html` were recounted; `CONTRIBUTING.md`
-  carries the six-path Windows inert recipe. The tree has 217 release-note files and 227 git tags
+  carries the six-path Windows inert recipe. The tree has 218 release-note files and 228 git tags
   at this snapshot.
 
 ## Current state
 
-- `v3.141.592657`（本波发布，tag `v3.141.592657` → `a7d2e33f`）; source baseline = `f6b843fe`,
-  release commit = `5afb7ace`, certification commit = `a7d2e33f`. D9 controls are active in the
-  tree and take effect for this tag.
+- `v3.141.592658`（2026-10-30 发布）; source baseline = `18879611` (combined `release/next-pr282`
+  tip over `c5564f9a`), release commit = the tag target (`git rev-parse 'v3.141.592658^{commit}'`).
+  `v3.141.592657`（tag `v3.141.592657` → `a7d2e33f`） remains the previous release: source baseline
+  `f6b843fe`, release commit `5afb7ace`, certification commit `a7d2e33f`.
 - D9 is **not fully closed**: source OTA and every release signature still trust the single
   Owner's tag/account authority. `environment: release` with an independent reviewer, or an
   offline signing root, is still an Owner decision (`evidence/final/D9-GATE.md` §3).

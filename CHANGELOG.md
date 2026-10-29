@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 217 份发布说明</a> ·
+  <a href="docs/releases/">全部 218 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **217** 份,v2.0.6 → v3.141.592657 |
-| git tag | 227 个（2026-10-26 实测；以 `git tag \| wc -l` 为准） |
-| 当前 | **v3.141.592657**(2026-10-26) |
+| 发布说明 | **218** 份,v2.0.6 → v3.141.592658 |
+| git tag | 228 个（2026-10-30 实测；以 `git tag \| wc -l` 为准） |
+| 当前 | **v3.141.592658**(2026-10-30) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -41,6 +41,10 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.141.592658](docs/releases/RELEASE_NOTES_3.141.592658.md) · 2026-10-30
+
+Gemini 原生 ToolDefs 的 JSON Schema `type` 数组不再被上游 400：`type: [a,b]` 无损降为 `anyOf`（`omp` 的 `grep` 带 `"type": ["number","null"]` 的 `skip` 参数此前会让整条请求 `invalid_argument`）。新增**默认关闭**的签名 thinking 回放（`DEVIN_CONNECT_REPLAY_SIGNED_THINKING=1`，需 `DEVIN_CONNECT_SIGNATURE_TAG=10`）：`/v1/messages` 历史里带签名的 Claude thinking 以 `#11` thinking + `#12` signature 回放到 assistant 帧，工具循环、rescue 重试与后续用户轮都覆盖，只限 Claude 且失败关闭（provider 门、E/R/C/Q 信封门、强制 emulation 400、签名字节预算、多段抑制、`claude-*`/`anthropic/` 别名兜底）。同时修掉签名被静默丢掉的四处（M1 流式覆盖、M2 builder、M3 `/v1/messages` 入口、M4 rescue）。live 实测：1440 字符 CAIS `C` 签名、回放臂 2/3 召回 vs 对照 0/3、改一个字节即上游 `invalid_argument`、Claude Code 2.1.306 wire `#11` 72 B + `#12` 936 B（关闭时 0/0）。wire 对 v3.141.592657 **270/270 逐字节一致、0 差异**；release gate **7,312 pass / 0 fail / 4 skip**（1 个声明 inert）；mutation 沿用 `15dd8904` 的全量 sweep（**97/97 spec、863 条 = 846 捕获 + 17 声明**，发布提交 `src/` 未变）。逐项计数见发布附录。M4 rescue 与多段签名未在线上观察，仍 `[UNVERIFIED]`。
 
 ### [v3.141.592657](docs/releases/RELEASE_NOTES_3.141.592657.md) · 2026-10-26
 

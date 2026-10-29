@@ -13,18 +13,19 @@
 
 | 项 | 值 |
 |---|---|
-| 扫描 | `docs/releases/*.md` 共 217 个文件 |
-| 命中 | 27 个文件 / 27 个小节 |
-| bullet | 113 条 |
+| 扫描 | `docs/releases/*.md` 共 218 个文件 |
+| 命中 | 28 个文件 / 28 个小节 |
+| bullet | 120 条 |
 | 已复核 | 2 |
-| 仍缺 | 111 |
+| 仍缺 | 118 |
 | 已修 | 0 |
-| 无 marker | 48 |
+| 无 marker | 55 |
 
 ## 按 release
 
 | release | 小节 | bullet | 已复核 | 仍缺 | 已修 | 无 marker |
 |---|---:|---:|---:|---:|---:|---:|
+| [3.141.592658](releases/RELEASE_NOTES_3.141.592658.md) | 1 | 7 | 0 | 7 | 0 | 7 |
 | [3.141.592657](releases/RELEASE_NOTES_3.141.592657.md) | 1 | 16 | 0 | 16 | 0 | 16 |
 | [3.141.592656](releases/RELEASE_NOTES_3.141.592656.md) | 1 | 16 | 0 | 16 | 0 | 16 |
 | [3.141.592655](releases/RELEASE_NOTES_3.141.592655.md) | 1 | 9 | 0 | 9 | 0 | 9 |
@@ -52,6 +53,22 @@
 | [3.9.41](releases/RELEASE_NOTES_3.9.41.md) | 1 | 6 | 0 | 6 | 0 | 0 |
 | [3.9.40](releases/RELEASE_NOTES_3.9.40.md) | 1 | 3 | 0 | 3 | 0 | 0 |
 | [3.9.39](releases/RELEASE_NOTES_3.9.39.md) | 1 | 3 | 0 | 3 | 0 | 0 |
+
+## 3.141.592658 — `docs/releases/RELEASE_NOTES_3.141.592658.md`
+
+1 个小节 · 7 条：已复核 0 · 仍缺 7 · 已修 0（无 marker 7）
+
+小节 `## 6. 已知 / 尚未验证`（`:111`）
+
+| # | 位置 | bullet | marker | 状态 |
+|---:|---|---|---|---|
+| 1 | `RELEASE_NOTES_3.141.592658.md:115` | **M4 的 rescue 路径没有在真实上游触发过**：M4 的修复由 hermetic 测试覆盖（注入空响应触发 rescue），live 会话里 `rescueObserved=false` —— 真实上游这次没有给出空响应，所以「rescue 后签名仍在」只有测试证据，没有线上证据。 | — | 仍缺 |
+| 2 | `RELEASE_NOTES_3.141.592658.md:118` | **多段签名没有在线上观察到**：live 抓包里只有一段 `#10` 分片（1580 字符，客户端收到与 wire 一致），`#21` 未出现。多段抑制逻辑因此只有 hermetic 证据。 | — | 仍缺 |
+| 3 | `RELEASE_NOTES_3.141.592658.md:120` | **回放只验证了 `/v1/messages` 客户端**：Claude Code 2.1.306 是唯一实测的客户端。`omp` 18.13.3 走 Anthropic provider 时能收到签名，但不回放它（潜在的第二条签名路径，未实测）； Codex 走 `/v1/responses`；DSH 未安装。 | — | 仍缺 |
+| 4 | `RELEASE_NOTES_3.141.592658.md:123` | **官方 `pr-gate` 仍是 `INCOMPLETE`**：它没有 inert 白名单，`test/devin-connect-relogin-live.test.js` 需要真实密码才能跑；发布门 `gate:release` 把该文件声明为 inert 后 PASS。两者是不同的入口， 不能把发布门的结果当作官方 PR 门的 PASS。 | — | 仍缺 |
+| 5 | `RELEASE_NOTES_3.141.592658.md:126` | **上游验签是唯一真实性来源**：本版不做客户端侧的签名验证，回放之所以有效是因为上游校验； 如果上游改变签名算法或信封形状，回放会退化为 400（失败关闭），而不是静默降级。 | — | 仍缺 |
+| 6 | `RELEASE_NOTES_3.141.592658.md:128` | **Node 下限未实测**：本版只在 24.x 上跑发布门；`>=22.13.0` 的 floor 本身仍是 `[UNVERIFIED]`。 | — | 仍缺 |
+| 7 | `RELEASE_NOTES_3.141.592658.md:129` | **托管 CI / 发布产物 / 部署**：tag 触发 release workflow、cosign 资产核验与 HMC 部署都在 tag 之后另行执行；本文件与验收附录不代表它们已经发生。 | — | 仍缺 |
 
 ## 3.141.592657 — `docs/releases/RELEASE_NOTES_3.141.592657.md`
 

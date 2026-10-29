@@ -1,6 +1,6 @@
 # Documentation Map
 
-> One line per documentation file in scope (tracked `docs/`, the root project docs, and the tracked D9/release evidence reports listed under `evidence/`): `path — purpose — status`. Snapshot: **2026-10-26**, branch `docs/final-20261026`. Release: **v3.141.592657**（本波发布，tag `v3.141.592657` → `a7d2e33f`）.
+> One line per documentation file in scope (tracked `docs/`, the root project docs, and the tracked D9/release evidence reports listed under `evidence/`): `path — purpose — status`. Snapshot: **2026-10-30**, branch `release/next-pr282`. Release: **v3.141.592658**（本波发布；tag `v3.141.592658` 指向发布提交，见 `git rev-parse 'v3.141.592658^{commit}'`；上一个 tag `v3.141.592657` → `a7d2e33f`）.
 >
 > Status key: `current` = accurate for its stated scope/date (including frozen historical records); `stale → fixed` = had a stale current-state claim, corrected in this sweep; `stale → deferred` = stale claim left in place with a reason; `superseded` = replaced by a newer record but retained as published history; `duplicate` = superseded or generated copy.
 
@@ -9,7 +9,7 @@
 - `README.md` — Chinese main README: install, API surfaces, model catalog, dashboard, release/secret boundary. — stale → fixed (D9: signature paragraph now covers image-digest and release-attestation; release count stated; Claude 80 / Gemini 26 rechecked)
 - `README.en.md` — English mirror of the main README. — stale → fixed (D9: signature paragraph now covers image-digest and release-attestation; release count stated; Claude 80 / Gemini 26 rechecked)
 - `AGENTS.md` — Repository operating notes: work loop, test/gate commands, landmines, local assets. — current (local, gitignored)
-- `CHANGELOG.md` — Version index and release summaries; banner and table both state the release-notes count. — current (217 release notes / 227 tags, 2026-10-26)
+- `CHANGELOG.md` — Version index and release summaries; banner and table both state the release-notes count. — current (218 release notes / 228 tags, 2026-10-30)
 - `CONTRIBUTING.md` — Merge bar, review rules, testing/gate instructions and contribution conventions. — stale → fixed (Windows inert set 4→6 paths; current-count pointer moved to HANDOFF-SUMMARY §Verify + acceptance §3)
 - `SECURITY.md` — Security vulnerability disclosure policy. — current
 - `CLAUDE.md` — One-line pointer to AGENTS.md. — duplicate (local pointer, gitignored)
@@ -74,8 +74,8 @@
 ## docs/releases/ — release records
 
 - `docs/releases/README.md` — Release runbook: procedure, gate, tag rules, asset/signing contract and note house style. — current
-- `docs/releases/ACCEPTANCE_3.141.592657.md` — Acceptance appendix for 3.141.592657: D9 controls, F3 fix, gate commands, skip lists and log hashes. — current
-- `docs/releases/ACCEPTANCE_3.141.592656.md` — Acceptance appendix for 3.141.592656: V-01…V-27 matrix, gate commands, skip lists and log hashes. — superseded (previous release)
+- `docs/releases/ACCEPTANCE_3.141.592658.md` — Acceptance appendix for 3.141.592658: Gemini `type[]` lowering, signed-thinking replay, gate commands, skip lists and log hashes. — current
+- `docs/releases/ACCEPTANCE_3.141.592657.md` — Acceptance appendix for 3.141.592657: D9 controls, F3 fix, gate commands, skip lists and log hashes. — superseded (previous release)
 - `docs/releases/RELEASE_NOTES_2.0.6.md` — Release notes for v2.0.6 (published GitHub Release body). — current (published record)
 - `docs/releases/RELEASE_NOTES_2.0.7.md` — Release notes for v2.0.7 (published GitHub Release body). — current (published record)
 - `docs/releases/RELEASE_NOTES_2.0.8.md` — Release notes for v2.0.8 (published GitHub Release body). — current (published record)
@@ -291,8 +291,8 @@
 - `docs/releases/RELEASE_NOTES_3.10.1.md` — Release notes for v3.10.1 (published GitHub Release body). — current (published record)
 - `docs/releases/RELEASE_NOTES_3.141.592654.md` — Release notes for v3.141.592654 (published GitHub Release body). — current (published record)
 - `docs/releases/RELEASE_NOTES_3.141.592655.md` — Release notes for v3.141.592655 (published GitHub Release body). — current (published record)
-- `docs/releases/RELEASE_NOTES_3.141.592657.md` — Release notes for v3.141.592657 (published GitHub Release body). — current
-- `docs/releases/RELEASE_NOTES_3.141.592656.md` — Release notes for v3.141.592656 (published GitHub Release body). — superseded (previous release)
+- `docs/releases/RELEASE_NOTES_3.141.592658.md` — Release notes for v3.141.592658 (published GitHub Release body). — current
+- `docs/releases/RELEASE_NOTES_3.141.592657.md` — Release notes for v3.141.592657 (published GitHub Release body). — superseded (previous release)
 
 ## evidence/ — D9 and release-gate evidence (2026-10-26)
 
@@ -310,7 +310,7 @@
 
 1. `README.md` / `README.en.md` — model summary counts corrected from Claude 73 / Gemini 22 to **80 / 26** (`src/models.js`: anthropic 80, openai 118, google 26); signature text corrected from `.sig` + `.pem` + `.sigstore.json` to the single `.sigstore.json` bundle, and extended for D9 to cover the signed Docker `image-digest.txt` and the signed `release-attestation.json`; release count line added (227 tags / 217 release notes, 2026-10-26).
 2. `docs/README.md` — source-only switch count **90**, bare-grep undercount **59** (183 total vs 124 bare after D9's two new switches); mutation-spec corpus 85→**97**; added D9 evidence section, HANDOFF-SUMMARY entry and the missing DETACH-ROLLOUT / REQUEST-TAIL-CONTRACT / HISTORY-LEDGER / ACCEPTANCE entries.
-3. `CHANGELOG.md` — `git tag` count 214→**227** and release-notes count 217 (2026-10-26 `git tag | wc -l` / `ls docs/releases/RELEASE_NOTES_*.md | wc -l`; includes `v3.141.592657`).
+3. `CHANGELOG.md` — `git tag` count 227→**228** and release-notes count 218 (2026-10-30 `git tag | wc -l` / `ls docs/releases/RELEASE_NOTES_*.md | wc -l`; includes `v3.141.592658`).
 4. `docs/ENV-SWITCHES.md` — D9 adds `WINDSURFAPI_UPDATE_ATTESTATION` and `WINDSURFAPI_ATTESTATION_DIR`; header recount 181→**183** full / 122→**124** bare, source-only table stays **90** (`.env.example` + README now cover 93).
 5. `docs/RELEASE-SIGNING.md` — “three signature artifacts” corrected to one `.sigstore.json` bundle per signed blob; removed the stale detached `.sig`/`.pem` verification block; D9 adds image-digest and release-attestation verification.
 6. `docs/index.html` — stale hero badge `v3.9.37`→`v3.141.592657`; model count 264→**283**; static provider counts refreshed; `MODELS` array regenerated from `src/models.js` with `scripts/gen-docs-models.js`.
