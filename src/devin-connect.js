@@ -886,7 +886,7 @@ export function normalizeToolSchema(schema) {
       if (req.length) out.required = req; else delete out.required;
     }
   }
-  return stripSchemaDescriptions(out);
+  return normalizeSchemaTree(out);
 }
 
 // ★ Strip top-level oneOf/anyOf/allOf combinators in place (ported from kiro.rs
@@ -926,27 +926,91 @@ function stripTopLevelCombinators(out) {
   return stripped;
 }
 
-// ★ Strip `description` annotations from JSON Schema recursively, but preserve
-// properties that happen to be NAMED "description" (a real parameter, e.g.
-// Cursor's Task tool has a `description` property). Only schema-annotation
-// `description` keys (siblings of `type`/`properties`/`required`) are removed.
-// This neutralizes upstream's MCP-gate fingerprinting on parameter descriptions
-// while keeping the full schema structure (types, required, enums, nested
-// objects) intact for the model.
-function stripSchemaDescriptions(value, inProperties = false) {
-  if (Array.isArray(value)) return value.map((item) => stripSchemaDescriptions(item));
+const LITERAL_VALUE_KEYS = new Set(['default', 'examples', 'enum', 'const']);
+// ★ Recursively normalize a JSON Schema tree for the native ToolDef path.
+// Two jobs, both required by upstream's decoder:
+//  1. Strip `description` ANNOTATIONS, but preserve properties that happen to
+//     be NAMED "description" (a real parameter, e.g. Cursor's Task tool has a
+//     `description` property). Only schema-annotation `description` keys
+//     (siblings of `type`/`properties`/`required`) are removed. This
+//     neutralizes upstream's MCP-gate fingerprinting on parameter descriptions
+//     while keeping the full schema structure (types, required, enums, nested
+//     objects) intact for the model.
+//  2. Lower every `type` ARRAY to an equivalent `anyOf` of single-type members.
+//     Upstream rejects the whole request with `invalid_argument` on
+//     `"type": ["number","null"]` (reproduced live with omp grep's `skip`
+//     parameter), while `anyOf: [{type:"number"},{type:"null"}]` is accepted.
+//     The lowering is lossless: `anyOf` with one `{type: member}` per member
+//     accepts exactly the same values, nullability included.
+// The traversal is the existing one: every object/array is rebuilt (so the
+// caller's schema is never mutated). `inProperties` keeps its original meaning
+// (the current object is a `properties` MAP, whose keys are parameter names) so
+// description stripping stays byte-identical. `kind` is the accurate container
+// check used only for type lowering:
+//   'schema'     — a JSON Schema object (the only place a `type` keyword lives)
+//   'properties' — a properties MAP: its KEYS are parameter names, its VALUES
+//                  are schemas (so a parameter named "properties"/"default"
+//                  still gets lowered)
+//   'literal'    — caller data from default/examples/enum/const. STICKY: every
+//                  descendant, including through arrays and nested objects, is
+//                  data, never a schema.
+function normalizeSchemaTree(value, inProperties = false, kind = 'schema') {
+  if (Array.isArray(value)) {
+    // Tuple items/prefixItems/combinator arrays contain schemas; literal arrays
+    // (enum/examples values) stay literal all the way down.
+    const itemKind = kind === 'literal' ? 'literal' : 'schema';
+    return value.map((item) => normalizeSchemaTree(item, false, itemKind));
+  }
   if (!value || typeof value !== 'object') return value;
   const out = {};
+  // Only a schema object carries the `type` keyword; inside a `properties` map
+  // `type` is just a parameter name. A malformed (non-string-member) or empty
+  // array is left untouched rather than rejected.
+  const typeMembers = kind === 'schema'
+    && Array.isArray(value.type)
+    && value.type.length > 0
+    && value.type.every((member) => typeof member === 'string')
+    ? value.type
+    : null;
   for (const [key, child] of Object.entries(value)) {
     if (key === 'description' && !inProperties) continue;
-    out[key] = stripSchemaDescriptions(child, key === 'properties');
+    if (key === 'type' && typeMembers) continue;
+    // A schema's `properties` value is a map; a schema's literal-value keys are
+    // caller data. Inside a properties map every value is a schema; inside a
+    // literal everything stays literal.
+    const childKind = kind === 'literal'
+      ? 'literal'
+      : kind === 'properties'
+        ? 'schema'
+        : key === 'properties'
+          ? 'properties'
+          : LITERAL_VALUE_KEYS.has(key) ? 'literal' : 'schema';
+    out[key] = normalizeSchemaTree(child, key === 'properties', childKind);
+  }
+  if (typeMembers) {
+    const lowered = typeMembers.map((member) => ({ type: member }));
+    // `anyOf` is the only combinator key the lowering would collide with. Keep
+    // an existing one and AND the lowered union in through `allOf` (created, or
+    // appended when it already exists) so neither semantic is dropped:
+    //   anyOf(A...) AND type∈T  ≡  anyOf(A...) AND allOf(anyOf(T...))
+    // (a sibling allOf is the intersection, so no branch cross-product is
+    // needed). oneOf/allOf are independent keywords and simply coexist.
+    if (out.anyOf === undefined) {
+      out.anyOf = lowered;
+    } else if (Array.isArray(out.allOf)) {
+      out.allOf = [...out.allOf, { anyOf: lowered }];
+    } else if (out.allOf === undefined) {
+      out.allOf = [{ anyOf: lowered }];
+    } else {
+      out.type = [...value.type]; // malformed anyOf + allOf: preserve the original
+    }
   }
   return out;
 }
 
 // ★ Tool-description length cap (2026-07-10, verified from live paid probes).
 // SUPERSEDED (2026-07-13): the MCP-gate fix below (encodeToolDef replaces the
-// top-level description with the tool name and stripSchemaDescriptions removes
+// top-level description with the tool name and normalizeSchemaTree removes
 // parameter-schema `description` annotations) is the authoritative approach —
 // it neutralizes BOTH the description-length threshold AND the MCP-gate
 // fingerprint match in one pass. capToolDescription is no longer called by
@@ -980,7 +1044,7 @@ function capToolDescription(desc, env = process.env) {
 // Fix: replace the top-level description with the tool name (the model
 // identifies tools by name, not by description prose) and strip all
 // `description` annotations from the parameter JSON Schema (see
-// stripSchemaDescriptions in normalizeToolSchema). Schema structure (types,
+// normalizeSchemaTree in normalizeToolSchema). Schema structure (types,
 // required, enums, nested objects, properties named "description") is
 // preserved — only human-readable annotation text is removed.
 //
