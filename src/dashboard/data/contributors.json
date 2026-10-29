@@ -639,7 +639,17 @@
       "weightLabel": "thinking 块恒带 signature · 修好 Grok Build，并推翻无据的旧裁定",
       "mergedAt": "2026-10-05",
       "title": "fix(messages): always include `signature` on thinking blocks",
-      "summary": "修好 #277：`/v1/messages` 的 thinking 块现在**始终带 `signature` 字段**（上游有真实签名时为真实值，没有时为空串），流式 `content_block_start` 与非流式一起对齐 —— Grok Build 把 `ContentBlock::Thinking.signature` 反序列化为必填 `String`，缺字段整条响应 / SSE 事件直接失败。这条同时**推翻了一个无据的旧裁定**：当年 #228 以「严格客户端会拒空 signature」为由删掉字段，但没版本、没报错、没复现；作者用 Grok Build 源码 + 最小 serde 程序 + 生产实例 + 端到端多轮工具调用（3 轮 success）逐层举证，维护者复核后判定「有证据的一边赢了没证据的一边」，并把它记入质量条作为「注释写错理由也是缺陷」的实例。合并 `d3eaab0`。"
+      "summary": "修好 #277：`/v1/messages` 的 thinking 块现在**始终带 `signature` 字段**（上游有真实签名时为真实值，没有时为空串），流式 `content_block_start` 与非流式一起对齐 —— Grok Build 把 `ContentBlock::Thinking.signature` 反序列化为必填 `String`，缺字段整条响应 / SSE 事件直接失败。这条同时**推翻了一个无据的旧裁定**：当年 #228 以「严格客户端会拒空 signature」为由删掉字段，但没版本、没报错、没复现；作者用 Grok Build 源码 + 最小 serde 程序 + 生产实例 + 端到端多轮工具调用（3 轮 success）逐层举证，维护者复核后判定「有证据的一边赢了没证据的一边」，并把它记入质量条作为「…"
+    },
+    {
+      "login": "PsychMing",
+      "githubId": 107941337,
+      "pr": 282,
+      "weight": "S",
+      "weightLabel": "签名 thinking 往返：`#11` thinking + `#12` signature 在工具循环、rescue 重试与后续用户轮都能被模型读到，默认关闭、失败关闭",
+      "mergedAt": "2026-10-30",
+      "title": "feat(devin-connect): round-trip signed thinking (tool loops, rescue retries, later user turns)",
+      "summary": "让 Claude 的**签名 thinking**真正往返，而不是被历史翻译丢掉。上游响应的 thinking 签名（`#10`，实测 1440 字符 CAIS `C` 信封）先经 `DEVIN_CONNECT_SIGNATURE_TAG` 解码交给客户端；客户端在 `/v1/messages` 历史里带回的带签名 thinking 块，在 `DEVIN_CONNECT_REPLAY_SIGNED_THINKING=1` 时以 `#11` thinking + `#12` signature 原生回放到 assistant 帧 —— 工具调用轮与纯文本轮都包括，工具循环内、rescue 重试之后、以及用户发新消息之后都有效。上游会验签（同一段历史改一个字节即 `invalid_argument` 400，未改动的 200），所以回放的不是「让模型回忆」的提示词，而是真实可验证的推理上下文；实测工具循环召回 2/3 对不带签名的 0/3，真实 Claude Code 2.1.306 的 `Read` 工具循环 + `--resume` 后续轮 wire 为 `#11` 72 B + `#12` 936 B（关闭时 0/0）。维护方评审把四处会让签名静默消失的路径全部钉掉：M1 流式 `signature_delta` 被赋值覆盖（master 既有缺陷，改为累加）、M2 builder 在旧回放探测关闭时丢掉 signed reasoning-only 历史、M3 `/v1/messages` 入口在进 builder 前就丢掉 thinking-only assistant 轮、M4 rescue 过滤把带签名的 reasoning-only 历史当空轮剔除；并补齐守卫：provider 门（只限 Claude，未入目录的名字按 `claude-*`/`anthropic/` 兜底）、E/R/C/Q 信封门（其他形状含 `#` 缓存前缀 400，接受字节永不改写）、强制 prompt 模拟时 400 失败关闭、历史预算计入签名字节、多段签名整体抑制（拼起来是无效签名）。默认关闭，因此默认路径的 wire 仍 270/270 逐字节不变。"
     }
   ]
 }
