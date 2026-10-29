@@ -284,6 +284,15 @@ describe('/v1/messages: signed thinking survives into the connect request', () =
     assert.equal(a.reasoning_signature, SIG);
   });
 
+  it('replays for unknown-catalog Claude names but stays closed for unknown non-Claude names', () => {
+    const env = { DEVIN_CONNECT_REPLAY_SIGNED_THINKING: '1' };
+    assert.equal(signedThinkingReplayEnabled(env, 'claude-opus-5-5'), true);
+    assert.equal(signedThinkingReplayEnabled(env, 'claude-opus-4.9'), true);
+    assert.equal(signedThinkingReplayEnabled(env, 'anthropic/claude-opus-5-5'), true);
+    assert.equal(signedThinkingReplayEnabled(env, 'gemini-3-pro'), false);
+    assert.equal(signedThinkingReplayEnabled(env, 'unknown-model'), false);
+  });
+
   it('rejects non-Claude replay and foreign or cache-prefixed envelopes before the adapter', async () => {
     process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING = '1';
     await handleMessages({ ...body([{ type: 'thinking', thinking: 't', signature: SIG }]), model: 'gemini-3-pro' }, { callerKey: 'sig-provider' });
