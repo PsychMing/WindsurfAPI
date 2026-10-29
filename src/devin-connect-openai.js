@@ -629,6 +629,8 @@ export async function toChatCompletion(params, opts = {}) {
   let content = '';
   let reasoning = '';
   let reasoningSignature = '';
+  let signedSegment = false;
+  let multipleSignedSegments = false;
   let finishReason = 'stop';
   let usage = null;
   // Per-request billing detail (credit / ACU cost) when the operator has calibrated
@@ -642,17 +644,23 @@ export async function toChatCompletion(params, opts = {}) {
   let nativeToolCalls = [];
   for (let attempt = 0; ; attempt++) {
     try {
-      content = ''; reasoning = ''; reasoningSignature = ''; finishReason = 'stop'; usage = null; nativeToolCalls = [];
+      content = ''; reasoning = ''; reasoningSignature = ''; signedSegment = false; multipleSignedSegments = false; finishReason = 'stop'; usage = null; nativeToolCalls = [];
       for await (const ev of streamChatWithEmptyRetry(params, undefined, opts)) {
         // A rescue attempt REPLACES the previous one; drop what it produced or the
         // client is handed every attempt concatenated.
-        if (ev.type === 'attempt_reset') { content = ''; reasoning = ''; reasoningSignature = ''; nativeToolCalls = []; billing = null; continue; }
+        if (ev.type === 'attempt_reset') { content = ''; reasoning = ''; reasoningSignature = ''; signedSegment = false; multipleSignedSegments = false; nativeToolCalls = []; billing = null; continue; }
         if (ev.type === 'content') content += ev.text;
-        else if (ev.type === 'reasoning') reasoning += ev.text;
+        else if (ev.type === 'reasoning') {
+          if (signedSegment) multipleSignedSegments = true;
+          reasoning += ev.text;
+        }
         // Thinking signature (opt-in decode, DEVIN_CONNECT_SIGNATURE_TAG). The
         // per-frame events are increments; the finish event's total is not used
         // because a rescue attempt_reset must discard the abandoned increments.
-        else if (ev.type === 'signature') reasoningSignature += ev.reasoning_signature || '';
+        else if (ev.type === 'signature') {
+          reasoningSignature += ev.reasoning_signature || '';
+          signedSegment = true;
+        }
         else if (ev.type === 'finish') {
           if (ev.reason) finishReason = ev.reason;
           if (ev.usage) usage = ev.usage;
@@ -783,7 +791,7 @@ export async function toChatCompletion(params, opts = {}) {
   if (reasoning && !promotedReasoning) message.reasoning_content = reasoning;
   // The signature seals exactly this reasoning text; promoted reasoning is no
   // longer a thinking block, so a signature beside it would seal nothing.
-  if (reasoning && !promotedReasoning && reasoningSignature) message.reasoning_signature = reasoningSignature;
+  if (reasoning && !promotedReasoning && reasoningSignature && !multipleSignedSegments) message.reasoning_signature = reasoningSignature;
   if (toolCalls.length) {
     message.tool_calls = toolCalls.map((tc, i) => ({
       id: toClientToolCallId(tc.id, `call_${i}_${Date.now().toString(36)}`),

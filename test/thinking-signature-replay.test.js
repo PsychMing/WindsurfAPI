@@ -17,10 +17,10 @@ import {
   __setStreamChatForTest,
 } from '../src/devin-connect-openai.js';
 import { handleMessages, signedThinkingReplayEnabled } from '../src/handlers/messages.js';
-import { __setConnectDeps } from '../src/handlers/chat.js';
+import { __setConnectDeps, __resetConnectDeps } from '../src/handlers/chat.js';
 
 const TOKEN = 'test$token';
-const SIG = 'EpkCCkYIBxgCKkDsignatureBase64Payload==';
+const SIG = 'EggKBggLEgKquxgB';
 
 function wireChats(proto) {
   return getAllFields(parseFields(proto), 3)
@@ -105,6 +105,48 @@ describe('adapter: signature reaches the OpenAI-shaped response', () => {
     await streamChatCompletion({ model: 'm', messages: [] }, (d) => frames.push(d));
     const sigs = frames.flatMap((f) => f.choices || []).map((c) => c.delta?.reasoning_signature).filter(Boolean);
     assert.deepEqual(sigs, ['Ep', 'kC']);
+  });
+
+  it('non-stream: independently signed reasoning segments never share a fabricated signature', async () => {
+    const first = 'EggKBggLEgKquxgB';
+    const second = 'EggKBggLEgKqvxgB';
+    __setStreamChatForTest(fake([
+      { type: 'reasoning', text: 'first' },
+      { type: 'signature', reasoning_signature: first },
+      { type: 'reasoning', text: 'second' },
+      { type: 'signature', reasoning_signature: second },
+      { type: 'content', text: 'answer' },
+      { type: 'finish', reason: 'stop', usage: null },
+    ]));
+    const { body } = await toChatCompletion({ model: 'm', messages: [] });
+    assert.equal(body.choices[0].message.reasoning_content, 'firstsecond');
+    assert.equal(body.choices[0].message.reasoning_signature, undefined);
+  });
+
+  it('stream: independently signed reasoning segments emit no invalid signature_delta', async () => {
+    const first = 'EggKBggLEgKquxgB';
+    const second = 'EggKBggLEgKqvxgB';
+    __setStreamChatForTest(fake([
+      { type: 'reasoning', text: 'first' },
+      { type: 'signature', reasoning_signature: first },
+      { type: 'reasoning', text: 'second' },
+      { type: 'signature', reasoning_signature: second },
+      { type: 'content', text: 'answer' },
+      { type: 'finish', reason: 'stop', usage: null },
+    ]));
+    const result = await handleMessages({ model: 'claude-sonnet-4.6', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'go' }] }, {
+      async handleChatCompletions() {
+        const frames = [];
+        await streamChatCompletion({ model: 'm', messages: [] }, (frame) => frames.push(frame));
+        return { status: 200, stream: true, async handler(res) {
+          for (const frame of frames) res.write(`data: ${JSON.stringify(frame)}\n\n`);
+          res.end('data: [DONE]\n\n');
+        } };
+      },
+    });
+    const res = { body: '', writableEnded: false, write(s) { this.body += s; return true; }, end(s) { if (s) this.write(s); this.writableEnded = true; }, on() { return this; } };
+    await result.handler(res);
+    assert.equal(res.body.includes('signature_delta'), false);
   });
 
   // A real rescue: the first upstream attempt is thinking-only (no text, no tool
@@ -240,6 +282,36 @@ describe('/v1/messages: signed thinking survives into the connect request', () =
     const a = assistantWithCalls();
     assert.equal(a.reasoning_content, 'secret 482917');
     assert.equal(a.reasoning_signature, SIG);
+  });
+
+  it('rejects non-Claude replay and foreign or cache-prefixed envelopes before the adapter', async () => {
+    process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING = '1';
+    await handleMessages({ ...body([{ type: 'thinking', thinking: 't', signature: SIG }]), model: 'gemini-3-pro' }, { callerKey: 'sig-provider' });
+    assert.equal(assistantWithCalls().reasoning_signature, undefined);
+    seen = null;
+    for (const signature of ['gAAAA-foreign-envelope', `cache#${SIG}`]) {
+      __resetConnectDeps();
+      const result = await handleMessages(body([{ type: 'thinking', thinking: 't', signature }]), { callerKey: 'sig-envelope' });
+      assert.equal(result.status, 400);
+      assert.equal(result.body.error.code, 'unsupported_thinking_signature');
+    }
+    assert.equal(seen, null, 'invalid replay never reaches the connect adapter');
+  });
+
+  it('fails closed when forced tool emulation would discard signed history', async () => {
+    process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING = '1';
+    process.env.DEVIN_CONNECT_TOOL_CALL_TAGS = 'invalid';
+    process.env.DEVIN_CONNECT_TOOL_DEF_TAGS = 'invalid';
+    try {
+      __resetConnectDeps();
+      const result = await handleMessages(body([{ type: 'thinking', thinking: 'signed', signature: SIG }]), { callerKey: 'sig-emulation' });
+      assert.equal(result.status, 400);
+      assert.equal(result.body.error.code, 'signed_thinking_tool_history_unsupported');
+      assert.equal(seen, null, 'fail-closed request never reaches the connect adapter');
+    } finally {
+      delete process.env.DEVIN_CONNECT_TOOL_CALL_TAGS;
+      delete process.env.DEVIN_CONNECT_TOOL_DEF_TAGS;
+    }
   });
 
   it('when on, an unsigned or multi-block turn is not replayed', async () => {

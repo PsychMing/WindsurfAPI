@@ -18,7 +18,7 @@
 // UNITS. `turns` is `messages.length` — every entry the encoder will see, system
 // turns included, because they all ride the wire. `bytes` counts the payload
 // fields the encoder forwards (content text and non-text parts, tool-call ids /
-// names / arguments, reasoning_content, name, tool_call_id) as UTF-8, the same
+// names / arguments, reasoning_content, reasoning_signature, name, tool_call_id) as UTF-8, the same
 // unit proto.js writes. Transport framing is not counted; the number is a
 // deliberate lower bound on the wire size, not an estimate of it.
 //
@@ -84,6 +84,7 @@ function messageBytes(message) {
   if (!message || typeof message !== 'object') return 0;
   let total = contentBytes(message.content);
   total += textBytes(message.reasoning_content);
+  total += textBytes(message.reasoning_signature);
   total += textBytes(message.reasoning);
   total += textBytes(message.name);
   total += textBytes(message.tool_call_id);

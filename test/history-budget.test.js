@@ -96,6 +96,11 @@ describe('measureOutboundHistory', () => {
     assert.equal(measured.bytes, 3 + 'data:image/png;base64,AAAA'.length + 6 + 4 + 12 + 6 + 2);
   });
 
+  it('counts signed reasoning payload bytes', () => {
+    const message = { role: 'assistant', content: null, reasoning_content: 'think', reasoning_signature: 'E'.repeat(4096) };
+    assert.equal(measureOutboundHistory([message]).bytes, 5 + 4096);
+  });
+
   it('is total on malformed input (never throws, never counts a missing transcript)', () => {
     assert.deepEqual(measureOutboundHistory(null), { turns: 0, bytes: 0 });
     assert.deepEqual(measureOutboundHistory([null, {}, { content: 42 }]), { turns: 3, bytes: 0 });
