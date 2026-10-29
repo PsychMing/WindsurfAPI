@@ -619,7 +619,11 @@ export function validateCountTokensRequest(body) {
 // replay). Needs DEVIN_CONNECT_SIGNATURE_TAG so the client receives the
 // signatures in the first place.
 export function signedThinkingReplayEnabled(env = process.env, model = null) {
-  const provider = model == null ? 'anthropic' : getModelInfo(resolveModel(model))?.provider;
+  const normalized = model == null ? '' : String(model).trim().toLowerCase();
+  const provider = model == null
+    ? 'anthropic'
+    : getModelInfo(resolveModel(model))?.provider
+      || (/^(?:claude-|anthropic\/)/.test(normalized) ? 'anthropic' : null);
   return provider === 'anthropic' && String(env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING || '').trim() === '1';
 }
 
