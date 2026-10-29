@@ -1364,6 +1364,7 @@ export function interleaveParallelToolMessages(messages) {
             if (!first) {
               delete singleAssistant.reasoning_content;
               delete singleAssistant.reasoning;
+              delete singleAssistant.reasoning_signature;
             }
             out.push(singleAssistant);
 

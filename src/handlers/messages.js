@@ -21,6 +21,8 @@ import { createToolIdAllocator, normalizeToolIdsInMessages, toolHygieneEnabled }
 import { normalizeHistoryTail } from '../history-normalize.js';
 import { leakTraceEnabled, thinkMarkersIn, leakSample } from '../leak-trace.js';
 import { recordToolDeferLoading } from './cc-compat.js';
+import { getModelInfo, resolveModel } from '../models.js';
+import { isClaudeThinkingSignature } from '../claude-signature.js';
 
 function genMsgId() {
   return 'msg_' + randomUUID().replace(/-/g, '').slice(0, 24);
@@ -609,6 +611,18 @@ export function validateCountTokensRequest(body) {
   return null;
 }
 
+// Native replay of signed Claude thinking on DEVIN_CONNECT (default OFF). The
+// upstream verifies the signature (a one-character change is rejected with
+// invalid_argument) and only then lets the model see the replayed thinking:
+// measured 2026-10-28 on claude-opus-5-5, recalled 2/2 inside a tool loop with
+// #11+#12 (0/3 with #11 alone) and 3/3 after a later user message (0/4 without
+// replay). Needs DEVIN_CONNECT_SIGNATURE_TAG so the client receives the
+// signatures in the first place.
+export function signedThinkingReplayEnabled(env = process.env, model = null) {
+  const provider = model == null ? 'anthropic' : getModelInfo(resolveModel(model))?.provider;
+  return provider === 'anthropic' && String(env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING || '').trim() === '1';
+}
+
 // A3: normalize an Anthropic image block ({ type:'image', source:{...} }) into
 // the OpenAI image_url shape the internal handler / wire builder understand.
 // base64 sources become a data URI; url sources are forwarded as-is (OpenAI
@@ -700,6 +714,35 @@ export { neutralizeClientIdentity } from './identity-neutralize.js';
 import { neutralizeClientIdentity } from './identity-neutralize.js';
 
 function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
+  if (signedThinkingReplayEnabled(process.env, body.model)
+      && (body.tools || []).length
+      && (String(process.env.DEVIN_CONNECT_TOOL_CALL_TAGS || '').trim() === 'invalid'
+        || String(process.env.DEVIN_CONNECT_TOOL_DEF_TAGS || '').trim() === 'invalid')) {
+    const signedToolHistory = (body.messages || []).some((message) => message?.role === 'assistant' && Array.isArray(message.content)
+      && message.content.some((block) => block?.type === 'thinking' && block.thinking && block.signature)
+      && message.content.some((block) => block?.type === 'tool_use'));
+    if (signedToolHistory) {
+      const err = new Error('Signed thinking replay requires native tool history; prompt emulation would discard the signed assistant turn.');
+      err.status = 400;
+      err.param = 'messages';
+      err.code = 'signed_thinking_tool_history_unsupported';
+      throw err;
+    }
+  }
+  if (signedThinkingReplayEnabled(process.env, body.model)) {
+    for (const message of body.messages || []) {
+      if (message?.role !== 'assistant' || !Array.isArray(message.content)) continue;
+      for (const block of message.content) {
+        if (block?.type === 'thinking' && block.signature && !isClaudeThinkingSignature(block.signature)) {
+          const err = new Error('Unsupported Claude thinking signature envelope; replay accepts only an unprefixed E/R/C/Q structure.');
+          err.status = 400;
+          err.param = 'messages';
+          err.code = 'unsupported_thinking_signature';
+          throw err;
+        }
+      }
+    }
+  }
   const cachePolicy = extractCachePolicy(body, promptEstimate);
   // CL2: context_management is validated at the entry point
   // (validateMessagesRequest). clear_thinking_20251015 needs no translation:
@@ -813,6 +856,11 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       const toolCalls = [];
       const toolResults = [];
       const msgThinking = [];
+      // Signed thinking, kept only when EVERY thinking block on the turn carries a
+      // signature: the upstream verifies each signature against its own text, so a
+      // partial set cannot be replayed (see signedThinkingReplayEnabled).
+      const signedThinking = [];
+      let unsignedThinking = false;
       for (const block of m.content) {
         // Malformed block shapes are dropped, never fatal: a null/undefined
         // entry (or a bare string) used to throw
@@ -852,12 +900,21 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
           }
         } else if (block.type === 'thinking') {
           if (typeof block.thinking === 'string' && block.thinking) msgThinking.push(block.thinking);
+          if (typeof block.thinking === 'string' && block.thinking
+              && typeof block.signature === 'string' && block.signature) {
+            signedThinking.push({ thinking: block.thinking, signature: block.signature });
+          } else {
+            unsignedThinking = true;
+          }
           // Incoming assistant thinking blocks are dropped on history translation:
           // 1) Upstream swe-1-7 (K2 family) accepts outgoing candidate tag #11 in ChatMessage,
           //    but causally ignores its content (0/3 causal effect; tag #9 is incoming-only).
           // 2) Wholesale promotion (reasoning -> text content) is an industry anti-pattern
           //    inducing self-reflection loops on Kimi/DeepSeek families.
           // 3) Genuine Bedrock clients send #11+#12 (signature), but K2 family emits no signature.
+          // Exception: a SIGNED Claude thinking block is replayed natively (below) when
+          // DEVIN_CONNECT_REPLAY_SIGNED_THINKING=1 — measured 2026-10-28 on
+          // claude-opus-5-5: #11+#12 is verified upstream and recalled inside a tool loop.
         } else if (block.type === 'tool_use' && role === 'assistant') {
           const id = block.id || `call_${randomUUID().slice(0, 8)}`;
           toolNameById.set(id, block.name || '');
@@ -892,21 +949,35 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       if (role === 'assistant' && msgThinking.length) {
         lastIncomingThinking = msgThinking.join('\n');
       }
+      // Signed thinking to replay on this assistant turn, tool-call turn or not:
+      // Opus 4.5+ keeps prior turns' thinking in context, and the upstream honors
+      // a replay after a later user message too (measured 2026-10-28: recall 3/3
+      // replayed vs 0/4 without, forced-answer design). One block only: the wire
+      // has one #11/#12 slot per message.
+      const signedReplay = role === 'assistant' && signedThinkingReplayEnabled(process.env, body.model)
+        && !unsignedThinking && signedThinking.length === 1
+        ? signedThinking[0]
+        : null;
+      const withSignedThinking = (msg) => (signedReplay
+        ? { ...msg, reasoning_content: signedReplay.thinking, reasoning_signature: signedReplay.signature }
+        : msg);
       // Tool results must directly follow the assistant tool_calls message
       // in OpenAI format. Push them before the user content message.
       for (const tr of toolResults) messages.push(tr);
       if (toolCalls.length) {
-        messages.push({
+        messages.push(withSignedThinking({
           role: 'assistant',
           content: textParts.length ? textParts.join('\n') : null,
           tool_calls: toolCalls,
-        });
+        }));
       } else if (imageParts.length) {
         const contentArr = [...imageParts];
         if (textParts.length) contentArr.push({ type: 'text', text: textParts.join('\n') });
-        messages.push({ role, content: contentArr });
+        messages.push(withSignedThinking({ role, content: contentArr }));
       } else if (textParts.length) {
-        messages.push({ role, content: textParts.join('\n') });
+        messages.push(withSignedThinking({ role, content: textParts.join('\n') }));
+      } else if (signedReplay) {
+        messages.push({ role: 'assistant', content: null, reasoning_content: signedReplay.thinking, reasoning_signature: signedReplay.signature });
       }
     }
   }
@@ -1398,7 +1469,9 @@ class AnthropicStreamTranslator {
     // always carries `signature: ""` (as Anthropic does), so strict clients that
     // require the key (e.g. Grok Build's messages backend) still parse it.
     this.pendingThinkingSignature = '';
-    // V-08/D8: one abort-aware bounded writer for this egress. `res` is the REAL
+    this.signedThinkingSegment = false;
+    this.multipleSignedThinkingSegments = false;
+    // V-08/D8: one abort-aware bounded writer for this egress. `res` is the RE…
     // response; the Chat producer writes into `createCaptureRes`, which reports
     // THIS writer's pressure back to it. Without the wait the translator consumed
     // `res.write()`'s false verdict itself, so the Cascade/Connect producer was
@@ -1525,7 +1598,7 @@ class AnthropicStreamTranslator {
     // thinking blocks get it — never text/tool_use. We only emit the delta when
     // the upstream actually provided a real signature; otherwise the `signature: ""`
     // already sent on content_block_start stands (see constructor note).
-    if (this.current.type === 'thinking' && this.pendingThinkingSignature) {
+    if (this.current.type === 'thinking' && this.pendingThinkingSignature && !this.multipleSignedThinkingSegments) {
       this.send('content_block_delta', {
         type: 'content_block_delta',
         index: this.current.index,
@@ -1536,6 +1609,9 @@ class AnthropicStreamTranslator {
     this.send('content_block_stop', { type: 'content_block_stop', index: this.current.index });
     this.blockIndex++;
     this.current = null;
+    this.pendingThinkingSignature = '';
+    this.signedThinkingSegment = false;
+    this.multipleSignedThinkingSegments = false;
     return true;
   }
 
@@ -1567,6 +1643,7 @@ class AnthropicStreamTranslator {
 
   emitThinkingDelta(text) {
     if (!text) return;
+    if (this.signedThinkingSegment) this.multipleSignedThinkingSegments = true;
     if (this.holdIfToolBlockOpen('thinking', text)) return;
     if (this.current?.type !== 'thinking' && !this.startBlock('thinking')) return;
     this.send('content_block_delta', {
@@ -1781,7 +1858,10 @@ class AnthropicStreamTranslator {
       // Forward-compat: if a future upstream attaches a real encrypted signature
       // to the reasoning stream, capture it so closeCurrentBlock round-trips the
       // genuine value instead of the empty-string placeholder.
-      if (delta.reasoning_signature) this.pendingThinkingSignature = delta.reasoning_signature;
+      if (delta.reasoning_signature) {
+        this.pendingThinkingSignature += delta.reasoning_signature;
+        this.signedThinkingSegment = true;
+      }
       if (delta.content) {
         if (leakTraceEnabled()) {
           log.info('LEAK_TRACE classify', {

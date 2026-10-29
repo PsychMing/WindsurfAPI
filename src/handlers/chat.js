@@ -3956,6 +3956,18 @@ async function _handleChatCompletionsInner(body, context = {}) {
     // silently falling back to prompt emulation.
     if (emulateTools) log.info(`Chat[${reqId}]: TOOLCALL nativeFlag=${nativeFlag} defsOn=${nativeDefsOn} callsOn=${nativeCallsOn} suppressPreamble=${suppressPreamble} mode=${(nativeDefsOn && nativeCallsOn) ? 'NATIVE' : 'emulation'}`);
     const nativeStructured = nativeDefsOn && nativeCallsOn;
+    if (String(process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING || '').trim() === '1' && emulateTools && !nativeStructured
+        && messages.some((m) => m?.role === 'assistant' && m.tool_calls?.length && m.reasoning_signature && String(m.reasoning_content || '').length > 0)) {
+      return {
+        status: 400,
+        body: { error: {
+          message: 'Signed thinking replay requires native tool history; prompt emulation would discard the signed assistant turn.',
+          type: 'invalid_request_error',
+          param: 'messages',
+          code: 'signed_thinking_tool_history_unsupported',
+        } },
+      };
+    }
     // P2-1: native #6/#7 encoding does NOT require tools to be declared. When the
     // native flag is on, connectParams.nativeToolCall below makes the builder emit
     // ChatToolCall/tool_result frames for the history even with `tools` absent

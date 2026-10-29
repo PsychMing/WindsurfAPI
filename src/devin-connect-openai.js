@@ -369,6 +369,10 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
     // rescue branch below drops the buffer together with the attempt.
     const rescuePossible = hasTools && rescueAttempt < rescueMax;
     let pendingReasoning = [];
+    // The thinking signature (opt-in decode, DEVIN_CONNECT_SIGNATURE_TAG) seals
+    // this attempt's reasoning, so it is held and released with it: committed
+    // together, or dropped together when a rescue replaces the attempt.
+    let pendingSignature = '';
     // Item 1 (loop break): leading think-tagged CONTENT is reclassified into the
     // reasoning channel HERE, at the stream-event level, BEFORE the rescue
     // decision below. A whole turn of ` thinking…` therefore stays a
@@ -436,6 +440,7 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
           // before the text it preceded.
           for (const text of pendingReasoning) yield { type: 'reasoning', text };
           pendingReasoning = [];
+          if (pendingSignature) { yield { type: 'signature', reasoning_signature: pendingSignature }; pendingSignature = ''; }
           sawContent = true;
           sawText = true;
           yield { type: 'content', text: routed.text };
@@ -447,6 +452,7 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
             // First text delta commits the attempt — see the classifier branch.
             for (const text of pendingReasoning) yield { type: 'reasoning', text };
             pendingReasoning = [];
+            if (pendingSignature) { yield { type: 'signature', reasoning_signature: pendingSignature }; pendingSignature = ''; }
             sawText = true;
           } else {
             sawReasoning = true;
@@ -460,6 +466,8 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
         yield ev;
       } else if (ev.type === 'finish') {
         finishEv = ev; // hold: decide retry after the stream drains
+      } else if (ev.type === 'signature' && rescuePossible && !sawText) {
+        pendingSignature += ev.reasoning_signature || '';
       } else {
         yield ev;
       }
@@ -474,6 +482,7 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
         // reason as a normal content delta.
         for (const text of pendingReasoning) yield { type: 'reasoning', text };
         pendingReasoning = [];
+        if (pendingSignature) { yield { type: 'signature', reasoning_signature: pendingSignature }; pendingSignature = ''; }
         sawContent = true;
         sawText = true;
         yield { type: 'content', text: rest };
@@ -506,6 +515,7 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
       const filteredMsgs = origMsgs.filter((msg) => {
         if (msg.role !== 'assistant') return true;
         if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) return true;
+        if (msg.reasoning_signature && String(msg.reasoning_content || '').length > 0) return true;
         return messageText(msg.content).trim() !== '';
       });
       let nudgeText = 'Stop reasoning. Emit the tool call markup now.';
@@ -554,6 +564,7 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
     // while a rescue was possible, before its terminal finish event.
     for (const text of pendingReasoning) yield { type: 'reasoning', text };
     pendingReasoning = [];
+    if (pendingSignature) { yield { type: 'signature', reasoning_signature: pendingSignature }; pendingSignature = ''; }
     if (finishEv) yield finishEv;
     return;
   }
@@ -617,6 +628,9 @@ export async function toChatCompletion(params, opts = {}) {
   // are not retryable and throw straight through for the handler to map.
   let content = '';
   let reasoning = '';
+  let reasoningSignature = '';
+  let signedSegment = false;
+  let multipleSignedSegments = false;
   let finishReason = 'stop';
   let usage = null;
   // Per-request billing detail (credit / ACU cost) when the operator has calibrated
@@ -630,13 +644,23 @@ export async function toChatCompletion(params, opts = {}) {
   let nativeToolCalls = [];
   for (let attempt = 0; ; attempt++) {
     try {
-      content = ''; reasoning = ''; finishReason = 'stop'; usage = null; nativeToolCalls = [];
+      content = ''; reasoning = ''; reasoningSignature = ''; signedSegment = false; multipleSignedSegments = false; finishReason = 'stop'; usage = null; nativeToolCalls = [];
       for await (const ev of streamChatWithEmptyRetry(params, undefined, opts)) {
         // A rescue attempt REPLACES the previous one; drop what it produced or the
         // client is handed every attempt concatenated.
-        if (ev.type === 'attempt_reset') { content = ''; reasoning = ''; nativeToolCalls = []; billing = null; continue; }
+        if (ev.type === 'attempt_reset') { content = ''; reasoning = ''; reasoningSignature = ''; signedSegment = false; multipleSignedSegments = false; nativeToolCalls = []; billing = null; continue; }
         if (ev.type === 'content') content += ev.text;
-        else if (ev.type === 'reasoning') reasoning += ev.text;
+        else if (ev.type === 'reasoning') {
+          if (signedSegment) multipleSignedSegments = true;
+          reasoning += ev.text;
+        }
+        // Thinking signature (opt-in decode, DEVIN_CONNECT_SIGNATURE_TAG). The
+        // per-frame events are increments; the finish event's total is not used
+        // because a rescue attempt_reset must discard the abandoned increments.
+        else if (ev.type === 'signature') {
+          reasoningSignature += ev.reasoning_signature || '';
+          signedSegment = true;
+        }
         else if (ev.type === 'finish') {
           if (ev.reason) finishReason = ev.reason;
           if (ev.usage) usage = ev.usage;
@@ -765,6 +789,9 @@ export async function toChatCompletion(params, opts = {}) {
   // OpenAI convention: content is a string (may be empty), never undefined.
   const message = { role: 'assistant', content: content || '' };
   if (reasoning && !promotedReasoning) message.reasoning_content = reasoning;
+  // The signature seals exactly this reasoning text; promoted reasoning is no
+  // longer a thinking block, so a signature beside it would seal nothing.
+  if (reasoning && !promotedReasoning && reasoningSignature && !multipleSignedSegments) message.reasoning_signature = reasoningSignature;
   if (toolCalls.length) {
     message.tool_calls = toolCalls.map((tc, i) => ({
       id: toClientToolCallId(tc.id, `call_${i}_${Date.now().toString(36)}`),
@@ -984,6 +1011,14 @@ export async function streamChatCompletion(params, send, opts = {}) {
           await prime(); // first real delta: emit the deferred role chunk first
           reasoning += ev.text;
           await send({ ...base, choices: [{ index: 0, delta: { reasoning_content: ev.text }, finish_reason: null }] });
+        } else if (ev.type === 'signature') {
+          // Opt-in decode (DEVIN_CONNECT_SIGNATURE_TAG). Upstream sends it after
+          // the last reasoning frame and before content, so messages.js can close
+          // the thinking block with a signature_delta. The generator releases it
+          // only with a committed attempt, so it always seals exactly `reasoning`.
+          if (reasoning && ev.reasoning_signature) {
+            await send({ ...base, choices: [{ index: 0, delta: { reasoning_signature: ev.reasoning_signature }, finish_reason: null }] });
+          }
         } else if (ev.type === 'content') {
           await prime(); // first real delta: emit the deferred role chunk first
           content += ev.text;
