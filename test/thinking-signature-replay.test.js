@@ -289,13 +289,13 @@ describe('/v1/messages: signed thinking survives into the connect request', () =
     assert.equal(signedThinkingReplayEnabled(env, 'claude-opus-5-5'), true);
     assert.equal(signedThinkingReplayEnabled(env, 'claude-opus-4.9'), true);
     assert.equal(signedThinkingReplayEnabled(env, 'anthropic/claude-opus-5-5'), true);
-    assert.equal(signedThinkingReplayEnabled(env, 'gemini-3-pro'), false);
+    assert.equal(signedThinkingReplayEnabled(env, 'gemini-4-argon-high'), false);
     assert.equal(signedThinkingReplayEnabled(env, 'unknown-model'), false);
   });
 
   it('rejects non-Claude replay and foreign or cache-prefixed envelopes before the adapter', async () => {
     process.env.DEVIN_CONNECT_REPLAY_SIGNED_THINKING = '1';
-    await handleMessages({ ...body([{ type: 'thinking', thinking: 't', signature: SIG }]), model: 'gemini-3-pro' }, { callerKey: 'sig-provider' });
+    await handleMessages({ ...body([{ type: 'thinking', thinking: 't', signature: SIG }]), model: 'gemini-4-argon-high' }, { callerKey: 'sig-provider' });
     assert.equal(assistantWithCalls().reasoning_signature, undefined);
     seen = null;
     for (const signature of ['gAAAA-foreign-envelope', `cache#${SIG}`]) {
